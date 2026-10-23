@@ -1,5 +1,7 @@
 export type Role = 'user' | 'assistant' | 'system'
 
+export type AttachmentSource = 'legacy_path' | 'native_inline_pending' | 'owned_native_asset' | 'provider_uri'
+
 export interface Attachment {
   id: string
   name: string
@@ -9,6 +11,15 @@ export interface Attachment {
   mimeType?: string
   previewKey?: string
   previewOriginPath?: string
+  /** Display provenance only; preview and delivery resolve the stored attachment identity. */
+  source?: AttachmentSource
+  sourceUri?: string
+  originExecutionHostId?: string
+  nativePartKey?: string
+  nativeToolCallId?: string
+  nativeSourceField?: string
+  nativeAssetKey?: string
+  contentDigest?: string
 }
 
 export interface MessageToolCall {
@@ -20,9 +31,14 @@ export interface MessageToolCall {
   content: string
   contentDeferred?: boolean
   contentDigest?: string
+  /** Native-derived accepted launch correlation; scoped run metadata alone grants actions. */
+  managedLaunchRunId?: string
   isSubAgent?: boolean
   subAgentId?: string
   subAgentTitle?: string
+  /** Bounded output-only canonical result metadata, independent of deferred tool content. */
+  subAgentResultContent?: string
+  subAgentChildren?: Array<{ id: string; title?: string; status?: string; startedAtEpochMs?: number; finishedAtEpochMs?: number; durationMs?: number }>
   currentActivity?: string
 }
 
@@ -43,6 +59,13 @@ export type MessageBlock =
   | { type: 'user_input_request'; requestId: string; toolCallId?: string; text?: string }
 
 export interface Message {
+  /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
+  inputWriteCompleted?: boolean
+  /** Inert per-input provenance; never admission/delivery/control proof. */
+  nativeInputId?: string
+  originRequestId?: string
+  /** Output-only correlation; scoped native list alone supplies child authority. */
+  managedOriginRunId?: string
   id: string
   sessionId: string
   role: Role

@@ -308,3 +308,39 @@ describe('UsageLimits independent account allowances', () => {
     } finally { view.close() }
   })
 })
+
+
+describe('UsageLimits observed native consumption', () => {
+  it.each([['antigravity-cli', true], ['codex-cli', false]] as const)('labels the reported scope for %s without inventing native history', async (providerId, observedOnly) => {
+    const previous = useAppStore.getState()
+    const previousQuery = window.cefQuery
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    useAppStore.setState({
+      sessions: [{ id: 'observed-native', name: 'Observed native chat', providerId, executionHostId: 'local' }] as typeof previous.sessions,
+      acpBindingBySessionId: { 'observed-native': { providerId, providerUsage: {
+        tokenUsage: { updatedAt: now, total: { inputTokens: 25, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 4, reasoningOutputTokens: 0, totalTokens: 29 }, last: null, modelContextWindow: null },
+        contextUsage: null, rateLimits: null,
+      } } } as typeof previous.acpBindingBySessionId,
+    })
+    window.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: false, providers: [] }))
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsageLimits executionHostId="local" />))
+      const prefix = observedOnly ? 'Tokens observed while attached to' : 'Tokens consumed in'
+      const other = observedOnly ? 'Tokens consumed in' : 'Tokens observed while attached to'
+      expect(host.textContent).toContain(`${prefix} Observed native chat: 29`)
+      expect(host.textContent).not.toContain(`${other} Observed native chat`)
+      const tokenDetails = host.querySelector<HTMLDetailsElement>(`[aria-label="${observedOnly ? 'Antigravity' : 'Codex'} limits"] details.uam-limits-tokens`)
+      expect(tokenDetails).not.toBeNull()
+      expect(tokenDetails!.open).toBe(false)
+      expect(tokenDetails!.querySelector('summary')?.textContent).toContain('Context and tokens')
+      const facts = Object.fromEntries([...tokenDetails!.querySelectorAll('dt')].map(term => [term.textContent?.trim(), term.nextElementSibling?.textContent?.trim()]))
+      expect(facts).toMatchObject({ Input: '25', Output: '4', 'Last turn': 'Unavailable' })
+      expect(host.textContent).toContain('Account allowances unavailable.')
+    } finally {
+      act(() => root.unmount()); useAppStore.setState(previous, true)
+      if (previousQuery) window.cefQuery = previousQuery; else delete window.cefQuery
+      vi.restoreAllMocks()
+    }
+  })
+})

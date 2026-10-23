@@ -1,0 +1,20 @@
+.uam-btn.uam-subagent-card { display: flex; flex: 1; min-width: 0; width: 100%; height: auto; min-height: 48px; padding: 8px 12px; gap: 12px; border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); text-align: left; cursor: pointer; transition: background var(--dur-fast) var(--ease); }
+/* Agent surfaces step one tone away from the transcript's --bg: darker in light themes, lighter in dark ones. */
+.uam-btn.uam-subagent-card:hover:not(:disabled) { background: var(--surface-high); }
+.uam-btn.uam-subagent-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.uam-subagent-card[aria-current="page"] { border-color: var(--blue); }
+.uam-subagent-card > .uam-btn__label { display: block; flex: 1; min-width: 0; overflow: hidden; }
+.uam-subagent-card__provider { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; }
+.uam-subagent-card__headline { display: flex; align-items: center; min-width: 0; gap: 8px; line-height: 16px; }
+.uam-subagent-card__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-base); font-weight: 500; }
+.uam-subagent-card__status { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 55%; align-items: center; gap: 4px; color: var(--text-3); font-size: var(--fs-xs); font-weight: 400; white-space: nowrap; }
+.uam-subagent-card__status .uam-working-ring { flex: none; color: var(--blue); }
+.uam-subagent-card__summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--fs-sm); font-weight: 400; line-height: 16px; }
+.uam-subagent-card__tail { display: inline-flex; flex: none; align-items: center; gap: 12px; color: var(--text-3); }
+.uam-subagent-card__time { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .uam-btn.uam-subagent-card { transition: none; } }
+
+.uam-subagent-card__status-label { overflow: hidden; text-overflow: ellipsis; }
+.uam-btn.uam-subagent-card:disabled { cursor: default; }
+
+[data-motion="off"] .uam-subagent-card .uam-working-ring { animation: none; }

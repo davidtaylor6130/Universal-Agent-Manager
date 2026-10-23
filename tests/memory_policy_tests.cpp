@@ -345,3 +345,205 @@ UAM_TEST(ProviderSwitchPreservesExplicitAndInheritedMemorySelections)
 		UAM_ASSERT_EQ(uam::memory_policy::Resolve(app.settings, *restored), level == "default" ? std::string("open") : level);
 	}
 }
+
+UAM_TEST(HostScopedMemoryPolicyResolvesOpposingAppDefaults)
+{
+	for (const std::string& provider : {"gemini-cli", "codex-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		AppSettings settings;
+		settings.memory_level_default = "strict";
+		settings.host_scoped_settings["lab"].provider_chat_defaults[provider].memory_level = "off";
+		ChatSession chat;
+		chat.provider_id = provider;
+		chat.execution_host_id = "lab";
+		chat.memory_level = "default";
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("off"));
+		settings.memory_level_default = "off";
+		settings.memory_enabled_default = false;
+		settings.host_scoped_settings["lab"].provider_chat_defaults[provider].memory_level = "strict";
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("strict"));
+	}
+}
+
+UAM_TEST(HostScopedMemoryPolicyFallbackAndAliasesStayIsolated)
+{
+	AppSettings settings;
+	settings.memory_level_default = "balanced";
+	settings.provider_chat_defaults["codex-cli"].memory_level = "readOnly";
+	settings.host_scoped_settings["lab"].provider_chat_defaults["codex-cli"].memory_level = "off";
+	settings.host_scoped_settings["lab"].provider_chat_defaults["gemini-cli"].memory_level = "open";
+	ChatSession chat;
+	chat.provider_id = "codex";
+	chat.memory_level = "default";
+	chat.execution_host_id = "other";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("readOnly"));
+	chat.execution_host_id = "local";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("readOnly"));
+	chat.execution_host_id = "lab";
+	chat.provider_id = "claude-cli";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("balanced"));
+	chat.provider_id = "codex";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("off"));
+	chat.provider_id = "gemini-cli";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("open"));
+}
+
+UAM_TEST(HostScopedMemoryPolicyDefaultRecordInheritsAppPolicy)
+{
+	AppSettings settings;
+	settings.memory_level_default = "balanced";
+	settings.provider_chat_defaults["codex-cli"].memory_level = "off";
+	settings.host_scoped_settings["lab"].provider_chat_defaults["codex-cli"].memory_level = "default";
+	ChatSession chat;
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "lab";
+	chat.memory_level = "default";
+	UAM_ASSERT_EQ(uam::provider_chat_defaults::ForProvider(settings, chat.provider_id, chat.execution_host_id).memory_level, std::string("default"));
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("balanced"));
+	settings.memory_level_default = "readOnly";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("readOnly"));
+	chat.execution_host_id = "other";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("off"));
+}
+
+UAM_TEST(HostScopedMemoryPolicyPreservesExplicitChatSelections)
+{
+	AppSettings settings;
+	settings.memory_level_default = "open";
+	settings.provider_chat_defaults["codex-cli"].memory_level = "balanced";
+	settings.host_scoped_settings["lab"].provider_chat_defaults["codex-cli"].memory_level = "off";
+	ChatSession chat;
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "lab";
+	for (const std::string& level : {"off", "strict", "readOnly", "balanced", "open"})
+	{
+		chat.memory_level = level;
+		chat.memory_enabled = level != "off";
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), level);
+	}
+	chat.memory_level.clear();
+	chat.memory_enabled = false;
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("off"));
+}
+
+UAM_TEST(HostScopedMemoryPolicyRoundTripPreservesInheritedSelection)
+{
+	TempDir temp("uam-host-memory-policy-settings");
+	AppSettings settings;
+	settings.memory_level_default = "strict";
+	ExecutionHost host;
+	host.id = "lab";
+	host.transport = "ssh";
+	host.ssh_alias = "private-fixture-never-connected";
+	settings.execution_hosts.push_back(host);
+	settings.host_scoped_settings[host.id].provider_chat_defaults["codex"].memory_level = "off";
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", loaded).loaded);
+	UAM_ASSERT_EQ(uam::provider_chat_defaults::ForProvider(loaded, "codex-cli", host.id).memory_level, std::string("off"));
+	ChatSession chat;
+	chat.id = "host-memory-inherited";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = host.id;
+	uam::provider_chat_defaults::ApplyToChat(loaded, chat);
+	UAM_ASSERT_EQ(chat.memory_level, std::string("default"));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root / "data", chat));
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(temp.root / "data", chat.id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->memory_level, std::string("default"));
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, *restored), std::string("off"));
+	ProviderChatDefaults& changed_defaults = loaded.host_scoped_settings[host.id].provider_chat_defaults["codex-cli"];
+	changed_defaults = uam::query_handler_internal::DefaultsFromPayload(nlohmann::json{{"memoryLevel", "readOnly"}, {"memoryEnabled", true}}, changed_defaults, "codex-cli");
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, *restored), std::string("readOnly"));
+	ChatSession local = *restored;
+	local.execution_host_id = "local";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, local), std::string("strict"));
+}
+
+UAM_TEST(HostScopedMemoryPolicyRejectsStaleRemoteExtractionCompletion)
+{
+	TempDir temp("uam-host-memory-stale-extraction");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.memory_level_default = "strict";
+	ExecutionHost host;
+	host.id = "lab";
+	host.platform = "linux";
+	host.transport = "ssh";
+	host.ssh_alias = "private-fixture-never-connected";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "host-memory-stale-extraction";
+	chat.provider_id = "claude-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/private-fixture-workspace";
+	chat.memory_level = "default";
+	chat.messages.push_back({MessageRole::User, "Fixture preference."});
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(app.settings, chat), std::string("strict"));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+	uam::AsyncMemoryExtractionTask task;
+	task.data_root = app.data_root;
+	task.chat_id = chat.id;
+	task.owner_provider_id = chat.provider_id;
+	task.memory_level = "strict";
+	task.remote_host = host;
+	task.remote_workspace = chat.workspace_directory;
+	task.message_count = 1;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.state->result.ok = true;
+	task.state->completed.store(true);
+	task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
+	task.extraction_state->remote_applied = true;
+	app.memory_extraction_tasks.push_back(std::move(task));
+	app.memory_retry_not_before_by_chat_id[chat.id] = uam::GetAppTimeSeconds() + 60.0;
+	app.settings.host_scoped_settings[host.id].provider_chat_defaults[chat.provider_id].memory_level = "off";
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->memory_last_processed_message_count, 0);
+}
+
+UAM_TEST(HostScopedMemoryPolicyCancelsPendingRemoteRecallBeforeStartupWait)
+{
+	TempDir temp("uam-host-memory-pending-recall");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.memory_level_default = "strict";
+	app.settings.memory_recall_budget_bytes = 2048;
+	ExecutionHost host;
+	host.id = "lab";
+	host.platform = "linux";
+	host.transport = "ssh";
+	host.ssh_alias = "private-fixture-never-connected";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "host-memory-pending-recall";
+	chat.provider_id = "gemini-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/private-fixture-workspace";
+	chat.memory_level = "default";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.queued_prompt = "accepted fixture prompt";
+	session.startup_model_request_id = 1;
+	const std::shared_ptr<uam::RemoteContextPreparation> preparation = std::make_shared<uam::RemoteContextPreparation>();
+	preparation->host = host;
+	preparation->workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+	preparation->prompt = session.queued_prompt;
+	preparation->memory_budget = 2048;
+	preparation->memory_level = "strict";
+	session.remote_context_preparation = preparation;
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(!preparation->cancel.stop_requested());
+	UAM_ASSERT(session.remote_context_preparation == preparation);
+	app.settings.host_scoped_settings[host.id].provider_chat_defaults[chat.provider_id].memory_level = "off";
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(preparation->cancel.stop_requested());
+	UAM_ASSERT(session.remote_context_preparation == nullptr);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("accepted fixture prompt"));
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(app.remote_context_tasks.empty());
+}

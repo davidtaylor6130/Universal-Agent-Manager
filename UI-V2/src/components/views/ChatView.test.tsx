@@ -1,3 +1,5 @@
+import { clearSubagentView, subagentRouteFor } from '../../utils/subagentNavigation'
+import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 import { captureContextReference } from '../../utils/contextReferences'
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
@@ -8,8 +10,25 @@ import { useAppStore } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
 import type { CppChat } from '../../store/cpp/types'
-import { sanitizeCppAcpSession } from '../../store/cpp/sanitizers'
+import { sanitizeCppAcpSession, sanitizeCppSettings } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
+import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
+import { ManagedSubagentConversation } from '../chat/ManagedSubagentConversation'
+import { NativeConversation } from '../chat/SubagentPaneContent'
+
+const realSendAcpPrompt = useAppStore.getState().sendAcpPrompt
+
+// Outgoing presentation rows outlive ChatView by design; isolate them per test.
+beforeEach(() => resetOutgoingPresentation())
+
+// Legacy ChatView fixtures have no managed-run server. The explicit integration case
+// below uses a strict launch result and owned root listing; panel/navigation contracts
+// have connected tests rather than treating generic `{}` mocks as ledger data.
+const managedPanelFixture = vi.hoisted(() => ({ enabled: false }))
+vi.mock('../chat/ManagedSubagentPanel', async importOriginal => {
+  const actual = await importOriginal<typeof import('../chat/ManagedSubagentPanel')>()
+  return { ...actual, ManagedSubagentPanel: (props: Parameters<typeof actual.ManagedSubagentPanel>[0]) => managedPanelFixture.enabled ? <actual.ManagedSubagentPanel {...props} /> : null }
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -35,11 +54,26 @@ function openWorkspaceActions(host: HTMLElement) {
   return menus[menus.length - 1] ?? null
 }
 
+function enableSupportedManualCompactionFixture() {
+  useAppStore.setState(state => ({
+    sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', modelId: 'gpt-5.4' } : session),
+    acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': acpBindingFromCppChat({
+      id: 'chat-1', title: 'Codex compaction fixture', folderId: 'default', providerId: 'codex-cli', modelId: 'gpt-5.4',
+      createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z',
+      acpSession: sanitizeCppAcpSession({ running: true, processing: false, lifecycleState: 'ready', providerId: 'codex-cli',
+        protocolKind: 'codex-app-server', sessionId: 'native-1', threadId: 'native-1', currentModelId: 'gpt-5.4',
+        manualCompaction: { available: true, providerId: 'codex-cli', modelId: 'gpt-5.4', nativeSessionId: 'native-1' },
+        pendingPermission: null, pendingUserInput: null, queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] }),
+    }, undefined) },
+  }))
+}
+
 describe('ChatView', () => {
   it('shows loading for missing history, preserves the draft and distinguishes empty history from failure', async () => {
     const previousLoad = useAppStore.getState().loadSessionMessages
     const loadSessionMessages = vi.fn().mockResolvedValue(false)
     useAppStore.setState((state) => ({ messages: {}, chatHistoryErrorBySessionId: {}, loadSessionMessages,
+      chatHistoryReadBySessionId: { 'chat-1': { requestId: 'fixture-read', birth: state.sessions[0].createdAt.getTime() } },
       sessions: state.sessions.map((session) => ({ ...session, messageCount: 50 })) }))
     const host = document.createElement('div'); document.body.append(host)
     const root = createRoot(host)
@@ -70,8 +104,101 @@ describe('ChatView', () => {
       expect(loadSessionMessages).toHaveBeenCalledWith('chat-1', true)
     } finally {
       act(() => root.unmount()); host.remove()
-      useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {} })
+      useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {}, chatHistoryReadBySessionId: {} })
     }
+  })
+
+  it.each([false, true])('shows retained unsent input instead of an indefinite missing-history animation (read pending=%s)', (pending) => {
+    const originalLoad = useAppStore.getState().loadSessionMessages
+    const load = vi.fn()
+    useAppStore.setState(state => ({ messages: {}, chatHistoryReadBySessionId: pending ? { 'chat-1': { requestId: 'owned-read', birth: state.sessions[0].createdAt.getTime() } } : {}, chatHistoryErrorBySessionId: {}, loadSessionMessages: load,
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 1 })),
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, running: false,
+        lifecycleState: 'stopped', queueHeld: true, queuedPrompts: [], pendingDirectPrompts: [],
+        unsentDirectPrompts: [{ id: 'retained-input', revision: 1, text: 'Retain the exact authored input', attachments: [] }] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Loading chat history…')
+      expect(host.querySelector('.conversation-skeleton')).toBeNull()
+      expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('false')
+      expect(host.textContent).toContain('Retain the exact authored input')
+      expect(host.textContent).toContain('Delivery not confirmed')
+      expect(host.querySelectorAll('[data-unsent-receipt-id="retained-input"]')).toHaveLength(1)
+      expect(host.querySelector('[data-unsent-receipt-id="retained-input"] article')?.getAttribute('data-delivery')).toBe('unconfirmed')
+      expect(host.textContent).not.toContain('What would you like to work on?')
+      expect(host.textContent?.includes('Chat history unavailable')).toBe(!pending)
+      expect(load).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ loadSessionMessages: originalLoad, chatHistoryReadBySessionId: {} }) }
+  })
+
+  it('does not claim an old-birth read is work on the current chat', () => {
+    useAppStore.setState(state => ({ messages: {}, chatHistoryErrorBySessionId: {},
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 2 })),
+      chatHistoryReadBySessionId: { 'chat-1': { requestId: 'old', birth: state.sessions[0].createdAt.getTime() - 1 } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('.conversation-skeleton')).toBeNull()
+      expect(host.textContent).toContain('Chat history unavailable')
+      expect(host.textContent).not.toContain('What would you like to work on?')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatHistoryReadBySessionId: {} }) }
+  })
+
+  it('keeps a real cold selection pending without a premature unavailable error', async () => {
+    let finishSelection: (() => void) | undefined
+    const requests: string[] = []
+    vi.stubGlobal('cefQuery', ({ request, onSuccess }: { request: string; onSuccess: (text: string) => void }) => {
+      const envelope = JSON.parse(request)
+      requests.push(envelope.action)
+      if (envelope.action === 'selectSession') finishSelection = () => onSuccess('{}')
+      else if (envelope.action === 'getChatMessages') onSuccess(JSON.stringify({ chatId: 'chat-1', messages: [], startIndex: 0, totalCount: 0 }))
+      else onSuccess('{}')
+    })
+    useAppStore.setState(state => ({ activeSessionId: null, messages: {}, chatHistoryErrorBySessionId: {}, chatHistoryReadBySessionId: {},
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 1 })) }))
+    const select = useAppStore.getState().setActiveSession
+    expect(vi.isMockFunction(select)).toBe(false)
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => { select('chat-1'); root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      expect(finishSelection).toBeTypeOf('function')
+      expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(0)
+      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('true')
+      await act(async () => { finishSelection!(); await Promise.resolve() })
+      expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
+      expect(host.querySelector('.conversation-skeleton')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); await act(async () => { finishSelection?.(); await Promise.resolve() }) }
+  })
+
+  it('does not mislabel an active targeted history search as an unavailable read', () => {
+    useAppStore.setState(state => ({ messages: {}, chatHistoryErrorBySessionId: {}, chatHistoryReadBySessionId: {},
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 2, messagesDigest: 'search-snapshot', userMessageIndices: [0] })),
+      chatSearchNavigation: { chatId: 'chat-1', phase: 'loading', generation: 1, queryRequestId: 'query', messageIndex: 0, messagesDigest: 'search-snapshot', anchored: false } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(host.textContent).not.toContain('What would you like to work on?')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatSearchNavigation: null }) }
+  })
+
+  it('keeps held queued input visible without a false empty-history heading', () => {
+    useAppStore.setState(state => ({ messages: {}, chatHistoryErrorBySessionId: {},
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 2 })),
+      chatHistoryReadBySessionId: { 'chat-1': { requestId: 'pending-read', birth: state.sessions[0].createdAt.getTime() } },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, running: false,
+        lifecycleState: 'stopped', queueHeld: true, pendingDirectPrompts: [], unsentDirectPrompts: [], turnEvents: [], toolCalls: [],
+        queuedPrompts: [{ id: 'queued-own', revision: 1, text: 'Keep this queued input', attachments: [], uamAgentId: '', markdownStoreFiles: [], goalMode: false, goalId: '' }] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('Keep this queued input')
+      expect(host.querySelector('.conversation-skeleton')).toBeNull()
+      expect(host.textContent).not.toContain('What would you like to work on?')
+      expect(host.querySelector('.uam-composer-dock--centred')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatHistoryReadBySessionId: {} }) }
   })
 
   it('centres the composer for an empty new chat, keeps the same textarea when the first message moves it down, and not for an existing chat still loading', () => {
@@ -116,7 +243,7 @@ describe('ChatView', () => {
       enter('/goal First objective'); submit()
       expect(create).toHaveBeenCalledTimes(1)
       await act(async () => finishCreate({ ok: true, goalId: 'strict-goal' }))
-      expect(send).toHaveBeenCalledWith(session.id, 'First objective', [])
+      expect(send).toHaveBeenCalledWith(session.id, 'First objective', [], undefined, expect.any(Function))
       expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
       enter('/goal Next objective'); submit()
       expect(create).toHaveBeenCalledTimes(2)
@@ -259,7 +386,7 @@ describe('ChatView', () => {
       expect(create).toHaveBeenCalledTimes(1)
       act(() => { useAppStore.setState({ activeSessionId: second.id }); root.render(<ChatView session={second} />) })
       await act(async () => finishCreate({ ok: true, goalId: 'old-created-goal' }))
-      expect(send).toHaveBeenCalledWith(first.id, kind === 'native' ? '/ralph Old objective' : 'Old objective', [])
+      expect(send).toHaveBeenCalledWith(first.id, kind === 'native' ? '/ralph Old objective' : 'Old objective', [], undefined, expect.any(Function))
       expect(host.textContent).not.toContain('Goal was created, but')
       act(() => { useAppStore.setState({ activeSessionId: first.id }); root.render(<ChatView session={first} />) })
       enter('/goal New objective')
@@ -332,6 +459,7 @@ describe('ChatView', () => {
   })
 
   beforeEach(() => {
+    managedPanelFixture.enabled = false
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
@@ -363,6 +491,7 @@ describe('ChatView', () => {
       ],
       activeSessionId: 'chat-1',
       chatSearchNavigation: null,
+      chatHistoryReadBySessionId: {},
       historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
@@ -741,7 +870,7 @@ describe('ChatView', () => {
     expect(shiftEnter.defaultPrevented).toBe(false)
     expect(sendAcpPrompt).not.toHaveBeenCalled()
     await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Inspect this file\nthen report findings', [])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Inspect this file\nthen report findings', [], undefined, expect.any(Function))
     act(() => root.unmount())
     host.remove()
   })
@@ -1158,7 +1287,9 @@ describe('ChatView', () => {
       sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messageCount: 204 } : session),
     })))
     await act(async () => root.render(<ChatView session={useAppStore.getState().sessions.find(session => session.id === 'chat-1')!} />))
-    expect(host.textContent).toContain('Loading chat history')
+    // No read was started by this fixture: missing rows must not pretend to be work.
+    expect(host.textContent).toContain('Chat history unavailable')
+    expect(host.querySelector('.conversation-skeleton')).toBeNull()
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': loadedMessages } })))
     const providerGoal = { id: 'provider-review-goal', chatId: 'chat-1', objective: 'Finish implementation', status: 'active' as const, executionOwner: 'provider' as const, createdAt: new Date(), updatedAt: new Date() }
@@ -1798,7 +1929,7 @@ describe('ChatView', () => {
     expect(queue).toBeTruthy()
     await act(async () => { queue.click(); await Promise.resolve() })
 
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Change direction now', [], undefined, expect.any(Function))
     expect(textarea.value).toBe('Change direction now')
     expect(host.querySelector('button[aria-label="Steering prompt"]')).toBeNull()
 
@@ -1950,15 +2081,15 @@ describe('ChatView', () => {
       expect(remove.disabled).toBe(false)
       act(() => { remove.click(); remove.click() })
       expect(discard).toHaveBeenCalledExactlyOnceWith(chatId, 0, original.id)
-      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain(original.content)
-      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
+      expect(host.querySelector('[data-unsent-message-index="0"]')?.textContent).toContain(original.content)
+      expect(host.querySelector('[data-message-index="0"] article[data-delivery="unsent"]')).not.toBeNull()
       act(() => {
         useAppStore.setState({ messages: { [chatId]: [{ ...original, acpPromptDiscarded: true }, later] },
           sessions: [{ ...session, messagesDigest: 'new-digest' }] })
         render()
       })
       await act(async () => finish(true))
-      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[data-unsent-message-index]')).toBeNull()
       expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
       expect(host.querySelector('[data-message-index="1"]')?.textContent).toContain(later.content)
       expect(useAppStore.getState().messages[chatId]).toHaveLength(2)
@@ -1975,7 +2106,7 @@ describe('ChatView', () => {
     expect([...projection.hiddenIndices]).toEqual([0, 1])
   })
 
-  it.each([{ readOnly: false, nativeSession: '' }, { readOnly: true, nativeSession: '' }, { readOnly: false, nativeSession: 'native-ready' }])('projects legacy unsent inputs outside history with exact recovery indices (readOnly=$readOnly, nativeSession=$nativeSession)', async ({ readOnly, nativeSession }) => {
+  it.each([{ readOnly: false, nativeSession: '' }, { readOnly: true, nativeSession: '' }, { readOnly: false, nativeSession: 'native-ready' }])('projects legacy unsent inputs in their transcript slots with exact recovery indices (readOnly=$readOnly, nativeSession=$nativeSession)', async ({ readOnly, nativeSession }) => {
     const previous = useAppStore.getState()
     const retry = vi.fn(async () => ({ ok: false, error: 'Delivery remains unconfirmed.' }))
     const image = { id: 'image', name: 'retained.png', type: 'file', mimeType: 'image/png', size: 4, path: '/tmp/retained.png' }
@@ -1994,15 +2125,15 @@ describe('ChatView', () => {
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      const recovery = host.querySelector('[aria-label="Unsent prompts"]')!
-      expect(recovery.textContent).toContain('Earlier unsent attempt')
-      expect(recovery.textContent).toContain('Latest unsent attempt')
+      const recovery = host.querySelector('.uam-message-list')!
+      expect(host.querySelector('[data-unsent-message-index="7"]')?.textContent).toContain('Earlier unsent attempt')
+      expect(host.querySelector('[data-unsent-message-index="8"]')?.textContent).toContain('Latest unsent attempt')
       expect(recovery.textContent).toContain('retained.png')
       expect(recovery.textContent).toContain('inspect.md')
-      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain('unsent attempt')
-      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(0)
-      expect(host.querySelector('[aria-label="Navigate user messages"]')).toBeNull()
+      expect(host.querySelectorAll('article[aria-label="You"][data-delivery="unsent"]')).toHaveLength(2)
+      expect(host.querySelector('[aria-label="Navigate user messages"]')?.getAttribute('aria-valuemax')).toBe('2')
       expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
       expect(host.querySelector('.uam-composer-dock--centred')).toBeNull()
       const retryButton = recovery.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')!
       expect(recovery.querySelectorAll('[aria-label="Retry message"]')).toHaveLength(1)
@@ -2016,7 +2147,7 @@ describe('ChatView', () => {
         expect(host.textContent).toContain('Delivery remains unconfirmed.')
         expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
       }
-      const editor = recovery.querySelector<HTMLButtonElement>('[aria-label="Edit message in new branch"]')!
+      const editor = recovery.querySelector<HTMLButtonElement>('[aria-label="Edit unsent message"]')!
       expect(editor.disabled).toBe(readOnly)
       act(() => editor.click())
       if (readOnly) expect(host.querySelector('[aria-label="Edit message"]')).toBeNull()
@@ -2042,12 +2173,13 @@ describe('ChatView', () => {
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      const recovery = host.querySelector('[aria-label="Unsent prompts"]')!
+      const recovery = host.querySelector('[data-unsent-message-index="0"]')!
       expect(recovery.textContent).toContain('Companion unsent input')
-      expect(recovery.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
+      expect(recovery.querySelector('[aria-label="Edit unsent message"]')).toBeNull()
       expect(recovery.querySelector('[aria-label="Retry message"]')).toBeNull()
       expect(recovery.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
-      expect(host.querySelector('article[aria-label="You"]')).toBeNull()
+      expect(recovery.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
+      expect(recovery.querySelector('article[aria-label="You"][data-delivery="unsent"]')).not.toBeNull()
     } finally { act(() => root.unmount()); host.remove(); window.history.pushState({}, '', previousPath); useAppStore.setState({ discoverProviderModels: previous.discoverProviderModels }) }
   })
 
@@ -2076,12 +2208,12 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect(Boolean(host.querySelector('[data-testid="turn-starting"]'))).toBe(processing)
-      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain('Earlier failed input')
-      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(0)
+      expect(host.querySelector('[data-unsent-message-index="0"]')?.textContent).toContain('Earlier failed input')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
     } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it('keeps unloaded native-confirmed unsent inputs out of transcript navigation without renumbering loaded messages', () => {
+  it('keeps unloaded native-confirmed unsent inputs navigable at their transcript slots without renumbering loaded messages', () => {
     const previous = useAppStore.getState()
     const navigate = vi.fn(async () => true)
     useAppStore.setState((state) => ({ jumpToSessionMessage: navigate, historyStartIndexBySessionId: { 'chat-1': 7 },
@@ -2093,14 +2225,14 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       const rail = host.querySelector<HTMLElement>('[aria-label="Navigate user messages"]')!
-      expect(rail.getAttribute('aria-valuemax')).toBe('1')
-      act(() => rail.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })))
+      expect(rail.getAttribute('aria-valuemax')).toBe('2')
+      act(() => rail.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })))
       expect(navigate).toHaveBeenCalledWith('chat-1', 7)
       expect(host.querySelector('[data-message-index="7"]')?.textContent).toContain('Delivered page input')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ jumpToSessionMessage: previous.jumpToSessionMessage }) }
   })
 
-  it('keeps an earlier unsent attempt out of history after the latest attempt is queued and delivered', () => {
+  it('keeps an earlier unsent attempt in its transcript slot after the latest attempt is queued and delivered', () => {
     const user = useAppStore.getState().messages['chat-1'][0]
     const earlier = { ...user, content: 'Earlier rejected input', acpPromptNotSent: true, interrupted: true }
     const latest = { ...user, id: 'latest', content: 'Latest rejected input', acpPromptNotSent: true, interrupted: true }
@@ -2110,8 +2242,8 @@ describe('ChatView', () => {
     useAppStore.setState({ messages: { 'chat-1': [earlier, latest] }, acpBindingBySessionId: { 'chat-1': binding } })
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
     const noEarlierInHistory = () => {
-      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(earlier.content)
-      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain(earlier.content)
+      expect(host.querySelector('[data-unsent-message-index="0"]')?.textContent).toContain(earlier.content)
+      expect(host.querySelector('[data-message-index="0"] article')?.getAttribute('data-delivery')).toBe('unsent')
     }
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)); noEarlierInHistory()
@@ -2120,14 +2252,15 @@ describe('ChatView', () => {
         queuedPrompts: [{ id: 'native-recovery', revision: 1, text: latest.content, uamAgentId: 'read-only', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' }] } } }))
       noEarlierInHistory()
       expect(host.querySelector('[aria-label="Queued prompt"]')?.textContent).toContain(latest.content)
-      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).not.toContain(latest.content)
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(latest.content)
       act(() => useAppStore.setState({ messages: { 'chat-1': [earlier, { ...latest, acpPromptNotSent: false, interrupted: false },
         { id: 'answer', sessionId: 'chat-1', role: 'assistant', content: 'Successful provider response', createdAt: new Date() }] },
         acpBindingBySessionId: { 'chat-1': { ...binding, sessionId: 'new-native', lifecycleState: 'ready', unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queueHeld: false, queuedPrompts: [] } } }))
       noEarlierInHistory()
       expect(host.querySelector('.uam-message-list')?.textContent).toContain(latest.content)
       expect(host.querySelector('.uam-message-list')?.textContent).toContain('Successful provider response')
-      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(2)
+      expect(host.querySelectorAll('article[aria-label="You"]:not([data-delivery])')).toHaveLength(1)
       expect(host.querySelector('[aria-label="Retry message"]')).toBeNull()
     } finally { act(() => root.unmount()); host.remove() }
   })
@@ -2362,7 +2495,9 @@ describe('ChatView', () => {
       expect(host.querySelector('[data-queue-id]')).toBeNull()
       expect(host.textContent).not.toContain('Queue held')
       expect(host.querySelector('[aria-label="Retry message"]')).toBeNull()
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')?.disabled).toBe(true)
+      // Pending receipts expose no recovery while delivery is unresolved.
+      expect(host.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+      expect(host.querySelector('[data-unsent-receipt-id="direct-receipt"] article[data-delivery="sending"]')).not.toBeNull()
       act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [row], true, 5) },
         acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...initial,
         acpSession: { ...initial.acpSession, lifecycleState: 'error', queueHeld: true,
@@ -2394,7 +2529,7 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect(host.textContent?.split('Preserve this direct request')).toHaveLength(2)
-      expect(host.querySelector('[aria-label="Unsent prompts"]')).not.toBeNull()
+      expect(host.querySelector('.uam-message-list [data-unsent-receipt-id="cold-direct"] article[data-delivery="unconfirmed"]')).not.toBeNull()
       expect(host.querySelector('[data-queue-id]')).toBeNull()
       expect(host.textContent).not.toContain('Queue held')
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(true)
@@ -2482,7 +2617,8 @@ describe('ChatView', () => {
     const projection = projectUnsentPrompts(messages, 23, [23], [], mismatch === 'unheld' ? [] : [queued])
     expect(projection.prompts).toHaveLength(1)
     expect(projection.prompts[0].messageIndex).toBe(23)
-    expect(projection.hiddenIndices.has(0)).toBe(true)
+    // The recovery input keeps its own transcript slot instead of a separate panel.
+    expect(projection.hiddenIndices.has(0)).toBe(false)
   })
 
   it('shows one combined queued prompt in a constrained composer panel', () => {
@@ -4003,6 +4139,7 @@ describe('ChatView', () => {
   })
 
   it('closes the slash palette at once when /compact is chosen, with no success notice', async () => {
+    enableSupportedManualCompactionFixture()
     useAppStore.setState((state) => ({
       acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null } },
     }))
@@ -4039,6 +4176,7 @@ describe('ChatView', () => {
   })
 
   it.each(['enter', 'send', 'palette', 'failure', 'not-accepted', 'new-draft'] as const)('routes compact via native control and preserves attachments (%s)', async (operation) => {
+    enableSupportedManualCompactionFixture()
     const previousSendAcpPrompt = useAppStore.getState().sendAcpPrompt
     const previousSkills = useAppStore.getState().markdownStoreAttachedBySessionId
     const sendAcpPrompt = vi.fn().mockResolvedValue(true)
@@ -4096,11 +4234,13 @@ describe('ChatView', () => {
   })
 
   it.each([false, true])('keeps compact acknowledgements scoped to their original chat visit and blocks duplicates (return=%s)', async (returnToFirst) => {
+    enableSupportedManualCompactionFixture()
     const first = useAppStore.getState().sessions[0]
     const second = { ...first, id: 'chat-2', name: 'Second chat' }
     useAppStore.setState((state) => ({
       sessions: [first, second],
-      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' } },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2', threadId: 'native-2',
+        manualCompaction: { available: true, providerId: 'codex-cli', modelId: 'gpt-5.4', nativeSessionId: 'native-2' } } },
     }))
     writeChatComposerDraft('chat-1', { text: '/compact', attachments: [] })
     writeChatComposerDraft('chat-2', { text: 'Second chat draft', attachments: [] })
@@ -5611,7 +5751,7 @@ describe('ChatView', () => {
 
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'acceptEdits')
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'proceed')
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'proceed', undefined, undefined, expect.any(Function))
 
     act(() => {
       root.unmount()
@@ -5707,7 +5847,7 @@ describe('ChatView', () => {
       finishGoal({ ok: true, goalId: 'goal-1' })
       await Promise.resolve()
     })
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', [])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship the goal loop', [], undefined, expect.any(Function))
 
     act(() => {
       root.unmount()
@@ -5828,7 +5968,7 @@ describe('ChatView', () => {
 		await Promise.resolve()
 	  })
 	  expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
-	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', '/ralph Keep the objective literal', [])
+	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', '/ralph Keep the objective literal', [], undefined, expect.any(Function))
 	  act(() => root.unmount())
 	  host.remove()
 	})
@@ -5885,7 +6025,7 @@ describe('ChatView', () => {
 	  })
 
 	  expect(setGoal).toHaveBeenCalledWith('chat-1', 'First line.\n\nSecond line.', 0, 'uam')
-	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'First line.\n\nSecond line.', [])
+	  expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'First line.\n\nSecond line.', [], undefined, expect.any(Function))
 	  act(() => root.unmount())
 	  host.remove()
 	})
@@ -6625,7 +6765,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionApprovalMode).toHaveBeenNthCalledWith(1, 'chat-1', 'default')
-    expect(sendAcpPrompt).toHaveBeenNthCalledWith(1, 'chat-1', 'Proceed with the plan.')
+    expect(sendAcpPrompt).toHaveBeenNthCalledWith(1, 'chat-1', 'Proceed with the plan.', undefined, undefined, expect.any(Function))
     expect(setSessionApprovalMode.mock.invocationCallOrder[0]).toBeLessThan(sendAcpPrompt.mock.invocationCallOrder[0])
 
     await act(async () => {
@@ -6636,7 +6776,7 @@ describe('ChatView', () => {
     expect(sendAcpPrompt).toHaveBeenNthCalledWith(
       2,
       'chat-1',
-      'Do not proceed with this plan. Please revise it before making changes.'
+      'Do not proceed with this plan. Please revise it before making changes.', undefined, undefined, expect.any(Function)
     )
 
     act(() => {
@@ -7388,14 +7528,14 @@ describe('ChatView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    const selector = workingDisplayMode === 'compact' ? '.conversation-work__subagent' : '.uam-subagent-panel'
+    const selector = '.uam-subagent-group'
     try {
       await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       await act(async () => {
         const panel = host.querySelector<HTMLDetailsElement>(selector)!
-        if (workingDisplayMode === 'compact') panel.querySelector('summary')!.click()
-        else { panel.open = true; panel.dispatchEvent(new Event('toggle', { bubbles: true })) }
+        panel.open = true; panel.dispatchEvent(new Event('toggle', { bubbles: true }))
       })
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Preview')!.click() })
       expect(host.textContent).toContain('Child transcript')
       await act(async () => useAppStore.setState((state) => ({
         messages: { ...state.messages, 'chat-1': [state.messages['chat-1'][0], {
@@ -7607,52 +7747,56 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
 
-    act(() => {
-      root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
-    })
+    try {
+      act(() => {
+        root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      })
 
-    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) => candidate.textContent?.includes('Subtask:'))
-    expect(summaries).toHaveLength(2)
-    expect(summaries.every((summary) => summary.textContent?.includes('Transcript available'))).toBe(true)
-    expect(summaries[0].querySelector('[data-tool-status="running"][aria-label="Tool status: Running"]')).toBeTruthy()
-    expect(summaries[1].querySelector('[data-tool-status="completed"][aria-label="Tool status: Completed"]')).toBeTruthy()
+      // These descriptive native events have exact receivers, but no recognized launch name.
+      // Each remains at its own tool slot rather than a fabricated whole-turn launch group.
+      const groups = [...host.querySelectorAll<HTMLDetailsElement>('.uam-subagent-group')]
+      expect(groups).toHaveLength(2)
+      expect(groups.map(group => group.querySelector('summary')?.textContent)).toEqual(['1 subagent', '1 subagent'])
+      expect(host.querySelector('[aria-label="Consecutive subagent launches"]')).toBeNull()
+      expect(groups[0].compareDocumentPosition(groups[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      await act(async () => { for (const group of groups) { group.open = true; group.dispatchEvent(new Event('toggle', { bubbles: true })) } })
+      expect(groups[0].querySelector('[aria-label="Open Planner"]')).not.toBeNull()
+      expect(groups[0].querySelector('[aria-label="Open Reviewer"]')).toBeNull()
+      expect(groups[1].querySelector('[aria-label="Open Reviewer"]')).not.toBeNull()
+      expect(groups[1].querySelector('[aria-label="Open Planner"]')).toBeNull()
+      expect(groups.every(group => group.textContent?.includes('Status unavailable'))).toBe(true)
+      expect(host.querySelector('[aria-label="Open Planner"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Open Reviewer"]')).toBeTruthy()
+      // A completed spawn operation is not evidence that the child itself completed.
+      expect(host.textContent?.match(/Status unavailable/g)).toHaveLength(2)
+      await act(async () => { for (const button of host.querySelectorAll<HTMLButtonElement>('button')) if (button.textContent === 'Preview') button.click() })
 
-    await act(async () => {
-      for (const summary of summaries) {
-        const details = summary.closest('details') as HTMLDetailsElement
-        details.open = true
-        details.dispatchEvent(new Event('toggle', { bubbles: true }))
-      }
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+      expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner', false)
+      expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-2', 'Reviewer', false)
+      expect(host.textContent).toContain('Planner history')
+      expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
+      expect(host.textContent).toContain('Reviewer history')
+      expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
+      expect(host.textContent?.match(/Inspect runtime/g)).toHaveLength(1)
+      const nestedToolButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Inspect runtime'))
+      act(() => nestedToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Nested tool output')
+      expect(useAppStore.getState().activeSessionId).toBe('chat-1')
 
-    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-1', 'Planner', false)
-    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'agent-session-2', 'Reviewer', false)
-    expect(host.textContent).toContain('Planner history')
-    expect(host.textContent).toContain('Sub-agent inspected the provider runtime.')
-    expect(host.textContent).toContain('Reviewer history')
-    expect(host.textContent).toContain('Sub-agent reviewed the provider runtime.')
-    expect(host.textContent?.match(/Inspect runtime/g)).toHaveLength(1)
-    const nestedToolButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Inspect runtime'))
-    act(() => nestedToolButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Nested tool output')
-    expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+      await act(async () => {
+        vi.advanceTimersByTime(5000)
+        await Promise.resolve()
+      })
+      expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(1)
+      expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
+      expect(loadSessionMessages).toHaveBeenCalledWith('agent-chat', false, true)
 
-    await act(async () => {
-      vi.advanceTimersByTime(5000)
-      await Promise.resolve()
-    })
-    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-1')).toHaveLength(1)
-    expect(openSubAgentSession.mock.calls.filter(([, nativeSessionId]) => nativeSessionId === 'agent-session-2')).toHaveLength(1)
-    expect(loadSessionMessages).toHaveBeenCalledWith('agent-chat', false, true)
-
-    act(() => {
-      root.unmount()
-    })
-    host.remove()
-    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession, loadSessionMessages: originalLoadSessionMessages })
-    vi.useRealTimers()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession, loadSessionMessages: originalLoadSessionMessages })
+      vi.useRealTimers()
+    }
   })
 
   it('keeps opaque provider sub-agent events distinct from transcript load failures', async () => {
@@ -7683,31 +7827,30 @@ describe('ChatView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const summaries = Array.from(host.querySelectorAll('summary')).filter((candidate) =>
-      candidate.textContent?.includes('Provider sub-agent event:') || candidate.textContent?.includes('Subtask:')
-    )
-    expect(summaries).toHaveLength(2)
-    await act(async () => {
-      for (const summary of summaries) {
-        const details = summary.closest('details') as HTMLDetailsElement
-        details.open = true
-        details.dispatchEvent(new Event('toggle', { bubbles: true }))
-      }
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+      const groups = [...host.querySelectorAll<HTMLDetailsElement>('.uam-subagent-group')]
+      expect(groups).toHaveLength(2)
+      expect(groups.map(group => group.querySelector('summary')?.textContent)).toEqual(['0 subagents, 1 event', '1 subagent'])
+      expect(host.querySelector('[aria-label="Consecutive subagent launches"]')).toBeNull()
+      expect(groups[0].compareDocumentPosition(groups[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      await act(async () => { for (const group of groups) { group.open = true; group.dispatchEvent(new Event('toggle', { bubbles: true })) } })
+      expect(groups[0].querySelector<HTMLButtonElement>('[aria-label="Open Opaque worker"]')?.disabled).toBe(true)
+      expect(groups[0].querySelector('button[aria-label^="Preview"]')).toBeNull()
+      expect(groups[1].querySelector('[aria-label="Open Missing worker"]')).not.toBeNull()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Open Opaque worker"]')?.disabled).toBe(true)
+      expect(host.textContent).toContain('The provider did not expose a separate conversation.')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Preview')!.click() })
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Sub-agent chat history is unavailable.')
+      expect(openSubAgentSession).toHaveBeenCalledOnce()
+      expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'missing-child', 'Missing worker', false)
 
-    expect(host.textContent).toContain('No separate transcript')
-    expect(host.textContent).toContain('Gemini did not expose a child session ID')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Sub-agent chat history is unavailable.')
-    expect(openSubAgentSession).toHaveBeenCalledOnce()
-    expect(openSubAgentSession).toHaveBeenCalledWith('chat-1', 'missing-child', undefined, false)
-
-    act(() => root.unmount())
-    host.remove()
-    useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ openSubAgentSession: originalOpenSubAgentSession })
+    }
   })
 
   it('opens the current workspace from the composer workspace row', async () => {
@@ -8153,7 +8296,7 @@ describe('ChatView', () => {
       form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', prompt, [stagedAttachment])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', prompt, [stagedAttachment], undefined, expect.any(Function))
 
     act(() => {
       root.unmount()
@@ -8439,6 +8582,68 @@ describe('ChatView', () => {
     window.history.replaceState(null, '', '/')
   })
 
+  it.each([
+    { label: 'legacy local', executionHostId: undefined, expectedHost: 'local', workspaceDirectory: '/fixture/local-project', platform: 'macos' },
+    { label: 'explicit local', executionHostId: 'local', expectedHost: 'local', workspaceDirectory: '/fixture/local-project', platform: 'macos' },
+    { label: 'remote POSIX', executionHostId: 'fixture-linux', expectedHost: 'fixture-linux', workspaceDirectory: '/fixture/remote-project', platform: 'linux' },
+    { label: 'remote Windows', executionHostId: 'fixture-windows', expectedHost: 'fixture-windows', workspaceDirectory: 'C:\\Fixture\\Project', platform: 'windows' },
+  ])('scopes empty OpenCode picker discovery to $label without changing chat context', async ({ executionHostId, expectedHost, workspaceDirectory, platform }) => {
+    const previous = useAppStore.getState()
+    const previousPath = window.location.pathname + window.location.search + window.location.hash
+    const discover = vi.fn().mockResolvedValue(true)
+    const setSessionProvider = vi.fn().mockResolvedValue(true)
+    const setSessionModel = vi.fn().mockResolvedValue(true)
+    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
+    const session = {
+      ...previous.sessions[0], providerId: 'opencode-cli', executionHostId, workspaceDirectory,
+      modelId: 'fixture/model', temporaryParentChatId: 'fixture-parent',
+    }
+    const savedDraft = { text: 'Unsent fixture draft remains here', attachments: [] }
+    writeChatComposerDraft(session.id, savedDraft)
+    window.history.replaceState(null, '', '/')
+    useAppStore.setState({
+      sessions: [session], activeSessionId: session.id,
+      providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' }],
+      executionHosts: [{ id: expectedHost, label: 'Private fixture', transport: expectedHost === 'local' ? 'local' : 'ssh', sshAlias: 'never-connect-fixture', runnerStatus: 'ready', runnerVersion: '', platform, architecture: '', lastSeenAt: '' }],
+      providerModelCatalogs: [],
+      discoverProviderModels: discover, setSessionProvider, setSessionModel, sendAcpPrompt,
+      acpBindingBySessionId: {
+        [session.id]: {
+          ...previous.acpBindingBySessionId[session.id], providerId: 'opencode-cli', protocolKind: 'acp',
+          processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null,
+          availableModels: [], configOptions: [], currentModelId: session.modelId, modelsLoading: false,
+          turnEvents: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+          queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [],
+        },
+      },
+    })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={session} />))
+      expect(discover).not.toHaveBeenCalled()
+      const textarea = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      expect(textarea.value).toBe(savedDraft.text)
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Select provider and model"]')!.click())
+      expect(discover).toHaveBeenCalledTimes(1)
+      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost)
+      expect(host.querySelector('.uam-composer-textarea')).toBe(textarea)
+      expect(textarea.value).toBe(savedDraft.text)
+      expect(readChatComposerDraft(session.id)).toEqual(savedDraft)
+      expect(useAppStore.getState().sessions).toEqual([session])
+      expect(useAppStore.getState().activeSessionId).toBe(session.id)
+      expect(useAppStore.getState().messages).toBe(previous.messages)
+      expect(setSessionProvider).not.toHaveBeenCalled()
+      expect(setSessionModel).not.toHaveBeenCalled()
+      expect(sendAcpPrompt).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount()); host.remove()
+      removeComposerDrafts([session.id])
+      window.history.replaceState(null, '', previousPath)
+      useAppStore.setState(previous, true)
+    }
+  })
+
   it('keeps stopped dictation as a draft and only submits when Send stops it', async () => {
     const requests: Array<{ action: string; payload?: { locale?: string; dictationId?: string } }> = []
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
@@ -8576,7 +8781,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Please write tests', [])
+    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Please write tests', [], undefined, expect.any(Function))
 
     act(() => root.unmount())
     host.remove()
@@ -8802,4 +9007,1908 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ resumeQueuedAcpPrompts: original, sendAcpPrompt: originalSend, editQueuedAcpPrompt: originalEdit }) }
   })
 
+  it('routes the managed launch at its exact inline slot into a child pane without putting child content below the parent draft', async () => {
+    const session = useAppStore.getState().sessions[0]
+    const runId = '8509f0ba-ea06-4068-a6ed-3e1bab09bc53'
+    const taskTitle = 'Inspect the parent workspace'
+    const launch = { id: 'owned-managed-launch', title: 'agent_delegate', kind: 'mcpToolCall', status: 'completed', content: JSON.stringify({ runId, status: 'queued' }) }
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    writeChatGridLayout({ ...defaultChatGridLayout, root: { type: 'leaf', id: 'leaf-1', sessionId: session.id } })
+    const originalOpen = useAppStore.getState().openSubAgentSession
+    const previousCef = window.cefQuery
+    const openSubAgentSession = vi.fn()
+    useAppStore.setState(state => ({ activeSessionId: session.id, openSubAgentSession,
+      messages: { ...state.messages, [session.id]: [
+        { id: 'managed-request', sessionId: session.id, role: 'user', content: 'Inspect the parent and delegate', createdAt },
+        { id: 'managed-response', sessionId: session.id, role: 'assistant', content: 'After managed launch', createdAt, toolCalls: [launch],
+          blocks: [{ type: 'assistant_text', text: 'Before managed launch' }, { type: 'tool_call', toolCallId: launch.id }, { type: 'assistant_text', text: 'After managed launch' }] },
+      ] },
+      acpBindingBySessionId: { [session.id]: { ...state.acpBindingBySessionId[session.id],
+        lifecycleState: 'ready', processing: false, pendingPermission: null, turnEvents: [],
+        backgroundTaskCount: 1,
+        toolCalls: [{ id: 'waiting-child', title: 'wait', kind: 'collabAgentToolCall', status: 'in_progress', isSubAgent: true }],
+      } },
+    }))
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'listManagedSubagents' ? {
+        chatId: session.id, controlScopeId: 'scope-managed', offset: 0, nextOffset: null, totalCount: 1,
+        runs: [{ runId, transcriptChatId: 'owned-transcript', parentRunId: '', agentId: 'Verifier', taskTitle, providerId: 'codex-cli', modelId: 'model', host: null, status: 'completed', canCancel: false }],
+      } : parsed.action === 'getManagedAgentTranscript' ? {
+        runId, title: 'Verifier conversation', status: 'completed', providerId: 'codex-cli', messages: [{ role: 'assistant', content: 'Managed child result with context' }],
+      } : {}))
+    }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={session} />))
+      const slot = host.querySelector<HTMLElement>('[data-launch-tool="owned-managed-launch"]')!
+      expect(slot).not.toBeNull()
+      expect(slot.closest('[data-message-index="1"]')).not.toBeNull()
+      expect(slot.closest('.uam-chat-content')).not.toBeNull()
+      expect(host.querySelector('.uam-managed-panel, [aria-label="UAM-managed subagents"]')).toBeNull()
+      const content = host.querySelector<HTMLElement>('[data-message-index="1"]')!.textContent!
+      expect(content.indexOf('Before managed launch')).toBeLessThan(content.indexOf(taskTitle))
+      expect(content.indexOf(taskTitle)).toBeLessThan(content.indexOf('After managed launch'))
+      const launchOpen = slot.querySelector<HTMLButtonElement>(`[aria-label="Open managed conversation for ${taskTitle}"]`)!
+      expect(launchOpen).not.toBeNull()
+      expect(launchOpen.textContent).toContain(taskTitle)
+      expect(launchOpen.textContent).not.toContain('Verifier')
+      expect(slot.querySelector('.uam-inline-subagents__meta')?.textContent).toContain('Verifier')
+      const waitStatus = host.querySelector<HTMLElement>('.chat-status-strip[data-tone="agents"]')!
+      expect(waitStatus).not.toBeNull()
+      expect(slot.compareDocumentPosition(waitStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Keep my parent draft'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => launchOpen.click())
+      expect(host.textContent).not.toContain('Managed child result with context')
+      // Inline Open carries the exact run; the child pane resolves its transcript, never a native ID.
+      expect(subagentRouteFor(readChatGridLayout().activeLeafId, session)).toMatchObject({ kind: 'managed', runId, parentId: session.id })
+      expect(subagentRouteFor(readChatGridLayout().activeLeafId, session)?.transcriptChatId).toBeUndefined()
+      expect(requests.filter(value => value.action === 'listManagedSubagents').length).toBeGreaterThan(0)
+      expect(requests.filter(value => value.action === 'listManagedSubagents').every(value => value.payload?.chatId === session.id)).toBe(true)
+      expect(requests.some(value => value.action === 'getManagedAgentTranscript')).toBe(false)
+      expect(requests.some(value => ['cancelManagedSubagent', 'sendAcpPrompt', 'startAcpSession'].includes(value.action))).toBe(false)
+      act(() => clearSubagentView(readChatGridLayout().activeLeafId))
+      expect(input.value).toBe('Keep my parent draft')
+      expect(useAppStore.getState().activeSessionId).toBe(session.id)
+      expect(openSubAgentSession).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove(); clearSubagentView(readChatGridLayout().activeLeafId); window.cefQuery = previousCef; useAppStore.setState({ openSubAgentSession: originalOpen }) }
+  })
+
+  it('does not query or mount managed-root controls for a temporary related chat', async () => {
+    managedPanelFixture.enabled = true
+    const session = { ...useAppStore.getState().sessions[0], temporaryParentChatId: 'main-chat' }
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => { const parsed = JSON.parse(request); requests.push(parsed.action); onSuccess('{}') }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={session} />))
+      expect(host.querySelector('[aria-label="UAM-managed subagents"]')).toBeNull()
+      expect(requests).not.toContain('listManagedSubagents')
+    } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+  })
+
+  it.each(['verbose', 'compact'] as const)('uses identical canonical assistant rendering in main, managed and passive-native history (%s)', async (workingDisplayMode) => {
+    const parent = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli', messageCount: 2 }
+    const child = { ...parent, id: 'canonical-native-child', name: 'Passive child', importedReadOnly: true,
+      subagentParentChatId: parent.id, subagentParentCreatedAt: parent.createdAt.toISOString() }
+    const supplied = [
+      { role: 'user' as const, content: 'Review this fixture.', providerId: 'gemini-cli', createdAt: '2026-01-01T00:00:00.000Z' },
+      { role: 'assistant' as const, content: 'Before. After.', providerId: 'gemini-cli', modelId: 'fixture-model', createdAt: '2026-01-01T00:00:01.000Z',
+        thoughts: 'Full representative reasoning.', processingTimeMs: 4000, interrupted: true, stopReason: 'timeout',
+        planSummary: 'Stored plan', planEntries: [{ content: 'Retained step', priority: '', status: 'completed' }],
+        blocks: [{ type: 'assistant_text' as const, text: 'Before **tool**.\n\n```ts\nconst fixture = true\n```' },
+          { type: 'thought' as const, text: 'Full representative reasoning.' }, { type: 'tool_call' as const, toolCallId: 'canonical-tool' },
+          { type: 'plan' as const }, { type: 'permission_request' as const, requestId: 'stored-permission', text: 'Recorded permission evidence.' },
+          { type: 'user_input_request' as const, requestId: 'stored-question', text: 'Recorded question evidence.' },
+          { type: 'assistant_text' as const, text: 'After tool.' }],
+        toolCalls: [{ id: 'canonical-tool', title: 'Inspect fixture', kind: 'read', status: 'completed', content: 'EMBEDDED CHILD OUTPUT' }] },
+    ]
+    const oldLoad = useAppStore.getState().loadSessionMessages
+    const oldCef = window.cefQuery
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const history = reconcileCppMessages(parent.id, undefined, supplied, true, 0)
+    useAppStore.setState((state) => ({ sessions: [parent, child], activeSessionId: parent.id,
+      messages: { [parent.id]: history, [child.id]: reconcileCppMessages(child.id, undefined, supplied, true, 0) },
+      workingDisplayMode, expandWorkTraces: true, collapsibleWorkSections: true,
+      loadSessionMessages: vi.fn().mockResolvedValue(true),
+      acpBindingBySessionId: { [parent.id]: { ...state.acpBindingBySessionId[parent.id], running: false, processing: false,
+        lifecycleState: 'stopped', pendingPermission: null, pendingUserInput: null, turnEvents: [], toolCalls: [], planEntries: [],
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, unsentMessageIndices: [], recoverableUnsentMessageIndices: [] } },
+    }))
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'getManagedAgentTranscript'
+        ? { runId: 'canonical-run', title: 'Managed child', providerId: 'gemini-cli', status: 'completed', messages: supplied } : {}))
+    }
+    writeChatComposerDraft(parent.id, { text: 'Preserve the independent parent draft.', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const assistant = (surface: string) => host.querySelector<HTMLElement>(`[data-surface="${surface}"] article.conversation-turn--assistant`)!
+    const body = (surface: string) => assistant(surface).querySelector<HTMLElement>('.conversation-turn__body')!
+    const canonicalMarkup = (surface: string) => {
+      const clone = body(surface).cloneNode(true) as HTMLElement
+      // React's generated accessibility IDs differ across roots; every class, element, state and content remains compared.
+      clone.querySelectorAll('[id],[aria-controls],[aria-describedby]').forEach(node => {
+        node.removeAttribute('id'); node.removeAttribute('aria-controls'); node.removeAttribute('aria-describedby')
+      })
+      return clone.innerHTML
+    }
+    try {
+      await act(async () => root.render(<>
+        <div data-surface="main"><ChatView session={parent} /></div>
+        <div data-surface="managed"><ManagedSubagentConversation sourceChatId={parent.id} runId="canonical-run" transcriptChatId="canonical-managed" /></div>
+        <div data-surface="native"><NativeConversation parent={parent} chatId={child.id} /></div>
+      </>))
+      const original = canonicalMarkup('main')
+      for (const surface of ['managed', 'native']) {
+        expect(canonicalMarkup(surface)).toBe(original)
+        expect(assistant(surface).className).toBe(assistant('main').className)
+        expect(body(surface).textContent).toContain('Recorded permission evidence.')
+        expect(body(surface).textContent).toContain('Recorded question evidence.')
+        expect(host.querySelector(`[data-surface="${surface}"]`)?.textContent).toContain('Response interrupted')
+        expect(host.querySelector(`[data-surface="${surface}"] textarea`)).toBeNull()
+        expect(host.querySelector(`[data-surface="${surface}"] [data-testid="plan-block"]`)).toBeNull()
+      }
+      expect(history[1].stopReason).toBe('timeout')
+      expect(history[1].planEntries).toMatchObject([{ content: 'Retained step', status: 'completed' }])
+      // Same disclosure controls and expanded reasoning content in all three routes.
+      for (const surface of ['main', 'managed', 'native']) {
+        const summary = body(surface).querySelector<HTMLDetailsElement>('details.conversation-work__thought')?.querySelector('summary')
+        if (summary) await act(async () => summary.click())
+      }
+      expect(canonicalMarkup('managed')).toBe(canonicalMarkup('main'))
+      expect(canonicalMarkup('native')).toBe(canonicalMarkup('main'))
+      for (const surface of ['managed', 'native']) {
+        const tool = [...body(surface).querySelectorAll<HTMLButtonElement>('button')].find(control =>
+          control.getAttribute('aria-label') === 'Inspect fixture, completed' || control.title === 'Open tool details')!
+        expect(tool).toBeTruthy()
+        await act(async () => tool.click())
+        expect(document.body.textContent).toContain('EMBEDDED CHILD OUTPUT')
+        const close = document.body.querySelector<HTMLButtonElement>('[aria-label="Close tool details"]')
+        if (close) await act(async () => close.click())
+        else await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      }
+      expect(requests.filter(request => /sendAcp|resume|startAcp|openSubAgent|AttachmentImage|ToolCallContent|resolve.*Permission/i.test(request.action))).toEqual([])
+      expect(host.querySelector<HTMLTextAreaElement>('[data-surface="main"] .uam-composer-textarea')?.value).toBe('Preserve the independent parent draft.')
+      expect(useAppStore.getState().activeSessionId).toBe(parent.id)
+      expect(useAppStore.getState().sessions).toEqual([parent, child])
+    } finally {
+      act(() => root.unmount()); host.remove(); window.cefQuery = oldCef
+      useAppStore.setState({ loadSessionMessages: oldLoad })
+    }
+  })
+
+  it.each(['verbose', 'compact'] as const)('retains identical recorded launch boundaries in collapsed main, managed and passive-native routes (%s)', async workingDisplayMode => {
+    const previous = useAppStore.getState()
+    const oldCef = window.cefQuery
+    const parent = { ...previous.sessions[0], providerId: 'gemini-cli', messageCount: 3 }
+    const child = { ...parent, id: 'collapsed-native-child', name: 'Recorded child', importedReadOnly: true,
+      subagentParentChatId: parent.id, subagentParentCreatedAt: parent.createdAt.toISOString() }
+    const launch = (id: string, title: string, name = 'spawn_agent') => ({ id, title: name, kind: 'sub-agent', status: 'completed', content: `Stored result for ${title}`, isSubAgent: true,
+      subAgentChildren: [{ id: `native-${id}`, title, status: 'completed', durationMs: 2000 }] })
+    const supplied = [
+      { role: 'user' as const, content: 'Review this recorded trace.', providerId: 'gemini-cli', createdAt: '2026-01-01T00:00:00Z' },
+      { role: 'assistant' as const, content: 'Earlier recorded prose', providerId: 'gemini-cli', createdAt: '2026-01-01T00:00:01Z', processingTimeMs: 5000,
+        thoughts: 'Recorded reasoning stays available.', blocks: [
+          { type: 'assistant_text' as const, text: 'Before **recorded** launch.\n\n```ts\nconst retained = true\n```' },
+          { type: 'thought' as const, text: 'Recorded reasoning stays available.' },
+          { type: 'tool_call' as const, toolCallId: 'launch-a' }, { type: 'tool_call' as const, toolCallId: 'launch-b' },
+          { type: 'assistant_text' as const, text: 'Interleaved retained boundary.' }, { type: 'tool_call' as const, toolCallId: 'launch-c' },
+          { type: 'assistant_text' as const, text: '   ' },
+        ], toolCalls: [launch('launch-a', 'Recorded alpha'), launch('launch-b', 'Recorded beta', 'task'), launch('launch-c', 'Recorded gamma'),
+          // Sparse stored block inventories keep the unreferenced launch at their existing fallback tail.
+          launch('launch-d', 'Recorded delta'), { id: 'ordinary', title: 'Recorded inspection', kind: 'read', status: 'completed', content: 'EMBEDDED RECORDED INSPECTION' }] },
+      { role: 'assistant' as const, content: 'Final **retained** answer.', providerId: 'gemini-cli', createdAt: '2026-01-01T00:00:02Z' },
+    ]
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const openNative = vi.fn().mockResolvedValue(null)
+    const load = vi.fn(async (_id: string) => true)
+    useAppStore.setState((state) => ({ sessions: [parent, child], activeSessionId: parent.id, workingDisplayMode,
+      expandWorkTraces: false, collapsibleWorkSections: true, openSubAgentSession: openNative, loadSessionMessages: load,
+      messages: { [parent.id]: reconcileCppMessages(parent.id, undefined, supplied, true, 0), [child.id]: reconcileCppMessages(child.id, undefined, supplied, true, 0) },
+      historyStartIndexBySessionId: { [parent.id]: 0, [child.id]: 0 },
+      acpBindingBySessionId: { [parent.id]: { ...state.acpBindingBySessionId[parent.id], running: false, processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [], toolCalls: [], planEntries: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+        queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [] } },
+    }))
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'getManagedAgentTranscript' ? { runId: 'collapsed-run', title: 'Recorded managed child', providerId: 'gemini-cli', status: 'completed', messages: supplied } : {}))
+    }
+    writeChatComposerDraft(parent.id, { text: 'Independent parent draft remains.', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const surface = (name: string) => host.querySelector<HTMLElement>(`[data-collapsed-surface="${name}"]`)!
+    const list = (name: string) => surface(name).querySelector<HTMLElement>('.uam-message-list')!
+    const boundarySnapshot = (name: string) => [...list(name).querySelectorAll('.uam-inline-subagents')].map(group => ({
+      launches: [...group.querySelectorAll('[data-launch-tool]')].map(row => row.getAttribute('data-launch-tool')),
+      // Native launches use the canonical shared nested group rather than substitute text rows.
+      nativeCounts: [...group.querySelectorAll('.uam-subagent-group > summary')].map(row => row.querySelector('span')?.textContent),
+      open: [...group.querySelectorAll<HTMLDetailsElement>('details.uam-subagent-group')].map(row => row.open),
+    }))
+    const recordedCards = (name: string) => [...list(name).querySelectorAll('[data-subagent-row]')].map(row => ({
+      id: row.getAttribute('data-subagent-row'), title: row.querySelector('.uam-subagent-card__title')?.textContent,
+      status: row.querySelector('.uam-subagent-card__status-label')?.textContent, summary: row.querySelector('.uam-subagent-card__summary')?.textContent,
+      time: row.querySelector('.uam-subagent-card__time')?.textContent,
+    }))
+    try {
+      await act(async () => root.render(<>
+        <div data-collapsed-surface="main"><ChatView session={parent} /></div>
+        <div data-collapsed-surface="managed"><ManagedSubagentConversation sourceChatId={parent.id} runId="collapsed-run" transcriptChatId="collapsed-managed" /></div>
+        <div data-collapsed-surface="native"><NativeConversation parent={parent} chatId={child.id} /></div>
+      </>))
+      const expected = boundarySnapshot('main')
+      expect(expected).toHaveLength(3)
+      expect(expected.map(group => group.nativeCounts)).toEqual([['2 subagents'], ['1 subagent'], ['1 subagent']])
+      expect(expected.every(group => group.open.every(open => !open))).toBe(true)
+      for (const name of ['main', 'managed', 'native']) {
+        expect(boundarySnapshot(name)).toEqual(expected)
+        const launchSlot = list(name).querySelector('[data-message-index="1"]')!
+        const finalSlot = list(name).querySelector('[data-message-index="2"]')!
+        expect(launchSlot).not.toBeNull(); expect(finalSlot).not.toBeNull()
+        expect(Boolean(launchSlot.compareDocumentPosition(finalSlot) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+        expect(list(name).textContent).toContain('Final retained answer.')
+        expect(list(name).textContent).not.toContain('Interleaved retained boundary.')
+        expect(list(name).querySelector('pre')).toBeNull()
+        for (const details of list(name).querySelectorAll<HTMLDetailsElement>('details.uam-subagent-group')) {
+          await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle', { bubbles: true })) })
+        }
+      }
+      const cards = recordedCards('main')
+      expect(cards.map(card => card.title)).toEqual(['Recorded alpha', 'Recorded beta', 'Recorded gamma', 'Recorded delta'])
+      expect(recordedCards('managed')).toEqual(cards); expect(recordedCards('native')).toEqual(cards)
+      for (const name of ['managed', 'native']) {
+        expect([...list(name).querySelectorAll<HTMLButtonElement>('[data-subagent-row]')].every(button => button.disabled)).toBe(true)
+        expect(list(name).querySelector('[aria-label^="Preview "]')).toBeNull()
+        expect(list(name).querySelector('[data-source-chat]')).toBeNull()
+        await act(async () => [...list(name).querySelectorAll<HTMLButtonElement>('[data-subagent-row]')].forEach(button => button.click()))
+      }
+      // Expand the actual work-section control in each route; stored Markdown/thought/tool content returns at its original slots.
+      for (const name of ['main', 'managed', 'native']) {
+        const toggle = list(name).querySelector<HTMLButtonElement>('button[aria-label="Expand work trace"]')!
+        expect(toggle).not.toBeNull()
+        await act(async () => toggle.click())
+        expect(list(name).querySelector('pre code')?.textContent).toContain('const retained = true')
+        expect(list(name).querySelector('strong')?.textContent).toContain('recorded')
+        expect(list(name).textContent).toContain('Recorded reasoning stays available.')
+        expect(list(name).textContent).toContain('Interleaved retained boundary.')
+        expect(list(name).textContent).toContain('Recorded inspection')
+        expect(boundarySnapshot(name).map(group => group.nativeCounts)).toEqual([['2 subagents'], ['1 subagent'], ['1 subagent']])
+      }
+      const beforeDetails = requests.length
+      for (const name of ['managed', 'native']) {
+        // Compact and verbose share the recorded tool action but expose its name differently.
+        const detailsControls = [...list(name).querySelectorAll<HTMLButtonElement>('button')].filter(button =>
+          button.getAttribute('aria-label') === 'Recorded inspection, completed' ||
+          (button.title === 'Open tool details' && button.textContent?.includes('Recorded inspection')))
+        expect(detailsControls).toHaveLength(1)
+        expect(detailsControls[0].disabled).toBe(false)
+        await act(async () => detailsControls[0].click())
+        expect(document.body.textContent).toContain('EMBEDDED RECORDED INSPECTION')
+        const close = document.body.querySelector<HTMLButtonElement>('[aria-label="Close tool details"]')!
+        await act(async () => close.click())
+      }
+      expect(requests.slice(beforeDetails)).toEqual([])
+      expect(requests.some(request => /listManagedSubagents|cancelManaged|openSubAgent|sendAcp|resume|AttachmentImage|ToolCallContent/i.test(request.action))).toBe(false)
+      expect(openNative).not.toHaveBeenCalled()
+      expect(load.mock.calls.every(([id]) => id === child.id)).toBe(true)
+      expect(surface('main').querySelector<HTMLTextAreaElement>('.uam-composer-textarea')?.value).toBe('Independent parent draft remains.')
+      expect(useAppStore.getState().activeSessionId).toBe(parent.id)
+      expect(useAppStore.getState().sessions).toEqual([parent, child])
+    } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; removeComposerDrafts([parent.id]); useAppStore.setState(previous, true) }
+  })
+
+  describe('outgoing direct input keeps one transcript slot', () => {
+    const history = [
+      { role: 'user' as const, content: 'Earlier request', createdAt: '2026-01-01T00:00:00.000Z' },
+      { role: 'assistant' as const, content: 'Earlier answer', createdAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    const outgoing = { role: 'user' as const, content: 'Outgoing hello', createdAt: '2026-01-02T00:00:00.000Z' }
+    const chat = (acpSession: Partial<NonNullable<CppChat['acpSession']>> = {}): CppChat => ({ id: 'chat-1', title: 'Gemini', providerId: 'gemini-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'gemini-cli', sessionId: 'native-1', running: true, processing: false, lifecycleState: 'ready',
+        queueHeld: false, queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [], ...acpSession } })
+    // Native push: the real reconcile/binding path, preserving previous message identity where reconcile does.
+    const push = (rows: Parameters<typeof reconcileCppMessages>[2], acpSession: Partial<NonNullable<CppChat['acpSession']>> = {}) => act(() => useAppStore.setState((state) => ({
+      messages: { 'chat-1': reconcileCppMessages('chat-1', state.messages['chat-1'], rows, true, 0) },
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(acpSession), acpSession: sanitizeCppAcpSession(chat(acpSession).acpSession) }, state.acpBindingBySessionId['chat-1']) },
+    })))
+    const receipt = (id: string, extra: Record<string, unknown> = {}) => ({ id, revision: 1, text: outgoing.content, uamAgentId: 'build', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '', ...extra })
+
+    function mount(initialDraft: Parameters<typeof writeChatComposerDraft>[1] = { text: outgoing.content, attachments: [] }, configure?: () => void) {
+      const previousSend = useAppStore.getState().sendAcpPrompt
+      useAppStore.setState({ sendAcpPrompt: realSendAcpPrompt })
+      useAppStore.setState((state) => ({ messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, history, true, 0) }, historyStartIndexBySessionId: { 'chat-1': 0 },
+        sessions: state.sessions.map((session) => ({ ...session, messageCount: 2, messagesDigest: undefined })),
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), acpSession: sanitizeCppAcpSession(chat().acpSession) }, state.acpBindingBySessionId['chat-1']) } }))
+      const requests: Array<{ action: string; requestId: string; payload: Record<string, unknown> }> = []
+      const pending: Array<{ ack: () => void; reject: (message: string) => void }> = []
+      // Private bridge fixture: sendAcpPrompt stays unresolved until the test acknowledges or rejects it.
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const parsed = JSON.parse(request)
+        requests.push(parsed)
+        if (parsed.action === 'sendAcpPrompt') pending.push({ ack: () => onSuccess('{}'), reject: (message) => onFailure(500, message) })
+        else onSuccess('{}')
+      }
+      writeChatComposerDraft('chat-1', initialDraft)
+      configure?.()
+      const host = document.createElement('div'); document.body.append(host); let root = createRoot(host)
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      // MainPanel remounts ChatView on chat/view switches; presentation rows must survive that.
+      const remount = () => { act(() => root.unmount()); root = createRoot(host); act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)) }
+      const sends = () => requests.filter((request) => request.action === 'sendAcpPrompt')
+      const inputIdentity = (requestIndex = 0) => {
+        expect(sends()[requestIndex]?.requestId).toEqual(expect.any(String))
+        return { nativeInputId: `33333333-3333-4333-8333-${String(requestIndex + 1).padStart(12, '0')}`, originRequestId: sends()[requestIndex].requestId }
+      }
+      const sideEffects = () => requests.filter((request) => /retry|discard|remove|resume|edit/i.test(request.action))
+      const occurrences = () => (host.querySelector('.uam-message-list')?.textContent?.split(outgoing.content).length ?? 1) - 1
+      const cleanup = () => { act(() => root.unmount()); host.remove(); delete window.cefQuery; useAppStore.setState({ sendAcpPrompt: previousSend }) }
+      return { host, pending, sends, inputIdentity, sideEffects, occurrences, cleanup, remount,
+        send: () => act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click()) }
+    }
+
+    it.each(['goal', 'claude-plan'] as const)('sends exact direct %s input and attachments without borrowing composer quoted references', async route => {
+      const previous = useAppStore.getState()
+      const exactPrompt = 'Exact direct request, including  internal spacing.'
+      const attachment = { id: 'direct-file', name: 'direct.txt', type: 'file', size: 4, path: '/private-fixture/direct.txt' }
+      const reference = captureContextReference({ id: 'unrelated-composer-reference', kind: 'message', sourceChatId: 'unrelated-chat', sourceMessageIndex: 7,
+        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Unrelated composer quote', text: 'THIS COMPOSER QUOTE MUST NOT ENTER A DIRECT INPUT' })!
+      const createGoal = vi.fn(async () => ({ ok: true, goalId: 'direct-goal-fixture' }))
+      const draftText = route === 'goal' ? `/goal ${exactPrompt}` : exactPrompt
+      const f = mount({ text: draftText, attachments: [attachment], references: [reference] }, () => {
+        useAppStore.setState({ setGoal: createGoal })
+        if (route === 'claude-plan') useAppStore.setState(state => ({
+          sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+            acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+        }))
+      })
+      try {
+        if (route === 'claude-plan') expect(useAppStore.getState().providers.find(provider => provider.id === 'claude-cli')).toMatchObject({
+          supportsStructured: true, structuredProtocol: 'claude-code-stream-json',
+        })
+        await f.send()
+        if (route === 'claude-plan') {
+          expect(f.sends()).toHaveLength(0)
+          const keepPlanning = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Keep planning')
+          expect(keepPlanning).toBeTruthy()
+          await act(async () => keepPlanning!.click())
+        } else expect(createGoal).toHaveBeenCalledWith('chat-1', exactPrompt, expect.any(Number), 'uam')
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [attachment], steerNow: false })
+        expect(f.sends()[0].payload.text).not.toContain('Referenced context')
+        expect(f.sends()[0].payload.text).not.toContain(reference.text)
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        const article = row.querySelector('article')!
+        expect(row.textContent).toContain(exactPrompt)
+        expect(row.querySelector('[aria-label="File attachments"]')?.textContent).toContain(attachment.name)
+        await act(async () => f.pending[0].ack())
+        expect(row.isConnected).toBe(true)
+        expect(row.querySelector('article')).toBe(article)
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+        expect(readChatComposerDraft('chat-1').references).toEqual([reference])
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+        useAppStore.setState({ setGoal: previous.setGoal })
+      }
+    })
+
+    it('sends the exact Codex Deny plan action without borrowing or consuming the independent composer draft', async () => {
+      const previous = useAppStore.getState()
+      const draftText = 'Independent composer request stays here'
+      const attachment = { id: 'independent-plan-file', name: 'independent.txt', type: 'file', size: 4, path: '/private-fixture/independent.txt' }
+      const reference = captureContextReference({ id: 'independent-plan-reference', kind: 'message', sourceChatId: 'unrelated-chat', sourceMessageIndex: 9,
+        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Independent plan quote', text: 'THIS QUOTE IS NOT PART OF THE CODEX DENY ACTION' })!
+      const independentDraft = { text: draftText, attachments: [attachment], references: [reference] }
+      const setMode = vi.fn(async () => true)
+      const exactPrompt = 'Do not proceed with this plan. Please revise it before making changes.'
+      const f = mount(independentDraft, () => useAppStore.setState(state => ({
+        setSessionApprovalMode: setMode, markdownStoreAttachedBySessionId: { 'chat-1': [] },
+        sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'plan' } : session),
+        messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [history[0], { ...history[1], planSummary: 'Review this bounded fixture plan.' }], true, 0) },
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'codex-cli',
+          acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'codex-cli', protocolKind: 'codex-app-server', currentModeId: 'plan' }) }, undefined) },
+      })))
+      try {
+        expect(useAppStore.getState().providers.find(provider => provider.id === 'codex-cli')).toMatchObject({ supportsStructured: true, structuredProtocol: 'codex-app-server' })
+        const deny = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Deny')
+        expect(deny).toBeTruthy()
+        expect(f.sends()).toHaveLength(0)
+        await act(async () => deny!.click())
+        expect(setMode).toHaveBeenCalledTimes(1)
+        expect(setMode).toHaveBeenCalledWith('chat-1', 'plan')
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [], markdownStoreFiles: [], steerNow: false })
+        expect(f.sends()[0].payload.text).not.toContain(draftText)
+        expect(f.sends()[0].payload.text).not.toContain(reference.text)
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        const article = row.querySelector('article')!
+        expect(row.textContent).toContain(exactPrompt)
+        expect(row.querySelector('[aria-label="File attachments"]')).toBeNull()
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        await act(async () => f.pending[0].ack())
+        expect(row.isConnected).toBe(true)
+        expect(row.querySelector('article')).toBe(article)
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draftText)
+        expect(readChatComposerDraft('chat-1')).toEqual(independentDraft)
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+        useAppStore.setState({ setSessionApprovalMode: previous.setSessionApprovalMode, markdownStoreAttachedBySessionId: previous.markdownStoreAttachedBySessionId })
+      }
+    })
+
+    it.each([
+      { label: 'attachment/context ACK first', typed: '', ackFirst: true },
+      { label: 'attachment/context push first', typed: '', ackFirst: false },
+      { label: 'typed whitespace/context ACK first', typed: '  Read this context  ', ackFirst: true },
+      { label: 'typed whitespace/context push first', typed: '  Read this context  ', ackFirst: false },
+    ])('correlates the normalized native prompt without replacing its transcript slot ($label)', async ({ typed, ackFirst }) => {
+      const previousSkills = useAppStore.getState().markdownStoreAttachedBySessionId
+      const skill = { id: 'quoted-skill', title: 'Quoted skill', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/quoted-skill.md' }
+      useAppStore.setState({ markdownStoreAttachedBySessionId: { 'chat-1': [skill] } })
+      const attachment = { id: 'quoted-file', name: 'quoted-fixture.txt', type: 'file', size: 4, path: '/private-fixture/quoted-fixture.txt' }
+      const reference = captureContextReference({ id: 'quoted-reference', kind: 'message', sourceChatId: 'source-chat', sourceMessageIndex: 3,
+        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Quoted fixture', text: 'Quoted fixture payload' })!
+      const { text: referenceText, ...referenceSource } = reference
+      const context = `Referenced context (quoted snapshot):\n${JSON.stringify({ ...referenceSource, text: referenceText })}`
+      const submittedText = `${typed.trim()}\n\n${context}`
+      const nativeText = submittedText.trim() // Actual sendAcpPrompt normalization, not mocked away.
+      if (!typed) expect(submittedText.startsWith('\n\n')).toBe(true)
+      const f = mount({ text: typed, attachments: [attachment], references: [reference] })
+      try {
+        await f.send()
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload).toMatchObject({ text: nativeText, attachments: [attachment], markdownStoreFiles: [skill.filePath] })
+        const row = f.host.querySelector('.uam-message-list [data-outgoing-message]')!
+        const article = row.querySelector('article')!
+        expect(row.querySelector('[aria-label="File attachments"]')?.textContent).toContain(attachment.name)
+        expect(row.querySelector('[aria-label="Skills context"]')).not.toBeNull()
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([])
+        const nativeMessage = { ...f.inputIdentity(), role: 'user' as const, content: nativeText, createdAt: '2026-01-02T00:00:00.000Z', attachments: [attachment], markdownStoreFiles: [skill.filePath] }
+        if (ackFirst) {
+          await act(async () => f.pending[0].ack())
+          // Generic ACK admits the request; only native history can provide its storage index.
+          expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+          expect(f.host.querySelector('[data-message-index="2"]')).toBeNull()
+          expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
+        } else {
+          push([...history, nativeMessage])
+          expect(f.host.querySelector('[data-message-index="2"]')).toBe(row)
+        }
+        expect(row.querySelector('article')).toBe(article)
+        if (ackFirst) push([...history, nativeMessage])
+        else await act(async () => f.pending[0].ack())
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(f.host.querySelectorAll('.uam-message-list [data-message-index="2"]')).toHaveLength(1)
+        expect(f.host.querySelector('[data-outgoing-message]')).toBeNull()
+        // Exact native action/input identity keeps correlation; stored bytes alone supply no write fact.
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(row.querySelector('[aria-label="File attachments"]')?.textContent).toContain(attachment.name)
+        expect(row.querySelector('[aria-label="Skills context"]')).not.toBeNull()
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(3)
+        expect(useAppStore.getState().messages['chat-1'][2].content).toBe(nativeText)
+        expect(useAppStore.getState().messages['chat-1'][2].attachments).toEqual(expect.arrayContaining([expect.objectContaining({ id: attachment.id }), expect.objectContaining({ type: 'markdown-store' })]))
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+        useAppStore.setState({ markdownStoreAttachedBySessionId: previousSkills })
+      }
+    })
+
+    it('explains retained unconfirmed input without promising an unchanged draft after a deliberate second send', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const first = f.host.querySelector('[data-outgoing-message]')!
+        await act(async () => f.pending[0].reject('Private bridge lost reply'))
+        await f.send() // Deliberate second user action, never automatic replay.
+        await act(async () => f.pending[1].ack())
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+        expect(first.isConnected).toBe(true)
+        expect(first.querySelector('article')?.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(first.textContent).toContain(outgoing.content)
+        const explanation = first.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? ''
+        expect(explanation).toContain('retained here')
+        expect(explanation).not.toMatch(/draft.*unchanged/i)
+        expect(f.host.querySelector('[data-message-index="2"]')).not.toBe(first)
+        expect(f.sends()).toHaveLength(2)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps the same outer row and article from click through ACK and native push (ACK before push)', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        expect(f.sends()).toHaveLength(1)
+        const row = f.host.querySelector('.uam-message-list [data-outgoing-message]')!
+        const attempt = row.querySelector('article[data-delivery="sending"]')
+        expect(attempt?.textContent).toContain(outgoing.content)
+        expect(f.host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+        expect(f.host.querySelector('[aria-label="Retry message"]')).toBeNull()
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([])
+        expect(f.occurrences()).toBe(1)
+        await act(async () => f.pending[0].ack())
+        // ACK is admission only: the display attempt retains its row, without a store placeholder.
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(f.host.querySelector('[data-message-index="2"]')).toBeNull()
+        expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(attempt)
+        expect(attempt!.getAttribute('data-delivery')).toBe('sending')
+        expect(row.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label')).toContain('waiting for the provider to confirm delivery')
+        expect(f.occurrences()).toBe(1)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+        push([...history, { ...outgoing, ...f.inputIdentity() }])
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(row)
+        expect(row.querySelector('article')).toBe(attempt)
+        expect(attempt!.getAttribute('data-delivery')).toBe('sending')
+        expect(row.hasAttribute('data-outgoing-message')).toBe(false)
+        expect(f.occurrences()).toBe(1)
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps one native node through pending, unsent recovery and unconfirmed materialization when push precedes ACK', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const slot = f.host.querySelector('[data-outgoing-message]')!
+        const article = slot.querySelector('article[data-delivery="sending"]')
+        expect(article).not.toBeNull()
+        push([...history, { ...outgoing, ...f.inputIdentity(), acpPromptNotSent: true, interrupted: true }], { pendingDirectPrompts: [receipt('direct-1', { ...f.inputIdentity(), existingUserMessageIndex: 2 })] })
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
+        expect(slot.querySelector('article')).toBe(article)
+        expect(article!.getAttribute('data-delivery')).toBe('sending')
+        expect(f.host.querySelector('[data-outgoing-message]')).toBeNull()
+        expect(f.occurrences()).toBe(1)
+        expect(f.host.textContent).not.toContain('Not sent')
+        await act(async () => f.pending[0].ack())
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
+        expect(f.occurrences()).toBe(1)
+        push([...history, { ...outgoing, ...f.inputIdentity(), acpPromptNotSent: true, interrupted: true }], { lifecycleState: 'error', running: false, unsentMessageIndices: [2], recoverableUnsentMessageIndices: [2] })
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
+        expect(slot.querySelector('article')).toBe(article)
+        expect(article!.getAttribute('data-delivery')).toBe('unsent')
+        expect(slot.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(false)
+        const status = slot.querySelector<HTMLElement>('.conversation-turn__delivery')!
+        expect(status.tabIndex).toBe(0)
+        expect(status.getAttribute('aria-label')).toContain('never resent automatically')
+        push([...history, { ...outgoing, ...f.inputIdentity() }, { role: 'assistant', content: 'Delivered answer', createdAt: '2026-01-02T00:00:01.000Z' }])
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
+        expect(slot.querySelector('article')).toBe(article)
+        // A following assistant row and a cleared not-sent flag are not action-local delivery evidence.
+        expect(article!.getAttribute('data-delivery')).toBe('sending')
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('retains a delayed rejection as the same dotted unconfirmed row without recovery and keeps the draft', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        const article = row.querySelector('article')
+        await act(async () => f.pending[0].reject('Provider rejected the prompt.'))
+        expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(article!.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(row.textContent).toContain('Delivery not confirmed')
+        expect(row.textContent).not.toContain('Not sent')
+        expect(row.querySelector('button')).toBeNull()
+        expect(f.occurrences()).toBe(1)
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(outgoing.content)
+        expect(f.host.querySelector('[aria-label="Retry message"]')).toBeNull()
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps pending and unconfirmed rows across a ChatView remount while the request settles', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        f.remount()
+        expect(f.host.querySelector('[data-outgoing-message] article')?.getAttribute('data-delivery')).toBe('sending')
+        await act(async () => f.pending[0].reject('Bridge lost'))
+        f.remount()
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        expect(row.querySelector('article')?.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(row.textContent).toContain(outgoing.content)
+        expect(row.querySelector('button')).toBeNull()
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps the bound row when a legitimate unsent edit changes its bytes', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        const article = row.querySelector('article')
+        push([...history, { ...outgoing, ...f.inputIdentity(), acpPromptNotSent: true, interrupted: true }], { pendingDirectPrompts: [receipt('direct-1', { ...f.inputIdentity(), existingUserMessageIndex: 2 })] })
+        await act(async () => f.pending[0].ack())
+        push([...history, { ...outgoing, ...f.inputIdentity(), acpPromptNotSent: true, interrupted: true }], { lifecycleState: 'error', running: false, unsentMessageIndices: [2], recoverableUnsentMessageIndices: [2] })
+        push([...history, { ...outgoing, ...f.inputIdentity(), content: 'Edited outgoing', acpPromptNotSent: true, interrupted: true }], { lifecycleState: 'error', running: false, unsentMessageIndices: [2], recoverableUnsentMessageIndices: [2] })
+        expect(f.host.querySelector('[data-message-index="2"]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(row.textContent).toContain('Edited outgoing')
+        expect(article!.getAttribute('data-delivery')).toBe('unsent')
+        // Unrelated history at the same index is never adopted by the alias.
+        push([...history, { role: 'user', content: 'Replaced history', createdAt: '2026-03-01T00:00:00.000Z' }])
+        expect(f.host.querySelector('[data-message-index="2"]')?.textContent).toContain('Replaced history')
+        // Losing a previously bound identity in this loaded window does not prove removal or delivery.
+        expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(row.textContent).toContain('Edited outgoing')
+        expect(article!.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(f.host.querySelector('[data-message-index="2"]')).not.toBe(row)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it.each([false, true])('keeps the captured outgoing slot before later assistant rows without claiming their native index (processingFirst=%s)', async processingFirst => {
+      const f = mount()
+      const placeholder = { id: 'anchor-empty-placeholder', sessionId: 'chat-1', role: 'assistant' as const, content: '', createdAt: new Date('2026-01-02T00:00:01Z') }
+      const unrelated = { id: 'anchor-unrelated-output', sessionId: 'chat-1', role: 'assistant' as const, content: 'Unrelated recorded output remains separate.', providerId: 'codex-cli', createdAt: new Date('2026-01-02T00:00:02Z') }
+      const processing = () => act(() => useAppStore.setState(state => ({ acpBindingBySessionId: {
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'processing', turnUserMessageIndex: 2, turnAssistantMessageIndex: 3 },
+      } })))
+      const before = (first: Element, second: Element) => Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+      try {
+        await f.send()
+        const list = f.host.querySelector<HTMLElement>('.uam-message-list')!
+        const row = list.querySelector<HTMLElement>('[data-outgoing-message]')!
+        const article = row.querySelector('article')!
+        const earlierAnswer = list.querySelector('[data-message-index="1"]')!
+        expect(row.previousElementSibling).toBe(earlierAnswer)
+        await act(async () => f.pending[0].ack())
+        // Ordinary admission ACK creates no native user row and supplies no delivery evidence.
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        expect(list.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        if (processingFirst) processing()
+        act(() => useAppStore.setState(state => ({ messages: { 'chat-1': [...state.messages['chat-1'], placeholder] } })))
+        const placeholderRow = list.querySelector('[data-message-index="2"]')!
+        expect(placeholderRow).not.toBeNull()
+        expect(placeholderRow).not.toBe(row)
+        expect(useAppStore.getState().messages['chat-1'][2].role).toBe('assistant')
+        expect(list.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(row.parentElement).toBe(list)
+        expect(row.previousElementSibling).toBe(earlierAnswer)
+        expect(before(row, placeholderRow)).toBe(true)
+        if (!processingFirst) processing()
+        act(() => useAppStore.setState(state => ({ messages: { 'chat-1': [...state.messages['chat-1'], unrelated] } })))
+        const unrelatedRow = list.querySelector('[data-message-index="3"]')!
+        expect(unrelatedRow).not.toBeNull()
+        expect(before(row, placeholderRow)).toBe(true)
+        expect(before(placeholderRow, unrelatedRow)).toBe(true)
+        expect(row.previousElementSibling).toBe(earlierAnswer)
+        expect(row.querySelector('article')).toBe(article)
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(row.querySelector('button')).toBeNull()
+        expect(f.occurrences()).toBe(1)
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(4)
+        expect(useAppStore.getState().messages['chat-1'].slice(2).map(message => message.role)).toEqual(['assistant', 'assistant'])
+        // A later exact native row may take over identity; the display anchor never authorizes delivery/retry.
+        push([...history, { ...outgoing, ...f.inputIdentity(), acpPromptNotSent: true, interrupted: true },
+          { ...placeholder, createdAt: placeholder.createdAt.toISOString() }, { ...unrelated, createdAt: unrelated.createdAt.toISOString() }], {
+          pendingDirectPrompts: [receipt('anchor-native-direct', { ...f.inputIdentity(), existingUserMessageIndex: 2 })], processing: true, lifecycleState: 'processing',
+        })
+        expect(list.querySelector('[data-message-index="2"]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(before(row, list.querySelector('[data-message-index="3"]')!)).toBe(true)
+        expect(before(list.querySelector('[data-message-index="3"]')!, list.querySelector('[data-message-index="4"]')!)).toBe(true)
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps two identical local intents at one captured boundary in their original insertion order', async () => {
+      const f = mount()
+      const before = (first: Element, second: Element) => Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+      try {
+        await f.send()
+        const first = f.host.querySelector<HTMLElement>('[data-outgoing-message]')!
+        const firstArticle = first.querySelector('article')!
+        await act(async () => f.pending[0].reject('Private reply lost'))
+        await f.send() // Explicit user action; never automatic replay of the first intent.
+        const second = f.host.querySelectorAll<HTMLElement>('[data-outgoing-message]')[1]
+        const secondArticle = second.querySelector('article')!
+        await act(async () => f.pending[1].ack())
+        expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+        act(() => useAppStore.setState(state => ({ messages: { 'chat-1': [...state.messages['chat-1'],
+          { id: 'same-anchor-assistant', sessionId: 'chat-1', role: 'assistant' as const, content: '', createdAt: new Date('2026-01-02T00:00:03Z') },
+        ] } })))
+        const placeholder = f.host.querySelector('[data-message-index="2"]')!
+        expect(placeholder).not.toBeNull()
+        expect(f.host.querySelectorAll('[data-outgoing-message]')).toHaveLength(2)
+        expect(f.host.querySelectorAll('[data-outgoing-message]')[0]).toBe(first)
+        expect(f.host.querySelectorAll('[data-outgoing-message]')[1]).toBe(second)
+        expect(first.querySelector('article')).toBe(firstArticle)
+        expect(second.querySelector('article')).toBe(secondArticle)
+        expect(before(first, second)).toBe(true)
+        expect(before(second, placeholder)).toBe(true)
+        expect(firstArticle.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(secondArticle.getAttribute('data-delivery')).toBe('sending')
+        expect(first.querySelector('button')).toBeNull(); expect(second.querySelector('button')).toBeNull()
+        expect(f.occurrences()).toBe(2)
+        expect(f.sends()).toHaveLength(2)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps an ACK-only row pending when an empty assistant placeholder or processing state follows', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const row = f.host.querySelector('[data-outgoing-message]')!
+        const article = row.querySelector('article')!
+        await act(async () => f.pending[0].ack())
+        act(() => useAppStore.setState((state) => ({
+          messages: { 'chat-1': [...state.messages['chat-1'], { id: 'empty-placeholder', sessionId: 'chat-1', role: 'assistant' as const, content: '', createdAt: new Date() }] },
+          acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'processing', turnUserMessageIndex: 2, turnAssistantMessageIndex: 3 } },
+        })))
+        // The native assistant keeps index 2; the local attempt keeps only its own identity/position.
+        const placeholder = f.host.querySelector('[data-message-index="2"]')!
+        expect(placeholder).not.toBeNull()
+        expect(placeholder).not.toBe(row)
+        expect(useAppStore.getState().messages['chat-1'][2].role).toBe('assistant')
+        expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
+        expect(row.querySelector('article')).toBe(article)
+        expect(Boolean(row.compareDocumentPosition(placeholder) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+        expect(article.getAttribute('data-delivery')).toBe('sending')
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('keeps an identical unknown rejection and a second attempt as separate intents', async () => {
+      const f = mount()
+      try {
+        await f.send()
+        const first = f.host.querySelector('[data-outgoing-message]')!
+        await act(async () => f.pending[0].reject('Bridge lost'))
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(outgoing.content)
+        await f.send()
+        expect(f.sends()).toHaveLength(2)
+        await act(async () => f.pending[1].ack())
+        // Both attempts match the placeholder at index 2 exactly, so neither may claim it.
+        const placeholder = f.host.querySelector('[data-message-index="2"]')!
+        expect(placeholder).not.toBe(first)
+        expect(first.isConnected).toBe(true)
+        expect(first.querySelector('article')?.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(f.host.querySelectorAll('[data-outgoing-message]')).toHaveLength(2)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+
+    it('lets only an exact action-origin receipt represent the attempt and keeps uncorrelated same-text receipts separate', async () => {
+      const f = mount()
+      try {
+        push(history, { unsentDirectPrompts: [receipt('older-same-text')] })
+        await f.send()
+        const attemptRow = f.host.querySelectorAll('[data-outgoing-message]')[1]
+        // A receipt that existed before capture cannot claim the attempt, even with identical text.
+        expect(f.host.querySelectorAll('[data-outgoing-message]')).toHaveLength(2)
+        expect(f.host.querySelector('[data-unsent-receipt-id="older-same-text"] article')?.getAttribute('data-delivery')).toBe('unconfirmed')
+        expect(f.host.querySelector('[data-unsent-receipt-id="older-same-text"]')?.textContent).not.toContain('Not sent')
+        push(history, { unsentDirectPrompts: [receipt('older-same-text')], pendingDirectPrompts: [receipt('other-skill', { markdownStoreFiles: ['/skills/other.md'] })] })
+        expect(f.host.querySelectorAll('[data-outgoing-message]')).toHaveLength(3)
+        push(history, { unsentDirectPrompts: [receipt('older-same-text')], pendingDirectPrompts: [receipt('other-skill', { markdownStoreFiles: ['/skills/other.md'] }), receipt('exact', f.inputIdentity())] })
+        expect(f.host.querySelectorAll('[data-outgoing-message]')).toHaveLength(3)
+        expect(f.host.querySelector('[data-unsent-receipt-id="exact"] article')?.getAttribute('data-delivery')).toBe('sending')
+        // The exact new receipt takes over the attempt's own row; distinct intents keep theirs.
+        expect(f.host.querySelector('[data-unsent-receipt-id="exact"]')).toBe(attemptRow)
+        expect(f.host.querySelector('[data-unsent-receipt-id="other-skill"]')).not.toBe(attemptRow)
+        expect(f.host.querySelector('[data-unsent-receipt-id="exact"] button')).toBeNull()
+        expect(f.host.querySelector<HTMLButtonElement>('[data-unsent-receipt-id="older-same-text"] [aria-label="Retry message"]')?.disabled).toBe(true)
+        await act(async () => f.pending[0].reject('Rejected'))
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally { f.cleanup() }
+    })
+  })
+
+
+  it.each([
+    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, expected: 'unconfirmed' },
+    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, expected: null },
+    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, expected: 'unconfirmed' },
+    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, expected: null },
+    { label: 'legacy absent fields', fields: {}, expected: null },
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, expected }) => {
+    const previous = useAppStore.getState()
+    const rows = [
+      { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields },
+      { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' },
+    ] as unknown as Parameters<typeof reconcileCppMessages>[2]
+    const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
+      subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
+    const native = vi.fn(async () => ''); const load = vi.fn(async () => true)
+    useAppStore.setState(state => ({ expandWorkTraces: true, openSubAgentSession: native, loadSessionMessages: load,
+      sessions: [{ ...state.sessions[0], providerId: 'codex-cli' }, child],
+      messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, rows, true, 0), 'input-child': reconcileCppMessages('input-child', undefined, rows, true, 0) },
+      historyStartIndexBySessionId: { 'chat-1': 0, 'input-child': 0 },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'codex-cli', processing: false, turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null } },
+    }))
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => { const parsed = JSON.parse(request); requests.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getManagedAgentTranscript' ? { runId: 'input-run', title: 'Input child', status: 'completed', providerId: 'codex-cli', messages: rows } : {})) }
+    const normalize = (html: string) => html.replace(/\s(id|for|aria-controls|aria-labelledby|aria-describedby)="[^"]*"/g, '')
+    const views: Array<{ host: HTMLDivElement; root: ReturnType<typeof createRoot> }> = []
+    const render = async (node: React.ReactNode) => { const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+      views.push({ host, root }); await act(async () => root.render(node)); return host }
+    try {
+      const main = await render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      const managed = await render(<ManagedSubagentConversation sourceChatId="chat-1" runId="input-run" transcriptChatId="input-transcript" />)
+      const passive = await render(<NativeConversation chatId="input-child" />)
+      const capture = (host: Element) => {
+        const user = host.querySelector('article.conversation-turn--user')!
+        expect(user).not.toBeNull()
+        return { body: normalize(user.querySelector('.conversation-turn__body')!.outerHTML), delivery: user.getAttribute('data-delivery'),
+          explanation: user.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? null,
+          answer: normalize(host.querySelector('article.conversation-turn--assistant .conversation-turn__body')!.outerHTML) }
+      }
+      const same = capture(main)
+      expect(same.delivery).toBe(expected)
+      expect(same.body).toContain('Historical'); expect(same.answer).toContain('kept')
+      expect(capture(managed)).toEqual(same); expect(capture(passive)).toEqual(same)
+      if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
+        const user = host.querySelector('article.conversation-turn--user')!
+        expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
+        expect(user.querySelector<HTMLElement>('.conversation-turn__delivery')?.tabIndex).toBe(0)
+      }
+      expect(native).not.toHaveBeenCalled()
+      expect(requests.filter(action => /sendAcpPrompt|retry|resume|discard|remove|edit|openSubAgent|Preview|Image/i.test(action))).toEqual([])
+    } finally {
+      for (const view of views) { act(() => view.root.unmount()); view.host.remove() }
+      delete window.cefQuery
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('renders child history through the same canonical rows as the main transcript (main vs managed vs passive native)', async () => {
+    const previous = useAppStore.getState()
+    // Representative serialized history: Markdown, code, thoughts, tools, plan and an interrupted stop status.
+    const rows = [
+      { role: 'user' as const, content: 'Review **this** change', providerId: 'codex-cli', modelId: 'gpt-x', createdAt: '2026-10-16T16:00:00Z' },
+      { role: 'assistant' as const, providerId: 'codex-cli', modelId: 'gpt-x', createdAt: '2026-10-16T16:00:09Z', processingTimeMs: 9000,
+        content: 'Done.\n\n```ts\nconst ok = true\n```', thoughts: 'Inspect the diff', interrupted: true, stopReason: 'interrupt',
+        planSummary: 'Verify', planEntries: [{ content: 'Run tests', status: 'completed' }],
+        blocks: [{ type: 'thought', text: 'Inspect the diff' }, { type: 'tool_call', toolCallId: 'tool-1' }, { type: 'plan' }, { type: 'assistant_text', text: 'Done.\n\n```ts\nconst ok = true\n```' }],
+        toolCalls: [{ id: 'tool-1', title: 'Run checks', kind: 'other', status: 'completed', content: 'CHECK OUTPUT' }] },
+    ]
+    const native = vi.fn(async () => '')
+    const load = vi.fn(async () => true)
+    const child = { ...previous.sessions[0], id: 'child-native', name: 'Child', providerId: 'codex-cli', importedReadOnly: true,
+      subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
+    useAppStore.setState((state) => ({ expandWorkTraces: true, openSubAgentSession: native, loadSessionMessages: load,
+      sessions: [{ ...state.sessions[0], providerId: 'codex-cli' }, child],
+      messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, rows, true, 0), 'child-native': reconcileCppMessages('child-native', undefined, rows, true, 0) },
+      historyStartIndexBySessionId: { 'chat-1': 0, 'child-native': 0 },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'codex-cli', processing: false, turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null } } }))
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => { const parsed = JSON.parse(request); requests.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getManagedAgentTranscript' ? { runId: 'run-1', title: 'Child', status: 'completed', providerId: 'codex-cli', messages: rows } : {})) }
+    // useId values differ between trees; everything else must match exactly.
+    const normalize = (html: string) => html.replace(/\s(id|for|aria-controls|aria-labelledby|aria-describedby)="[^"]*"/g, '')
+    const capture = (container: Element) => ({
+      assistant: normalize(container.querySelector('article.conversation-turn--assistant')!.outerHTML),
+      user: normalize(container.querySelector('article.conversation-turn--user .conversation-turn__body')!.outerHTML),
+      dividers: [...container.querySelectorAll('.uam-message-list > div > *')].map((element) => element.className).filter((name) => /divider|turn-start|conversation-work/.test(name)),
+    })
+    const render = async (node: React.ReactNode) => {
+      const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+      await act(async () => root.render(node))
+      return { host, root }
+    }
+    const main = await render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    const managed = await render(<ManagedSubagentConversation sourceChatId="chat-1" runId="run-1" transcriptChatId="transcript-1" />)
+    const passive = await render(<NativeConversation chatId="child-native" />)
+    try {
+      const expected = capture(main.host.querySelector('.uam-message-list')!)
+      expect(expected.assistant).toContain('CHECK OUTPUT'.slice(0, 0) + 'Run checks')
+      expect(capture(managed.host.querySelector('.uam-message-list')!)).toEqual(expected)
+      expect(capture(passive.host.querySelector('.uam-message-list')!)).toEqual(expected)
+      // Normal disclosure behaviour: collapsing the section works the same way in a child.
+      for (const host of [main.host, managed.host]) {
+        const toggle = host.querySelector<HTMLElement>('.uam-message-list .conversation-work__toggle')
+        if (toggle) await act(async () => toggle.click())
+      }
+      expect(capture(managed.host.querySelector('.uam-message-list')!).assistant).toBe(capture(main.host.querySelector('.uam-message-list')!).assistant)
+      // Opening a child tool shows embedded content with no parent/native mutation, preview or resume IPC.
+      const before = requests.length
+      await act(async () => passive.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
+      await act(async () => managed.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
+      expect(requests.slice(before)).toEqual([])
+      expect(native).not.toHaveBeenCalled()
+      expect(passive.host.querySelector('[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
+      expect(managed.host.querySelector('[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
+      expect(requests.filter((action) => /Preview|Image|resume|openSubAgent/i.test(action))).toEqual([])
+    } finally {
+      for (const view of [main, managed, passive]) { act(() => view.root.unmount()); view.host.remove() }
+      delete window.cefQuery
+      useAppStore.setState({ openSubAgentSession: previous.openSubAgentSession, loadSessionMessages: previous.loadSessionMessages, expandWorkTraces: previous.expandWorkTraces })
+    }
+  })
+
+})
+
+describe('ChatView definite unsent local editing', () => {
+  it('keeps an ordinary definitely-unsent edit local when submitted from the composer', async () => {
+    const previous = useAppStore.getState()
+    const previousDraft = readChatComposerDraft('chat-1')
+    const previousUrl = window.location.href
+    const previousManagedPanel = managedPanelFixture.enabled
+    const previousResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver')
+    const branchFromMessage = vi.fn(async () => null)
+    const retryFailedMessage = vi.fn(async () => ({ ok: false, error: 'Unexpected retry.' }))
+    const sendAcpPrompt = vi.fn(async () => false)
+    const nativeFiles = [
+      { id: 'keep-native', name: 'keep.txt', type: 'file', mimeType: 'text/plain', size: 4, path: '/tmp/keep.txt' },
+      { id: 'drop-native', name: 'drop.txt', type: 'file', mimeType: 'text/plain', size: 4, path: '/tmp/drop.txt' },
+    ]
+    const independentDraft = { text: 'Independent draft stays here', attachments: [
+      { id: 'draft-file', name: 'draft.txt', type: 'file', mimeType: 'text/plain', size: 5, path: '/tmp/draft.txt' },
+    ] }
+    const chat: CppChat = {
+      id: 'chat-1', title: 'Gemini Session', folderId: 'default', providerId: 'gemini-cli',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      importedReadOnly: false, messageCount: 8, messagesDigest: '0123456789abcdef',
+      messages: [{ role: 'user', providerId: 'gemini-cli', content: 'Original definitely-unsent input',
+        createdAt: '2026-01-01T00:00:07.000Z', acpPromptNotSent: true, interrupted: true,
+        acpPromptDiscarded: false, attachments: nativeFiles, markdownStoreFiles: ['/skills/inspect.md'] }],
+      acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+        running: true, lifecycleState: 'ready', processing: false, readySinceLastSelect: true,
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [], toolCalls: [], planEntries: [],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] },
+    }
+    const rows = reconcileCppMessages('chat-1', undefined, chat.messages!, true, 7)
+    const originalMessage = rows[0]
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      // EOF append: the earlier ChatView describe's beforeEach does not cover this test.
+      managedPanelFixture.enabled = false
+      Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true,
+        value: class { observe() {} unobserve() {} disconnect() {} } })
+      window.history.replaceState({}, '', '/')
+      removeComposerDrafts(['chat-1'])
+      writeChatComposerDraft('chat-1', independentDraft)
+      useAppStore.setState({ ...useAppStore.getInitialState(),
+        workingDisplayMode: 'verbose', collapsibleWorkSections: true, expandWorkTraces: true,
+        folders: [{ id: 'default', name: 'Project', parentId: null, directory: '/tmp/project',
+          isExpanded: true, createdAt: new Date(chat.createdAt) }],
+        sessions: [{ id: chat.id, name: chat.title, providerId: chat.providerId, viewMode: 'chat', folderId: chat.folderId,
+          workspaceDirectory: '/tmp/project', executionHostId: 'local', importedReadOnly: false,
+          createdAt: new Date(chat.createdAt), updatedAt: new Date(chat.updatedAt),
+          messageCount: chat.messageCount, messagesDigest: chat.messagesDigest, userMessageIndices: [7] }],
+        activeSessionId: 'chat-1', historyStartIndexBySessionId: { 'chat-1': 7 }, messages: { 'chat-1': rows },
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(chat, undefined) }, cliBindingBySessionId: {},
+        providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '',
+          outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
+        uamAgentsBySessionId: { 'chat-1': [{ id: 'build', description: 'Build', builtIn: true }] },
+        refreshUamAgents: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null),
+        branchFromMessage, retryFailedMessage, sendAcpPrompt,
+      }, true)
+
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const binding = useAppStore.getState().acpBindingBySessionId['chat-1']
+      expect(binding.unsentMessageIndices).toEqual([7])
+      expect(binding.recoverableUnsentMessageIndices).toEqual([7])
+      expect(binding.queuedPrompts).toEqual([])
+      expect(binding.pendingDirectPrompts).toEqual([])
+      expect(binding.unsentDirectPrompts).toEqual([])
+      expect(binding.processing).toBe(false)
+      expect(binding.pendingPermission).toBeNull()
+      expect(binding.pendingUserInput).toBeNull()
+      expect(binding.turnEvents).toEqual([])
+      expect(binding.toolCalls).toEqual([])
+      expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
+      expect(rows).toHaveLength(1)
+      expect(originalMessage.nativeMessageIndex).toBe(7)
+      expect(originalMessage.acpPromptNotSent).toBe(true)
+      expect(originalMessage.acpPromptDiscarded).toBe(false)
+      expect(originalMessage.attachments?.map(attachment => attachment.id)).toEqual(['/skills/inspect.md', 'keep-native', 'drop-native'])
+      const recovery = host.querySelector<HTMLElement>('.uam-message-list')
+      expect(recovery).not.toBeNull()
+      expect(recovery!.querySelectorAll('[data-unsent-message-index="7"]')).toHaveLength(1)
+      expect(host.querySelector('[data-unsent-receipt-id]')).toBeNull()
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+      const row = recovery!.querySelector<HTMLElement>('[data-unsent-message-index="7"]')!
+      expect(row.textContent).toContain(originalMessage.content)
+      expect(row.textContent).toContain('keep.txt')
+      expect(row.textContent).toContain('drop.txt')
+      expect(row.textContent).toContain('inspect.md')
+      expect(host.querySelectorAll('article[aria-label="You"][data-delivery="unsent"]')).toHaveLength(1)
+      const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')
+      expect(composer).not.toBeNull()
+      expect(composer!.value).toBe(independentDraft.text)
+      const edit = row.querySelector<HTMLButtonElement>('button[aria-label="Edit unsent message"]')
+      expect(edit).not.toBeNull()
+      expect(edit!.disabled).toBe(false)
+      await act(async () => edit!.click())
+      const editor = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')
+      expect(editor).toBe(composer)
+      expect(editor!.disabled).toBe(false)
+      expect(editor!.value).toBe(originalMessage.content)
+      expect(host.querySelectorAll('textarea')).toHaveLength(1)
+      for (const name of ['keep.txt', 'drop.txt', 'inspect.md']) {
+        const remove = host.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${name} from edited message"]`)
+        expect(remove).not.toBeNull()
+        expect(remove!.disabled).toBe(false)
+      }
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'Edited definitely-unsent input')
+        editor!.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Remove drop.txt from edited message"]')!.click())
+      expect(editor!.value).toBe('Edited definitely-unsent input')
+      expect(host.querySelector('button[aria-label="Remove drop.txt from edited message"]')).toBeNull()
+      expect(host.querySelector('button[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(host.querySelector('button[aria-label="Remove inspect.md from edited message"]')).not.toBeNull()
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(originalMessage)
+      expect(originalMessage.attachments?.map(attachment => attachment.id)).toEqual(['/skills/inspect.md', 'keep-native', 'drop-native'])
+      expect(readChatComposerDraft('chat-1')).toEqual(independentDraft)
+
+      await act(async () => editor!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      // First post-submit behavioral oracle: ordinary definite-unsent edits must not branch.
+      expect(branchFromMessage).not.toHaveBeenCalled()
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+      expect(sendAcpPrompt).not.toHaveBeenCalled()
+      expect(readChatComposerDraft('chat-1')).toEqual(independentDraft)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState(previous, true)
+      removeComposerDrafts(['chat-1'])
+      writeChatComposerDraft('chat-1', previousDraft)
+      window.history.replaceState({}, '', previousUrl)
+      managedPanelFixture.enabled = previousManagedPanel
+      if (previousResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', previousResizeObserver)
+      else Reflect.deleteProperty(globalThis, 'ResizeObserver')
+    }
+  })
+})
+
+
+describe('ChatView committed unsent editing', () => {
+  function fixture() {
+    const previous = useAppStore.getState()
+    const previousDraft = readChatComposerDraft('chat-1')
+    const previousSecondDraft = readChatComposerDraft('chat-2')
+    const previousUrl = window.location.href
+    const previousCef = window.cefQuery
+    const previousManagedPanel = managedPanelFixture.enabled
+    const previousResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver')
+    const branch = vi.fn(async () => null)
+    const retry = vi.fn(async () => ({ ok: false }))
+    const send = vi.fn(async () => false)
+    const native = { role: 'user' as const, providerId: 'gemini-cli', content: 'Original unsent input',
+      createdAt: '2026-01-01T00:00:07.000Z', acpPromptNotSent: true, acpPromptDiscarded: false, interrupted: true,
+      attachments: [
+        { id: 'keep', name: 'keep.txt', type: 'file', size: 4, path: '/tmp/keep.txt' },
+        { id: 'drop', name: 'drop.txt', type: 'file', size: 4, path: '/tmp/drop.txt' },
+      ], markdownStoreFiles: ['/skills/original.md'] }
+    const rows = reconcileCppMessages('chat-1', undefined, [native], true, 7)
+    const row = rows[0]
+    const page = { chatId: 'chat-1', startIndex: 7, totalCount: 8, messagesDigest: '0123456789abcdef', unchanged: false, messages: [native] }
+    const committed = { ...page, messagesDigest: 'fedcba9876543210', messages: [{ ...native, content: 'Edited local input', attachments: [native.attachments[0]] }] }
+    const draft = { text: 'Independent draft', attachments: [{ id: 'draft', name: 'draft.txt', type: 'file', size: 4, path: '/tmp/draft.txt' }] }
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    let reply!: (data: unknown) => void
+    managedPanelFixture.enabled = false
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true,
+      value: class { observe() {} unobserve() {} disconnect() {} } })
+    window.history.replaceState({}, '', '/')
+    removeComposerDrafts(['chat-1', 'chat-2']); writeChatComposerDraft('chat-1', draft)
+    writeChatComposerDraft('chat-2', { text: 'Second pane draft', attachments: [] })
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      if (parsed.action === 'getChatMessages') onSuccess(JSON.stringify(page))
+      else if (parsed.action === 'manageQueuedAcpPrompt') reply = data => onSuccess(JSON.stringify(data))
+      else throw new Error(`Unexpected editor request: ${parsed.action}`)
+    }
+    const binding = acpBindingFromCppChat({ id: 'chat-1', title: 'Gemini', folderId: 'default', providerId: 'gemini-cli', createdAt: '', updatedAt: '',
+      acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp', running: true,
+        lifecycleState: 'ready', processing: false, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] } }, undefined)
+    const session = { id: 'chat-1', name: 'Gemini', providerId: 'gemini-cli', viewMode: 'chat' as const, folderId: 'default',
+      executionHostId: 'local', workspaceDirectory: '/tmp/project', importedReadOnly: false, uamAgentId: 'current-agent',
+      createdAt: new Date(0), updatedAt: new Date(0), messageCount: 8, messagesDigest: page.messagesDigest, userMessageIndices: [7] }
+    const second = { ...session, id: 'chat-2', messageCount: 0, messagesDigest: '', userMessageIndices: [] }
+    useAppStore.setState({ ...useAppStore.getInitialState(), sessions: [session, second], activeSessionId: 'chat-1',
+      messages: { 'chat-1': rows, 'chat-2': [] }, historyStartIndexBySessionId: { 'chat-1': 7 },
+      folders: [{ id: 'default', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date(0) }],
+      acpBindingBySessionId: { 'chat-1': binding, 'chat-2': { ...binding, unsentMessageIndices: [], recoverableUnsentMessageIndices: [] } },
+      cliBindingBySessionId: {}, uamAgentsBySessionId: { 'chat-1': [{ id: 'current-agent', description: 'Current agent', builtIn: false }] },
+      refreshUamAgents: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null),
+      branchFromMessage: branch, retryFailedMessage: retry, sendAcpPrompt: send,
+    }, true)
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    let mounted = true
+    const editor = () => {
+      const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')
+      expect(textarea).not.toBeNull()
+      return textarea!
+    }
+    const changeText = (text = 'Edited local input') => act(() => {
+      const textarea = editor()
+      expect(textarea.disabled).toBe(false)
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, text)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const open = async () => {
+      await act(async () => root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      const button = host.querySelector<HTMLButtonElement>('[data-unsent-message-index="7"] button[aria-label="Edit unsent message"]')
+      expect(button).not.toBeNull(); expect(button!.disabled).toBe(false)
+      await act(async () => button!.click())
+      changeText()
+      const remove = host.querySelector<HTMLButtonElement>('button[aria-label="Remove drop.txt from edited message"]')
+      expect(remove).not.toBeNull(); expect(remove!.disabled).toBe(false)
+      await act(async () => remove!.click())
+      expect(editor().value).toBe('Edited local input')
+      expect(host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+    }
+    const enter = async () => { await act(async () => editor().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))) }
+    const noExecution = () => { expect(branch).not.toHaveBeenCalled(); expect(retry).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled() }
+    const unmount = () => { act(() => root.unmount()); mounted = false }
+    const cleanup = () => {
+      if (mounted) unmount()
+      host.remove(); useAppStore.setState(previous, true)
+      removeComposerDrafts(['chat-1', 'chat-2']); writeChatComposerDraft('chat-1', previousDraft); writeChatComposerDraft('chat-2', previousSecondDraft)
+      window.history.replaceState({}, '', previousUrl)
+      if (previousCef) window.cefQuery = previousCef; else delete window.cefQuery
+      managedPanelFixture.enabled = previousManagedPanel
+      if (previousResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', previousResizeObserver)
+      else Reflect.deleteProperty(globalThis, 'ResizeObserver')
+    }
+    return { host, root, row, session, second, committed, draft, requests, open, editor, changeText, enter, noExecution, unmount, cleanup,
+      reply: async (data: unknown) => { expect(reply).toBeTypeOf('function'); await act(async () => reply(data)) } }
+  }
+  it.each(['ack-only', 'commit-push-first'] as const)('saves the local row and retained file/skill context after %s while preserving the independent draft', async order => {
+    const f = fixture()
+    try {
+      await f.open()
+      expect(f.host.textContent).toContain('Editing unsent message. Saving updates this input.')
+      const save = Array.from(f.host.querySelectorAll('button')).find(button => button.textContent === 'Save changes')
+      expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
+      await f.enter()
+      expect(f.requests.map(request => request.action)).toEqual(['getChatMessages', 'manageQueuedAcpPrompt'])
+      expect(f.requests[1].payload).toEqual({ chatId: 'chat-1', operation: 'editUnsent', messageIndex: 7,
+        expectedMessagesDigest: '0123456789abcdef', text: 'Edited local input', retainedAttachmentIds: ['keep'], retainedMarkdownStoreFiles: ['/skills/original.md'] })
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.editor().disabled).toBe(true)
+      if (order === 'commit-push-first') act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': reconcileCppMessages('chat-1', state.messages['chat-1'], f.committed.messages, true, 7) },
+        sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messagesDigest: f.committed.messagesDigest } : session),
+      })))
+      await f.reply(f.committed)
+      f.noExecution()
+      const saved = useAppStore.getState().messages['chat-1'][0]
+      expect(saved).toMatchObject({ id: f.row.id, nativeMessageIndex: 7, content: 'Edited local input', acpPromptNotSent: true, createdAt: f.row.createdAt })
+      expect(saved.attachments?.map(attachment => attachment.id)).toEqual(['/skills/original.md', 'keep'])
+      expect(f.row.attachments?.map(attachment => attachment.id)).toEqual(['/skills/original.md', 'keep', 'drop'])
+      expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(f.draft.text)
+      expect(f.host.querySelector('[data-unsent-message-index="7"]')?.textContent).toContain('Edited local input')
+      expect(f.host.querySelector('[data-unsent-message-index="7"]')?.textContent).not.toContain('drop.txt')
+      expect(useAppStore.getState().sessions).toHaveLength(2)
+      expect(useAppStore.getState().sessions[0].uamAgentId).toBe('current-agent')
+      expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+    } finally { f.cleanup() }
+  })
+  it('serializes double Enter and retains edited text/resources after refusal before allowing an explicit save again', async () => {
+    const f = fixture()
+    try {
+      await f.open()
+      const textarea = f.editor()
+      await act(async () => {
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      })
+      expect(f.requests.filter(request => request.action === 'manageQueuedAcpPrompt')).toHaveLength(1)
+      await f.reply({ ok: false, error: 'The edited input could not be saved.' })
+      expect(f.editor().disabled).toBe(false)
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[aria-label="Remove drop.txt from edited message"]')).toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('The edited input could not be saved.')
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      await f.enter()
+      expect(f.requests.filter(request => request.action === 'manageQueuedAcpPrompt')).toHaveLength(2)
+      await f.reply(f.committed)
+      expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it('keeps the local editor when its original source object was replaced before Enter', async () => {
+    const f = fixture()
+    try {
+      await f.open()
+      const replacement = { ...f.row }
+      act(() => useAppStore.setState({ messages: { ...useAppStore.getState().messages, 'chat-1': [replacement] } }))
+      await f.enter()
+      expect(f.requests).toHaveLength(0)
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it('retains a newer pushed source and the pending editor when an older commit reply arrives', async () => {
+    const f = fixture()
+    try {
+      await f.open(); await f.enter()
+      const pushed = { ...f.row, content: 'Newer saved input' }
+      act(() => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': [pushed] },
+        sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messagesDigest: 'aaaaaaaaaaaaaaaa' } : session) })))
+      await f.reply(f.committed)
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(pushed)
+      expect(useAppStore.getState().sessions[0].messagesDigest).toBe('aaaaaaaaaaaaaaaa')
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.editor().disabled).toBe(false)
+      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it.each(['pane-change', 'unmount'] as const)('does not apply old editor feedback after %s', async departure => {
+    const f = fixture()
+    try {
+      await f.open(); await f.enter()
+      if (departure === 'unmount') f.unmount()
+      else {
+        act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+        await act(async () => f.root.render(<ChatView key={f.second.id} session={f.second} />))
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('Second pane draft')
+      }
+      await f.reply(f.committed)
+      if (departure === 'pane-change') {
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('Second pane draft')
+        expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+        expect(f.host.querySelector('[role="alert"]')).toBeNull()
+      }
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(readChatComposerDraft('chat-2').text).toBe('Second pane draft')
+      expect(useAppStore.getState().activeSessionId).toBe(departure === 'pane-change' ? 'chat-2' : 'chat-1')
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+
+  function controlledUnsentFocusFrames() {
+    const frames: FrameRequestCallback[] = []
+    let frameId = 0
+    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+      return ++frameId
+    })
+    return {
+      pending: () => frames.length,
+      flush: async () => {
+        const pending = frames.splice(0)
+        await act(async () => { for (const callback of pending) callback(0) })
+      },
+      restore: () => { frames.length = 0; request.mockRestore() },
+    }
+  }
+
+  it.each(['rejected', 'committed'] as const)('restores the owning composer focus after a %s local save blurs the pending textarea', async outcome => {
+    const f = fixture()
+    let frames: ReturnType<typeof controlledUnsentFocusFrames> | undefined
+    const sink = document.createElement('button')
+    sink.textContent = 'Another control'
+    document.body.append(sink)
+    try {
+      await f.open()
+      const textarea = f.editor()
+      act(() => textarea.focus())
+      expect(document.activeElement).toBe(textarea)
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
+      frames = controlledUnsentFocusFrames()
+      await f.enter()
+      expect(f.editor()).toBe(textarea)
+      expect(textarea.disabled).toBe(true)
+      // jsdom ignores blur() on this disabled input. Focus a real control to model
+      // browser focus exit; this tests restoration, not actual browser behaviour.
+      expect(document.activeElement).toBe(textarea)
+      act(() => sink.focus())
+      expect(document.activeElement).toBe(sink)
+      await f.reply(outcome === 'committed' ? f.committed : { ok: false, error: 'The edited input could not be saved.' })
+      const target = outcome === 'rejected' ? f.editor() : f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      expect(target).toBe(textarea)
+      expect(target.disabled).toBe(false)
+      expect(target.value).toBe(outcome === 'rejected' ? 'Edited local input' : f.draft.text)
+      await frames.flush()
+      expect(document.activeElement).toBe(target)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+    } finally { frames?.restore(); sink.remove(); f.cleanup() }
+  })
+
+  it.each(['generation-change', 'pane-change', 'unmount'] as const)('does not restore stale local-save focus after %s between scheduling and the frame', async departure => {
+    const f = fixture()
+    let frames: ReturnType<typeof controlledUnsentFocusFrames> | undefined
+    const sink = document.createElement('button')
+    sink.textContent = 'Another control'
+    document.body.append(sink)
+    let restoreTextareaFocus: (() => void) | undefined
+    try {
+      await f.open()
+      const textarea = f.editor()
+      act(() => textarea.focus())
+      expect(document.activeElement).toBe(textarea)
+      frames = controlledUnsentFocusFrames()
+      // Positive control proves that this fixture reaches an owned restoration.
+      await f.enter()
+      expect(textarea.disabled).toBe(true)
+      expect(document.activeElement).toBe(textarea)
+      act(() => sink.focus()) // Real focus-exit model; jsdom alone is not browser verification.
+      expect(document.activeElement).toBe(sink)
+      await f.reply({ ok: false, error: 'First save was refused.' })
+      expect(f.editor()).toBe(textarea)
+      expect(textarea.disabled).toBe(false)
+      await frames.flush()
+      expect(document.activeElement).toBe(textarea)
+
+      await f.enter()
+      expect(textarea.disabled).toBe(true)
+      expect(document.activeElement).toBe(textarea)
+      act(() => sink.focus())
+      expect(document.activeElement).toBe(sink)
+      await f.reply({ ok: false, error: 'Second save was refused.' })
+      expect(f.requests.filter(request => request.action === 'manageQueuedAcpPrompt')).toHaveLength(2)
+      expect(textarea.disabled).toBe(false)
+      expect(frames.pending()).toBeGreaterThan(0)
+      // Invalidate ownership after the response schedules focus but before its callback runs.
+      if (departure === 'generation-change') {
+        await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+        expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      } else if (departure === 'pane-change') {
+        act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+        await act(async () => f.root.render(<ChatView key={f.second.id} session={f.second} />))
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('Second pane draft')
+      } else f.unmount()
+      act(() => sink.focus())
+      expect(document.activeElement).toBe(sink)
+      const textareaFocus = vi.spyOn(HTMLTextAreaElement.prototype, 'focus')
+      restoreTextareaFocus = () => textareaFocus.mockRestore()
+      await frames.flush()
+      expect(document.activeElement).toBe(sink)
+      expect(textareaFocus).not.toHaveBeenCalled()
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+    } finally { restoreTextareaFocus?.(); frames?.restore(); sink.remove(); f.cleanup() }
+  })
+  it.each(['native', 'skill'] as const)('keeps colliding %s chip removal separate in the local unsent editor', async removed => {
+    const f = fixture()
+    try {
+      const colliding = { ...f.row, attachments: f.row.attachments!.map(attachment => attachment.id === 'keep'
+        ? { ...attachment, id: '/skills/original.md' } : attachment) }
+      const originalResources = colliding.attachments.map(attachment => ({ ...attachment }))
+      act(() => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': [colliding] } })))
+      await f.open()
+      const name = removed === 'native' ? 'keep.txt' : 'original.md'
+      const remove = f.host.querySelector<HTMLButtonElement>(`[aria-label="Remove ${name} from edited message"]`)
+      expect(remove).not.toBeNull(); expect(remove!.disabled).toBe(false)
+      await act(async () => remove!.click())
+      expect(Boolean(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]'))).toBe(removed !== 'native')
+      expect(Boolean(f.host.querySelector('[aria-label="Remove original.md from edited message"]'))).toBe(removed !== 'skill')
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(colliding)
+      expect(colliding.attachments).toEqual(originalResources)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(f.requests).toEqual([])
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+
+})
+
+describe('ChatView delivered edit skill selection', () => {
+  it.each(['retain-all', 'remove-F2', 'remove-skill', 'remove-colliding-native', 'remove-colliding-skill'] as const)('separates native file and skill retention in a refused delivered edit (%s)', async selection => {
+    const previous = useAppStore.getState()
+    const previousDraft = readChatComposerDraft('chat-1')
+    const previousUrl = window.location.href
+    const previousHistoryState = window.history.state
+    const previousCef = window.cefQuery
+    const previousManagedPanel = managedPanelFixture.enabled
+    const previousResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver')
+    const branchFromMessage = vi.fn<typeof previous.branchFromMessage>(async () => null)
+    const retryFailedMessage = vi.fn<typeof previous.retryFailedMessage>(async () => ({ ok: false, error: 'Unexpected retry.' }))
+    const sendAcpPrompt = vi.fn<typeof previous.sendAcpPrompt>(async () => false)
+    const editUnsentMessage = vi.fn<typeof previous.editUnsentMessage>(async () => ({ ok: false, error: 'Unexpected local edit.' }))
+    const collidingIds = selection === 'remove-colliding-native' || selection === 'remove-colliding-skill'
+    const nativeFiles = [
+      { id: collidingIds ? '/skills/review.md' : 'F1', name: 'first.txt', type: 'file', mimeType: 'text/plain', size: 4, path: '/tmp/first.txt' },
+      { id: 'F2', name: 'second.txt', type: 'file', mimeType: 'text/plain', size: 5, path: '/tmp/second.txt' },
+    ]
+    const independentDraft = { text: 'Independent delivered-edit draft', attachments: [
+      { id: 'draft-file', name: 'draft.txt', type: 'file', mimeType: 'text/plain', size: 5, path: '/tmp/draft.txt' },
+    ] }
+    const chat: CppChat = {
+      id: 'chat-1', title: 'Gemini Session', folderId: 'default', providerId: 'gemini-cli',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:09.000Z',
+      importedReadOnly: false, messageCount: 9, messagesDigest: '0123456789abcdef',
+      messages: [
+        { role: 'user', providerId: 'gemini-cli', content: 'Original delivered request',
+          createdAt: '2026-01-01T00:00:07.000Z', acpPromptNotSent: false, acpPromptDiscarded: false,
+          interrupted: false, attachments: nativeFiles, markdownStoreFiles: ['/skills/review.md'] },
+        { role: 'assistant', providerId: 'gemini-cli', content: 'This is the substantive delivered response.',
+          createdAt: '2026-01-01T00:00:08.000Z', acpPromptNotSent: false, interrupted: false },
+      ],
+      acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
+        running: true, lifecycleState: 'ready', processing: false, readySinceLastSelect: true,
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [], toolCalls: [], planEntries: [],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [], recoverableUnsentMessageIndices: [],
+        queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] },
+    }
+    const rows = reconcileCppMessages('chat-1', undefined, chat.messages!, true, 7)
+    const source = rows[0]
+    const originalResources = source.attachments!.map(attachment => ({ ...attachment }))
+    const removedNativeName = selection === 'remove-F2' ? 'second.txt' : selection === 'remove-colliding-native' ? 'first.txt' : null
+    const removedSkill = selection === 'remove-skill' || selection === 'remove-colliding-skill'
+    const retainedNativeIds = nativeFiles.filter(file => file.name !== removedNativeName).map(file => file.id)
+    const retainedSkillFiles = removedSkill ? [] : ['/skills/review.md']
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      // This appended describe has its own setup; the original ChatView beforeEach is scoped to its suite.
+      managedPanelFixture.enabled = false
+      Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true,
+        value: class { observe() {} unobserve() {} disconnect() {} } })
+      window.history.replaceState({}, '', '/')
+      delete window.cefQuery
+      removeComposerDrafts(['chat-1']); writeChatComposerDraft('chat-1', independentDraft)
+      useAppStore.setState({ ...useAppStore.getInitialState(),
+        workingDisplayMode: 'verbose', collapsibleWorkSections: true, expandWorkTraces: true, providerChatDefaults: {},
+        folders: [{ id: 'default', name: 'Project', parentId: null, directory: '/tmp/project',
+          isExpanded: true, createdAt: new Date(chat.createdAt) }],
+        sessions: [{ id: chat.id, name: chat.title, providerId: chat.providerId, viewMode: 'chat', folderId: chat.folderId,
+          workspaceDirectory: '/tmp/project', executionHostId: 'local', importedReadOnly: false,
+          createdAt: new Date(chat.createdAt), updatedAt: new Date(chat.updatedAt),
+          messageCount: chat.messageCount, messagesDigest: chat.messagesDigest, userMessageIndices: [7] }],
+        activeSessionId: 'chat-1', historyStartIndexBySessionId: { 'chat-1': 7 }, messages: { 'chat-1': rows },
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(chat, undefined) }, cliBindingBySessionId: {},
+        providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '',
+          outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }],
+        uamAgentsBySessionId: { 'chat-1': [{ id: 'build', description: 'Build', builtIn: true }] },
+        refreshUamAgents: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null),
+        branchFromMessage, retryFailedMessage, sendAcpPrompt, editUnsentMessage,
+      }, true)
+      await act(async () => root.render(<ChatView key={chat.id} session={useAppStore.getState().sessions[0]} />))
+      const binding = useAppStore.getState().acpBindingBySessionId['chat-1']
+      expect(binding.processing).toBe(false)
+      expect(binding.unsentMessageIndices).toEqual([])
+      expect(binding.recoverableUnsentMessageIndices).toEqual([])
+      expect(binding.queuedPrompts).toEqual([])
+      expect(binding.pendingDirectPrompts).toEqual([])
+      expect(binding.unsentDirectPrompts).toEqual([])
+      expect(binding.pendingPermission).toBeNull()
+      expect(binding.pendingUserInput).toBeNull()
+      expect(useAppStore.getState().cliBindingBySessionId['chat-1']).toBeUndefined()
+      expect(source.nativeMessageIndex).toBe(7)
+      expect(source.acpPromptNotSent).toBe(false)
+      expect(rows[1]).toMatchObject({ role: 'assistant', nativeMessageIndex: 8, content: 'This is the substantive delivered response.' })
+      expect(host.textContent).toContain(rows[1].content)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+      expect(host.querySelector('[data-unsent-receipt-id]')).toBeNull()
+      expect(host.querySelector('[aria-label="Edit unsent message"]')).toBeNull()
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
+      const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')
+      expect(composer).not.toBeNull()
+      expect(composer!.value).toBe(independentDraft.text)
+      const delivered = host.querySelector('article[aria-label="You"]')!
+      const edit = delivered.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')
+      expect(edit).not.toBeNull(); expect(edit!.disabled).toBe(false)
+      await act(async () => edit!.click())
+      const editor = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')
+      expect(editor).toBe(composer)
+      expect(editor!.disabled).toBe(false)
+      expect(editor!.value).toBe(source.content)
+      expect(host.querySelector('.conversation-edit-strip')?.textContent).toContain('Saving creates a new branch.')
+      for (const name of ['first.txt', 'second.txt', 'review.md']) {
+        const remove = host.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${name} from edited message"]`)
+        expect(remove).not.toBeNull(); expect(remove!.disabled).toBe(false)
+      }
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, 'Revised delivered request')
+        editor!.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      if (removedNativeName) await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${removedNativeName} from edited message"]`)!.click())
+      if (removedSkill) await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Remove review.md from edited message"]')!.click())
+      expect(editor!.value).toBe('Revised delivered request')
+      for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
+      expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
+      const save = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save to new branch')
+      expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
+      expect(useAppStore.getState().messages['chat-1']).toBe(rows)
+      expect(source.attachments).toEqual(originalResources)
+      expect(readChatComposerDraft('chat-1')).toEqual(independentDraft)
+      expect(branchFromMessage).not.toHaveBeenCalled()
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+      expect(sendAcpPrompt).not.toHaveBeenCalled()
+      expect(editUnsentMessage).not.toHaveBeenCalled()
+
+      await act(async () => editor!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      // Preserve the R66 first oracle: only selected native records contribute to the fourth argument.
+      expect(branchFromMessage.mock.calls[0]?.[3]).toEqual(retainedNativeIds)
+      expect(branchFromMessage.mock.calls[0]?.[4]).toEqual(retainedSkillFiles)
+      expect(branchFromMessage).toHaveBeenCalledTimes(1)
+      expect(branchFromMessage.mock.calls[0].slice(0, 3)).toEqual(['chat-1', 7, 'Revised delivered request'])
+      expect(retryFailedMessage).not.toHaveBeenCalled()
+      expect(sendAcpPrompt).not.toHaveBeenCalled()
+      expect(editUnsentMessage).not.toHaveBeenCalled()
+      expect(useAppStore.getState().messages['chat-1']).toBe(rows)
+      expect(source.attachments).toEqual(originalResources)
+      expect(useAppStore.getState().sessions).toHaveLength(1)
+      expect(useAppStore.getState().activeSessionId).toBe('chat-1')
+      expect(readChatComposerDraft('chat-1')).toEqual(independentDraft)
+      expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')).toBe(editor)
+      expect(editor!.value).toBe('Revised delivered request')
+      expect(editor!.disabled).toBe(false)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not create the message branch.')
+      for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
+      expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
+    } finally {
+      act(() => root.unmount()); host.remove(); useAppStore.setState(previous, true)
+      removeComposerDrafts(['chat-1']); writeChatComposerDraft('chat-1', previousDraft)
+      window.history.replaceState(previousHistoryState, '', previousUrl)
+      if (previousCef) window.cefQuery = previousCef; else delete window.cefQuery
+      managedPanelFixture.enabled = previousManagedPanel
+      if (previousResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', previousResizeObserver)
+      else Reflect.deleteProperty(globalThis, 'ResizeObserver')
+    }
+  })
+})
+
+
+describe('managed initial composer acknowledgement R83', () => {
+  it.each(['unmount-before-ack', 'remount-before-ack', 'remount-with-newer-draft', 'pagehide-after-ack', 'newer-draft', 'parent-rejected', 'goal-unmount-before-ack', 'plan-unmount-before-ack'] as const)('preserves exact draft ownership across %s', async (scenario) => {
+    const previous = useAppStore.getState()
+    const prompt = '@reviewer inspect this change'
+    const isGoal = scenario === 'goal-unmount-before-ack'
+    const isPlan = scenario === 'plan-unmount-before-ack'
+    const submittedDraft = isGoal ? `/goal ${prompt}` : prompt
+    const parentMessage = { role: 'user' as const, content: prompt, createdAt: '2026-10-17T13:00:00.000Z' }
+    const chat: CppChat = { id: 'managed-draft-r83', title: 'Managed request', folderId: 'default', providerId: isPlan ? 'claude-cli' : 'codex-cli',
+      createdAt: '2026-10-17T12:00:00.000Z', updatedAt: '2026-10-17T12:00:00.000Z', messages: [], messageCount: 0,
+      acpSession: { sessionId: '', running: false, processing: false, currentModeId: isPlan ? 'plan' : 'default', turnSerial: 0 } }
+    const session = { id: chat.id, name: chat.title, folderId: chat.folderId, providerId: chat.providerId, viewMode: 'chat' as const,
+      createdAt: new Date(chat.createdAt), updatedAt: new Date(chat.updatedAt), messageCount: 0, approvalMode: isPlan ? 'plan' : 'default' }
+    let acknowledge!: () => void
+    let sends = 0
+    let mounted = true
+    const host = document.createElement('div'); document.body.append(host); let root = createRoot(host)
+    const enter = (text: string) => act(() => {
+      const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    try {
+      managedPanelFixture.enabled = false
+      Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true,
+        value: class { observe() {} unobserve() {} disconnect() {} } })
+      window.history.replaceState({}, '', '/')
+      removeComposerDrafts([chat.id]); writeChatComposerDraft(chat.id, { text: submittedDraft, attachments: [] })
+      window.cefQuery = ({ request, onSuccess }) => {
+        const parsed = JSON.parse(request)
+        if (parsed.action === 'sendAcpPrompt') {
+          sends += 1
+          expect(parsed.payload.text).toBe(prompt)
+          acknowledge = () => onSuccess(JSON.stringify(isGoal || isPlan ? {} : { managedMention: scenario === 'parent-rejected'
+            ? { inputRecorded: false, delegationState: 'rejected', error: 'Parent publication failed.' }
+            : { inputRecorded: true, delegationState: 'rejected', parentMessageIndex: 0, parentMessage, error: 'Child creation failed after saving the request.' } }))
+        } else onSuccess('{}')
+      }
+      useAppStore.setState({ ...useAppStore.getInitialState(), sessions: [session], activeSessionId: chat.id,
+        folders: [{ id: 'default', name: 'Project', parentId: null, directory: '', isExpanded: true, createdAt: session.createdAt }],
+        messages: { [chat.id]: [] }, acpBindingBySessionId: { [chat.id]: acpBindingFromCppChat(chat, undefined) }, cliBindingBySessionId: {},
+        providers: [{ id: chat.providerId, name: isPlan ? 'Claude' : 'Codex', shortName: 'Codex', color: '#fff', description: '',
+          outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: isPlan ? 'claude-stream-json' : 'codex-app-server' }],
+        refreshUamAgents: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null),
+        setGoal: vi.fn(async () => ({ ok: true, goalId: 'private-goal-r83' })),
+      }, true)
+      await act(async () => root.render(<ChatView key={chat.id} session={session} />))
+      await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+      if (isPlan) await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep planning')!.click())
+      expect(sends).toBe(1)
+      if (scenario === 'newer-draft') enter('My newer draft')
+      if (scenario === 'unmount-before-ack' || scenario === 'remount-before-ack' || scenario === 'remount-with-newer-draft' || isGoal || isPlan) { act(() => root.unmount()); mounted = false }
+      if (scenario === 'remount-before-ack' || scenario === 'remount-with-newer-draft') { root = createRoot(host); await act(async () => root.render(<ChatView key={chat.id} session={session} />)); mounted = true }
+      if (scenario === 'remount-with-newer-draft') enter('My newer draft')
+      await act(async () => { acknowledge(); await Promise.resolve() })
+      if (mounted) {
+        const expected = (scenario === 'newer-draft' || scenario === 'remount-with-newer-draft') ? 'My newer draft' : scenario === 'parent-rejected' ? prompt : ''
+        expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(expected)
+        expect(host.textContent).toContain(scenario === 'parent-rejected' ? 'Parent publication failed.' : 'Child creation failed after saving the request.')
+        act(() => window.dispatchEvent(new Event('pagehide')))
+      }
+      expect(readChatComposerDraft(chat.id).text).toBe((scenario === 'newer-draft' || scenario === 'remount-with-newer-draft') ? 'My newer draft' : scenario === 'parent-rejected' ? prompt : '')
+      // Goal/plan receive generic admission only; the other cases exercise an explicit parent-publication receipt.
+      expect(useAppStore.getState().messages[chat.id]).toHaveLength(scenario === 'parent-rejected' || isGoal || isPlan ? 0 : 1)
+      expect(sends).toBe(1)
+    } finally {
+      if (mounted) act(() => root.unmount())
+      host.remove(); delete window.cefQuery; removeComposerDrafts([chat.id]); useAppStore.setState(previous, true)
+    }
+  })
+})
+
+describe('ChatView conditional manual compaction offer', () => {
+  async function unsupportedCompactionFixture(draft: string) {
+    const previous = useAppStore.getState()
+    const previousCefQuery = window.cefQuery
+    const previousLocation = window.location.href
+    const previousManagedPanelEnabled = managedPanelFixture.enabled
+    const previousResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver')
+    const chat: CppChat = {
+      id: 'unsupported-compact-opencode', title: 'Ordinary OpenCode conversation', folderId: 'default', providerId: 'opencode-cli',
+      modelId: 'private/ordinary', executionHostId: 'local', workspaceDirectory: '/tmp/compaction-project', importedReadOnly: false,
+      createdAt: '2026-10-17T12:00:00Z', updatedAt: '2026-10-17T12:00:01Z', messageCount: 2,
+      messages: [{ role: 'user', content: 'Existing ordinary request', createdAt: '2026-10-17T12:00:00Z' },
+        { role: 'assistant', content: 'Existing substantive answer', createdAt: '2026-10-17T12:00:01Z' }],
+      acpSession: sanitizeCppAcpSession({ providerId: 'opencode-cli', protocolKind: 'opencode-acp', sessionId: 'private-opencode-session',
+        running: true, processing: false, lifecycleState: 'ready', currentModelId: 'private/ordinary',
+        availableCommands: [], pendingPermission: null, pendingUserInput: null,
+        unsentMessageIndices: [], recoverableUnsentMessageIndices: [], queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] }),
+    }
+    const file = { id: 'keep-compact-file', name: 'keep-compaction.txt', type: 'file' as const, size: 4, path: '/tmp/keep-compaction.txt' }
+    const skill = { id: 'keep-compact-skill', title: 'Keep compaction skill', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/keep-compaction.md' }
+    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    managedPanelFixture.enabled = false
+    window.history.replaceState({}, '', '/')
+    Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, writable: true,
+      value: class { observe() {} unobserve() {} disconnect() {} } })
+    removeComposerDrafts([chat.id]); writeChatComposerDraft(chat.id, { text: draft, attachments: [file] })
+    const persistedDraft = readChatComposerDraft(chat.id)
+    expect(persistedDraft.attachments).toEqual([file])
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'compactAcpSession') onFailure(409, 'This provider does not support manual compaction.')
+      else onSuccess('{}')
+    }
+    useAppStore.setState({ ...useAppStore.getInitialState(),
+      sessions: [{ id: chat.id, name: chat.title, providerId: chat.providerId, modelId: chat.modelId, viewMode: 'chat', folderId: chat.folderId,
+        workspaceDirectory: chat.workspaceDirectory, executionHostId: 'local', importedReadOnly: false,
+        createdAt: new Date(chat.createdAt), updatedAt: new Date(chat.updatedAt), messageCount: 2 }],
+      activeSessionId: chat.id, providerChatDefaults: {},
+      folders: [{ id: 'default', name: 'Project', parentId: null, directory: chat.workspaceDirectory!, isExpanded: true, createdAt: new Date(chat.createdAt) }],
+      messages: { [chat.id]: reconcileCppMessages(chat.id, undefined, chat.messages!, true) },
+      acpBindingBySessionId: { [chat.id]: acpBindingFromCppChat(chat, undefined) }, cliBindingBySessionId: {},
+      providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#fff', description: '',
+        outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' }],
+      markdownStoreAttachedBySessionId: { [chat.id]: [skill] },
+      uamAgentsBySessionId: { [chat.id]: [{ id: 'build', description: 'Build', builtIn: true }] },
+      refreshUamAgents: vi.fn(async () => true), refreshMarkdownStore: vi.fn(async () => true), getVcsCommitStatus: vi.fn(async () => null), sendAcpPrompt,
+    }, true)
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const cleanup = () => {
+      act(() => root.unmount()); host.remove(); removeComposerDrafts([chat.id]); useAppStore.setState(previous, true)
+      managedPanelFixture.enabled = previousManagedPanelEnabled
+      window.history.replaceState({}, '', previousLocation)
+      if (previousCefQuery) window.cefQuery = previousCefQuery; else delete window.cefQuery
+      if (previousResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', previousResizeObserver); else Reflect.deleteProperty(globalThis, 'ResizeObserver')
+    }
+    try {
+      await act(async () => root.render(<ChatView key={chat.id} session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')
+      expect(textarea).not.toBeNull()
+      expect(textarea!.disabled).toBe(false)
+      expect(textarea!.value).toBe(draft)
+      const binding = useAppStore.getState().acpBindingBySessionId[chat.id]
+      expect(binding).toMatchObject({ providerId: 'opencode-cli', running: true, processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null })
+      expect(binding.queuedPrompts).toEqual([])
+      expect(binding.unsentMessageIndices).toEqual([])
+      expect(host.textContent).toContain('Existing substantive answer')
+      expect(host.textContent).toContain(file.name)
+      expect(host.textContent).toContain(skill.title)
+      return { host, textarea: textarea!, requests, sendAcpPrompt, chat, file, skill, persistedDraft, cleanup,
+        render: () => root.render(<ChatView key={chat.id} session={useAppStore.getState().sessions[0]} />) }
+    } catch (error) { cleanup(); throw error }
+  }
+
+  it('does not offer manual compaction for an ordinary unsupported OpenCode runtime', async () => {
+    const f = await unsupportedCompactionFixture('/')
+    try {
+      const palette = document.body.querySelector('[aria-label="Slash commands"]')
+      expect(palette).not.toBeNull()
+      const options = Array.from(palette!.querySelectorAll('[role="option"]'))
+      expect(options.some(option => option.textContent?.includes('/model'))).toBe(true)
+      // First behavior oracle: the current UI unconditionally offers this known-unsupported action.
+      expect(options.find(option => option.textContent?.includes('/compact'))).toBeUndefined()
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.textarea.value).toBe('/')
+      expect(readChatComposerDraft(f.chat.id).attachments).toEqual(f.persistedDraft.attachments)
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+    } finally { f.cleanup() }
+  })
+
+  it.each(['enter', 'send'] as const)('refuses typed unsupported OpenCode compaction before any bridge or ordinary send (%s)', async (operation) => {
+    const f = await unsupportedCompactionFixture('/compact')
+    try {
+      const send = f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')
+      expect(send).not.toBeNull()
+      expect(send!.disabled).toBe(false)
+      await act(async () => {
+        if (operation === 'enter') f.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        else send!.click()
+      })
+      // First post-action oracle is the existing IPC, not an absent future API/capability field.
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('/compact')
+      act(() => window.dispatchEvent(new Event('pagehide')))
+      expect(readChatComposerDraft(f.chat.id)).toEqual(f.persistedDraft)
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+      expect(useAppStore.getState().messages[f.chat.id]).toHaveLength(2)
+    } finally { f.cleanup() }
+  })
+
+  const supportedCompactionChat = (chat: CppChat): CppChat => ({ ...chat, providerId: 'codex-cli', modelId: 'gpt-5.4',
+    acpSession: sanitizeCppAcpSession({ providerId: 'codex-cli', protocolKind: 'codex-app-server', sessionId: 'private-codex-compact', threadId: 'private-codex-compact',
+      currentModelId: 'gpt-5.4', running: true, processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null,
+      queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [],
+      manualCompaction: { available: true, providerId: 'codex-cli', modelId: 'gpt-5.4', nativeSessionId: 'private-codex-compact' } }) })
+
+  function publishCompactionChat(chat: CppChat) {
+    const state = useAppStore.getState()
+    state.loadFromCef({ stateRevision: state.lastAppliedStateRevision + 1,
+      chats: [chat], selectedChatId: chat.id,
+      folders: [{ id: 'default', title: 'Project', directory: chat.workspaceDirectory!, executionHostId: 'local', collapsed: false }],
+      providers: [{ id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', supportsStructured: true, supportsCli: true, structuredProtocol: 'opencode-acp' },
+        { id: 'codex-cli', name: 'Codex', shortName: 'Codex', supportsStructured: true, supportsCli: true, structuredProtocol: 'codex-app-server' }],
+      settings: sanitizeCppSettings({}),
+    })
+  }
+
+  it.each(['enter', 'send', 'palette'] as const)('dispatches a supported matching native Codex compaction without ordinary send (%s)', async operation => {
+    const f = await unsupportedCompactionFixture('/compact')
+    try {
+      const supported = supportedCompactionChat(f.chat)
+      await act(async () => { publishCompactionChat(supported); f.render() })
+      expect(useAppStore.getState().acpBindingBySessionId[f.chat.id].manualCompaction?.available).toBe(true)
+      const row = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find(option => option.textContent?.includes('/compact'))
+      expect(row).toBeTruthy()
+      window.cefQuery = ({ request, onSuccess }) => { f.requests.push(JSON.parse(request)); onSuccess(JSON.stringify({ accepted: true })) }
+      await act(async () => {
+        if (operation === 'palette') row!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+        else if (operation === 'enter') f.textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+        else f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click()
+      })
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([
+        { action: 'compactAcpSession', payload: { chatId: f.chat.id }, requestId: expect.any(String) },
+      ])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('')
+      act(() => window.dispatchEvent(new Event('pagehide')))
+      expect(readChatComposerDraft(f.chat.id).attachments).toEqual([f.file])
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+      expect(useAppStore.getState().messages[f.chat.id]).toHaveLength(2)
+    } finally { f.cleanup() }
+  })
+
+  it.each(['provider', 'model', 'native'] as const)('revalidates a connected stale compact option and typed submit against a native push (%s)', async drift => {
+    for (const route of ['palette', 'submit'] as const) {
+      const f = await unsupportedCompactionFixture('/compact')
+      try {
+        const supported = supportedCompactionChat(f.chat)
+        await act(async () => { publishCompactionChat(supported); f.render() })
+        const oldBinding = useAppStore.getState().acpBindingBySessionId[f.chat.id]
+        const row = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Slash commands"] [role="option"]')).find(option => option.textContent?.includes('/compact'))
+        const form = f.host.querySelector('form')!
+        expect(row?.isConnected).toBe(true)
+        const changed: CppChat = drift === 'provider' ? { ...supported, providerId: 'opencode-cli', acpSession: { ...supported.acpSession, providerId: 'opencode-cli', protocolKind: 'opencode-acp' } }
+          : drift === 'model' ? { ...supported, modelId: 'gpt-5.4-new' }
+          : { ...supported, acpSession: { ...supported.acpSession, sessionId: 'replacement-native', threadId: 'replacement-native' } }
+        // Deliberately retain the old projection in the raw push; real sanitizer/reconciliation must revoke its mismatching anchors.
+        await act(async () => {
+          publishCompactionChat(changed)
+          expect(useAppStore.getState().acpBindingBySessionId[f.chat.id]).not.toBe(oldBinding)
+          expect(useAppStore.getState().acpBindingBySessionId[f.chat.id].manualCompaction).toBeUndefined()
+          // Dispatch BEFORE React commits the new view. A detached element would be an invalid stale-handler oracle.
+          expect(row!.isConnected && form.isConnected).toBe(true)
+          if (route === 'palette') row!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+          else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        })
+        expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+        expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+        expect(f.textarea.value).toBe('/compact')
+        act(() => window.dispatchEvent(new Event('pagehide')))
+        expect(readChatComposerDraft(f.chat.id)).toEqual(f.persistedDraft)
+        expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+        await act(async () => { publishCompactionChat(supported); f.render() })
+        const send = f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!
+        expect(send.disabled).toBe(false)
+        await act(async () => send.click())
+        expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1) // Fresh matching support can recover.
+      } finally { f.cleanup() }
+    }
+  })
+
+  it.each(['omitted', 'malformed', 'false'] as const)('does not retain or advertise an old true capability after a current native snapshot (%s)', async condition => {
+    const f = await unsupportedCompactionFixture('/compact')
+    try {
+      const supported = supportedCompactionChat(f.chat)
+      await act(async () => { publishCompactionChat(supported); f.render() })
+      const previous = useAppStore.getState().acpBindingBySessionId[f.chat.id]
+      expect(previous.manualCompaction?.available).toBe(true)
+      const raw = { ...supported.acpSession,
+        availableCommands: [{ name: 'compact', description: 'Advertised command cannot replace native availability', inputHint: '' }],
+        manualCompaction: condition === 'omitted' ? undefined : { ...supported.acpSession!.manualCompaction, available: condition === 'malformed' ? 'true' : false },
+      }
+      await act(async () => { publishCompactionChat({ ...supported, acpSession: sanitizeCppAcpSession(raw) }); f.render() })
+      const current = useAppStore.getState().acpBindingBySessionId[f.chat.id]
+      expect(current).not.toBe(previous)
+      expect(current.manualCompaction?.available === true).toBe(false)
+      expect(Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).some(option => option.textContent?.includes('/compact'))).toBe(false)
+      await act(async () => f.host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.textarea.value).toBe('/compact')
+      act(() => window.dispatchEvent(new Event('pagehide')))
+      expect(readChatComposerDraft(f.chat.id)).toEqual(f.persistedDraft)
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+    } finally { f.cleanup() }
+  })
+
+  it.each(['model', 'native'] as const)('keeps an accepted compact ACK from clearing another native target and releases its pending UI (%s)', async drift => {
+    const f = await unsupportedCompactionFixture('/compact')
+    try {
+      const supported = supportedCompactionChat(f.chat)
+      await act(async () => { publishCompactionChat(supported); f.render() })
+      let acknowledge = () => { throw new Error('Compact not requested') }
+      window.cefQuery = ({ request, onSuccess }) => {
+        const parsed = JSON.parse(request); f.requests.push(parsed)
+        if (parsed.action === 'compactAcpSession') acknowledge = () => onSuccess(JSON.stringify({ accepted: true }))
+        else onSuccess('{}')
+      }
+      await act(async () => f.host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
+      const changed = drift === 'model' ? { ...supported, modelId: 'gpt-5.4-new' }
+        : { ...supported, acpSession: { ...supported.acpSession, sessionId: 'replacement-native', threadId: 'replacement-native' } }
+      await act(async () => { publishCompactionChat(changed); f.render() })
+      await act(async () => acknowledge())
+      expect(f.textarea.value).toBe('/compact')
+      expect(f.textarea.disabled).toBe(false)
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.disabled).toBe(false)
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      act(() => window.dispatchEvent(new Event('pagehide')))
+      expect(readChatComposerDraft(f.chat.id)).toEqual(f.persistedDraft)
+      expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
+    } finally { f.cleanup() }
+  })
 })

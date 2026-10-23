@@ -2,6 +2,8 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SettingsModal } from './SettingsModal'
+import * as cefBridge from '../../ipc/cefBridge'
+import * as copySelection from '../../utils/copySelection'
 import { useAppStore } from '../../store/useAppStore'
 import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { version as packageVersion } from '../../../package.json'
@@ -185,16 +187,182 @@ describe('SettingsModal memory settings', () => {
     act(() => defaultsSectionButton?.click())
   }
 
+  it('keeps failed phone access actionable and offers an inline application restart', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      actions.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getCompanionSettings'
+        ? { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '', proxyRunning: false, restartRequired: true }
+        : {}))
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+    expect(host.textContent).toContain('The secure phone connection could not start.')
+    const restart = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Restart Universal Agent Manager')
+    expect(restart).toBeTruthy()
+    expect((Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Show pairing code') as HTMLButtonElement | undefined)?.disabled ?? true).toBe(true)
+    await act(async () => restart?.click())
+    expect(actions).toContain('restartApplication')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('clears recovered polling errors without hiding a failed phone action', async () => {
+    vi.useFakeTimers()
+    let loads = 0
+    let rejectRetry: (() => void) | undefined
+    const failedStatus = { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '' }
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings' && ++loads === 1) onFailure(1, 'Temporary phone settings failure.')
+      else if (action === 'getCompanionSettings') onSuccess(JSON.stringify(failedStatus))
+      else if (action === 'restartCompanion') rejectRetry = () => onFailure(1, 'Phone access retry failed.')
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe('Temporary phone settings failure.')
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).not.toContain('Temporary phone settings failure.')
+      const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry phone access')!
+      act(() => retry.click())
+      expect(retry.textContent).toBe('Retrying…')
+      expect(retry.disabled).toBe(true)
+      await act(async () => rejectRetry!())
+      const error = host.querySelector('[role="alert"]')!
+      expect(error.textContent).toBe('Phone access retry failed.')
+      expect(error.closest('.uam-set-row')?.textContent).toContain('Retry phone access')
+      expect((error as HTMLElement).style.color).toBe('var(--error)')
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(loads).toBe(3)
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe('Phone access retry failed.')
+      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat Defaults"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
+      await act(async () => {})
+      expect(host.textContent).not.toContain('Phone access retry failed.')
+    } finally {
+      act(() => root.unmount()); host.remove(); vi.useRealTimers()
+    }
+  })
+
+  it('hides a revealed QR and disables URL copying when status polling fails', async () => {
+    vi.useFakeTimers()
+    let failed = false
+    const url = 'https://phone.example/companion'
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings') {
+        if (failed) onFailure(1, 'Phone settings connection lost.')
+        else onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: url, desiredUrl: url }))
+      } else if (action === 'getCompanionToken') onSuccess(JSON.stringify({ token: 'a'.repeat(64), url }))
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      const pairing = () => [...host.querySelectorAll('button')].find(button => /^(Show|Hide) pairing code$/.test(button.textContent || ''))!
+      const qr = () => [...host.querySelectorAll('svg title')].find(title => title.textContent === 'Universal Agent Manager iPhone pairing code')
+      await act(async () => pairing().click())
+      expect(qr()).toBeTruthy()
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(false)
+      failed = true
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).not.toContain('Ready to connect')
+      expect(host.textContent).toContain('Phone settings connection lost.')
+      expect(qr()).toBeUndefined()
+      expect(pairing().disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(true)
+      failed = false
+      await act(async () => vi.advanceTimersByTimeAsync(1500))
+      expect(host.textContent).toContain('Ready to connect')
+      expect(pairing().disabled).toBe(false)
+      expect(qr()).toBeUndefined()
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Copy phone URL"]')?.disabled).toBe(false)
+    } finally { act(() => root.unmount()); host.remove(); vi.useRealTimers() }
+  })
+
+  it.each(['bridge', 'clipboard'] as const)('unlocks phone controls after a rejected %s copy operation', async failure => {
+    let mutations = 0
+    window.cefQuery = ({ request, onSuccess }) => {
+      const { action } = JSON.parse(request)
+      if (action === 'getCompanionSettings') onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', desiredUrl: 'https://phone.example/companion' }))
+      else if (action === 'getCompanionToken') onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
+      else if (action === 'setCompanionEnabled') { mutations += 1; onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled' })) }
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      let rejectCopy!: (error: Error) => void
+      const rejected = new Promise<never>((_resolve, reject) => { rejectCopy = reject })
+      if (failure === 'bridge') vi.spyOn(cefBridge, 'sendToCEF').mockImplementationOnce(() => rejected)
+      else vi.spyOn(copySelection, 'copyTextToClipboard').mockImplementationOnce(() => rejected)
+      const copyToken = host.querySelector<HTMLButtonElement>('button[aria-label="Copy token"]')!
+      act(() => copyToken.click())
+      await act(async () => {})
+      const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      expect(toggle.disabled).toBe(true)
+      act(() => toggle.click())
+      expect(mutations).toBe(0)
+      await act(async () => rejectCopy(new Error('Copy fixture rejected')))
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not copy the phone access token.')
+      expect(copyToken.disabled).toBe(false)
+      expect(toggle.disabled).toBe(false)
+      await act(async () => toggle.click())
+      expect(mutations).toBe(1)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers current network addresses once beside connection recovery controls', async () => {
+    let completeRepair: ((response: string) => void) | undefined
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'getCompanionSettings') onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'failed', reason: 'Choose a current LAN address and repair.', desiredUrl: 'https://192.168.1.4/companion', effectiveUrl: '', localAddresses: ['192.168.1.5', '10.0.0.5', '192.168.1.5'] }))
+      else if (parsed.action === 'repairCompanionLanAddress') completeRepair = onSuccess
+      else onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      const rows = [...host.querySelectorAll('.uam-set-row')]
+      const repairs = rows.filter(row => row.querySelector('.uam-set-row__title')?.textContent === 'Network address changed')
+      expect(repairs).toHaveLength(1)
+      const repair = repairs[0]
+      const status = rows.find(row => row.querySelector('.uam-set-row__title')?.textContent === 'Phone access needs attention')!
+      expect(status.nextElementSibling).toBe(repair)
+      expect(host.textContent).not.toContain('LAN')
+      expect(repair.querySelectorAll('button')).toHaveLength(2)
+      expect(host.querySelector<HTMLDivElement>('.uam-settings-frame')?.style.margin).toBe('0px auto')
+      expect(host.querySelector('button[aria-label="Copy phone URL"]')?.closest('.uam-set-row')?.textContent).toContain('Available when phone access is ready.')
+      const choice = [...repair.querySelectorAll('button')].find(button => button.textContent === 'Use 10.0.0.5')!
+      act(() => choice.click())
+      expect(choice.textContent).toBe('Repairing…')
+      expect(repair.textContent).toContain('Use 192.168.1.5')
+      expect(requests.find(request => request.action === 'repairCompanionLanAddress')?.payload).toEqual({ address: '10.0.0.5' })
+      await act(async () => completeRepair!(JSON.stringify({ configured: true, enabled: true, state: 'ready', desiredUrl: 'https://10.0.0.5/companion', effectiveUrl: 'https://10.0.0.5/companion', localAddresses: ['192.168.1.5', '10.0.0.5'] })))
+      expect(host.textContent).toContain('Ready to connect')
+      expect(host.textContent).not.toContain('Network address changed')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request) as { action: string; payload?: { enabled?: boolean } }
       actions.push(parsed.action)
       if (parsed.action === 'getCompanionSettings') {
-        onSuccess(JSON.stringify({ configured: true, enabled: true, url: 'https://phone.example/companion', restartRequired: true }))
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'setCompanionEnabled') {
         expect(parsed.payload).toEqual({ enabled: false })
-        onSuccess(JSON.stringify({ configured: true, enabled: false, url: 'https://phone.example/companion', restartRequired: true }))
+        onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled', effectiveUrl: '', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'getCompanionToken') {
         onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
       } else {
@@ -2337,6 +2505,32 @@ describe('SettingsModal memory settings', () => {
       await act(async () => saveButton().click())
       expect(useAppStore.getState().providerAvailability).toEqual([{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }, { providerId: 'codex-cli', executionHostId: 'lab', enabled: false }])
       expect(saveButton().disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers accessible Default recovery for an unavailable saved Gemini default effort', () => {
+    const save = vi.fn(async () => true)
+    useAppStore.setState({
+      providerChatDefaults: { 'gemini-cli': { modelId: 'auto-gemini-3', reasoningEffort: 'high', serviceTier: '', approvalMode: 'default', commandSafetyTier: 'off', memoryLevel: 'default', memoryEnabled: true, smallModelMode: false } },
+      setProviderChatDefaults: save,
+      providerModelCatalogs: [], acpBindingBySessionId: {},
+    })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+      openProviderSection(host, 'Gemini')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
+      const trigger = host.querySelector<HTMLButtonElement>('[aria-label="Gemini default reasoning"]')
+      expect(trigger).not.toBeNull()
+      expect(trigger!.textContent).toContain('unavailable')
+      act(() => trigger!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      const list = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Gemini default reasoning"]')!
+      expect(list.querySelector<HTMLButtonElement>('[role="option"][disabled]')?.textContent).toContain('unavailable')
+      const clear = list.querySelector<HTMLButtonElement>('[role="option"]:not([disabled])')!
+      expect(document.activeElement).toBe(clear)
+      // Native button activation is a click; JSDOM does not synthesize it from Enter.
+      act(() => clear.click())
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'gemini-cli': expect.objectContaining({ reasoningEffort: '' }) }) }), '*')
     } finally { act(() => root.unmount()); host.remove() }
   })
 

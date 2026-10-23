@@ -18,15 +18,26 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	const char* AcpProtocolKind() const override { return "claude-code-stream-json"; }
 	const char* GetAcpDisplayName() const override { return "Claude stream-json"; }
 	nlohmann::json OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const override;
+	bool OnAcpPreDispatch(uam::AppState& app, uam::AcpSessionState& session, const ChatSession& chat,
+	    const nlohmann::json* decoded_frame) const noexcept override;
 	bool OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	    const nlohmann::json& message, const CefRefPtr<CefBrowser>& browser) const override;
 	void OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const override;
+	bool OnAcpHandleResult(uam::AppState&, uam::AcpSessionState&, ChatSession&, const std::string&, const std::string&, const nlohmann::json&) const override;
 	nlohmann::json OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
 	    const std::string& cwd, bool can_load, std::string& out_method) const override;
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const override;
+	nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState& session, int request_id, std::string& out_method) const override;
+	bool SupportsAcpCompaction() const override
+	{
+		return true;
+	}
+	bool SupportsSavedImageRetry(const uam::AcpSessionState& session) const override;
+	bool SupportsRemoteOwnedImageRetry(const uam::AcpSessionState& session) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session, int request_id, std::string& out_method) const override;
-	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const std::string& option_id, bool cancelled) const override;
+	using IProviderRuntime::OnAcpBuildPermissionResponse;
+	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const override;
 	nlohmann::json OnAcpBuildUserInputResponse(const uam::AcpSessionState& session, const std::map<std::string, std::vector<std::string>>& answers) const override;
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::RestartSession; }

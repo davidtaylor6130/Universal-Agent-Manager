@@ -228,7 +228,7 @@ namespace uam
 		}
 
 		bool RecoverOwnedWorkspace(const std::filesystem::path& root, const std::vector<ChatSession>& live_chats,
-		    ChatSession& metadata, const nlohmann::json& policy, std::filesystem::path& receipt, bool& found, std::string& error, std::stop_token stop)
+		    ChatSession& metadata, const nlohmann::json& policy, std::filesystem::path& receipt, bool& found, std::shared_ptr<const platform::PublishedFileChangeWitness>& resumed_intent, std::string& error, std::stop_token stop)
 		{
 			const std::filesystem::path directory = root / ".worktree-launch";
 			std::error_code scan_error;
@@ -237,9 +237,17 @@ namespace uam
 			const std::string prefix = hashing::Hex64(hashing::Fnv1a64(metadata.id)) + "-";
 			try
 			{
-				for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory))
+				std::optional<std::filesystem::directory_entry> matching;
+				for (const auto& entry : std::filesystem::directory_iterator(directory))
 				{
 					if (!entry.path().filename().string().starts_with(prefix) || entry.path().extension() != ".json") continue;
+					// Reject the second match immediately, before reading or progressing either journal.
+					if (matching) return false;
+					matching = entry;
+				}
+				if (!matching) return true;
+				const std::filesystem::directory_entry& entry = *matching;
+				{
 					if (found || paths::IsLinkOrReparsePointNoThrow(entry.path())) return false;
 					found = true;
 					std::string receipt_text;
@@ -248,10 +256,31 @@ namespace uam
 						error = "Interrupted workspace ownership receipt could not be read within its size limit. The workspace was preserved.";
 						return false;
 					}
+					const auto witness = platform::PublishedFileChangeWitness::Capture(entry.path());
+					const auto held_bytes = witness ? witness->ReadBounded(64 * 1024, stop) : std::nullopt;
+					if (!held_bytes || *held_bytes != receipt_text) return false;
 					const nlohmann::json record = nlohmann::json::parse(receipt_text);
 					if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at ||
 					    !SnapshotLaunchPoliciesMatch(record.at("launchPolicy"), policy) ||
 					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory))) return false;
+					const std::string branch = record.at("branch").get<std::string>();
+					const std::string base = record.at("baseSha").get<std::string>();
+					if (branch.empty() && base.empty())
+					{
+						if (!GitWorktreeService().ValidateUncreatedWorkspaceIntent(root, entry.path(), metadata, error, stop)) return false;
+						ChatSession planned = metadata;
+						planned.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
+						planned.workspace_worktree_directory = record.at("worktree").get<std::string>();
+						const auto references = [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, planned); };
+						const auto persisted = ChatRepository::LoadLocalChatSummariesReadOnly(root);
+						if (std::any_of(live_chats.begin(), live_chats.end(), references) || std::any_of(persisted.begin(), persisted.end(), references) ||
+						    !witness->Current() || stop.stop_requested()) return false;
+						// Resume this exact owner's journal; no artifact or receipt is removed or accepted as ready.
+						receipt = entry.path();
+						resumed_intent = witness;
+						found = false;
+						return true;
+					}
 					metadata.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
 					metadata.workspace_source_directory = record.at("source").get<std::string>();
 					metadata.workspace_worktree_directory = record.at("worktree").get<std::string>();
@@ -610,6 +639,9 @@ namespace uam
 					return PrepareWorktreeForLaunch(app, chat, true);
 				}
 				const std::shared_ptr<std::stop_source> cancellation = task->cancellation;
+				// Local tasks retire here, so publish the warning once, on the owner after durable success.
+				if (!task->remote_host && task->prepared && !task->prepared->operation.status.warning.empty())
+					app.status_line = task->prepared->operation.status.warning;
 				if (!task->remote_host) app.worktree_launch_preparations.erase(found);
 				return {WorktreeLaunchPreparationState::Ready, {}, cancellation};
 			}
@@ -744,7 +776,7 @@ namespace uam
 		std::vector<ChatSession> live_chats;
 		live_chats.reserve(app.chats.size());
 		for (const ChatSession& other : app.chats) live_chats.push_back(CaptureVcsChatContext(other));
-		std::packaged_task<PreparedLaunchWorktree()> worker([task, live_chats = std::move(live_chats), root = task->data_root, receipt = task->receipt_file, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease]() mutable
+		std::packaged_task<PreparedLaunchWorktree()> worker([task, live_chats = std::move(live_chats), root = task->data_root, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease]() mutable
 		{
 			AppState snapshot;
 			snapshot.data_root = root;
@@ -775,8 +807,9 @@ namespace uam
 			    {"snapshotSvn", snapshot.settings.git_snapshot_svn}, {"snapshotPlainFolders", snapshot.settings.git_snapshot_plain_folders},
 			    {"baseOverride", metadata.git_base_branch_override ? nlohmann::json(*metadata.git_base_branch_override) : nlohmann::json(nullptr)}};
 			bool recovered = false;
+			std::shared_ptr<const platform::PublishedFileChangeWitness> resumed_intent;
 			GitWorktreeOperationResult recovery;
-			if (!RecoverOwnedWorkspace(root, live_chats, metadata, policy, task->receipt_file, recovered, recovery.message, cancellation->get_token()))
+			if (!RecoverOwnedWorkspace(root, live_chats, metadata, policy, task->receipt_file, recovered, resumed_intent, recovery.message, cancellation->get_token()))
 			{
 				if (recovery.message.empty()) recovery.message = "Interrupted workspace ownership could not be verified. The workspace was preserved.";
 				return PreparedLaunchWorktree{std::move(recovery), std::move(metadata)};
@@ -786,8 +819,14 @@ namespace uam
 				recovery.ok = true;
 				return PreparedLaunchWorktree{std::move(recovery), std::move(metadata)};
 			}
-			const GitWorktreeIntentRecorder record = [root, receipt, policy, id = metadata.id, created = metadata.created_at](const GitWorktreeCreationIntent& intent, std::string& error)
-			{ return RecordIntent(root, receipt, id, created, policy, intent, error); };
+			const GitWorktreeIntentRecorder record = [root, receipt = task->receipt_file, policy, id = metadata.id, created = metadata.created_at, witness = std::move(resumed_intent)](const GitWorktreeCreationIntent& intent, std::string& error) mutable
+			{
+				if (witness && !witness->Current()) { error = "Workspace ownership journal changed before preparation. Its files were preserved."; return false; }
+				if (!RecordIntent(root, receipt, id, created, policy, intent, error)) return false;
+				witness = platform::PublishedFileChangeWitness::Capture(receipt);
+				if (!witness) { error = "Workspace ownership journal could not be retained after preparation."; return false; }
+				return true;
+			};
 			GitWorktreeOperationResult operation = GitWorktreeService().PrepareForChat(snapshot, metadata, record, cancellation->get_token());
 			return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
 		});

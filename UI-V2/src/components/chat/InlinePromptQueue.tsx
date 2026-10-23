@@ -138,7 +138,7 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
           <span className="uam-queue-row__label">{prompt.sending ? 'Sending' : 'Unsent'}</span>
           <span className="uam-queue-row__text">{prompt.text}</span>
           <div className="uam-queue-row__actions">
-            {onEditUnsent && <IconButton size="sm" icon={<Pencil size={13} />} label="Edit message in new branch" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => onEditUnsent(prompt.messageIndex, prompt.text)} />}
+            {onEditUnsent && !prompt.receipt && <IconButton size="sm" icon={<Pencil size={13} />} label="Edit unsent message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => onEditUnsent(prompt.messageIndex, prompt.text)} />}
             {prompt.retryable && onRetryUnsent && <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Retry message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => void run(() => onRetryUnsent(prompt.messageIndex), 'Unsent prompt could not be retried. Your input is kept.')} />}
             {onRemoveUnsent && <IconButton size="sm" icon={<X size={14} />} label="Remove unsent prompt" disabled={blocked || (prompt.receipt ? unsentReceiptDeleteDisabled : unsentActionsDisabled) || Boolean(prompt.sending || (prompt.recoveryPending && !prompt.receipt)) || Boolean(editing)} onClick={() => void run(() => onRemoveUnsent(prompt.messageIndex, prompt.receipt), 'Unsent prompt could not be removed. Your input is kept.')} />}
           </div>

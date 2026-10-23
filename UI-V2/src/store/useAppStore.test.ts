@@ -1,5 +1,8 @@
+import { subagentParentFor, subagentRouteFor, clearSubagentView } from '../utils/subagentNavigation'
+import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../utils/chatGridStorage'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AcpBinding } from './cpp/types'
+import type { Attachment, Message } from '../types/message'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
@@ -99,6 +102,18 @@ function makeCppState(
       lastStatus: '',
     },
     statusLine: '',
+  }
+}
+
+/** Explicit recovery prerequisite from an older renderer, never a generic ACK result. */
+function legacySyntheticPrompt(content: string, attachments: Attachment[] = []): Message {
+  return {
+    id: `legacy-synthetic-${content}`,
+    sessionId: 'chat-1',
+    role: 'user',
+    content,
+    attachments,
+    createdAt: new Date('2026-01-01T00:00:02.000Z'),
   }
 }
 
@@ -212,7 +227,9 @@ describe('useAppStore Gemini CLI slice', () => {
       if (parsed.action === 'openNativeSessionChat') completions.set(parsed.payload.nativeSessionId, onSuccess)
       else onSuccess('{}')
     }
-    useAppStore.setState({ activeSessionId: 'parent' })
+    const parent = { id: 'parent', name: 'Parent', viewMode: 'chat' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    useAppStore.setState({ sessions: [parent], activeSessionId: 'parent' })
+    writeChatGridLayout({ ...defaultChatGridLayout, root: { type: 'leaf', id: 'leaf-1', sessionId: parent.id } })
     const opening = useAppStore.getState().openSubAgentSession('parent', 'native-first')
     if (intent === 'other chat') useAppStore.getState().setActiveSession('other')
     if (intent === 'same chat') useAppStore.getState().setActiveSession('parent')
@@ -224,11 +241,34 @@ describe('useAppStore Gemini CLI slice', () => {
     completions.get('native-first')?.('{"chatId":"first"}')
     expect(await opening).toBe(intent === 'complete' ? 'first' : null)
     expect(useAppStore.getState().activeSessionId).toBe(
-      intent === 'complete' ? 'first' : intent === 'other chat' ? 'other' : intent === 'newer child' ? 'second' : 'parent'
+      intent === 'other chat' ? 'other' : 'parent'
     )
+    if (intent === 'complete' || intent === 'newer child') expect(subagentRouteFor(readChatGridLayout().activeLeafId, parent)).toMatchObject({ kind: 'native', chatId: intent === 'complete' ? 'first' : 'second' })
+    clearSubagentView(readChatGridLayout().activeLeafId)
     expect(requests.filter((request) => request.action === 'openNativeSessionChat').every(
       (request) => request.payload?.selectChat === false && request.payload?.refreshHistory === false
     )).toBe(true)
+  })
+
+  it.each(['missing', 'recreated', 'provider', 'host', 'workspace'])('rejects a native child receipt after its parent identity changed: %s', async (change) => {
+    const parent = { id: 'guarded-parent', name: 'Parent', providerId: 'codex-cli', executionHostId: 'local', viewMode: 'chat' as const, folderId: null, createdAt: new Date('2026-10-16T10:00:00Z'), updatedAt: new Date('2026-10-16T10:00:00Z') }
+    useAppStore.setState({ sessions: [parent], activeSessionId: parent.id })
+    let complete: ((response: string) => void) | undefined
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => { actions.push(JSON.parse(request).action); complete = onSuccess }
+    const opening = useAppStore.getState().openSubAgentSession(parent.id, 'guarded-native-child')
+    useAppStore.setState({ sessions: change === 'missing' ? [] : [{ ...parent,
+      ...(change === 'recreated' ? { createdAt: new Date(parent.createdAt.getTime() + 1) } : {}),
+      ...(change === 'provider' ? { providerId: 'claude-cli' } : {}),
+      ...(change === 'host' ? { executionHostId: 'other-host' } : {}),
+      ...(change === 'workspace' ? { workspaceDirectory: '/foreign-workspace' } : {}),
+    }] })
+    complete?.('{"chatId":"guarded-child"}')
+    expect(await opening).toBeNull()
+    expect(actions).toEqual(['openNativeSessionChat'])
+    const child = { ...parent, id: 'guarded-child' }
+    expect(subagentParentFor(child, [parent, child])).toBeUndefined()
+    expect(useAppStore.getState().activeSessionId).toBe(parent.id)
   })
 
   it('clears the selected chat locally and through CEF', async () => {
@@ -1421,7 +1461,7 @@ describe('useAppStore Gemini CLI slice', () => {
     )
   })
 
-  it.each(['held-before-ack', 'ack-before-held'] as const)('keeps a recovered prompt outside history across %s with deferred hydration', async (order) => {
+  it.each(['held-before-ack', 'ack-before-held'] as const)('keeps a recovered prompt outside history across %s without fabricated admission rows', async (order) => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
     const initial = makeCppState(1)
@@ -1449,20 +1489,18 @@ describe('useAppStore Gemini CLI slice', () => {
     if (order === 'ack-before-held') {
       acknowledge()
       await expect(sending).resolves.toBe(true)
-      expect(cefStore.getState().messages['chat-1']).toHaveLength(1)
+      expect(cefStore.getState().messages['chat-1']).toEqual([])
     }
     testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [held] } })
     if (order === 'held-before-ack') {
       acknowledge()
       await expect(sending).resolves.toBe(true)
       expect(cefStore.getState().messages['chat-1']).toEqual([])
-    } else {
-      // Opaque optimistic rows require authoritative history, rather than a guessed native index.
-      expect(historyRequests).toBe(1)
-      hydrate!()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(cefStore.getState().messages['chat-1']).toEqual([])
     }
+    // Fresh ACK and a held native summary both leave history empty; no opaque mismatch exists to hydrate.
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
+    expect(historyRequests).toBe(0)
+    expect(hydrate).toBeUndefined()
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
   })
 
@@ -1486,10 +1524,14 @@ describe('useAppStore Gemini CLI slice', () => {
       acpSession: { ...initial.chats[0].acpSession, queuedPrompts: [{ id: 'already-held', revision: 2, text: 'Repeat' }] } }] } })
     acknowledge()
     await expect(sending).resolves.toBe(true)
-    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Repeat'])
+    // Admission of a new same-text input cannot create history or claim the existing queue entry.
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([
+      expect.objectContaining({ id: 'already-held', revision: 2, text: 'Repeat' }),
+    ])
   })
 
-  it('forces history for an opaque held mismatch when the chat is loaded later', async () => {
+  it('forces history for a legacy opaque held mismatch when the chat is loaded later', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
     const initial = makeCppState(1)
@@ -1510,6 +1552,9 @@ describe('useAppStore Gemini CLI slice', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     await cefStore.getState().loadSessionMessages('chat-1')
     await cefStore.getState().sendAcpPrompt('chat-1', 'Recovered while away')
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
+    // Seed the old renderer's opaque projection explicitly; ACK alone cannot satisfy the mismatch guard.
+    cefStore.setState({ messages: { 'chat-1': [legacySyntheticPrompt('Recovered while away')] } })
     cefStore.getState().loadFromCef({ ...initial, stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
       acpSession: { ...initial.chats[0].acpSession, queueHeld: true, queuedPrompts: [{ id: 'held-away', revision: 1, text: 'Recovered while away' }] } }] })
     expect(cefStore.getState().messages['chat-1']).toHaveLength(1)
@@ -1518,7 +1563,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-1']).toEqual([])
   })
 
-  it.each(['none', 'ack-before-removal', 'removal-before-ack'] as const)('retires a proven referenced raw tail atomically while preserving a later optimistic attempt (%s)', async (order) => {
+  it.each(['none', 'ack-before-removal', 'removal-before-ack'] as const)('retires a proven referenced raw tail atomically while preserving a later legacy optimistic attempt (%s)', async (order) => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
     const initial = makeCppState(1)
@@ -1541,6 +1586,13 @@ describe('useAppStore Gemini CLI slice', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     const prefix = cefStore.getState().messages['chat-1'].slice(0, 2)
     const sending = order !== 'none' ? cefStore.getState().sendAcpPrompt('chat-1', 'Later pending input') : undefined
+    if (order !== 'none') {
+      // Legacy-only raw tail prerequisite, independent of fresh generic admission and its callback order.
+      expect(cefStore.getState().messages['chat-1']).toHaveLength(3)
+      cefStore.setState((state) => ({ messages: { ...state.messages,
+        'chat-1': [...state.messages['chat-1'], legacySyntheticPrompt('Later pending input')],
+      } }))
+    }
     if (order === 'ack-before-removal') { acknowledge(); await sending }
     const optimistic = cefStore.getState().messages['chat-1'].find((message) => message.content === 'Later pending input')
     const observed: { rows: string[]; known: number[] }[] = []
@@ -1588,7 +1640,7 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([])
   })
 
-  it('preserves a newer optimistic attempt when an older held snapshot and history response arrive', async () => {
+  it('preserves a newer legacy optimistic attempt when an older held snapshot and history response arrive', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
     const initial = makeCppState(1)
@@ -1609,9 +1661,16 @@ describe('useAppStore Gemini CLI slice', () => {
     const first = cefStore.getState().sendAcpPrompt('chat-1', 'Old failed input')
     acknowledgements[0]()
     await first
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
+    // Force history only for an explicitly restored legacy opaque row, not for generic admission.
+    cefStore.setState({ messages: { 'chat-1': [legacySyntheticPrompt('Old failed input')] } })
     testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
       acpSession: { ...initial.chats[0].acpSession, queueHeld: true, queuedPrompts: [{ id: 'held-old', revision: 1, text: 'Old failed input' }] } }] } })
     const second = cefStore.getState().sendAcpPrompt('chat-1', 'Newer input')
+    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Old failed input'])
+    // A later legacy projection changes row identity while the old authoritative response is outstanding.
+    const laterLegacy = legacySyntheticPrompt('Newer input')
+    cefStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': [...state.messages['chat-1'], laterLegacy] } }))
     acknowledgements[1]()
     await expect(second).resolves.toBe(true)
     hydrate()
@@ -1641,7 +1700,8 @@ describe('useAppStore Gemini CLI slice', () => {
     rejectFirst()
     await expect(first).resolves.toBe(false)
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].promptActionError).toBeUndefined()
-    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Accepted attempt'])
+    // A newer successful admission suppresses the stale error, but neither callback owns a native row.
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
   })
 
   it('preserves failed prompt actions across native snapshots and gives retries a fresh identity', async () => {
@@ -1798,7 +1858,9 @@ describe('useAppStore Gemini CLI slice', () => {
     const first = cefStore.getState().sendAcpPrompt('chat-1', 'Repeat')
     finishPrompt()
     await expect(first).resolves.toBe(true)
-    expect(cefStore.getState().messages['chat-1']).toHaveLength(2)
+    // Ordinary ACK leaves the one pre-existing native position unchanged until an authoritative push.
+    expect(cefStore.getState().messages['chat-1']).toHaveLength(1)
+    expect(cefStore.getState().messages['chat-1'][0]).toMatchObject({ content: 'Repeat', nativeMessageIndex: 0 })
 
     const attachment = { id: 'file-1', name: 'test.txt', type: 'text/plain', size: 10, path: '/tmp/test.txt' }
     const second = cefStore.getState().sendAcpPrompt('chat-1', 'Repeat', [attachment])
@@ -1832,6 +1894,7 @@ describe('useAppStore Gemini CLI slice', () => {
       { role: 'assistant', content: 'First', createdAt: '2026-01-01T00:00:01.000Z' },
     ]
     initial.chats[0].messageCount = 2
+    initial.chats[0].messagesDigest = 'turn-one'
     initial.chats[0].acpSession = {
       sessionId: 'acp-chat-1',
       running: true,
@@ -1851,10 +1914,15 @@ describe('useAppStore Gemini CLI slice', () => {
         type: 'statePatch',
         data: {
           stateRevision: 2,
+          // Patch chat entries are summaries; the full native transcript uses this zero-based carrier.
+          messagesByChatId: { 'chat-1': [...initial.chats[0].messages!, {
+            role: 'user', content: 'New question', createdAt: '2026-01-01T00:00:02.000Z',
+          }] },
           chats: [{
             ...initial.chats[0],
             messages: undefined,
             messageCount: 3,
+            messagesDigest: 'turn-two',
             acpSession: {
               ...initial.chats[0].acpSession,
               processing: true,
@@ -1871,10 +1939,14 @@ describe('useAppStore Gemini CLI slice', () => {
 
     const { useAppStore: cefStore } = await import('./useAppStore')
     await new Promise((resolve) => setTimeout(resolve, 0))
+    const oldAssistant = cefStore.getState().messages['chat-1'][1]
     await expect(cefStore.getState().sendAcpPrompt('chat-1', 'New question')).resolves.toBe(true)
+    expect(cefStore.getState().messages['chat-1'][2]).toMatchObject({ content: 'New question', nativeMessageIndex: 2 })
     testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', token: 'Second' })
     await new Promise((resolve) => setTimeout(resolve, 80))
 
+    expect(cefStore.getState().messages['chat-1'][1]).toBe(oldAssistant)
+    expect(oldAssistant.content).toBe('First')
     expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual([
       'Old question',
       'First',
@@ -2282,6 +2354,297 @@ describe('useAppStore Gemini CLI slice', () => {
       'Question',
       'Final answer',
     ])
+  })
+
+
+  describe('bounded exact-refusal cold history reread', () => {
+    const refusal = 'Chat history changed while loading. Retry to refresh it.'
+    async function coldHistoryFixture(loaded = false) {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      testWindow.dispatchEvent = vi.fn(() => true)
+      const initial = makeCppState(1)
+      initial.chats[0].providerId = 'codex-cli'
+      initial.chats[0].cliTerminal = undefined
+      initial.chats[0].messages = loaded ? [{ role: 'assistant', content: 'Already loaded', createdAt: '2026-01-01T00:00:00.000Z' }] : undefined
+      initial.chats[0].messageCount = 1
+      initial.chats[0].messagesDigest = 'cold-summary'
+      initial.chats[0].acpSession = {
+        providerId: 'codex-cli', sessionId: 'native-cold', threadId: 'thread-cold',
+        running: true, processing: false, lifecycleState: 'ready', turnSerial: 4,
+        idleCountdownStartsAtMs: 1000, idleShutdownAtMs: 31000,
+        unsentMessageIndices: [], recoverableUnsentMessageIndices: [], diagnostics: [],
+      }
+      const requests: Array<{ action: string; requestId?: string; payload?: Record<string, unknown> }> = []
+      const replies: Array<{ success: (value: string) => void; failure: (code: number, error: string) => void }> = []
+      let finishSend: ((value: string) => void) | undefined
+      testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const parsed = JSON.parse(request) as typeof requests[number]
+        requests.push(parsed)
+        if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+        else if (parsed.action === 'getChatMessages') replies.push({ success: onSuccess, failure: onFailure })
+        else if (parsed.action === 'sendAcpPrompt') finishSend = onSuccess
+        else if (parsed.action === 'releaseChatMessages') onSuccess('{}')
+      }
+      const { useAppStore: store } = await import('./useAppStore')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const historyRequests = () => requests.filter(request => request.action === 'getChatMessages')
+      const page = { chatId: 'chat-1', startIndex: 0, totalCount: 1, messagesDigest: 'fresh-native',
+        messages: [{ role: 'user', content: 'Retained rejected input', createdAt: '2026-01-01T00:00:00.000Z', interrupted: true, acpPromptNotSent: true }],
+        unsentMessageIndices: [0], recoverableUnsentMessageIndices: [0] }
+      const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+      const metadataPush = () => testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2,
+        chats: [{ ...initial.chats[0], messages: undefined, acpSession: { ...initial.chats[0].acpSession, idleShutdownAtMs: 32000 } }],
+      } })
+      return { store, requests, replies, historyRequests, page, tick, metadataPush, finishSend: () => finishSend?.('{}') }
+    }
+
+    it('rereads one exact cold refusal with a new ID and atomically adopts only the fresh page', async () => {
+      const f = await coldHistoryFixture()
+      const loading = f.store.getState().loadSessionMessages('chat-1')
+      expect(f.store.getState().messages['chat-1']).toBeUndefined()
+      f.replies[0].failure(409, refusal)
+      await f.tick()
+      expect(f.historyRequests()).toHaveLength(2)
+      expect(f.historyRequests()[1].requestId).not.toBe(f.historyRequests()[0].requestId)
+      expect(f.historyRequests()[1].payload).toEqual({ chatId: 'chat-1', messagesDigest: '', limit: 50, deferToolCallContent: true })
+      expect(f.store.getState().messages['chat-1']).toBeUndefined()
+      expect(f.store.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+      expect(f.store.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+      const observed: Array<{ count: number; recoverable: number[] | undefined }> = []
+      const unsubscribe = f.store.subscribe(state => observed.push({ count: state.messages['chat-1']?.length ?? 0,
+        recoverable: state.acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices }))
+      try {
+        f.replies[1].success(JSON.stringify(f.page))
+        await loading
+        expect(f.store.getState().messages['chat-1'].map(row => row.content)).toEqual(['Retained rejected input'])
+        expect(f.store.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([0])
+        expect(f.store.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([0])
+        expect(observed.filter(state => state.count === 1).every(state => state.recoverable?.join() === '0')).toBe(true)
+        expect(f.requests.map(request => request.action)).toEqual(['getInitialState', 'getChatMessages', 'getChatMessages'])
+      } finally { unsubscribe() }
+    })
+
+    it('shows the second exact refusal normally without a third read', async () => {
+      const f = await coldHistoryFixture()
+      const loading = f.store.getState().loadSessionMessages('chat-1')
+      f.replies[0].failure(409, refusal)
+      await f.tick()
+      expect(f.replies).toHaveLength(2)
+      f.replies[1].failure(409, refusal)
+      expect(await loading).toBe(false)
+      expect(f.historyRequests()).toHaveLength(2)
+      expect(f.store.getState().messages['chat-1']).toBeUndefined()
+      expect(f.store.getState().chatHistoryErrorBySessionId['chat-1']).toBe(refusal)
+    })
+
+    it.each(['refusal-first', 'presentation-first'] as const)('shares the existing one-reread budget (%s)', async order => {
+      const f = await coldHistoryFixture()
+      const loading = f.store.getState().loadSessionMessages('chat-1')
+      if (order === 'refusal-first') {
+        f.replies[0].failure(409, refusal)
+        await f.tick()
+        expect(f.replies).toHaveLength(2)
+        f.metadataPush()
+        f.replies[1].success(JSON.stringify(f.page))
+      } else {
+        f.metadataPush()
+        f.replies[0].success(JSON.stringify(f.page))
+        await f.tick()
+        expect(f.replies).toHaveLength(2)
+        f.replies[1].failure(409, refusal)
+      }
+      await loading
+      expect(f.historyRequests()).toHaveLength(2)
+      expect(f.historyRequests().every(request => !('refreshNative' in request.payload!))).toBe(true)
+      expect(f.store.getState().messages['chat-1']).toBeUndefined()
+      expect(f.store.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+      expect(f.store.getState().chatHistoryErrorBySessionId['chat-1']).toBe(refusal)
+    })
+
+    it.each(['different-error', 'already-loaded', 'native-refresh'] as const)('does not automatically reread %s', async mode => {
+      const f = await coldHistoryFixture(mode === 'already-loaded')
+      const before = f.store.getState().messages['chat-1']
+      const loading = f.store.getState().loadSessionMessages('chat-1', mode === 'native-refresh', mode === 'native-refresh')
+      const error = mode === 'different-error' ? 'Chat history changed while loading.' : refusal
+      f.replies[0].failure(409, error)
+      expect(await loading).toBe(false)
+      expect(f.historyRequests()).toHaveLength(1)
+      expect(f.store.getState().messages['chat-1']).toBe(before)
+      expect(f.store.getState().chatHistoryErrorBySessionId['chat-1']).toBe(error)
+    })
+
+    it.each(['superseded', 'deleted', 'new-birth', 'authored-message', 'unloaded', 'owner', 'binding', 'search', 'send-in-flight'] as const)(
+      'suppresses exact-refusal reread after %s', async change => {
+        const f = await coldHistoryFixture()
+        const loading = f.store.getState().loadSessionMessages('chat-1')
+        let newer: Promise<void | false> | undefined
+        let sending: Promise<boolean> | undefined
+        if (change === 'superseded') newer = f.store.getState().loadSessionMessages('chat-1', true)
+        if (change === 'deleted') f.store.setState({ sessions: [] })
+        if (change === 'new-birth') f.store.setState(state => ({ sessions: state.sessions.map(chat => ({ ...chat, createdAt: new Date(chat.createdAt.getTime() + 1) })) }))
+        if (change === 'authored-message') f.store.setState({ messages: { 'chat-1': [legacySyntheticPrompt('Newly authored input')] } })
+        if (change === 'unloaded') f.store.getState().unloadSessionMessages('chat-1')
+        if (change === 'owner') f.store.setState(state => ({ sessions: state.sessions.map(chat => ({ ...chat, providerId: 'opencode-cli', executionHostId: 'new-host', workspaceDirectory: '/tmp/other' })) }))
+        if (change === 'binding') f.store.setState(state => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], turnSerial: 5 } } }))
+        if (change === 'search') f.store.setState({ chatSearchNavigation: { generation: 1, queryRequestId: 'test-search', chatId: 'chat-1', messageIndex: 0, messagesDigest: 'cold-summary', phase: 'loading', anchored: false } })
+        if (change === 'send-in-flight') sending = f.store.getState().sendAcpPrompt('chat-1', 'New pending input')
+        const rowsBefore = f.store.getState().messages['chat-1']
+        f.replies[0].failure(409, refusal)
+        await loading
+        await f.tick()
+        expect(f.historyRequests()).toHaveLength(change === 'superseded' ? 2 : 1)
+        expect(f.store.getState().messages['chat-1']).toBe(rowsBefore)
+        if (change === 'deleted' || change === 'new-birth' || change === 'unloaded' || change === 'superseded') {
+          expect(f.store.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+        }
+        if (change === 'superseded') { f.replies[1].failure(502, 'Newer request stopped'); await newer }
+        if (sending) { f.finishSend(); await sending }
+      })
+  })
+
+  it.each(['identical', 'idle-clock', 'diagnostic', 'newer-turn', 'repeated-metadata'] as const)('keeps cold history authority scoped across a real summary push (%s)', async (change) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].providerId = 'codex-cli'
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = undefined
+    initial.chats[0].messageCount = 2
+    initial.chats[0].messagesDigest = 'cold-summary'
+    initial.chats[0].acpSession = {
+      providerId: 'codex-cli', protocolKind: 'codex-app-server',
+      sessionId: 'native-cold-chat-1', threadId: 'thread-cold-chat-1',
+      running: true, processing: false, lifecycleState: 'ready', turnSerial: 4,
+      idleCountdownStartsAtMs: 1000, idleShutdownAtMs: 31000, idleShutdownTimeoutSeconds: 30,
+      unsentMessageIndices: [], recoverableUnsentMessageIndices: [], diagnostics: [],
+    }
+    const requests: Array<{ action: string; payload?: Record<string, unknown>; requestId?: string }> = []
+    const replies: Array<(response: string) => void> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload?: Record<string, unknown>; requestId?: string }
+      requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') replies.push(onSuccess)
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+    const loading = cefStore.getState().loadSessionMessages('chat-1')
+    expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(1)
+    expect(requests.at(-1)?.payload?.messagesDigest).toBe('')
+    const originalBinding = cefStore.getState().acpBindingBySessionId['chat-1']
+    const acp = { ...initial.chats[0].acpSession }
+    if (change === 'idle-clock' || change === 'repeated-metadata') acp.idleShutdownAtMs = 32000
+    if (change === 'diagnostic') acp.diagnostics = [{
+      time: '2026-01-01T00:00:02.000Z', event: 'diagnostic', reason: 'presentation-only',
+      method: '', requestId: '', code: null, message: 'Recorded diagnostic.', detail: '', lifecycleState: 'ready',
+    }]
+    if (change === 'newer-turn') acp.turnSerial = 5
+    // This is a real sparse statePatch through sanitizeCppStatePatch/applyStatePatch,
+    // not an injected replacement AcpBinding. Native identity, history summary,
+    // queue contents and both unsent arrays remain unchanged in this push.
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2,
+      chats: [{ ...initial.chats[0], messages: undefined, acpSession: acp }],
+    } })
+    const pushedBinding = cefStore.getState().acpBindingBySessionId['chat-1']
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+    if (change === 'identical') expect(pushedBinding).toBe(originalBinding)
+    else expect(pushedBinding).not.toBe(originalBinding)
+    expect(pushedBinding.sessionId).toBe(originalBinding.sessionId)
+    expect(pushedBinding.threadId).toBe(originalBinding.threadId)
+    expect(pushedBinding.providerId).toBe(originalBinding.providerId)
+    expect(pushedBinding.queueHeld).toBe(originalBinding.queueHeld)
+    expect(pushedBinding.unsentMessageIndices).toEqual([])
+    expect(pushedBinding.recoverableUnsentMessageIndices).toEqual([])
+    expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(1)
+
+    const rows = [
+      { role: 'user' as const, content: 'Earlier rejected input', createdAt: '2026-01-01T00:00:00.000Z', interrupted: true, acpPromptNotSent: true },
+      { role: 'user' as const, content: 'Latest rejected input', createdAt: '2026-01-01T00:00:01.000Z', interrupted: true, acpPromptNotSent: true },
+    ]
+    const page = { chatId: 'chat-1', startIndex: 0, totalCount: 2,
+      messagesDigest: 'native-hash', messages: rows, unsentMessageIndices: [0, 1], recoverableUnsentMessageIndices: [1] }
+    const observed: { count: number; known: number[] | undefined; retry: number[] | undefined; error: string | undefined }[] = []
+    const unsubscribe = cefStore.subscribe(state => observed.push({ count: state.messages['chat-1']?.length ?? 0,
+      known: state.acpBindingBySessionId['chat-1'].unsentMessageIndices,
+      retry: state.acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices,
+      error: state.chatHistoryErrorBySessionId['chat-1'] }))
+    let expectedRows = rows
+    try {
+      replies[0](JSON.stringify(page))
+      if (change === 'idle-clock' || change === 'diagnostic' || change === 'repeated-metadata') {
+        // R2 design: the first page is stale and MUST NOT be adopted. The
+        // original call may make one new read under the CURRENT binding.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        const historyRequests = requests.filter(request => request.action === 'getChatMessages')
+        expect(historyRequests).toHaveLength(2)
+        expect(historyRequests[1].requestId).toBeTypeOf('string')
+        expect(historyRequests[1].requestId).not.toBe(historyRequests[0].requestId)
+        expect(historyRequests[1].payload).toMatchObject({ chatId: 'chat-1', messagesDigest: '' })
+        expect(historyRequests[1].payload).not.toHaveProperty('refreshNative')
+        expect(historyRequests[0].payload).not.toHaveProperty('refreshNative')
+        expect(replies).toHaveLength(2)
+        expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+        expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([])
+        expect(cefStore.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+        expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+        expect(observed.every(state => state.count === 0 && state.known?.length === 0 && state.retry?.length === 0 && state.error === undefined)).toBe(true)
+        expectedRows = rows.map(row => ({ ...row, content: `Fresh read: ${row.content}` }))
+        const freshPage = { ...page, messagesDigest: 'fresh-native-hash', messages: expectedRows }
+        if (change === 'repeated-metadata') {
+          const bindingAtFreshRead = cefStore.getState().acpBindingBySessionId['chat-1']
+          testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 3,
+            chats: [{ ...initial.chats[0], messages: undefined, acpSession: { ...acp, diagnostics: [{
+              time: '2026-01-01T00:00:03.000Z', event: 'diagnostic', reason: 'second-metadata-conflict',
+              method: '', requestId: '', code: null, message: 'Another recorded diagnostic.', detail: '', lifecycleState: 'ready',
+            }] } }],
+          } })
+          expect(cefStore.getState().lastAppliedStateRevision).toBe(3)
+          expect(cefStore.getState().acpBindingBySessionId['chat-1']).not.toBe(bindingAtFreshRead)
+        }
+        replies[1](JSON.stringify(freshPage))
+        await loading
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        if (change === 'repeated-metadata') {
+          // A second conflict exhausts this call's retry budget. No third
+          // request or stale page/unsent projection may escape the guard.
+          expect(requests.map(request => request.action)).toEqual(['getInitialState', 'getChatMessages', 'getChatMessages'])
+          expect(replies).toHaveLength(2)
+          expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+          expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([])
+          expect(cefStore.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+          expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toBe('Chat history changed while loading. Retry to refresh it.')
+          expect(observed.every(state => state.count === 0 && state.known?.length === 0 && state.retry?.length === 0)).toBe(true)
+          return
+        }
+      } else await loading
+      if (change === 'newer-turn') {
+        // A genuine authority change must still reject the old page atomically.
+        expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+        expect(cefStore.getState().acpBindingBySessionId['chat-1'].turnSerial).toBe(5)
+        expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([])
+        expect(cefStore.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+        expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toBe('Chat history changed while loading. Retry to refresh it.')
+        const fresh = cefStore.getState().loadSessionMessages('chat-1', true)
+        expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(2)
+        replies[1](JSON.stringify(page))
+        await fresh
+      }
+      // Identical pushes keep the first-page control unchanged. Metadata-only
+      // conflicts require the distinguishable fresh response above; no stale
+      // response is accepted by weakening turn/queue/identity validation.
+      expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+      expect(cefStore.getState().messages['chat-1'].map(message => message.content)).toEqual(expectedRows.map(row => row.content))
+      expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([0, 1])
+      expect(cefStore.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([1])
+      expect(observed.filter(state => state.count === 2).every(state => state.known?.join() === '0,1' && state.retry?.join() === '1')).toBe(true)
+      if (change === 'idle-clock') expect(cefStore.getState().acpBindingBySessionId['chat-1'].idleShutdownAtMs).toBe(32000)
+      if (change === 'diagnostic') expect(cefStore.getState().acpBindingBySessionId['chat-1'].diagnostics).toEqual(acp.diagnostics)
+      expect(requests.map(request => request.action)).toEqual(change === 'identical'
+        ? ['getInitialState', 'getChatMessages'] : ['getInitialState', 'getChatMessages', 'getChatMessages'])
+    } finally { unsubscribe() }
   })
 
   it.each(['adopted', 'unchanged', 'newer-binding', 'rejected'] as const)('applies cold unsent authority atomically only with a current accepted history response (%s)', async (outcome) => {
@@ -7368,5 +7731,165 @@ describe('computer use stop retry transport', () => {
     useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, computerUseEnabled: true })) }))
     expect(await useAppStore.getState().setSessionComputerUseEnabled('stop-retry', true)).toEqual({ ok: true })
     expect(requests).toHaveLength(1)
+  })
+})
+
+
+describe('managed initial receipt R83', () => {
+  const prompt = '@reviewer inspect this change'
+  const parentMessage = { role: 'user' as const, content: prompt, createdAt: '2026-10-17T13:00:00.000Z', markdownStoreFiles: ['/skills/review.md'] }
+  const skill = { id: 'managed-skill', title: 'Review rules', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/review.md' }
+
+  async function begin(patchWithoutSession = false) {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0] = { ...initial.chats[0], providerId: 'codex-cli', messages: [], messageCount: 0,
+      acpSession: { sessionId: '', running: false, processing: false, turnSerial: 0 } }
+    const patchChat = initial.chats[0]
+    if (patchWithoutSession) { delete patchChat.acpSession; initial.chats = []; initial.selectedChatId = null }
+    let finish: (body: unknown) => void = () => { throw new Error('Managed request not started') }
+    let sends = 0
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'sendAcpPrompt') { sends += 1; finish = (body) => onSuccess(JSON.stringify(body)) }
+      else if (parsed.action === 'getChatMessages') onSuccess(JSON.stringify({ chatId: 'chat-1', messages: [], startIndex: 0, totalCount: 0 }))
+      else onSuccess(JSON.stringify(initial))
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    if (patchWithoutSession) testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [patchChat], selectedChatId: patchChat.id } })
+    store.getState().attachMarkdownStoreEntry('chat-1', skill)
+    const sending = store.getState().sendAcpPrompt('chat-1', prompt)
+    return { store, sending, initial, testWindow, finish: (body: unknown) => finish(body), sends: () => sends }
+  }
+
+  it('keeps a recorded delegation error separate from runtime state after a session-less public chat patch', async () => {
+    const task = await begin(true)
+    expect(task.store.getState().sessions.some((session) => session.id === 'chat-1')).toBe(true)
+    expect(task.store.getState().acpBindingBySessionId['chat-1']).toBeUndefined()
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'uncertain', parentMessageIndex: 0, parentMessage,
+      error: 'The request was saved, but child creation was not confirmed.' } })
+    await expect(task.sending).resolves.toBe(true)
+    const binding = task.store.getState().acpBindingBySessionId['chat-1']
+    expect(binding?.promptActionError?.message).toBe('The request was saved, but child creation was not confirmed.')
+    expect(binding?.lifecycleState).toBe('stopped')
+    expect(binding?.protocolKind).toBe('')
+    expect(binding?.providerId).toBe('codex-cli')
+    expect(binding?.processing).toBe(false)
+    expect(task.store.getState().messages['chat-1']).toHaveLength(1)
+    expect(task.sends()).toBe(1)
+  })
+
+  it.each(['rejected', 'uncertain'] as const)('retains resources when parent publication is %s', async (delegationState) => {
+    const task = await begin()
+    task.finish({ managedMention: { inputRecorded: false, delegationState, error: 'Parent publication was not confirmed.' } })
+    await expect(task.sending).resolves.toBe(false)
+    expect(task.store.getState().messages['chat-1']).toEqual([])
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1'].map((entry) => entry.filePath)).toEqual([skill.filePath])
+    expect(task.store.getState().acpBindingBySessionId['chat-1'].promptActionError?.message).toBe('Parent publication was not confirmed.')
+    expect(task.sends()).toBe(1)
+  })
+
+  it.each(['committed', 'rejected', 'uncertain'] as const)('records authoritative saved input when delegation is %s', async (delegationState) => {
+    const task = await begin()
+    const added = { ...skill, id: 'later', filePath: '/skills/later.md' }
+    task.store.getState().attachMarkdownStoreEntry('chat-1', added)
+    task.finish({ managedMention: { inputRecorded: true, delegationState, parentMessageIndex: 0, parentMessage,
+      ...(delegationState === 'committed' ? { runId: 'run-actual', transcriptChatId: 'transcript-actual' } : { error: 'Child creation was not confirmed.' }) } })
+    await expect(task.sending).resolves.toBe(true)
+    expect(task.store.getState().messages['chat-1']).toEqual([expect.objectContaining({
+      id: `cef-m-chat-1-${Date.parse(parentMessage.createdAt)}-0-user`, nativeMessageIndex: 0, content: prompt,
+      createdAt: new Date(parentMessage.createdAt),
+    })])
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1'].map((entry) => entry.filePath)).toEqual([added.filePath])
+    expect(task.store.getState().acpBindingBySessionId['chat-1'].processing).toBe(false)
+    expect(task.store.getState().acpBindingBySessionId['chat-1'].promptActionError?.message).toBe(
+      delegationState === 'committed' ? undefined : 'Child creation was not confirmed.')
+    expect(task.sends()).toBe(1)
+  })
+
+  it.each(['push-before-ack', 'ack-before-push'] as const)('deduplicates the exact parent row across %s', async (order) => {
+    const task = await begin()
+    const push = () => task.testWindow.uamPush?.({ type: 'stateUpdate', data: { ...task.initial, stateRevision: 2,
+      chats: [{ ...task.initial.chats[0], messageCount: 1, messages: [parentMessage] }] } })
+    if (order === 'push-before-ack') push()
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 0, parentMessage,
+      runId: 'run-actual', transcriptChatId: 'transcript-actual' } })
+    await expect(task.sending).resolves.toBe(true)
+    expect(task.store.getState().messages['chat-1']).toHaveLength(1)
+    expect(task.store.getState().messages['chat-1'][0].nativeMessageIndex).toBe(0)
+    if (order === 'ack-before-push') push()
+    expect(task.store.getState().messages['chat-1']).toHaveLength(1)
+    expect(task.store.getState().messages['chat-1'][0].nativeMessageIndex).toBe(0)
+  })
+
+  it('uses the authoritative receipt index when the renderer count was stale without inventing missing history', async () => {
+    const task = await begin()
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 2, parentMessage,
+      runId: 'run-actual', transcriptChatId: 'transcript-actual' } })
+    await expect(task.sending).resolves.toBe(true)
+    expect(task.store.getState().messages['chat-1']).toEqual([])
+    expect(task.store.getState().sessions.find((session) => session.id === 'chat-1')?.messageCount).toBe(3)
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([])
+    expect(task.sends()).toBe(1)
+  })
+
+  it.each(['folder', 'workspace', 'provider', 'host'] as const)('acknowledges recorded input after a %s change without projecting stale history', async (field) => {
+    const task = await begin()
+    task.store.setState((state) => ({ sessions: state.sessions.map((session) => session.id !== 'chat-1' ? session : {
+      ...session, ...(field === 'folder' ? { folderId: 'moved-folder' } : field === 'workspace' ? { workspaceDirectory: '/new/workspace' }
+        : field === 'provider' ? { providerId: 'claude-cli' } : { executionHostId: 'different-host' }),
+    }) }))
+    const currentRows = task.store.getState().messages['chat-1']
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 0, parentMessage,
+      runId: 'run-actual', transcriptChatId: 'transcript-actual' } })
+    await expect(task.sending).resolves.toBe(true)
+    expect(task.store.getState().messages['chat-1']).toBe(currentRows)
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([])
+    expect(task.sends()).toBe(1)
+  })
+
+  it.each(['deleted', 'recreated'] as const)('does not resurrect a %s root on a late receipt', async (scenario) => {
+    const task = await begin()
+    task.store.setState((state) => ({ sessions: scenario === 'deleted' ? [] : state.sessions.map((session) =>
+      session.id === 'chat-1' ? { ...session, createdAt: new Date('2026-10-17T13:30:00.000Z') } : session) }))
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 0, parentMessage,
+      runId: 'run-actual', transcriptChatId: 'transcript-actual' } })
+    await expect(task.sending).resolves.toBe(false)
+    expect(task.store.getState().messages['chat-1']).toEqual([])
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1']).toHaveLength(1)
+  })
+
+  it('preserves a reattached skill and a newer authoritative tail on late acknowledgement', async () => {
+    const task = await begin()
+    task.store.getState().detachMarkdownStoreEntry('chat-1', skill.filePath)
+    task.store.getState().attachMarkdownStoreEntry('chat-1', skill)
+    const assistant = { role: 'assistant' as const, content: 'Newer parent output', createdAt: '2026-10-17T13:00:01.000Z' }
+    task.testWindow.uamPush?.({ type: 'stateUpdate', data: { ...task.initial, stateRevision: 2,
+      chats: [{ ...task.initial.chats[0], messageCount: 2, messages: [parentMessage, assistant] }] } })
+    const rows = task.store.getState().messages['chat-1']
+    task.finish({ managedMention: { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 0, parentMessage,
+      runId: 'run-actual', transcriptChatId: 'transcript-actual' } })
+    await expect(task.sending).resolves.toBe(true)
+    expect(task.store.getState().messages['chat-1']).toBe(rows)
+    expect(task.store.getState().messages['chat-1'].map((message) => message.content)).toEqual([prompt, assistant.content])
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1'].map((entry) => entry.filePath)).toEqual([skill.filePath])
+  })
+
+  it.each([
+    null,
+    { inputRecorded: false, delegationState: 'committed', runId: 'impossible' },
+    { inputRecorded: true, delegationState: 'committed', parentMessageIndex: -1, parentMessage, runId: 'run', transcriptChatId: 'child' },
+    { inputRecorded: true, delegationState: 'committed', parentMessageIndex: 0, parentMessage: { ...parentMessage, content: 'different request' }, runId: 'run', transcriptChatId: 'child' },
+  ])('refuses a malformed present receipt without ordinary-send fallback: %j', async (managedMention) => {
+    const task = await begin()
+    task.finish({ managedMention })
+    await expect(task.sending).resolves.toBe(false)
+    expect(task.store.getState().messages['chat-1']).toEqual([])
+    expect(task.store.getState().markdownStoreAttachedBySessionId['chat-1']).toHaveLength(1)
+    expect(task.store.getState().acpBindingBySessionId['chat-1'].promptActionError?.message).toBeTruthy()
+    expect(task.sends()).toBe(1)
   })
 })

@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <random>
 #include <sys/wait.h>
 #include <thread>
@@ -76,6 +77,26 @@ namespace uam::platform_linux_impl
 		class LinuxProcessService final : public IPlatformProcessService
 		{
 		  public:
+			uam::platform::StandardInputReadResult ReadStandardInput(char* buffer, std::size_t capacity) const override
+			{
+				using uam::platform::StandardInputReadStatus;
+				if (buffer == nullptr || capacity == 0) return {};
+				pollfd input{STDIN_FILENO, POLLIN, 0};
+				const int ready = poll(&input, 1, 0);
+				if (ready == 0 || (ready < 0 && errno == EINTR))
+					return {StandardInputReadStatus::Pending, 0};
+				if (ready < 0 || (input.revents & (POLLERR | POLLNVAL)) != 0) return {};
+				if ((input.revents & (POLLIN | POLLHUP)) == 0)
+					return {StandardInputReadStatus::Pending, 0};
+				// Sole consumer: a ready redirected pipe cannot be drained by a competing reader.
+				const ssize_t count = read(STDIN_FILENO, buffer, capacity);
+				if (count > 0) return {StandardInputReadStatus::Data, static_cast<std::size_t>(count)};
+				if (count == 0) return {StandardInputReadStatus::EndOfStream, 0};
+				if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+					return {StandardInputReadStatus::Pending, 0};
+				return {};
+			}
+
 			bool SupportsDetachedProcesses() const override { return true; }
 			bool PopulateLocalTime(std::time_t value, std::tm* output) const override
 			{
@@ -228,6 +249,28 @@ namespace uam::platform_linux_impl
 				return process.stdin_writer != nullptr &&
 				       process.stdin_writer->Enqueue(bytes, size, error_out);
 			}
+			bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+			    const char* bytes, std::size_t len,
+			    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+			    std::string* error_out = nullptr) const override
+			{
+				receipt_out.reset();
+				if (bytes == nullptr || len == 0)
+				{
+					if (error_out) *error_out = "An observed input write requires nonempty bytes.";
+					return false;
+				}
+				if (process.stdin_write_fd < 0)
+				{
+					if (error_out) *error_out = "stdin pipe handle is closed.";
+					return false;
+				}
+				if (process.stdin_writer == nullptr)
+					process.stdin_writer = CreateWriter(process.stdin_write_fd, error_out);
+				const std::shared_ptr<uam::platform::AsyncByteWriter> writer = process.stdin_writer;
+				return writer != nullptr && writer->EnqueueObserved(bytes, len, receipt_out, error_out);
+			}
+
 			void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override
 			{
 				if (process.stdin_writer != nullptr)

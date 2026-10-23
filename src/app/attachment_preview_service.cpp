@@ -6,6 +6,8 @@
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/message_attachment_sources.h"
+#include "common/chat/native_attachment_assets.h"
 #include "common/chat/native_chat_identity.h"
 #if defined(_WIN32)
 #include <windows.h>
@@ -138,7 +140,7 @@ namespace uam::attachment_preview
 		}
 	}
 
-	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat)
+	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat, const std::filesystem::path& data_root)
 	{
 		ChatSnapshot snapshot;
 		snapshot.chat_id = chat.id;
@@ -147,6 +149,8 @@ namespace uam::attachment_preview
 		snapshot.message_count = MessageCount(chat);
 		snapshot.messages_digest = chat.persisted_messages_digest;
 		snapshot.messages_loaded = chat.messages_loaded;
+		snapshot.storage_revision_required = !data_root.empty();
+		if (snapshot.storage_revision_required) snapshot.storage_revision = ChatRepository::ChatStorageRevision(data_root, chat.id);
 		return snapshot;
 	}
 
@@ -154,7 +158,9 @@ namespace uam::attachment_preview
 	    const ChatSnapshot& expected, std::size_t message_index, std::string_view attachment_id)
 	{
 		if (expected.messages_loaded || expected.chat_id.empty() || attachment_id.empty() ||
-		    message_index >= expected.message_count) return std::nullopt;
+		    message_index >= expected.message_count ||
+		    (expected.storage_revision_required && (!expected.storage_revision ||
+		        ChatRepository::ChatStorageRevision(data_root, expected.chat_id) != expected.storage_revision))) return std::nullopt;
 		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(data_root, expected.chat_id, true);
 		if (!persisted || persisted->id != expected.chat_id || !persisted->messages_loaded ||
 		    persisted->execution_host_id != expected.execution_host_id ||
@@ -162,6 +168,8 @@ namespace uam::attachment_preview
 		    persisted->messages.size() != expected.message_count ||
 		    persisted->persisted_messages_digest != expected.messages_digest)
 			return std::nullopt;
+		if (expected.storage_revision_required &&
+		    ChatRepository::ChatStorageRevision(data_root, expected.chat_id) != expected.storage_revision) return std::nullopt;
 		return FindAttachment(*persisted, message_index, attachment_id);
 	}
 
@@ -227,7 +235,9 @@ namespace uam::attachment_preview
 
 	std::string Store(const std::filesystem::path& data_root, std::string_view source)
 	{
-		if (source.empty() || source.size() > kMaxSourceBytes) return {};
+		// Ordinary files have no preview: do not wait for an image decoder or ask
+		// the native codec registry to probe arbitrary attachment bytes.
+		if (source.empty() || source.size() > kMaxSourceBytes || ImageMime(source).empty()) return {};
 		std::lock_guard<std::mutex> lock(s_decodeMutex);
 		const Image image = Decode(source);
 		if (image.png.empty() || image.png.size() > kMaxPreviewBytes) return {};
@@ -240,9 +250,22 @@ namespace uam::attachment_preview
 		return ReadRegular(path, kMaxPreviewBytes, existing) && Digest(existing) == key ? key : std::string{};
 	}
 
-	Image Read(const std::filesystem::path& data_root, const MessageAttachment& attachment, bool local_host)
+	Image Read(const std::filesystem::path& data_root, const MessageAttachment& attachment, bool local_host,
+	    std::string_view saved_owner)
 	{
+		// Reject pending/URI and mixed source authority before any cache or path access.
+		if (!attachment_sources::IsPersistable(attachment, saved_owner) ||
+		    (attachment.source != AttachmentSource::LegacyPath && attachment.source != AttachmentSource::OwnedNativeAsset)) return {};
 		std::string bytes;
+		if (attachment.source == AttachmentSource::OwnedNativeAsset)
+		{
+			if (saved_owner.empty() || (attachment.mime_type != "image/png" && attachment.mime_type != "image/jpeg")) return {};
+			// A derived preview key cannot bypass the saved original's owner, declaration,
+			// publication-attempt receipt, exact size or digest. No staging occurs here.
+			auto original = native_assets::ReadOwned(data_root, saved_owner, attachment.native_asset_key, kMaxSourceBytes);
+			if (!original.ok || ImageMime(original.bytes) != attachment.mime_type) return {};
+			bytes = std::move(original.bytes);
+		}
 		if (!attachment.preview_key.empty())
 		{
 			std::filesystem::path root = data_root / "attachment-previews";
@@ -250,7 +273,7 @@ namespace uam::attachment_preview
 			    !ReadRegular(root / (attachment.preview_key + ".png"), kMaxPreviewBytes, bytes) ||
 			    Digest(bytes) != attachment.preview_key) return {};
 		}
-		else
+		else if (attachment.source == AttachmentSource::LegacyPath)
 		{
 			// Relative historical paths have no immutable workspace origin. Never rebase them.
 			if (!local_host || (attachment.mime_type != "image/png" && attachment.mime_type != "image/jpeg")) return {};

@@ -104,6 +104,9 @@ namespace uam
 			terminal.last_error = "The previous terminal is still stopping.";
 			return false;
 		}
+		if (terminal.native_history_generation) terminal.native_history_generation->revoked.store(true, std::memory_order_release);
+		terminal.native_history_generation = std::make_shared<CliTerminalHistoryGeneration>();
+		ChatHistorySyncService().CancelTerminalNativeMediaForChat(app, chat.id);
 		if (chat.side_cleanup_requested)
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
 			                            "This side chat is closing.");
@@ -167,6 +170,37 @@ namespace uam
 		if (const std::string permission_flag_error = runtime.InteractiveConfigurationError(provider, app.settings); !permission_flag_error.empty())
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
+		}
+
+		if (runtime.ModelOptionsRequireRestart() && !chat.reasoning_effort.empty())
+		{
+			ProviderCliCompatibilityService versions;
+			versions.Poll(app);
+			const std::string provider_id = provider_ids::CanonicalCliProviderLookupId(provider.id);
+			auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, execution_host->id)];
+			const bool checked = version.checked && execution_hosts::SameConnection(version.execution_host, *execution_host);
+			if (checked && (!version.check_error.empty() || !version.supported))
+				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, version.check_error.empty()
+				    ? "The installed CLI does not satisfy the native version manager's compatibility policy." : version.check_error);
+			if (!checked)
+			{
+				const std::pair<std::string, std::string> target{provider_id, execution_host->id};
+				const bool checking = app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id &&
+				    execution_hosts::SameConnection(app.runtime_cli_version_check_task.execution_host, *execution_host);
+				if (!checking)
+				{
+					std::erase(app.runtime_cli_version_check_queue, target);
+					if (app.runtime_cli_version_check_task.running) app.runtime_cli_version_check_queue.push_front(target);
+					else
+					{
+						std::string error;
+						if (!versions.StartProviderVersionCheck(app, provider_id, true, execution_host->id, &error))
+							return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, error);
+					}
+				}
+				terminal.last_error.clear(); terminal.should_launch = true;
+				return true;
+			}
 		}
 
 		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, chat);
@@ -284,6 +318,8 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
 		    : runtime.BuildInteractiveEnvironment(provider);
+		if (!runtime.PrepareInteractiveLaunch(app, terminal, chat, *execution_host, provider_argv, launch_environment, &startup_error))
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, startup_error);
 		std::string context_launch_channel;
 		if (!PrepareCliProviderHandoffAsync(app, terminal, chat, *execution_host, provider_argv, launch_environment, context_launch_channel, startup_error))
 		{

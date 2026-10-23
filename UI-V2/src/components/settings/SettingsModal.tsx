@@ -5,6 +5,7 @@ import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
+import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
@@ -65,7 +66,7 @@ import {
   providerSupportsTextWorkers,
   providerShortName,
 } from '../../utils/providerMetadata'
-import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
+import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOptions, modelCatalogForDefaults, reasoningEffortForModel, titleFromModelId } from '../chat/modelOptions'
 import './settings-motion.css'
 import './settings-shell.css'
 
@@ -199,7 +200,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
     finally { setSaving(false) }
   }
   return <>
-    {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)} description={provider.id === 'antigravity-cli' ? 'Terminal sessions only.' : undefined}
+    {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
         control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
           options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
@@ -211,6 +212,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
 })
 
 interface MemoryModelOption {
+  disabled?: boolean
   id: string
   label: string
   detail: string
@@ -439,7 +441,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'remote-hosts': 'Computers that can run workspaces over SSH.',
   routing: 'Which computers run new chats and which remote folders they use.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
-  phone: 'Use UAM from your phone on the same network.',
+  phone: 'Use Universal Agent Manager from your phone on the same network.',
 }
 
 
@@ -642,6 +644,22 @@ function cliVersionIssues(manager: CliVersionProviderState): string[] {
   ].filter(Boolean))]
 }
 
+interface PhoneAccessStatus {
+  configured: boolean
+  enabled: boolean
+  url: string
+  desiredUrl?: string
+  effectiveUrl?: string
+  state?: 'disabled' | 'starting' | 'ready' | 'failed'
+  reason?: string
+  reasonCode?: string
+  generation?: number
+  restartRequired?: boolean
+  localAddresses?: string[]
+  proxyRunning?: boolean
+  loopbackRunning?: boolean
+}
+
 export interface SettingsHandle {
   requestClose: () => void
   showMemory: () => void
@@ -762,9 +780,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [computerUseMessage, setComputerUseMessage] = useState('')
   const [computerUseBusy, setComputerUseBusy] = useState(false)
   const [computerUseSaveBusy, setComputerUseSaveBusy] = useState(false)
-  const [companionSettings, setCompanionSettings] = useState<{ configured: boolean; enabled: boolean; url: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean } | null>(null)
+  const [companionSettings, setCompanionSettings] = useState<PhoneAccessStatus | null>(null)
   const [companionBusy, setCompanionBusy] = useState(false)
+  const companionInFlight = useRef(false)
   const [companionMessage, setCompanionMessage] = useState('')
+  const [companionLoadError, setCompanionLoadError] = useState('')
+  const [companionNotice, setCompanionNotice] = useState('')
+  const [companionBusyAction, setCompanionBusyAction] = useState('')
   const [companionCopy, setCompanionCopy] = useState<{ kind: 'token' | 'url'; ok: boolean } | null>(null)
   const companionCopyTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(companionCopyTimer.current), [])
@@ -1162,6 +1184,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           value: option.id,
           label: option.label,
           description: option.detail,
+          disabled: option.disabled,
           icon: renderOptionIcon?.(option),
         }))}
         onChange={onSelect}
@@ -1515,58 +1538,99 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (!response.ok) { setComputerUseMessage(response.error || 'Could not list applications.'); return }
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
-  const loadCompanionSettings = async () => {
-    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean }>({ action: 'getCompanionSettings' })
-    if (!response.ok) { setCompanionMessage(response.error || 'Could not load phone access settings.'); return }
-    setCompanionSettings({
-      configured: Boolean(response.data?.configured),
-      enabled: Boolean(response.data?.enabled),
-      url: response.data?.url || '',
-      restartRequired: response.data?.restartRequired,
-      localAddresses: response.data?.localAddresses,
-      proxyRunning: response.data?.proxyRunning,
-    })
+  const adoptCompanionStatus = (next: PhoneAccessStatus) => {
+    setCompanionSettings(previous => (previous?.generation ?? -1) > (next.generation ?? -1) ? previous : next)
   }
-  const setCompanionEnabled = async (enabled: boolean) => {
+  const loadCompanionSettings = async (manual = false) => {
+    if (manual) {
+      if (companionInFlight.current) return
+      companionInFlight.current = true
+      setCompanionBusy(true)
+      setCompanionBusyAction('reloadCompanion')
+    }
+    try {
+      const response = await sendToCEF<PhoneAccessStatus>({ action: 'getCompanionSettings' })
+      if (!response.ok || !response.data) { setCompanionLoadError(response.error || 'Could not load phone access settings.'); return }
+      adoptCompanionStatus(response.data)
+      setCompanionLoadError('')
+    } catch { setCompanionLoadError('Could not load phone access settings. Try again.') }
+    finally {
+      if (manual) { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
+    }
+  }
+  const changeCompanion = async (action: 'setCompanionEnabled' | 'restartCompanion' | 'repairCompanionLanAddress', payload: Record<string, unknown> = {}) => {
+    if (companionInFlight.current) return
+    companionInFlight.current = true
     setCompanionBusy(true)
+    setCompanionBusyAction(action === 'repairCompanionLanAddress' ? `${action}:${payload.address}` : action)
     setCompanionMessage('')
-    const response = await sendToCEF<{ configured?: boolean; enabled?: boolean; url?: string; restartRequired?: boolean; localAddresses?: string[]; proxyRunning?: boolean }>({ action: 'setCompanionEnabled', payload: { enabled } })
-    setCompanionBusy(false)
-    if (!response.ok) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
-    setCompanionSettings({
-      configured: Boolean(response.data?.configured),
-      enabled: Boolean(response.data?.enabled),
-      url: response.data?.url || '',
-      restartRequired: response.data?.restartRequired,
-      localAddresses: response.data?.localAddresses,
-      proxyRunning: response.data?.proxyRunning,
-    })
-    setCompanionMessage('Restart UAM to apply this change.')
+    setCompanionNotice('')
+    try {
+      const response = await sendToCEF<PhoneAccessStatus>({ action, payload })
+      if (!response.ok || !response.data) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
+      adoptCompanionStatus(response.data)
+    } catch { setCompanionMessage('Could not update phone access. Try again.') }
+    finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
+  }
+  const setCompanionEnabled = (enabled: boolean) => changeCompanion('setCompanionEnabled', { enabled })
+  const restartApplication = async () => {
+    if (companionInFlight.current) return
+    companionInFlight.current = true
+    setCompanionBusy(true)
+    setCompanionBusyAction('restartApplication')
+    setCompanionMessage('')
+    setCompanionNotice('')
+    try {
+      const response = await sendToCEF({ action: 'restartApplication' })
+      if (!response.ok) setCompanionMessage(response.error || 'Could not restart Universal Agent Manager. Close and open it again.')
+      else setCompanionNotice('Restarting Universal Agent Manager…')
+    } catch { setCompanionMessage('Could not restart Universal Agent Manager. Close and open it again.') }
+    finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
   }
   const copyCompanion = async (kind: 'token' | 'url') => {
+    if (companionInFlight.current) return
+    companionInFlight.current = true
     setCompanionBusy(true)
+    setCompanionBusyAction(`copy:${kind}`)
     setCompanionMessage('')
-    let text = companionSettings?.url ?? ''
-    if (kind === 'token') {
-      const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
-      if (!response.ok || !response.data?.token) {
-        setCompanionBusy(false)
-        setCompanionCopy({ kind, ok: false })
-        setCompanionMessage(response.error || 'Phone access token is unavailable.')
-        return
+    setCompanionNotice('')
+    let ok = false
+    try {
+      let text = companionSettings?.effectiveUrl ?? ''
+      if (kind === 'token') {
+        const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
+        if (!response.ok || !response.data?.token) {
+          setCompanionMessage(response.error || 'Phone access token is unavailable.')
+          return
+        }
+        text = response.data.token
       }
-      text = response.data.token
+      // CEF blocks navigator.clipboard here; route through the native bridge helper.
+      ok = await copyTextToClipboard(text, document)
+      if (!ok) setCompanionMessage(`Could not copy the phone access ${kind}.`)
+    } catch { setCompanionMessage(`Could not copy the phone access ${kind}. Try again.`) }
+    finally {
+      companionInFlight.current = false
+      setCompanionBusy(false)
+      setCompanionBusyAction('')
+      setCompanionCopy({ kind, ok })
+      window.clearTimeout(companionCopyTimer.current)
+      companionCopyTimer.current = window.setTimeout(() => setCompanionCopy(null), 1800)
     }
-    // CEF blocks navigator.clipboard here; route through the native bridge helper.
-    const ok = await copyTextToClipboard(text, document)
-    setCompanionBusy(false)
-    setCompanionCopy({ kind, ok })
-    if (!ok) setCompanionMessage(`Could not copy the phone access ${kind}.`)
-    window.clearTimeout(companionCopyTimer.current)
-    companionCopyTimer.current = window.setTimeout(() => setCompanionCopy(null), 1800)
   }
   useEffect(() => {
-    if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') void loadCompanionSettings()
+    if (!MOBILE_COMPANION_ENABLED || selectedSection !== 'phone') return
+    setCompanionMessage('')
+    setCompanionNotice('')
+    setCompanionCopy(null)
+    let disposed = false
+    let timer: number | undefined
+    const poll = async () => {
+      if (!disposed && !companionInFlight.current) await loadCompanionSettings()
+      if (!disposed) timer = window.setTimeout(() => void poll(), 1500)
+    }
+    void poll()
+    return () => { disposed = true; window.clearTimeout(timer) }
   }, [selectedSection])
   const saveComputerUseSettings = async (allowlistEnabled: boolean, allowedApplications: ComputerUseAllowedApplication[]) => {
     if (computerUseSaveInFlight.current) return
@@ -1589,52 +1653,48 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     ? companionCopy.ok ? <Check key="ok" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--success)' }} /> : <X key="fail" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--error)' }} />
     : <Copy key="idle" size={14} aria-hidden />
   const copyLabel = (kind: 'token' | 'url', idle: string) => companionCopy?.kind === kind ? companionCopy.ok ? 'Copied' : 'Copy failed' : idle
-  const renderPhoneAccess = () => <div className="grid gap-0">
-    <SettingsSection title="Phone access">
-      <SettingRow
-        title="Enable phone access"
-        description={companionSettings?.configured ? 'Restart UAM after changing.' : 'Not configured on this computer.'}
-        status={companionSettings?.enabled && companionSettings.proxyRunning === false ? <span style={{ color: 'var(--error)' }}>HTTPS proxy not running. Restart UAM.</span> : undefined}
-        control={<Switch
-          hideLabel
-          label="Enable phone access"
-          checked={Boolean(companionSettings?.enabled)}
-          disabled={!companionSettings?.configured || companionBusy}
-          onChange={(event) => void setCompanionEnabled(event.target.checked)}
-        />}
-      />
-      {companionSettings?.url && <SettingRow
-        title="Companion URL"
-        control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}
-      >
-        <code className="block truncate font-mono text-xs" title={companionSettings.url} style={{ color: 'var(--text-2)' }}>{companionSettings.url}</code>
-      </SettingRow>}
-      <SettingRow
-        title="Access token"
-        description="Paste this on the phone to sign in."
-        control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>}
-      />
-      {companionSettings?.localAddresses?.map((address) => {
-        let host = ''
-        try { host = new URL(companionSettings.url).hostname } catch { /* No configured URL. */ }
-        if (!host || host === address || host === '127.0.0.1' || !/^\d+\.\d+\.\d+\.\d+$/.test(host) || companionSettings.localAddresses?.includes(host)) return null
-        return <SettingRow
-          key={address}
-          title="Network address changed"
-          description={`${host} is no longer on this Mac.`}
-          control={<Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
-            setCompanionBusy(true)
-            void sendToCEF<typeof companionSettings>({ action: 'repairCompanionLanAddress', payload: { address } }).then((result) => {
-              if (!result.ok || !result.data) throw new Error(result.error || 'Could not update network address.')
-              setCompanionSettings(result.data)
-              setCompanionMessage('Network address updated. Restart UAM to start phone access.')
-            }).catch((error) => setCompanionMessage(error instanceof Error ? error.message : 'Could not update network address.')).finally(() => setCompanionBusy(false))
-          }}>Use {address}</Button>}
+  const renderPhoneAccess = () => {
+    const ready = !companionLoadError && companionSettings?.state === 'ready' && companionSettings.enabled && Boolean(companionSettings.effectiveUrl)
+    const address = companionSettings?.desiredUrl || companionSettings?.url || ''
+    const failed = companionSettings?.state === 'failed'
+    const currentAddresses = [...new Set(companionSettings?.localAddresses ?? [])]
+    let configuredHost = ''
+    try { configuredHost = new URL(address).hostname } catch { /* No configured address. */ }
+    const repairAddresses = configuredHost && configuredHost !== '127.0.0.1' && /^\d+\.\d+\.\d+\.\d+$/.test(configuredHost) && !currentAddresses.includes(configuredHost) ? currentAddresses : []
+    const phoneFeedback = (companionLoadError || companionMessage || companionNotice) ? <>
+      {companionLoadError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionLoadError}</p>}
+      {companionMessage && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionMessage}</p>}
+      {companionNotice && <p role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>{companionNotice}</p>}
+    </> : null
+    return <div className="grid gap-0">
+      <SettingsSection title="Phone access">
+        <SettingRow
+          title="Enable phone access"
+          description={companionSettings?.configured ? 'Connect your phone to this computer. Changes apply automatically.' : 'Not configured on this computer.'}
+          control={<Switch hideLabel label="Enable phone access" checked={Boolean(companionSettings?.enabled)}
+            disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void setCompanionEnabled(event.target.checked)} />}
         />
-      })}
-    </SettingsSection>
-    {companionMessage && <p role="status" className="text-xs" style={{ color: companionCopy?.ok === false ? 'var(--error)' : 'var(--text-2)' }}>{companionMessage}</p>}
-  </div>
+        <SettingRow
+          title={companionLoadError ? 'Phone access needs attention' : !companionSettings ? 'Checking phone access…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating phone access…' : failed ? 'Phone access needs attention' : 'Phone access is off'}
+          description={companionLoadError ? 'Retry to check phone access on this computer.' : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network') || (ready ? 'Scan the pairing code in the Universal Agent Manager iPhone app.' : 'Enable phone access to connect your iPhone.')}
+          status={<span role="status" aria-live="polite" style={{ color: failed ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating phone access…' : undefined}</span>}
+          control={<div className="flex flex-wrap gap-2">
+            {(failed || companionLoadError) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button>}
+            {(failed || companionSettings?.restartRequired) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button>}
+          </div>}
+        >{phoneFeedback}</SettingRow>
+        {repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
+          control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}
+        {address && <SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
+          control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
+          <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
+        </SettingRow>}
+        <SettingRow title="Access token" description="For manual entry in the iPhone app. Pairing by QR code also configures secure certificate trust."
+          control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
+        {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}
+      </SettingsSection>
+    </div>
+  }
 
   const renderComputerUse = () => {
     const activeSession = sessions.find((session) => session.id === activeSessionId)
@@ -1644,7 +1704,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeUamControlSupported = Boolean(
       activeSession
       && activeProvider?.supportsStructured !== false
-      && ['codex-app-server', 'claude-code-stream-json', 'gemini-acp', 'opencode-acp', 'copilot-acp'].includes(
+      && ['codex-app-server', 'claude-code-stream-json', 'gemini-acp', 'opencode-acp', 'copilot-acp', 'copilot-sdk', 'antigravity-stream-json'].includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )
@@ -1969,22 +2029,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const providerName = providerDisplayName(provider, provider.id)
                   const providerSession = latestLocalProviderSession(sessions, provider.id, effectiveProviderSettingsHostId)
 				  const providerWorkspace = providerSession?.workspaceDirectory || folders.find(folder => (folder.executionHostId || 'local') === effectiveProviderSettingsHostId)?.directory || ''
-				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
-				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === effectiveProviderSettingsHostId && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
+				  const providerAcp = modelCatalogForDefaults((providerSession ? acpBindings[providerSession.id] : undefined)
+				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === effectiveProviderSettingsHostId && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace)))
                   const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
                   const reviewerModelOptions = buildModelOptions(providerAcp, defaults.reviewerModelId || defaults.modelId, provider, provider.id, true)
-                  const runtimeSupportsReasoning = (selectedRuntimeModel(providerAcp, defaults.modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
-                  const liveReasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
-                    ? buildCodexReasoningOptions(providerAcp, defaults.modelId, defaults.reasoningEffort, caps.reasoningOptions.map((option) => option.id))
-                    : []
+                  const liveReasoningOptions = buildProviderReasoningOptions(provider.id, providerAcp, defaults.modelId, defaults.reasoningEffort)
                   const defaultReasoningOption = caps.reasoningOptions.find((option) => !option.id)
                   const reasoningOptions = defaultReasoningOption && !liveReasoningOptions.some((option) => !option.id)
                     ? [defaultReasoningOption, ...liveReasoningOptions]
                     : liveReasoningOptions
-                  const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier)
+                  const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier, provider.id === 'codex-cli')
                   const visibilityGroups = provider.id === 'opencode-cli'
                     ? [...new Set(modelOptions.filter((option) => option.id).map((option) => option.id.split('/')[0]))]
                     : []
@@ -2066,7 +2123,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               })
                             )}
                           </div>
-                          {(caps.hasReasoningEffort || runtimeSupportsReasoning) && (
+                          {reasoningOptions.length > 0 && (
                             <div className="grid gap-1">
                               <div>Reasoning</div>
                               {renderDefaultsMenu(
@@ -2078,7 +2135,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               )}
                             </div>
                           )}
-                          {caps.hasServiceTier && (
+                          {caps.hasServiceTier && speedOptions.length > 0 && (
                             <div className="grid gap-1">
                               <div>Speed</div>
                               {renderDefaultsMenu(
@@ -3191,7 +3248,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 </div>
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}
             </div>

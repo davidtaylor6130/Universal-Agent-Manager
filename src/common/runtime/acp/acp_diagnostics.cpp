@@ -31,6 +31,9 @@ std::string AcpTimestampNow()
 
 std::string ProviderStructuredProtocolOrDefault(const ProviderProfile& provider)
 {
+	if (uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kCopilotCli) &&
+	    uam::strings::TrimAsciiView(provider.structured_protocol) == uam::provider_profile_constants::kProtocolCopilotAcp)
+		return uam::provider_profile_constants::kProtocolCopilotSdk;
 	return uam::provider_profile_constants::StructuredProtocolOrGemini(provider.structured_protocol);
 }
 

@@ -2,6 +2,7 @@
 
 #include "common/utils/nlohmann_json_utils.h"
 
+#include <algorithm>
 #include <string_view>
 #include <utility>
 
@@ -59,6 +60,19 @@ namespace uam::cef
 			}
 
 			payload = *payload_value;
+		}
+
+		if (action == "sendAcpPrompt")
+		{
+			// Only the current envelope can supply this optional correlation hint.
+			payload.erase("_uamOriginRequestId");
+			const nlohmann::json* request_id = uam::nlohmann_json::FindField(root, "requestId");
+			if (request_id != nullptr && request_id->is_string())
+			{
+				const std::string& value = request_id->get_ref<const std::string&>();
+				if (!value.empty() && value.size() <= 128 && std::all_of(value.begin(), value.end(), [](unsigned char byte) { return byte >= 0x20 && byte <= 0x7e; }))
+					payload["_uamOriginRequestId"] = value;
+			}
 		}
 
 		BridgeRequestParseResult result;

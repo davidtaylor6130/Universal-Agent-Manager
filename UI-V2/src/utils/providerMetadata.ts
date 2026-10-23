@@ -183,8 +183,8 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     capabilities: {
       supportsTextWorkers: true,
       hasReasoningEffort: false,
-      hasServiceTier: false,
-      hasAcceptEditsMode: false,
+      hasServiceTier: true,
+      hasAcceptEditsMode: true,
       structuredPermissionControl: 'uam',
       terminalPermissionControl: 'provider',
       usesFriendlyModelLabels: false,
@@ -231,8 +231,8 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     id: COPILOT_CLI_PROVIDER_ID,
     name: 'GitHub Copilot CLI',
     shortName: 'Copilot',
-    structuredProtocol: 'copilot-acp',
-    runtimeDescription: 'Copilot ACP + CLI',
+    structuredProtocol: 'copilot-sdk',
+    runtimeDescription: 'Copilot SDK + CLI',
     npmPackage: '@github/copilot',
     capabilities: {
       supportsTextWorkers: true,
@@ -263,7 +263,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
     npmPackage: '',
     capabilities: {
       supportsTextWorkers: false,
-      hasReasoningEffort: false,
+      hasReasoningEffort: true,
       hasServiceTier: false,
       hasAcceptEditsMode: false,
       structuredPermissionControl: 'provider',
@@ -364,7 +364,8 @@ export function providerShortName(provider?: Provider, fallbackId = ''): string 
 }
 
 export function providerRuntimeDescription(provider?: Provider, fallbackId = ''): string {
-  const protocol = provider?.structuredProtocol?.trim()
+  const rawProtocol = provider?.structuredProtocol?.trim()
+  const protocol = rawProtocol === 'copilot-acp' ? 'copilot-sdk' : rawProtocol
   const metadata = protocol
     ? Object.values(PROVIDER_METADATA_BY_ID).find((candidate) => candidate.structuredProtocol === protocol)
     : undefined
@@ -376,13 +377,15 @@ export function providerRuntimeKindLabel(provider?: Provider, protocolKind = '')
   if (protocol === providerMetadataForId(CODEX_CLI_PROVIDER_ID).structuredProtocol) return 'App Server'
   if (protocol === providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).structuredProtocol) return 'Claude Stream'
   if (protocol === providerMetadataForId(ANTIGRAVITY_CLI_PROVIDER_ID).structuredProtocol) return 'Antigravity Stream'
+  if (protocol === 'copilot-sdk') return 'Copilot SDK'
   if (protocol === 'none') return 'CLI'
   return 'ACP'
 }
 
 export function providerUsesProtocol(provider: Provider | undefined, providerId: string, fallbackProviderId: string): boolean {
   const metadata = providerMetadataForId(fallbackProviderId)
-  return normalizeCliProviderIdAlias(providerId) === metadata.id || provider?.structuredProtocol === metadata.structuredProtocol
+  const protocol = provider?.structuredProtocol === 'copilot-acp' ? 'copilot-sdk' : provider?.structuredProtocol
+  return normalizeCliProviderIdAlias(providerId) === metadata.id || protocol === metadata.structuredProtocol
 }
 
 export function isCodexProvider(provider?: Provider, providerId = ''): boolean {

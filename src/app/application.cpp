@@ -3,7 +3,10 @@
 #include "app/execution_routing_integration.h"
 #include "application.h"
 #include <thread>
+#include <cstdlib>
 #include "common/utils/diagnostic_log.h"
+#include "common/platform/app_crash_supervisor.h"
+#include "cef/companion_server.h"
 
 #include "agent_run_ledger.h"
 #include "agent_run_scheduler.h"
@@ -251,7 +254,7 @@ namespace
 
 	int GetNextPollDelayMs(const uam::AppState& app, bool dictation_running, bool terminal_ui_visible)
 	{
-		if (NeedsInteractiveRuntimePolling(app, terminal_ui_visible))
+		if (ChatHistorySyncService().TerminalNativeMediaPending(app) || NeedsInteractiveRuntimePolling(app, terminal_ui_visible))
 		{
 			return 16;
 		}
@@ -327,7 +330,9 @@ namespace
 				std::string error;
 				const std::filesystem::path destination_root = MarkdownStoreService::NormalizeRoot(m_destination_directory);
 				const bool seeded = MarkdownStoreService::SeedBundledEntries(m_bundled_root, destination_root, &error);
+				if (!m_lifetime_token->load()) return;
 				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{});
+				if (!m_lifetime_token->load()) return;
 				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), m_destination_directory));
 			}
 		}
@@ -381,7 +386,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 
 	// CefRunMessageLoop() blocks until OnBeforeClose calls CefQuitMessageLoop().
 	CefRunMessageLoop();
-	return m_exitCode;
+	return uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +453,7 @@ void Application::PollTick()
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
+	const bool opencode_native_changed = m_app.opencode_native_activity && m_app.opencode_native_activity->Poll(m_app);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
@@ -504,7 +510,7 @@ void Application::PollTick()
 	}
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -570,10 +576,15 @@ void Application::OnBrowserReady(CefRefPtr<CefBrowser> browser)
 	m_browser = browser;
 	if (!m_pendingBundledMarkdownRoot.empty())
 	{
-		// Bundled skill discovery can touch a user-selected Documents/network tree.
-		// Keep it off the CEF UI thread so startup remains responsive while it runs.
-		CefPostTask(TID_FILE_USER_BLOCKING,
-		            new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory)));
+		// A consent-blocked seed must not occupy the shared foreground file worker.
+		m_markdownSeedWorker = CefThread::CreateThread("uam-markdown-seed");
+		const std::string destination_directory = m_pendingMarkdownStoreDirectory;
+		if (m_markdownSeedWorker == nullptr ||
+		    !m_markdownSeedWorker->GetTaskRunner()->PostTask(
+		        new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory))))
+		{
+			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, destination_directory);
+		}
 	}
 	// Start the polling loop as soon as the browser window exists.
 	ScheduleNextUpdate(50);
@@ -724,6 +735,7 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->SetExecutionHostContext(m_app.settings.execution_hosts);
 	m_app.provider_model_catalog->MaybeStartRefresh();
 	m_openCodeCompactionSync = std::make_shared<uam::OpenCodeCompactionSyncService>();
+	m_app.opencode_native_activity = std::make_shared<uam::OpenCodeNativeActivityService>();
 	const std::weak_ptr<uam::OpenCodeCompactionSyncService> compaction_sync = m_openCodeCompactionSync;
 	m_app.opencode_compaction_before_turn_reset = [compaction_sync, app = &m_app](uam::AcpSessionState& session, const ChatSession& chat)
 	{
@@ -864,6 +876,9 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	if (m_app.opencode_native_activity)
+		m_app.opencode_native_activity->Stop();
+	m_app.opencode_native_activity.reset();
 	m_app.opencode_compaction_before_turn_reset = {};
 	m_app.opencode_compaction_before_dispatch = {};
 	if (m_openCodeCompactionSync) m_openCodeCompactionSync->Stop();
@@ -877,10 +892,16 @@ void Application::Shutdown()
 	}
 	m_shutdownComplete = true;
 	m_done = true;
+	m_lifetimeToken->store(false);
+#if UAM_ENABLE_MOBILE_COMPANION
+	UamCompanionService::BeginShutdownAll();
+#endif
 	if (m_platformServices != nullptr)
 	{
 		m_platformServices->dictation_service.Stop();
 	}
+	// Revoke initial task authority and settle real cleanup before the FIRST force-save barrier.
+	(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(m_app);
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
 		PersistenceCoordinator().SaveSettings(m_app);
@@ -906,6 +927,16 @@ void Application::Shutdown()
 	}
 	uam::UamControlService::Shutdown(m_app);
 	uam::FastStopCliTerminalsForExit(m_app);
+	// PollTick has stopped; settle authenticated final history before app/CEF teardown.
+	ChatHistorySyncService().SettleTerminalNativeMediaForExit(m_app);
+
+	// Created on the CEF UI/main thread; join here before CEF/data-root teardown.
+	// Stop cannot interrupt filesystem I/O parked on OS consent and may wait for it.
+	if (m_markdownSeedWorker != nullptr)
+	{
+		m_markdownSeedWorker->Stop();
+		m_markdownSeedWorker = nullptr;
+	}
 
 	m_browser = nullptr;
 	uam_cef_globals::g_client = nullptr;
@@ -913,6 +944,22 @@ void Application::Shutdown()
 
 	if (m_cefInitialized)
 	{
+#if UAM_ENABLE_MOBILE_COMPANION
+		// Server destruction is asynchronous. Keep CEF alive until the owned worker
+		// has released its runtime, callback and browser references.
+		const auto companion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+		while (!UamCompanionService::AllStopped() && std::chrono::steady_clock::now() < companion_deadline)
+		{
+			CefDoMessageLoopWork();
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		if (!UamCompanionService::AllStopped())
+		{
+			// Saves and provider shutdown above are complete. Process exit releases
+			// the data lock; do not tear CEF down underneath an unconfirmed worker.
+			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode);
+		}
+#endif
 		CefShutdown();
 		m_cefInitialized = false;
 	}

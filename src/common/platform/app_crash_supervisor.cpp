@@ -1,5 +1,6 @@
 #include "common/platform/app_crash_supervisor.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <charconv>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <thread>
 #if defined(_WIN32)
 #include <windows.h>
+#include <tlhelp32.h>
 #else
 #include <cerrno>
 #include <csignal>
@@ -24,6 +26,9 @@ namespace uam::platform
 {
 	namespace
 	{
+		std::atomic_bool supervised_gui{false};
+		std::atomic_bool restart_requested{false};
+
 		void LogRecovery(const int result, const int attempt, const bool exhausted)
 		{
 			std::filesystem::path directory;
@@ -47,15 +52,35 @@ namespace uam::platform
 		{
 			constexpr std::string_view prefix = "--uam-supervisor-pid=";
 			std::uint32_t parent_pid = 0;
+			bool has_parent_pid = false;
 			for (const std::string& argument : arguments)
 			{
 				if (!argument.starts_with(prefix)) continue;
+				if (has_parent_pid) std::_Exit(1);
+				has_parent_pid = true;
 				const std::string_view value(argument.data() + prefix.size(), argument.size() - prefix.size());
 				const std::from_chars_result parsed = std::from_chars(value.data(), value.data() + value.size(), parent_pid);
 				if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) std::_Exit(1);
 			}
 			if (parent_pid == 0 || parent_pid > static_cast<std::uint32_t>((std::numeric_limits<int>::max)())) std::_Exit(1);
 #if defined(_WIN32)
+			// The private marker alone must not enable restart in an unrelated process.
+			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (snapshot == INVALID_HANDLE_VALUE) std::_Exit(1);
+			PROCESSENTRY32W entry{};
+			entry.dwSize = sizeof(entry);
+			bool parent_matches = false;
+			if (Process32FirstW(snapshot, &entry))
+			{
+				do
+				{
+					if (entry.th32ProcessID != GetCurrentProcessId()) continue;
+					parent_matches = entry.th32ParentProcessID == parent_pid;
+					break;
+				} while (Process32NextW(snapshot, &entry));
+			}
+			CloseHandle(snapshot);
+			if (!parent_matches) std::_Exit(1);
 			// The handle identifies the original process even if its PID is later reused.
 			HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, parent_pid);
 			if (parent == nullptr) std::_Exit(0);
@@ -66,6 +91,7 @@ namespace uam::platform
 				std::_Exit(0);
 			}).detach();
 #else
+			if (getppid() != static_cast<pid_t>(parent_pid)) std::_Exit(1);
 			std::thread([parent_pid]()
 			{
 				while (getppid() == static_cast<pid_t>(parent_pid))
@@ -73,7 +99,20 @@ namespace uam::platform
 				std::_Exit(0);
 			}).detach();
 #endif
+			supervised_gui.store(true, std::memory_order_release);
 		}
+	}
+
+	bool RequestApplicationRestart()
+	{
+		if (!supervised_gui.load(std::memory_order_acquire)) return false;
+		bool expected = false;
+		return restart_requested.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+	}
+
+	bool ApplicationRestartRequested()
+	{
+		return restart_requested.load(std::memory_order_acquire);
 	}
 
 	std::optional<int> RunAppCrashSupervisor(const std::vector<std::string>& arguments)
@@ -135,6 +174,9 @@ namespace uam::platform
 				          signal == SIGILL || signal == SIGFPE || signal == SIGTRAP;
 			}
 #endif
+			// The wait above observes full process exit, including normal GUI teardown.
+			// Explicit requests neither consume nor reset the fatal-crash retry budget.
+			if (!crashed && result == kApplicationRestartExitCode) continue;
 			if (!crashed) return result;
 			if (std::chrono::steady_clock::now() - started >= std::chrono::minutes(1)) restart_count = 0;
 			if (++restart_count > 3)

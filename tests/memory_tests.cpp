@@ -3048,3 +3048,416 @@ UAM_TEST(MemoryRecallFoldsMultilineFactsIntoOneRowWithoutEvidence)
 	UAM_ASSERT(recall.find("NOT_INLINE") == std::string::npos);
 	UAM_ASSERT_EQ(std::count(recall.begin(), recall.end(), '\n'), 4);
 }
+
+
+// Alpha143 containment proposals: private files and in-process memory tasks only.
+#include <array>
+#include <fstream>
+
+UAM_TEST(MemoryServiceOversizedColdManualScanRetainsIntentUntilSourceRepair)
+{
+	TempDir temp("uam-memory-oversized-cold");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles.clear();
+	app.settings.memory_worker_bindings.clear();
+	ChatSession chat;
+	chat.id = "oversized-cold-manual";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = (temp.root / "workspace").string();
+	fs::create_directories(chat.workspace_directory);
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.memory_last_processed_message_count = 1;
+	chat.memory_last_processed_at = "before-scan";
+	chat.messages.push_back({MessageRole::User, "Remember the complete first preference.", "first"});
+	chat.messages.push_back({MessageRole::Assistant, "The second preference is also durable.", "second"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path source = app.data_root / "chats" / (chat.id + ".json");
+	const std::string original = uam::io::ReadTextFile(source);
+	UAM_ASSERT(!original.empty() && original.size() < 128 * 1024);
+	const auto small = ChatRepository::LoadLocalChatBounded(app.data_root, chat.id, 128 * 1024);
+	UAM_ASSERT(small && small->messages.size() == chat.messages.size());
+	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!app.chats.front().messages_loaded && app.chats.front().messages.empty());
+	const std::string digest = app.chats.front().persisted_messages_digest;
+	const std::size_t count = app.chats.front().persisted_message_count;
+
+	// JSON permits trailing whitespace. Keep the body valid and the harness buffer bounded.
+	constexpr std::uintmax_t limit = 32ULL * 1024 * 1024;
+	{
+		std::ofstream file(source, std::ios::binary | std::ios::app);
+		UAM_ASSERT(file.is_open());
+		std::array<char, 64 * 1024> whitespace{};
+		whitespace.fill(' ');
+		std::uintmax_t length = original.size();
+		while (length <= limit)
+		{
+			file.write(whitespace.data(), static_cast<std::streamsize>(whitespace.size()));
+			UAM_ASSERT(file.good());
+			length += whitespace.size();
+		}
+		file.close();
+		UAM_ASSERT(!file.fail());
+	}
+	const auto fingerprint = [](const fs::path& path)
+	{
+		std::ifstream file(path, std::ios::binary);
+		UAM_ASSERT(file.is_open());
+		std::array<char, 64 * 1024> buffer{};
+		std::uintmax_t bytes = 0;
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		while (file)
+		{
+			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			const std::size_t read = static_cast<std::size_t>(file.gcount());
+			bytes += read;
+			uam::hashing::UpdateFnv1a64(hash, reinterpret_cast<const unsigned char*>(buffer.data()), read);
+		}
+		UAM_ASSERT(!file.bad());
+		return std::make_pair(bytes, hash);
+	};
+	const auto before = fingerprint(source);
+	UAM_ASSERT(before.first > limit);
+	int queued_count = 0;
+	std::string error;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued_count, &error));
+	UAM_ASSERT_EQ(queued_count, 1);
+	UAM_ASSERT(app.provider_profiles.empty()); // No configured worker can reach a provider launch.
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(app.memory_last_status.find("cannot be read within the requested size limit") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
+	const double retry = app.memory_retry_not_before_by_chat_id.at(chat.id);
+	UAM_ASSERT(retry > uam::GetAppTimeSeconds());
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.memory_extraction_queue.front().manual);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_at, std::string("before-scan"));
+	UAM_ASSERT_EQ(app.chats.front().persisted_message_count, count);
+	UAM_ASSERT_EQ(app.chats.front().persisted_messages_digest, digest);
+	UAM_ASSERT(!app.chats.front().messages_loaded && app.chats.front().messages.empty());
+	UAM_ASSERT(fingerprint(source) == before);
+	UAM_ASSERT(app.acp_sessions.empty() && app.cli_terminals.empty());
+	UAM_ASSERT(!fs::exists(temp.root / "workspace" / ".UAM" / "Lessons"));
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
+	UAM_ASSERT_EQ(app.memory_retry_not_before_by_chat_id.at(chat.id), retry);
+	UAM_ASSERT(fingerprint(source) == before);
+
+	// Repair only this fixture's source. Explicit retry preserves the full manual range.
+	UAM_ASSERT(uam::io::WriteTextFile(source, original));
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued_count, &error));
+	UAM_ASSERT_EQ(queued_count, 1);
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	DrainMemoryWork(app);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(app.memory_last_status.find("provider is unavailable") != std::string::npos);
+	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 2);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.memory_extraction_queue.front().manual);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_at, std::string("before-scan"));
+	UAM_ASSERT(!app.chats.front().messages_loaded && app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(source), original);
+	UAM_ASSERT(app.provider_profiles.empty() && app.acp_sessions.empty() && app.cli_terminals.empty());
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+}
+
+UAM_TEST(MemoryBoundedHydrationPreservesCompleteAndRequestedRangePrompts)
+{
+	TempDir temp("uam-memory-bounded-hydrate");
+	ChatSession chat;
+	chat.id = "bounded-memory-prompts";
+	chat.title = "saved title";
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.memory_last_processed_message_count = 4;
+	for (int index = 0; index < 6; ++index)
+		chat.messages.push_back({index % 2 == 0 ? MessageRole::User : MessageRole::Assistant,
+		    "Remember exact preference " + std::to_string(index), "saved"});
+	chat.messages[3].acp_prompt_discarded = true;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path source = temp.root / "chats" / (chat.id + ".json");
+	const std::string original = uam::io::ReadTextFile(source);
+	constexpr std::size_t cap = 128 * 1024;
+	UAM_ASSERT(!original.empty() && original.size() < cap);
+	auto summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	ChatSession hydrated = summaries.front();
+	UAM_ASSERT(!hydrated.messages_loaded && hydrated.messages.empty());
+	hydrated.title = "current live title";
+	hydrated.interaction_at = "current live interaction";
+	std::string warning = "old warning";
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, hydrated, &warning, cap));
+	UAM_ASSERT(warning.empty());
+	UAM_ASSERT(hydrated.messages_loaded);
+	UAM_ASSERT_EQ(hydrated.messages.size(), chat.messages.size());
+	UAM_ASSERT_EQ(hydrated.title, std::string("current live title"));
+	UAM_ASSERT_EQ(hydrated.interaction_at, std::string("current live interaction"));
+	for (std::size_t index = 0; index < chat.messages.size(); ++index)
+	{
+		UAM_ASSERT_EQ(hydrated.messages[index].content, chat.messages[index].content);
+		UAM_ASSERT(hydrated.messages[index].role == chat.messages[index].role);
+		UAM_ASSERT_EQ(hydrated.messages[index].acp_prompt_discarded, chat.messages[index].acp_prompt_discarded);
+	}
+	for (const int start : {-1, 0, 4, 9})
+	{
+		const ChatSession captured = MemoryService::CaptureWorkerInput(hydrated, start);
+		UAM_ASSERT_EQ(captured.messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(captured, start),
+		    MemoryService::BuildWorkerPromptForTests(chat, start));
+	}
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(source), original);
+}
+
+UAM_TEST(MemoryBoundedHydrationRejectsChangedQueueRevisionWithoutAdoption)
+{
+	TempDir temp("uam-memory-bounded-queue");
+	ChatSession saved;
+	saved.id = "bounded-memory-queue";
+	saved.messages.push_back({MessageRole::User, "Remember this saved preference.", "saved"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+	const fs::path source = temp.root / "chats" / (saved.id + ".json");
+	const std::string original = uam::io::ReadTextFile(source);
+	constexpr std::size_t cap = 128 * 1024;
+	UAM_ASSERT(!original.empty() && original.size() < cap);
+	const auto summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(1));
+	for (const bool full_revision : {false, true})
+	{
+		ChatSession cold = summaries.front();
+		if (full_revision) cold.acp_queue_full_save_revision += "-changed";
+		else cold.acp_queue_storage_revision += "-changed";
+		cold.title = "live metadata must survive refusal";
+		const std::string queue_revision = cold.acp_queue_storage_revision;
+		const std::string full_save_revision = cold.acp_queue_full_save_revision;
+		const std::size_t count = cold.persisted_message_count;
+		const std::string digest = cold.persisted_messages_digest;
+		std::string warning;
+		UAM_ASSERT(!ChatRepository::HydrateChatMessages(temp.root, cold, &warning, cap));
+		UAM_ASSERT_EQ(warning, std::string("Queued inputs changed while history was loading. Reload the chat before continuing."));
+		UAM_ASSERT(!cold.messages_loaded && cold.messages.empty());
+		UAM_ASSERT_EQ(cold.title, std::string("live metadata must survive refusal"));
+		UAM_ASSERT_EQ(cold.acp_queue_storage_revision, queue_revision);
+		UAM_ASSERT_EQ(cold.acp_queue_full_save_revision, full_save_revision);
+		UAM_ASSERT_EQ(cold.persisted_message_count, count);
+		UAM_ASSERT_EQ(cold.persisted_messages_digest, digest);
+	}
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(source), original);
+}
+
+
+// Source-dependent containment controls. NEVER execute against pre-containment source:
+// the old path can launch this private inert executable before a capture refusal.
+#include "app/provider_worker_command.h"
+
+#if !defined(_WIN32)
+namespace
+{
+	void AssertWarmMemoryCaptureRefusesBeforeWorker(bool oversized_skeleton)
+	{
+		TempDir temp("uam-memory-warm-capture-budget");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		const fs::path executable = temp.root / "private-inert-memory-worker";
+		UAM_ASSERT(uam::io::WriteTextFile(executable, "#!/bin/sh\nexit 97\n"));
+		fs::permissions(executable, fs::perms::owner_all);
+		ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+		profile.interactive_command = uam::shell::EscapeArg(executable.string());
+		app.provider_profiles = {profile};
+		app.settings.memory_worker_bindings.clear();
+		app.settings.provider_availability.clear();
+		UAM_ASSERT(ProviderRuntime::IsRuntimeEnabled(profile)); // Prerequisite refusal is not containment coverage.
+		{
+			std::string error;
+			const uam::ProviderWorkerInvocation admitted = uam::BuildProviderWorkerInvocation(app, profile,
+			    app.settings, {}, {}, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, &error);
+			UAM_ASSERT(error.empty() && !admitted.Empty() && admitted.direct_process);
+			UAM_ASSERT(!admitted.argv.empty() && admitted.argv.front() == executable.string());
+			UAM_ASSERT(admitted.standard_input.empty());
+		} // This prepares argv/private isolation only; ExecuteProviderWorkerInvocation is never called here.
+
+		app.chats.emplace_back();
+		ChatSession& chat = app.chats.front();
+		chat.id = oversized_skeleton ? "warm-budget-skeleton" : "warm-budget-text";
+		chat.provider_id = profile.id;
+		chat.workspace_directory = (temp.root / "workspace").string();
+		fs::create_directories(chat.workspace_directory);
+		chat.messages_loaded = true;
+		chat.memory_enabled = true;
+		chat.memory_level = "open";
+		chat.memory_last_processed_message_count = 1;
+		chat.memory_last_processed_at = "before-refusal";
+		constexpr std::size_t limit = 32U * 1024U * 1024U;
+		if (oversized_skeleton)
+		{
+			chat.messages.resize(limit / sizeof(Message) + 1);
+			for (std::size_t index = 0; index < chat.messages.size(); ++index)
+			{
+				chat.messages[index].role = index % 2 == 0 ? MessageRole::User : MessageRole::Assistant;
+				chat.messages[index].acp_prompt_discarded = index % 2 != 0;
+			}
+		}
+		else
+		{
+			chat.messages.emplace_back();
+			chat.messages.front().role = MessageRole::User;
+			chat.messages.front().content.assign(limit + 1, 'x');
+		}
+		const std::size_t message_count = chat.messages.size();
+		const std::size_t selected_size = chat.messages.front().content.size();
+		const std::uint64_t selected_hash = uam::hashing::Fnv1a64(chat.messages.front().content);
+		const std::string id = chat.id;
+		int queued = 0;
+		std::string error;
+		UAM_ASSERT(MemoryService::QueueManualScan(app, {id}, &queued, &error));
+		UAM_ASSERT_EQ(queued, 1);
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+		const uam::AsyncMemoryExtractionTask& task = app.memory_extraction_tasks.front();
+		UAM_ASSERT(task.state != nullptr && task.extraction_state != nullptr);
+		UAM_ASSERT(task.worker == nullptr);
+		UAM_ASSERT(task.state->completed.load(std::memory_order_acquire));
+		UAM_ASSERT(task.extraction_state->hydration_failed);
+		UAM_ASSERT(!task.state->result.ok);
+		UAM_ASSERT_EQ(task.state->result.error,
+		    std::string("Memory scan input could not be prepared safely. History and progress are unchanged."));
+		UAM_ASSERT_EQ(task.scan_start_message_index, 0);
+		UAM_ASSERT(!task.prepared_from_cold);
+		UAM_ASSERT(app.acp_sessions.empty() && app.cli_terminals.empty());
+		// The exact synchronous failure with no jthread is the no-invocation witness;
+		// absent executable output/markers alone would not establish this fact.
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, id);
+		UAM_ASSERT(app.memory_extraction_queue.front().manual);
+		UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(id), 1);
+		const double retry_at = app.memory_retry_not_before_by_chat_id.at(id);
+		UAM_ASSERT(retry_at > uam::GetAppTimeSeconds());
+		UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 1);
+		UAM_ASSERT_EQ(chat.memory_last_processed_at, std::string("before-refusal"));
+		UAM_ASSERT(chat.messages_loaded);
+		UAM_ASSERT_EQ(chat.messages.size(), message_count);
+		UAM_ASSERT_EQ(chat.messages.front().content.size(), selected_size);
+		UAM_ASSERT_EQ(uam::hashing::Fnv1a64(chat.messages.front().content), selected_hash);
+		if (oversized_skeleton)
+		{
+			for (std::size_t index = 0; index < chat.messages.size(); ++index)
+			{
+				UAM_ASSERT(chat.messages[index].content.empty());
+				UAM_ASSERT(chat.messages[index].role == (index % 2 == 0 ? MessageRole::User : MessageRole::Assistant));
+				UAM_ASSERT_EQ(chat.messages[index].acp_prompt_discarded, index % 2 != 0);
+			}
+		}
+		UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+		UAM_ASSERT(!fs::exists(fs::path(chat.workspace_directory) / ".UAM"));
+		UAM_ASSERT(!fs::exists(app.data_root / "chats" / (id + ".json")));
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(id), 1);
+		UAM_ASSERT_EQ(app.memory_retry_not_before_by_chat_id.at(id), retry_at);
+	}
+}
+
+UAM_TEST(MemoryWarmSelectedTextBudgetRefusesBeforeWorkerCreation)
+{
+	AssertWarmMemoryCaptureRefusesBeforeWorker(false);
+}
+
+UAM_TEST(MemoryWarmPositionalSkeletonBudgetRefusesBeforeWorkerCreation)
+{
+	AssertWarmMemoryCaptureRefusesBeforeWorker(true);
+}
+#endif
+
+
+// Prompt-boundary controls only: these do not exercise warm snapshot admission.
+#include <stdexcept>
+
+UAM_TEST(MemoryWorkerPromptAcceptsExactByteLimitAndRejectsOneByteExcess)
+{
+	constexpr std::size_t limit = 32U * 1024U * 1024U;
+	const std::string sentinel = "UAM_PROMPT_BOUNDARY_65e3a1_unique";
+	ChatSession chat;
+	chat.messages_loaded = true;
+	chat.memory_enabled = true;
+	chat.memory_level = "open";
+	chat.messages.push_back({MessageRole::User, sentinel, "boundary-time"});
+	const std::string small = MemoryService::BuildWorkerPromptForTests(chat, 0);
+	const std::size_t content_offset = small.find(sentinel);
+	UAM_ASSERT(content_offset != std::string::npos);
+	UAM_ASSERT(small.find(sentinel, content_offset + sentinel.size()) == std::string::npos);
+	const std::size_t suffix_offset = content_offset + sentinel.size();
+	const std::size_t suffix_size = small.size() - suffix_offset;
+	const std::size_t overhead = small.size() - sentinel.size();
+	UAM_ASSERT(overhead < limit);
+	const std::size_t content_size = limit - overhead;
+	std::string& content = chat.messages.front().content;
+	content.reserve(content_size + 1);
+	content.assign(content_size, 'q');
+	{
+		const std::string prompt = MemoryService::BuildWorkerPromptForTests(chat, 0);
+		UAM_ASSERT_EQ(prompt.size(), limit);
+		UAM_ASSERT_EQ(prompt.compare(0, content_offset, small, 0, content_offset), 0);
+		UAM_ASSERT(std::all_of(prompt.begin() + content_offset, prompt.begin() + content_offset + content_size,
+		    [](char value) { return value == 'q'; }));
+		UAM_ASSERT_EQ(prompt.compare(content_offset + content_size, suffix_size, small, suffix_offset, suffix_size), 0);
+	}
+	content.push_back('q');
+	bool length_rejected = false;
+	try
+	{
+		(void)MemoryService::BuildWorkerPromptForTests(chat, 0);
+	}
+	catch (const std::length_error&)
+	{
+		length_rejected = true;
+	}
+	UAM_ASSERT(length_rejected);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT_EQ(content.size(), content_size + 1);
+	UAM_ASSERT(std::all_of(content.begin(), content.end(), [](char value) { return value == 'q'; }));
+	UAM_ASSERT(chat.messages.front().role == MessageRole::User);
+	UAM_ASSERT(!chat.messages.front().acp_prompt_discarded);
+}
+
+UAM_TEST(MemoryWorkerPromptExcludesOnlyDiscardedOrBeforeExplicitStartContent)
+{
+	constexpr std::size_t oversized_bytes = 32U * 1024U * 1024U + 1;
+	const std::string selected = " \tExact selected preference: preserve UTF-8 é and all internal  spaces.\r\n";
+	ChatSession reference;
+	reference.messages_loaded = true;
+	reference.memory_enabled = true;
+	reference.memory_level = "balanced";
+	reference.messages.push_back({MessageRole::User, selected, "selected-time"});
+	const std::string expected = MemoryService::BuildWorkerPromptForTests(reference, 0);
+	ChatSession chat;
+	chat.messages_loaded = true;
+	chat.memory_enabled = true;
+	chat.memory_level = "balanced";
+	chat.messages.push_back({MessageRole::Assistant, std::string(oversized_bytes, 'x'), "excluded-time"});
+	chat.messages.push_back({MessageRole::User, selected, "selected-time"});
+	// This large row is truthfully outside the explicitly requested range.
+	UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(chat, 1), expected);
+	UAM_ASSERT_EQ(chat.messages.front().content.size(), oversized_bytes);
+	UAM_ASSERT(!chat.messages.front().acp_prompt_discarded);
+	// Starting at zero excludes it only after the row is explicitly discarded.
+	chat.messages.front().acp_prompt_discarded = true;
+	UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(chat, 0), expected);
+	UAM_ASSERT_EQ(chat.messages.front().content.size(), oversized_bytes);
+	UAM_ASSERT(std::all_of(chat.messages.front().content.begin(), chat.messages.front().content.end(),
+	    [](char value) { return value == 'x'; }));
+	UAM_ASSERT_EQ(chat.messages.back().content, selected);
+	UAM_ASSERT(!chat.messages.back().acp_prompt_discarded);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+}

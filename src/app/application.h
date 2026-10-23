@@ -1,12 +1,14 @@
 #pragma once
 
 #include "cef/cef_includes.h"
+#include "include/cef_thread.h"
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
 #include "app/opencode_compaction_sync_service.h"
+#include "app/opencode_native_activity_service.h"
 #include "app/computer_use_service.h"
 #include "app/worktree_retention_service.h"
 
@@ -56,6 +58,7 @@ class Application
 	std::shared_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);
 	CefRefPtr<CefBrowser> m_browser;
+	CefRefPtr<CefThread> m_markdownSeedWorker;
 	bool m_done = false;
 	bool m_settingsLoaded = false;
 	bool m_cefInitialized = false;

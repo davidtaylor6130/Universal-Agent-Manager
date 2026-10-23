@@ -1,4 +1,7 @@
+#include "app/managed_parent_continuation_service.h"
 #include "common/provider/codex/cli/codex_cli_provider_runtime.h"
+#include "app/agent_run_scheduler.h"
+#include "common/utils/uuid.h"
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/config/approval_modes.h"
@@ -8,6 +11,7 @@
 #include "common/provider/codex/cli/codex_terminal_activity.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
+#include "common/provider/codex/cli/codex_native_children.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
@@ -19,6 +23,7 @@
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/acp/acp_request_defaults.h"
+#include "common/runtime/acp/acp_tool_items.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/io_utils.h"
 
@@ -28,6 +33,44 @@
 
 namespace
 {
+	std::string_view ManagedSetupText(const nlohmann::json& value, const char* key, std::size_t maximum)
+	{
+		const auto field = value.find(key);
+		if (field == value.end() || !field->is_string()) return {};
+		const auto& text = field->get_ref<const std::string&>();
+		return text.empty() || text.size() > maximum || text.find('\0') != std::string::npos ? std::string_view{} : std::string_view(text);
+	}
+
+	bool ObserveManagedCodexSetup(uam::AppState& app, uam::AcpSessionState& session, const ChatSession& chat, const std::string& request_id, const nlohmann::json& result, bool resume = false)
+	{
+		if (!session.managed_initial_owner) return true;
+		try
+		{
+			const auto thread = result.find("thread");
+			const bool object = result.is_object() && thread != result.end() && thread->is_object();
+			const auto native = object ? ManagedSetupText(*thread, "id", 160) : std::string_view{};
+			const auto model = ManagedSetupText(result, "model", 160);
+			const auto cwd = ManagedSetupText(result, "cwd", 4096);
+			const bool policy = object && ManagedSetupText(result, "modelProvider", 160) == "openai" && ManagedSetupText(*thread, "modelProvider", 160) == "openai" && !cwd.empty() && ManagedSetupText(*thread, "cwd", 4096) == cwd && uam::uuid::IsCanonicalUuid(native) && result.contains("approvalPolicy") && result["approvalPolicy"] == "on-request" && result.contains("approvalsReviewer") && result["approvalsReviewer"] == "user" && result.contains("sandbox") && result["sandbox"] == nlohmann::json({{"type", "readOnly"}, {"networkAccess", false}});
+			if (resume)
+			{
+				const auto collaboration = result.find("collaborationMode");
+				const bool supplied = collaboration != result.end();
+				const auto mode = supplied && collaboration->is_object() ? ManagedSetupText(*collaboration, "mode", 64) : std::string_view{};
+				const auto settings = supplied && collaboration->is_object() ? collaboration->find("settings") : result.end();
+				const auto collaboration_model = supplied && collaboration->is_object() && settings != collaboration->end() && settings->is_object() ? ManagedSetupText(*settings, "model", 160) : std::string_view{};
+				return uam::AgentRunScheduler::InitialResumeSetupExecutionObserved(app, session, chat, request_id, native, model, cwd, policy, mode, collaboration_model, supplied);
+			}
+			uam::AgentRunScheduler::InitialSetupExecutionObserved(app, session, chat, request_id, native, model, cwd, policy);
+			return true;
+		}
+		catch (...)
+		{
+			uam::AgentRunScheduler::InitialExecutionProofObserved(session, {}, {}, {}, false); // Optional proof failure cannot change one-shot behavior.
+			return !resume;
+		}
+	}
+
 	std::string RequestedCodexApprovalsReviewer(const ChatSession& chat, bool read_only)
 	{
 		return !read_only && uam::command_safety::ParseTier(chat.command_safety_tier) == uam::command_safety::Tier::AiReview ? "auto_review" : "user";
@@ -296,8 +339,18 @@ MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& p
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
 }
 
-void CodexCliProviderRuntime::ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json&) const
+void CodexCliProviderRuntime::ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& item) const
 {
+	if (uam::nlohmann_json::StringViewOrEmpty(item, "type") == uam::acp_tool_items::kCollabAgentToolCall)
+	{
+		tool.is_sub_agent = true;
+		tool.sub_agent_id.clear();
+		tool.sub_agent_title.clear();
+		tool.sub_agent_children = uam::codex::CollaborationChildren(item);
+		tool.sub_agent_children_authoritative = true;
+		if (!tool.sub_agent_children.empty()) tool.sub_agent_id = tool.sub_agent_children.front().id;
+		return;
+	}
 	if (tool.name != "spawn_agent" && tool.name != "multi_agent_v1.spawn_agent" && tool.name != "functions.spawn_agent") return;
 	tool.is_sub_agent = true;
 	const nlohmann::json result = nlohmann::json::parse(tool.result_text, nullptr, false);
@@ -307,6 +360,25 @@ void CodexCliProviderRuntime::ApplyNativeToolMetadata(ToolCall& tool, const nloh
 	tool.sub_agent_id = child_id;
 	const std::string_view nickname = uam::nlohmann_json::StringViewOrEmpty(result, "nickname");
 	if (!nickname.empty()) tool.sub_agent_title = nickname;
+}
+
+void CodexCliProviderRuntime::ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& item) const
+{
+	// Live and history share validation; common ACP aliases cannot override native receivers.
+	ToolCall metadata;
+	metadata.name = tool.title;
+	metadata.result_text = tool.content;
+	metadata.is_sub_agent = tool.is_sub_agent;
+	metadata.sub_agent_id = tool.sub_agent_id;
+	metadata.sub_agent_title = tool.sub_agent_title;
+	metadata.sub_agent_children = std::move(tool.sub_agent_children);
+	metadata.sub_agent_children_authoritative = tool.sub_agent_children_authoritative;
+	ApplyNativeToolMetadata(metadata, item);
+	tool.is_sub_agent = metadata.is_sub_agent;
+	tool.sub_agent_id = std::move(metadata.sub_agent_id);
+	tool.sub_agent_title = std::move(metadata.sub_agent_title);
+	tool.sub_agent_children = std::move(metadata.sub_agent_children);
+	tool.sub_agent_children_authoritative = metadata.sub_agent_children_authoritative;
 }
 
 std::vector<ChatSession> CodexCliProviderRuntime::LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const
@@ -456,6 +528,8 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 	const AcpFailureDetails& failure = details.failure;
 	const std::string& detail_text = details.detail_text;
 	const std::string& formatted_error = details.formatted_error;
+	if (failure.method == uam::acp_methods::kTurnStart &&
+	    uam::ManagedParentContinuationService::ObserveNativeStartFailure(app, session, chat, failure.request_id)) return true;
 	if (HandleCodexGoalError(app, session, chat, failure))
 	{
 		DrainQueuedCodexNativeGoal(app, session, chat);
@@ -498,6 +572,15 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 	{
 		return true;
 	}
+	if (failure.method == uam::acp_methods::kThreadResume && session.managed_initial_owner &&
+	    !uam::AgentRunScheduler::InitialResumeSetupExecutionObserved(app, session, chat, failure.request_id, {}, {}, {}, false, {}, {}, false))
+	{
+		// Keep the original lease for the managed scheduler's tagged Stop/save/reap path.
+		// Generic restart invalidation would reset that lease before terminal publication.
+		session.last_error = formatted_error;
+		session.lifecycle_state = kAcpLifecycleError;
+		return true;
+	}
 	if (failure.method == uam::acp_methods::kThreadResume && failure.has_code && failure.code == -32600 && uam::codex::ErrorLooksLikeInvalidThreadId(failure.message) && !session.codex_resume_fallback_attempted)
 	{
 		if (!ClearSavedAcpResumeId(app, session, chat)) return true;
@@ -518,7 +601,12 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		std::string retry_method;
 		ChatSession retry_chat = chat;
 		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") retry_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
-		const nlohmann::json retry_request = OnAcpBuildSetupRequest(retry_id, retry_chat, cwd, false, retry_method);
+		nlohmann::json retry_request = OnAcpBuildSetupRequest(retry_id, retry_chat, cwd, false, retry_method);
+		if (!DecorateAcpSessionSetupRequest(app, session, retry_method, cwd, retry_request))
+		{
+			(void)FailAcpSessionSetupWrite(app, session, chat, "Failed to configure replacement session setup.");
+			return true;
+		}
 		session.pending_request_methods[retry_id] = retry_method;
 		session.session_setup_request_id = retry_id;
 		session.lifecycle_state = kAcpLifecycleStarting;
@@ -567,6 +655,8 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 	}
 	if (uam::acp_methods::IsCodexThreadSetupMethod(method))
 	{
+		if (method == uam::acp_methods::kThreadResume && !ObserveManagedCodexSetup(app, session, chat, request_id, result, true)) return true; // Validate before generic identity/default mutation.
+		if (method == uam::acp_methods::kThreadStart) (void)ObserveManagedCodexSetup(app, session, chat, request_id, result);
 		session.session_setup_request_id = 0;
 		if (method == uam::acp_methods::kThreadStart)
 		{
@@ -632,6 +722,16 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 
 	if (method == uam::acp_methods::kTurnStart)
 	{
+		const auto observed = JsonObjectValue(result, "turn");
+		const auto observed_id = observed.find("id");
+		const std::string typed_turn = observed_id != observed.end() && observed_id->is_string() ? observed_id->get<std::string>() : std::string{};
+		if (ManagedParentContinuationService::ObserveNativeStartResult(app, session, chat, request_id, typed_turn)) return true;
+		if (request_id == std::to_string(session.prompt_request_id) && !typed_turn.empty() && typed_turn.size() <= 256 &&
+		    std::ranges::none_of(typed_turn, [](unsigned char c) { return c <= 32 || c == 127; }))
+		{
+			session.codex_origin_rpc_turn_id = typed_turn;
+			session.codex_origin_rpc_turn_serial = session.turn_serial;
+		}
 		session.prompt_request_id = 0;
 		if (result.is_object())
 		{
@@ -755,49 +855,106 @@ std::string CodexCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& ch
 	return uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
 }
 
-nlohmann::json CodexCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
-    const std::string& prompt, const ChatSession& chat, std::string& out_method) const
+namespace
+{
+	nlohmann::json BuildCodexPrompt(const uam::AcpSessionState& session, int request_id, const std::string& prompt, const ChatSession& chat)
+	{
+		const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode || session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+		nlohmann::json sandbox_policy = {{"type", read_only ? "readOnly" : "workspaceWrite"}, {"networkAccess", false}};
+		if (!read_only && !chat.workspace_directory.empty())
+			sandbox_policy["writableRoots"] = nlohmann::json::array({chat.workspace_directory});
+		nlohmann::json params = {
+		    {"threadId", session.session_id}, {"approvalPolicy", "on-request"}, {"approvalsReviewer", RequestedCodexApprovalsReviewer(chat, read_only)}, {"sandboxPolicy", std::move(sandbox_policy)}, {"input", nlohmann::json::array({{{"type", "text"}, {"text", prompt}, {"text_elements", nlohmann::json::array()}}})},
+		};
+
+		const std::string model_id = uam::strings::Trim(chat.model_id);
+		const std::string collaboration_model_id = model_id.empty() ? uam::strings::Trim(session.current_model_id) : model_id;
+		const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(chat.reasoning_effort);
+		const std::string service_tier = uam::codex::NormalizeServiceTier(chat.service_tier);
+		if (!model_id.empty())
+		{
+			params["model"] = model_id;
+		}
+		if (!reasoning_effort.empty())
+		{
+			params["effort"] = reasoning_effort;
+		}
+		if (chat.service_tier_explicit)
+			params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
+
+		const std::string requested_mode_id = read_only ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;
+		if (!collaboration_model_id.empty())
+		{
+			nlohmann::json settings = {
+			    {"model", collaboration_model_id},
+			    {"reasoning_effort", uam::nlohmann_json::StringOrNull(reasoning_effort)},
+			    {"developer_instructions", nullptr},
+			};
+			params["collaborationMode"] = {
+			    {"mode", requested_mode_id},
+			    {"settings", std::move(settings)},
+			};
+		}
+
+		return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kTurnStart, std::move(params));
+	}
+
+} // namespace
+
+nlohmann::json CodexCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id, const std::string& prompt, const ChatSession& chat, std::string& out_method) const
 {
 	out_method = uam::acp_methods::kTurnStart;
-	const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode ||
-	    session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
-	nlohmann::json sandbox_policy = {{"type", read_only ? "readOnly" : "workspaceWrite"}, {"networkAccess", false}};
-	if (!read_only && !chat.workspace_directory.empty()) sandbox_policy["writableRoots"] = nlohmann::json::array({chat.workspace_directory});
-	nlohmann::json params = {
-	    {"threadId", session.session_id},
-	    {"approvalPolicy", "on-request"}, {"approvalsReviewer", RequestedCodexApprovalsReviewer(chat, read_only)}, {"sandboxPolicy", std::move(sandbox_policy)},
-	    {"input", nlohmann::json::array({{{"type", "text"}, {"text", prompt}, {"text_elements", nlohmann::json::array()}}})},
+	return BuildCodexPrompt(session, request_id, prompt, chat);
+}
+
+bool CodexCliProviderRuntime::SupportsSavedImageRetry(const uam::AcpSessionState& session) const
+{
+	return session.protocol_kind == "codex-app-server";
+}
+
+bool CodexCliProviderRuntime::SupportsRemoteOwnedImageRetry(const uam::AcpSessionState& session) const
+{
+	return SupportsSavedImageRetry(session);
+}
+
+nlohmann::json CodexCliProviderRuntime::SavedImageRetryMetadata(const uam::AcpSessionState& session, const ChatSession& chat) const
+{
+	// The same pure builder binds effective native settings without reserving a request ID.
+	return {{"request", BuildCodexPrompt(session, 0, "", chat)}, {"savedNativeSessionId", chat.native_session_id}};
+}
+
+bool CodexCliProviderRuntime::EncodePreparedSavedImageRetry(nlohmann::json& request, const nlohmann::json& prepared, std::string& error, const std::vector<MessageAttachment>&, const nlohmann::json&) const
+{
+	const auto fail = [&error]()
+	{
+		error = "Codex saved-image Retry has no complete native image input.";
+		return false;
 	};
-
-	const std::string model_id = uam::strings::Trim(chat.model_id);
-	const std::string collaboration_model_id = model_id.empty() ? uam::strings::Trim(session.current_model_id) : model_id;
-	const std::string reasoning_effort = uam::codex::NormalizeReasoningEffort(chat.reasoning_effort);
-	const std::string service_tier = uam::codex::NormalizeServiceTier(chat.service_tier);
-	if (!model_id.empty())
+	if (!request.is_object() || request.value("method", "") != uam::acp_methods::kTurnStart || !request.contains("params") || !request["params"].is_object() || !request["params"].contains("input") || !request["params"]["input"].is_array() || request["params"]["input"].size() != 1 || !request["params"]["input"][0].is_object() || request["params"]["input"][0].value("type", "") != "text" || !request["params"]["input"][0]["text"].is_string() || !prepared.is_object() || !prepared.contains("message") || !prepared["message"].is_object() || !prepared["message"].contains("content") || !prepared["message"]["content"].is_array())
+		return fail();
+	const auto& content = prepared["message"]["content"];
+	if (content.size() < 2 || content.size() > 33 || !content[0].is_object() || content[0].value("type", "") != "text" || !content[0]["text"].is_string())
+		return fail();
+	const std::string& labeled_prompt = content[0]["text"].get_ref<const std::string&>();
+	if (!labeled_prompt.starts_with(request["params"]["input"][0]["text"].get_ref<const std::string&>()))
+		return fail();
+	auto input = request["params"]["input"];
+	input[0]["text"] = labeled_prompt;
+	for (std::size_t index = 1; index < content.size(); ++index)
 	{
-		params["model"] = model_id;
+		const auto& part = content[index];
+		if (!part.is_object() || part.value("type", "") != "image" || !part.contains("source") || !part["source"].is_object())
+			return fail();
+		const auto& source = part["source"];
+		if (source.value("type", "") != "base64" || !source.contains("data") || !source["data"].is_string() || source["data"].get_ref<const std::string&>().empty())
+			return fail();
+		const std::string mime = source.value("media_type", "");
+		if (mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/webp")
+			return fail();
+		input.push_back({{"type", "image"}, {"url", "data:" + mime + ";base64," + source["data"].get_ref<const std::string&>()}});
 	}
-	if (!reasoning_effort.empty())
-	{
-		params["effort"] = reasoning_effort;
-	}
-	if (chat.service_tier_explicit) params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
-
-	const std::string requested_mode_id = read_only ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;
-	if (!collaboration_model_id.empty())
-	{
-		nlohmann::json settings = {
-		    {"model", collaboration_model_id},
-		    {"reasoning_effort", uam::nlohmann_json::StringOrNull(reasoning_effort)},
-		    {"developer_instructions", nullptr},
-		};
-		params["collaborationMode"] = {
-		    {"mode", requested_mode_id},
-		    {"settings", std::move(settings)},
-		};
-	}
-
-	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kTurnStart, std::move(params));
+	request["params"]["input"] = std::move(input);
+	return true;
 }
 
 std::string CodexCliProviderRuntime::AcpTurnIdentity(const uam::AcpSessionState& session) const
@@ -807,20 +964,22 @@ std::string CodexCliProviderRuntime::AcpTurnIdentity(const uam::AcpSessionState&
 
 void CodexCliProviderRuntime::RestoreAcpTurnIdentity(uam::AcpSessionState& session, const std::string& identity) const
 {
-	if (session.codex_turn_id.empty()) session.codex_turn_id = identity;
+	if (session.codex_turn_id.empty())
+		session.codex_turn_id = identity;
 }
 
-nlohmann::json CodexCliProviderRuntime::OnAcpBuildSteer(uam::AcpSessionState& session,
-    int request_id, const std::string& prompt, std::string& out_method) const
+nlohmann::json CodexCliProviderRuntime::OnAcpBuildSteer(uam::AcpSessionState& session, int request_id, const std::string& prompt, std::string& out_method) const
 {
-	if (session.session_id.empty() || session.codex_turn_id.empty()) return nullptr;
+	if (session.session_id.empty() || session.codex_turn_id.empty())
+		return nullptr;
 	out_method = "turn/steer";
 	session.pending_steer_requests[std::to_string(request_id)].provider_turn_id = session.codex_turn_id;
-	return uam::acp_json_rpc::Request(request_id, out_method, {
-	    {"threadId", session.session_id},
-	    {"expectedTurnId", session.codex_turn_id},
-	    {"input", nlohmann::json::array({{{"type", "text"}, {"text", prompt}, {"text_elements", nlohmann::json::array()}}})},
-	});
+	return uam::acp_json_rpc::Request(request_id, out_method,
+	                                  {
+	                                      {"threadId", session.session_id},
+	                                      {"expectedTurnId", session.codex_turn_id},
+	                                      {"input", nlohmann::json::array({{{"type", "text"}, {"text", prompt}, {"text_elements", nlohmann::json::array()}}})},
+	                                  });
 }
 
 nlohmann::json CodexCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState& session,
@@ -839,13 +998,30 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionSt
 	return nullptr;
 }
 
-nlohmann::json CodexCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
-    const std::string& option_id, bool cancelled) const
+ProviderPermissionChoice CodexCliProviderRuntime::AcpPermissionChoice(const uam::AcpPendingPermissionState& pending, const uam::AcpPermissionOptionState& option) const
 {
-	const std::string kind = session.pending_permission.provider_request_kind;
+	if (uam::acp_permissions::IsCodexDecisionPermissionKind(pending.provider_request_kind) ||
+	    pending.provider_request_kind == uam::acp_permissions::kCodexPermissionsRequestKind)
+	{
+		if (option.kind == uam::acp_permissions::kCancelOptionKind && option.id == uam::acp_permissions::kCancelledOptionId) return ProviderPermissionChoice::Denied;
+		if (option.kind == uam::acp_permissions::kDecisionOptionKind)
+		{
+			if (uam::acp_permissions::IsDenyDecision(option.id, false) || option.id == uam::acp_permissions::kCancelDecision) return ProviderPermissionChoice::Denied;
+			if (option.id == uam::acp_permissions::kAcceptDecision) return ProviderPermissionChoice::AllowedOnce;
+			return ProviderPermissionChoice::Other;
+		}
+	}
+	return IProviderRuntime::AcpPermissionChoice(pending, option);
+}
+
+nlohmann::json CodexCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
+    const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const
+{
+	(void)session;
+	const std::string kind = pending.provider_request_kind;
 	const bool deny = uam::acp_permissions::IsDenyDecision(option_id, cancelled);
 	nlohmann::json response = uam::acp_json_rpc::SuccessResponse(
-	    uam::acp_detail::StableStringToJsonRpcId(session.pending_permission.request_id_json),
+	    uam::acp_detail::StableStringToJsonRpcId(pending.request_id_json),
 	    nlohmann::json::object());
 
 	if (uam::acp_permissions::IsCodexDecisionPermissionKind(kind))
@@ -855,11 +1031,11 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::
 	else if (kind == uam::acp_permissions::kCodexPermissionsRequestKind)
 	{
 		nlohmann::json permissions = nlohmann::json::object();
-		if (!deny && !session.pending_permission.codex_approval_payload_json.empty())
+		if (!deny && !pending.codex_approval_payload_json.empty())
 		{
 			try
 			{
-				const nlohmann::json payload = nlohmann::json::parse(session.pending_permission.codex_approval_payload_json);
+				const nlohmann::json payload = nlohmann::json::parse(pending.codex_approval_payload_json);
 				const nlohmann::json* parsed_permissions = uam::nlohmann_json::FindField(payload, "permissions");
 				if (parsed_permissions != nullptr)
 				{

@@ -6,3 +6,5 @@ Terminal View is the actual provider CLI running interactively in UAM’s embedd
 - [Session continuity](session-continuity.md)
 
 [Provider sessions](../../architecture/provider-sessions.md).
+
+Busy and Ready must come from evidence owned by that terminal and session. When native activity or input admission cannot be proven, display Unknown; an idle-looking screen or an unrelated server must not imply completion, and an idle terminal should not keep background observation processes running.

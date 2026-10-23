@@ -405,3 +405,443 @@ UAM_TEST(ClaudeDeliveryKeepsTinyAndAnimatedImagesWhileCompressingLargeStaticImag
 	UAM_ASSERT(uam::base64::Decode(message["message"]["content"][3]["source"]["data"].get<std::string>(), delivered)); UAM_ASSERT_EQ(delivered, medium);
 #endif
 }
+
+UAM_TEST(AttachmentPreviewIgnoresNonImageBytesWithoutCaching)
+{
+	uam_test::TempDir temp("attachment-preview-nonimage");
+	const std::string original(112 * 1024, 'x');
+	const std::filesystem::path original_path = temp.root / "ordinary.png";
+	UAM_ASSERT(uam::io::WriteBinaryFile(original_path, original));
+	UAM_ASSERT(uam::attachment_preview::Store(temp.root, original).empty());
+	UAM_ASSERT(uam::attachment_preview::Decode(original).png.empty());
+	UAM_ASSERT(uam::attachment_preview::PrepareDeliveryImage(original, original.size()).bytes.empty());
+	UAM_ASSERT(!std::filesystem::exists(temp.root / "attachment-previews"));
+	UAM_ASSERT_EQ(uam_test::ReadFile(original_path), original);
+	// A rejected ordinary file must not poison later recognized-image staging.
+	const std::string image = Png(8, 7);
+	const std::string key = uam::attachment_preview::Store(temp.root, image);
+	UAM_ASSERT(uam::attachment_preview::IsKey(key));
+	const uam::attachment_preview::Image preview = uam::attachment_preview::Decode(uam_test::ReadFile(temp.root / "attachment-previews" / (key + ".png")));
+	UAM_ASSERT_EQ(preview.width, 8u);
+	UAM_ASSERT_EQ(preview.height, 7u);
+	UAM_ASSERT_EQ(FirstPixelAlpha(preview.png), 128u);
+	UAM_ASSERT_EQ(uam_test::ReadFile(original_path), original);
+}
+
+// Owned-native preview cases are appended so the existing fixture/test prefix remains intact.
+#include "common/chat/native_attachment_assets.h"
+#include "common/chat/native_media_chat_save.h"
+
+#if defined(__APPLE__) || defined(_WIN32)
+namespace
+{
+	struct PreviewOriginal
+	{
+		std::string bytes;
+		std::string mime;
+	};
+
+	std::string PreviewOrientedJpeg()
+	{
+		std::string bytes;
+		UAM_ASSERT(uam::base64::Decode("/9j/4AAQSkZJRgABAQAAAQABAAD/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAYAAAAAAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAMDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxKiiivyo/0jP/2Q==", bytes));
+		return bytes;
+	}
+
+	MessageAttachment PreviewPendingOriginal(const PreviewOriginal& original, std::string id, std::string host)
+	{
+		MessageAttachment attachment;
+		attachment.id = std::move(id); attachment.name = "Native original"; attachment.kind = "image";
+		attachment.source = AttachmentSource::NativeInlinePending;
+		attachment.native_part_key = attachment.id;
+		attachment.native_tool_call_id = "native-tool";
+		attachment.native_source_field = "toolCalls/native-tool/result/0";
+		attachment.origin_execution_host_id = std::move(host);
+		std::string error;
+		attachment.native_inline_payload = uam::native_assets::MakeInlinePayload(uam::base64::Encode(original.bytes), original.mime,
+		    std::make_shared<uam::native_assets::PayloadBudget>(), error);
+		UAM_ASSERT(attachment.native_inline_payload && error.empty());
+		attachment.mime_type = attachment.native_inline_payload->MimeType();
+		attachment.content_digest = attachment.native_inline_payload->Digest();
+		attachment.size_bytes = attachment.native_inline_payload->DecodedSize();
+		return attachment;
+	}
+
+	ChatSession SavePreviewOriginals(const std::filesystem::path& root, const std::vector<PreviewOriginal>& originals,
+	    std::string first_id = "preview-part-0")
+	{
+		ChatSession chat;
+		chat.id = "saved-UAM-preview-owner"; chat.native_session_id = "separate-native-session";
+		chat.provider_id = "gemini-cli"; chat.execution_host_id = "saved-remote-origin";
+		chat.workspace_directory = uam::paths::Utf8PathString(root);
+		chat.created_at = "2026-10-16T12:00:00Z"; chat.updated_at = chat.created_at;
+		chat.messages.push_back(Message{MessageRole::User, "Saved native media"});
+		UAM_ASSERT(ChatRepository::SaveChat(root, chat));
+		const auto primary = AppPaths::UamChatFilePath(root, chat.id);
+		const auto before = uam_test::ReadFile(primary);
+		const auto revision = ChatRepository::ChatStorageRevision(root, chat.id);
+		UAM_ASSERT(revision);
+		for (std::size_t index = 0; index < originals.size(); ++index)
+			chat.messages.front().attachments.push_back(PreviewPendingOriginal(originals[index],
+			    index == 0 ? first_id : "preview-part-" + std::to_string(index), chat.execution_host_id));
+		std::string error;
+		auto save = uam::PreparedNativeMediaChatSave::Prepare(root, chat, *revision, error);
+		UAM_ASSERT(save && error.empty());
+		UAM_ASSERT_EQ(uam_test::ReadFile(primary), before);
+		UAM_ASSERT(!save->PrimaryAcknowledged());
+		UAM_ASSERT(!save->TakeCommittedChat());
+		UAM_ASSERT(save->Publish(error, [] { return true; }));
+		UAM_ASSERT(save->PrimaryAcknowledged());
+		UAM_ASSERT(save->AcknowledgeOriginals(error));
+		const auto committed = save->TakeCommittedChat(); UAM_ASSERT(committed);
+		save.reset();
+		const auto loaded = ChatRepository::LoadLocalChat(root, chat.id, true);
+		UAM_ASSERT(loaded && loaded->messages_loaded);
+		UAM_ASSERT_EQ(loaded->messages.front().attachments, committed->messages.front().attachments);
+		UAM_ASSERT_EQ(loaded->messages.front().attachments.size(), originals.size());
+		for (std::size_t index = 0; index < originals.size(); ++index)
+		{
+			const auto& attachment = loaded->messages.front().attachments[index];
+			UAM_ASSERT_EQ(attachment.source, AttachmentSource::OwnedNativeAsset);
+			UAM_ASSERT(!attachment.native_inline_payload && attachment.path.empty());
+			UAM_ASSERT(uam::native_assets::IsKeyForOwner(chat.id, attachment.native_asset_key));
+			UAM_ASSERT(!uam::native_assets::IsKeyForOwner(chat.native_session_id, attachment.native_asset_key));
+			const auto original = uam::native_assets::ReadOwned(root, chat.id, attachment.native_asset_key);
+			UAM_ASSERT(original.ok); UAM_ASSERT_EQ(original.bytes, originals[index].bytes);
+		}
+		return *loaded;
+	}
+
+	std::filesystem::path PreviewOriginalFile(const std::filesystem::path& root, const MessageAttachment& attachment)
+	{
+		std::filesystem::path original;
+		for (const auto& entry : std::filesystem::recursive_directory_iterator(root / std::string(uam::native_assets::kStoreDirectory)))
+			if (entry.path().filename() == attachment.content_digest + ".bin")
+			{
+				UAM_ASSERT(original.empty());
+				original = entry.path();
+			}
+		UAM_ASSERT(!original.empty());
+		return original;
+	}
+
+	void AssertBoundedOwnedPreview(const uam::attachment_preview::Image& image)
+	{
+		UAM_ASSERT(!image.png.empty());
+		UAM_ASSERT(image.png.size() <= uam::attachment_preview::kMaxPreviewBytes);
+		UAM_ASSERT(image.width > 0 && image.width <= uam::attachment_preview::kMaxPreviewSide);
+		UAM_ASSERT(image.height > 0 && image.height <= uam::attachment_preview::kMaxPreviewSide);
+		UAM_ASSERT_EQ(uam::attachment_preview::ImageMime(image.png), std::string("image/png"));
+	}
+}
+
+UAM_TEST(AttachmentPreviewOwnedPrimarySaveDecodesPngAndOrientedJpeg)
+{
+	uam_test::TempDir temp("owned-preview-originals");
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(2048, 512), "image/png"}, {PreviewOrientedJpeg(), "image/jpeg"},
+	    {Png(1024, 1024, true), "image/png"}});
+	const auto& attachments = chat.messages.front().attachments;
+	// Remote provenance does not prevent reading originals already owned by this controller.
+	const auto png = uam::attachment_preview::Read(temp.root, attachments[0], false, chat.id);
+	AssertBoundedOwnedPreview(png); UAM_ASSERT_EQ(png.width, 1024u); UAM_ASSERT_EQ(png.height, 256u);
+	const auto jpeg = uam::attachment_preview::Read(temp.root, attachments[1], false, chat.id);
+	AssertBoundedOwnedPreview(jpeg); UAM_ASSERT_EQ(jpeg.width, 2u); UAM_ASSERT_EQ(jpeg.height, 3u);
+	const auto noisy = uam::attachment_preview::Read(temp.root, attachments[2], false, chat.id);
+	AssertBoundedOwnedPreview(noisy);
+	UAM_ASSERT(noisy.width < 1024 && noisy.height < 1024);
+	// Reading originals does not create derived preview cache entries.
+	UAM_ASSERT(!std::filesystem::exists(temp.root / "attachment-previews"));
+	for (const auto& attachment : attachments) UAM_ASSERT(attachment.preview_key.empty());
+}
+
+UAM_TEST(AttachmentPreviewOwnedRequiresExactSavedOwner)
+{
+	uam_test::TempDir temp("owned-preview-owner");
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(6, 4), "image/png"}});
+	auto attachment = chat.messages.front().attachments.front();
+	attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(attachment.preview_key));
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+	// Existing three-argument callers retain legacy behavior but gain no owned-original authority.
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, true).png.empty());
+	for (const auto& owner : {std::string{}, std::string("unknown-UAM-owner"), chat.native_session_id})
+	{
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, true, owner).png.empty());
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, owner).png.empty());
+	}
+	attachment.preview_key.clear();
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, true, chat.native_session_id).png.empty());
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+}
+
+UAM_TEST(AttachmentPreviewOwnedCacheRequiresVerifiedOriginal)
+{
+	uam_test::TempDir temp("owned-preview-original-integrity");
+	const std::string bytes = Png(6, 4);
+	const auto chat = SavePreviewOriginals(temp.root, {{bytes, "image/png"}});
+	auto attachment = chat.messages.front().attachments.front();
+	attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(attachment.preview_key));
+	const auto cached = uam::attachment_preview::Read(temp.root, attachment, false, chat.id);
+	AssertBoundedOwnedPreview(cached); UAM_ASSERT_EQ(cached.width, 9u); UAM_ASSERT_EQ(cached.height, 7u);
+	const auto original = PreviewOriginalFile(temp.root, attachment);
+	std::string changed = bytes; changed.back() ^= 1;
+	UAM_ASSERT(uam::io::WriteBinaryFile(original, changed));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	UAM_ASSERT(uam::io::WriteBinaryFile(original, bytes));
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+	std::filesystem::resize_file(original, uam::attachment_preview::kMaxSourceBytes + 1);
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	UAM_ASSERT(uam::io::WriteBinaryFile(original, bytes));
+	UAM_ASSERT(std::filesystem::remove(original));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	// The independent derived cache is still readable through the unchanged legacy route.
+	MessageAttachment legacy; legacy.mime_type = "image/png"; legacy.preview_key = attachment.preview_key;
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, legacy, false));
+}
+
+UAM_TEST(AttachmentPreviewOwnedExplicitCacheNeverFallsBack)
+{
+	uam_test::TempDir temp("owned-preview-explicit-cache");
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(6, 4), "image/png"}});
+	auto attachment = chat.messages.front().attachments.front();
+	const auto key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(key));
+	attachment.preview_key = key;
+	UAM_ASSERT_EQ(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).width, 9u);
+	attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(5, 3));
+	UAM_ASSERT(uam::attachment_preview::IsKey(attachment.preview_key));
+	UAM_ASSERT_EQ(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).width, 5u);
+	attachment.preview_key = "../outside";
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	attachment.preview_key = std::string(64, '0');
+	UAM_ASSERT(attachment.preview_key != key);
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	attachment.preview_key = key;
+	const auto cached = temp.root / "attachment-previews" / (key + ".png");
+	UAM_ASSERT(uam::io::WriteBinaryFile(cached, Png(8, 2)));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	UAM_ASSERT(std::filesystem::remove(cached));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	attachment.preview_key.clear();
+	const auto original = uam::attachment_preview::Read(temp.root, attachment, false, chat.id);
+	AssertBoundedOwnedPreview(original); UAM_ASSERT_EQ(original.width, 6u); UAM_ASSERT_EQ(original.height, 4u);
+}
+
+UAM_TEST(AttachmentPreviewProhibitedSourcesRejectReadableCacheAndLocalPaths)
+{
+	uam_test::TempDir temp("owned-preview-no-source-fallback");
+	const auto path = temp.root / "readable-origin.png";
+	UAM_ASSERT(uam::io::WriteBinaryFile(path, Png(4, 5)));
+	MessageAttachment legacy; legacy.id = "legacy-image"; legacy.name = "image.png"; legacy.mime_type = "image/png";
+	legacy.path = uam::paths::Utf8PathString(path); legacy.preview_origin_path = legacy.path;
+	legacy.preview_key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(legacy.preview_key));
+	UAM_ASSERT_EQ(uam::attachment_preview::Read(temp.root, legacy, false).width, 9u);
+	auto local_only = legacy; local_only.preview_key.clear();
+	UAM_ASSERT_EQ(uam::attachment_preview::Read(temp.root, local_only, true).width, 4u);
+	for (const auto source : {AttachmentSource::NativeInlinePending, AttachmentSource::ProviderUri,
+	         AttachmentSource::LegacyPath, static_cast<AttachmentSource>(999)})
+	{
+		auto prohibited = legacy; prohibited.source = source;
+		prohibited.source_uri = "file://" + legacy.path;
+		for (const bool local : {false, true})
+		{
+			UAM_ASSERT(uam::attachment_preview::Read(temp.root, prohibited, local, "saved-UAM-preview-owner").png.empty());
+			auto no_cache = prohibited; no_cache.preview_key.clear();
+			UAM_ASSERT(uam::attachment_preview::Read(temp.root, no_cache, local, "saved-UAM-preview-owner").png.empty());
+		}
+	}
+	// Pure pathless native inputs are also unavailable, even when a cache key is injected.
+	auto pending = PreviewPendingOriginal({Png(2, 3), "image/png"}, "pending-part", "local");
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, pending, true, "saved-UAM-preview-owner").png.empty());
+	pending.preview_key = legacy.preview_key;
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, pending, true, "saved-UAM-preview-owner").png.empty());
+	MessageAttachment uri; uri.id = "uri-part"; uri.name = "External image"; uri.mime_type = "image/png";
+	uri.source = AttachmentSource::ProviderUri; uri.native_part_key = "v1:opaque-uri";
+	for (const auto& reference : {std::string("https://assets.invalid/original.png"), std::string("file://") + legacy.path,
+	         legacy.path, std::string("provider:opaque/image")})
+	{
+		uri.source_uri = reference;
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, uri, true, "saved-UAM-preview-owner").png.empty());
+		uri.preview_key = legacy.preview_key;
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, uri, true, "saved-UAM-preview-owner").png.empty());
+		uri.preview_key.clear();
+	}
+	UAM_ASSERT(!std::filesystem::exists(temp.root / std::string(uam::native_assets::kStoreDirectory)));
+	UAM_ASSERT_EQ(uam_test::ReadFile(path), Png(4, 5));
+}
+
+UAM_TEST(AttachmentPreviewOwnedRejectsMixedAndInconsistentMetadata)
+{
+	uam_test::TempDir temp("owned-preview-metadata");
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(6, 4), "image/png"}});
+	auto attachment = chat.messages.front().attachments.front();
+	attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	const auto readable = temp.root / "readable.png";
+	UAM_ASSERT(uam::io::WriteBinaryFile(readable, Png(4, 5)));
+	const auto reject = [&](const MessageAttachment& invalid)
+	{
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, invalid, true, chat.id).png.empty());
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, invalid, false, chat.id).png.empty());
+	};
+	auto invalid = attachment; invalid.path = uam::paths::Utf8PathString(readable); reject(invalid);
+	invalid = attachment; invalid.preview_origin_path = uam::paths::Utf8PathString(readable); reject(invalid);
+	invalid = attachment; invalid.source_uri = "file://" + uam::paths::Utf8PathString(readable); reject(invalid);
+	invalid = attachment; invalid.copied = true; reject(invalid);
+	invalid = attachment; invalid.native_part_key.clear(); reject(invalid);
+	invalid = attachment; invalid.id.assign(16385, 'i'); reject(invalid);
+	invalid = attachment; invalid.native_asset_key = "../outside"; reject(invalid);
+	invalid = attachment; ++invalid.size_bytes; reject(invalid);
+	invalid = attachment; invalid.size_bytes = uam::attachment_preview::kMaxSourceBytes + 1; reject(invalid);
+	invalid = attachment; invalid.content_digest.front() = invalid.content_digest.front() == '0' ? '1' : '0'; reject(invalid);
+	invalid = attachment; invalid.mime_type = "image/jpeg"; reject(invalid);
+	invalid = attachment; invalid.mime_type = "image/gif"; reject(invalid);
+	invalid = attachment; invalid.native_inline_payload = PreviewPendingOriginal({Png(2, 3), "image/png"}, "pending", "local").native_inline_payload; reject(invalid);
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+}
+
+UAM_TEST(AttachmentPreviewOwnedRequiresAttemptAndDeclarationBeforeCache)
+{
+	uam_test::TempDir temp("owned-preview-publication-proof");
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(6, 4), "image/png"}});
+	auto attachment = chat.messages.front().attachments.front();
+	attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(attachment.preview_key));
+	const auto generation = PreviewOriginalFile(temp.root, attachment).parent_path();
+	const auto attempt_path = generation / "attempted.receipt";
+	const auto attempted = uam_test::ReadFile(attempt_path);
+	UAM_ASSERT(!attempted.empty()); UAM_ASSERT(std::filesystem::remove(attempt_path));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	UAM_ASSERT(uam::io::WriteBinaryFile(attempt_path, attempted));
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+	const auto manifest_path = generation / "prepared.receipt";
+	const auto manifest = uam_test::ReadFile(manifest_path);
+	const auto position = manifest.find(attachment.native_asset_key + '\n');
+	UAM_ASSERT(position != std::string::npos);
+	auto undeclared = manifest; undeclared.erase(position, attachment.native_asset_key.size() + 1);
+	UAM_ASSERT(uam::io::WriteBinaryFile(manifest_path, undeclared));
+	UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	UAM_ASSERT(uam::io::WriteBinaryFile(manifest_path, manifest));
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, attachment, false, chat.id));
+}
+
+UAM_TEST(AttachmentPreviewOwnedColdSnapshotRevalidatesProvenance)
+{
+	uam_test::TempDir temp("owned-preview-cold-provenance");
+	const std::string id(16384, 'p');
+	const auto chat = SavePreviewOriginals(temp.root, {{Png(6, 4), "image/png"}}, id);
+	auto cold = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(cold && !cold->messages_loaded && cold->messages.empty());
+	const auto captured = uam::attachment_preview::CaptureChatSnapshot(*cold, temp.root);
+	const auto resolved = uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, captured, 0, id);
+	UAM_ASSERT(resolved); UAM_ASSERT_EQ(resolved->attachment, chat.messages.front().attachments.front());
+	AssertBoundedOwnedPreview(uam::attachment_preview::Read(temp.root, resolved->attachment, false, captured.chat_id));
+	UAM_ASSERT(!cold->messages_loaded && cold->messages.empty());
+	UAM_ASSERT(uam::attachment_preview::MatchesCurrentAttachmentSnapshot(*cold, captured, 0, id, *resolved));
+	UAM_ASSERT(uam::attachment_preview::MatchesCurrentAttachmentSnapshot(chat, captured, 0, id, *resolved));
+	const auto reject = [&](const MessageAttachment& changed)
+	{
+		auto current = chat; current.messages.front().attachments.front() = changed;
+		UAM_ASSERT(!uam::attachment_preview::MatchesCurrentAttachmentSnapshot(current, captured, 0, id, *resolved));
+	};
+	const auto attachment = resolved->attachment;
+	auto changed = attachment; changed.source = AttachmentSource::ProviderUri; reject(changed);
+	changed = attachment; changed.source_uri = "provider:changed"; reject(changed);
+	changed = attachment; changed.origin_execution_host_id = "different-origin"; reject(changed);
+	changed = attachment; changed.native_part_key += "changed"; reject(changed);
+	changed = attachment; changed.native_tool_call_id += "changed"; reject(changed);
+	changed = attachment; changed.native_source_field += "changed"; reject(changed);
+	changed = attachment; changed.native_asset_key += "changed"; reject(changed);
+	changed = attachment; changed.content_digest.front() = changed.content_digest.front() == '0' ? '1' : '0'; reject(changed);
+	changed = attachment; ++changed.size_bytes; reject(changed);
+	changed = attachment; changed.preview_key = std::string(64, 'a'); reject(changed);
+	auto duplicate = chat; duplicate.messages.front().attachments.push_back(attachment);
+	UAM_ASSERT(!uam::attachment_preview::MatchesCurrentAttachmentSnapshot(duplicate, captured, 0, id, *resolved));
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, captured, 1, id));
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, captured, 0, "missing"));
+	cold->persisted_messages_digest += "changed";
+	UAM_ASSERT(!uam::attachment_preview::MatchesCurrentAttachmentSnapshot(*cold, captured, 0, id, *resolved));
+	auto replacement = chat; replacement.messages.front().attachments.front().native_source_field += "/new-association";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, replacement));
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, captured, 0, id));
+}
+
+UAM_TEST(AttachmentPreviewOwnedUnsupportedOriginalsRejectDerivedCache)
+{
+	uam_test::TempDir temp("owned-preview-unsupported");
+	std::string gif; UAM_ASSERT(uam::base64::Decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", gif));
+	const auto chat = SavePreviewOriginals(temp.root, {{"not an image", "image/png"}, {gif, "image/gif"}, {Png(3, 2), "image/jpeg"}});
+	const auto key = uam::attachment_preview::Store(temp.root, Png(9, 7));
+	UAM_ASSERT(uam::attachment_preview::IsKey(key));
+	for (auto attachment : chat.messages.front().attachments)
+	{
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+		attachment.preview_key = key;
+		UAM_ASSERT(uam::attachment_preview::Read(temp.root, attachment, false, chat.id).png.empty());
+	}
+}
+#endif
+
+
+// Public owned-original byte-builder control; no provider/process authority is created here.
+#include "common/provider/structured_attachments.h"
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(_WIN32))
+UAM_TEST(ClaudeSavedOwnedRetryCompressesLargeOriginalWithinRemoteWireBudget)
+{
+	uam_test::TempDir temp("claude-owned-retry-compression");
+	const std::string original = Png(1024, 1024, true);
+	constexpr std::size_t limit = 2 * 1024 * 1024 - 16 * 1024;
+	UAM_ASSERT(original.size() > 2 * 1024 * 1024);
+	// Existing public fixture publishes and ACKs the real originals, reloads
+	// their exact saved associations and checks ReadOwned against these bytes.
+	// Its provider label is DATA only; this test calls no runtime or transport.
+	const ChatSession chat = SavePreviewOriginals(temp.root, {{original, "image/png"}});
+	const auto& attachments = chat.messages.front().attachments;
+	UAM_ASSERT_EQ(attachments.size(), std::size_t{1});
+	UAM_ASSERT(attachments.front().source == AttachmentSource::OwnedNativeAsset);
+	UAM_ASSERT(attachments.front().path.empty() && !attachments.front().native_inline_payload);
+	UAM_ASSERT_EQ(attachments.front().origin_execution_host_id, chat.execution_host_id);
+	UAM_ASSERT_EQ(attachments.front().size_bytes, original.size());
+	const auto asset = PreviewOriginalFile(temp.root, attachments.front());
+	const auto primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const auto summary = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	const std::string primary_before = uam_test::ReadFile(primary);
+	const std::string summary_before = uam_test::ReadFile(summary);
+	UAM_ASSERT_EQ(uam_test::ReadFile(asset), original);
+	const auto owned_before = uam::native_assets::ReadOwned(temp.root, chat.id, attachments.front().native_asset_key);
+	UAM_ASSERT(owned_before.ok && owned_before.bytes == original);
+	const std::string prompt = "Inspect this retained original.\n\"Quoted\" text and \\ path.";
+	std::string error;
+	const auto message = uam::claude_input::BuildSavedImageRetry(temp.root, chat.id,
+	    uam::paths::PathFromUtf8(chat.workspace_directory), prompt, attachments, error, {},
+	    uam::claude_input::SavedImageSourcePolicy::OwnedImagesOnly, limit);
+	UAM_ASSERT(error.empty() && !message.is_null());
+	UAM_ASSERT(message.dump().size() + 1 <= limit);
+	const auto& content = message.at("message").at("content");
+	UAM_ASSERT_EQ(content.size(), std::size_t{2});
+	UAM_ASSERT_EQ(content[0].at("type"), nlohmann::json("text"));
+	UAM_ASSERT_EQ(content[0].at("text"), nlohmann::json(prompt +
+	    "\nImage 1 (native image-block order): " + nlohmann::json(attachments.front().name).dump()));
+	UAM_ASSERT_EQ(content[1].at("type"), nlohmann::json("image"));
+	const auto& source = content[1].at("source");
+	UAM_ASSERT_EQ(source.at("type"), nlohmann::json("base64"));
+	std::string delivered;
+	UAM_ASSERT(uam::base64::Decode(source.at("data").get<std::string>(), delivered));
+	UAM_ASSERT(!delivered.empty() && delivered.size() < original.size() && delivered != original);
+	const auto decoded = uam::attachment_preview::Decode(delivered);
+	UAM_ASSERT(!decoded.png.empty() && decoded.width > 0 && decoded.height > 0);
+	UAM_ASSERT(decoded.width <= 1024 && decoded.height <= 1024);
+	UAM_ASSERT_EQ(source.at("media_type"), nlohmann::json(uam::attachment_preview::ImageMime(delivered)));
+	UAM_ASSERT(!uam::attachment_preview::ImageMime(delivered).empty());
+	const auto after = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(after && after->messages == chat.messages);
+	UAM_ASSERT_EQ(after->execution_host_id, chat.execution_host_id);
+	UAM_ASSERT_EQ(after->messages.front().attachments, attachments);
+	const auto owned_after = uam::native_assets::ReadOwned(temp.root, chat.id, attachments.front().native_asset_key);
+	UAM_ASSERT(owned_after.ok && owned_after.bytes == original);
+	UAM_ASSERT_EQ(uam_test::ReadFile(asset), original);
+	UAM_ASSERT_EQ(uam_test::ReadFile(primary), primary_before);
+	UAM_ASSERT_EQ(uam_test::ReadFile(summary), summary_before);
+}
+#endif

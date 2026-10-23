@@ -2,6 +2,8 @@
 
 The composer is the place to prepare and send input for the current chat, with its provider, model, agent, permissions and supported reasoning or speed choices. Draft content and context belong to the selected chat. Empty new chats centre the composer; after the first send it moves into the normal transcript layout. Controls must reflect actual capabilities and retained drafts must survive recoverable errors.
 
+A confirmed send clears only the submitted draft and resources, including when the chat was switched or remounted while acknowledgement was pending; newer text and resources remain. An unconfirmed send retains the draft so its saved state can be checked before retrying.
+
 - [Attachments](attachments.md)
 - [Voice input](voice-input.md)
 - [Workspace actions](workspace-actions.md)

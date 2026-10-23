@@ -6,6 +6,7 @@
 #include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
+#include "common/platform/async_byte_writer.h"
 #include "common/provider/provider_profile.h"
 
 #include <nlohmann/json.hpp>
@@ -20,8 +21,17 @@
 #include <string_view>
 #include <vector>
 
+struct SavedChatPrimaryWitness;
+namespace uam { struct ManagedResultPromptInput; }
+class StoppedChatLaunchStorageReceipt;
+struct StoppedChatLaunchPublicationResult;
+namespace uam::platform { class PublishedFileChangeWitness; }
+
 namespace uam::acp_detail
 {
+bool BeginManagedResultPrompt(AppState&, AcpSessionState&, ChatSession&,
+    std::shared_ptr<const ManagedResultPromptInput>, const SavedChatPrimaryWitness&);
+
 
 WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 
@@ -120,13 +130,23 @@ struct AcpResponseFailureDetails
 };
 
 // ACP wire I/O
-bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out = nullptr);
+bool WriteAcpMessage(AcpSessionState& session, const nlohmann::json& message, std::string* error_out = nullptr,
+    std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt>* sink_receipt = nullptr,
+    std::string* exact_observed_bytes = nullptr);
+bool WriteLocalAcpPromptWithObservation(AppState& app, AcpSessionState& session, ChatSession& chat,
+    const nlohmann::json& message, const std::string& method, int request_id,
+    const std::vector<std::size_t>& authored_rows);
+// Owner-thread only; never invokes retry or provider input.
+bool PollLocalInputWriteObservations(AppState& app);
+std::string SerializeStructuredMessage(const AcpSessionState& session, const nlohmann::json& message);
 
 // Permission handler helpers
 void SendJsonRpcError(AcpSessionState& session, const nlohmann::json& id, int code, const std::string& message);
 nlohmann::json BuildGenericPermissionOutcomeResult(const std::string& option_id, bool cancelled);
 void RecordAcpPermissionDecision(AcpSessionState& session, const std::string& option_id, bool cancelled);
 bool SendPermissionResponse(AcpSessionState& session, const std::string& request_id_json, const std::string& option_id, bool cancelled, std::string* error_out = nullptr);
+bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out);
+bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
@@ -169,6 +189,20 @@ MessagePlanEntry PersistedPlanEntryFromAcpPlanEntry(const AcpPlanEntryState& ent
 std::vector<MessagePlanEntry> PersistedPlanEntriesFromAcpPlanEntries(const std::vector<AcpPlanEntryState>& entries);
 bool MessagePlanEntriesEqual(const std::vector<MessagePlanEntry>& lhs, const std::vector<MessagePlanEntry>& rhs);
 bool SyncAcpPlanToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
+
+// Native completion proof is consumed only by an owned full save, never by an outbox ACK.
+struct CompletedAcpPromptRecoverySave
+{
+	std::shared_ptr<PendingAcpCompletedPromptRecoveries> owner;
+	std::vector<AcpUnsentPromptRecovery> records;
+};
+void RecordCompletedAcpPromptRecoveries(AppState& app, const AcpSessionState& session, const ChatSession& chat);
+CompletedAcpPromptRecoverySave PrepareCompletedAcpPromptRecoverySave(AppState& app, const ChatSession& chat);
+bool CompletedAcpPromptRecoverySaveIsOwned(const AppState& app, const ChatSession& chat, const CompletedAcpPromptRecoverySave& candidate);
+void ApplyCompletedAcpPromptRecoverySave(ChatSession& chat, const CompletedAcpPromptRecoverySave& candidate);
+void CommitCompletedAcpPromptRecoverySave(AppState& app, const ChatSession& chat, const CompletedAcpPromptRecoverySave& candidate);
+bool HasCompletedAcpPromptRecoveries(const AppState& app, const ChatSession& chat);
+void ScheduleCompletedAcpPromptRecoverySaveIfReady(AppState& app, std::string_view chat_id);
 
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
@@ -307,6 +341,8 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 void RestoreRemoteAcpRequests(AcpSessionState& session, const ChatSession& chat);
 void RetireRemoteAcpRequests(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool WriteRemoteAcpRequest(AcpSessionState& session, const AcpRemotePendingRequestState& request);
+/// <summary>Validate captured transport ownership before restart admission or process control.</summary>
+bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
@@ -316,12 +352,23 @@ bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState
 bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
     const std::string& agent_id, const std::string& snapshot, const std::string& capability,
     std::string* error_out = nullptr);
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
+bool SavedImageRetrySourceMatches(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const SavedImageRetryPermission& permission);
+void RevokeSavedImageRetry(AcpSessionState& session);
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr);
+/// <summary>Apply the same captured instructions and current MCP authority to initial and replacement setup.</summary>
+bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
+    const std::string& cwd, nlohmann::json& request);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat);
-bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Only a definite pre-delivery transport failure may retain transport reconnect/FIFO policy.</summary>
+enum class AcpPromptFailurePurpose
+{
+	Admission,
+	Transport
+};
+bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPromptFailurePurpose* failure_purpose = nullptr);
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
@@ -330,8 +377,16 @@ bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& se
 /// <summary>Blocks local prompt transport until the full native-binding receipt commits.</summary>
 bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat);
 std::string LocalSessionReceiptOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+/// Pure selected execution context; active-turn form binds actual admitted policy.
+std::string SavedImageRetryExecutionOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, bool active_turn = false);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
-bool SaveChatQuietly(AppState& app, const ChatSession& chat);
+/// <summary>Internal Stop preservation must not settle the queue it explicitly retains.</summary>
+enum class AcpChatSavePurpose
+{
+	SettleFailedDirect,
+	PreserveQueuedIntent
+};
+bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose purpose = AcpChatSavePurpose::SettleFailedDirect, SavedChatPrimaryWitness* own_primary = nullptr);
 /// <summary>Pending input may be retained locally; only Committed authorizes transport.</summary>
 enum class DurableAdmissionState { Pending, Committed, Failed };
 /// <summary>Binding receipts cannot reject an unrelated undelivered prompt on save failure.</summary>
@@ -339,6 +394,27 @@ enum class DurableAdmissionFailurePurpose { Prompt, BindingOnly };
 DurableAdmissionState BeginDurableAdmission(AppState& app, const ChatSession& chat,
     std::function<bool()> owned, std::function<void(DurableAdmissionState)> completion,
     DurableAdmissionFailurePurpose failure_purpose = DurableAdmissionFailurePurpose::Prompt);
+/// The actual full-publication bytes verified by its worker, never reconstructed from current storage.
+struct DurableBindingAdmissionReceipt
+{
+	DurableAdmissionState state = DurableAdmissionState::Failed;
+	std::string primary_revision, primary_sha256;
+	std::uint64_t primary_byte_count = 0;
+	std::shared_ptr<const uam::platform::PublishedFileChangeWitness> physical_primary;
+	// True only when preparation returned no candidate and no publication worker ever existed.
+	bool preparation_rejected_before_publication = false;
+};
+/// One-shot, exclusive, binding-only full save; no queue-only/force fallback or automatic restaging.
+DurableAdmissionState BeginDurableBindingAdmission(AppState& app, const ChatSession& chat,
+    const SavedChatPrimaryWitness& expected, std::function<bool()> owned,
+    std::function<void(DurableBindingAdmissionReceipt)> completion);
+/// Exclusive full publication derived only from an actual repository-owned predecessor.
+/// A committed result may lack a receipt after owner loss; publication facts are never relabelled.
+/// The caller supplies a pure owner-thread predicate and must invalidate before changing its owner.
+/// Storage receipt DATA alone never authorizes native launch or input.
+DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState& app, const ChatSession& candidate,
+    std::shared_ptr<const StoppedChatLaunchStorageReceipt> predecessor, std::function<bool()> still_owned,
+    std::function<void(StoppedChatLaunchPublicationResult)> completion);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
@@ -350,6 +426,8 @@ void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, Chat
 bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Changes scheduled-save ownership without altering the debounce deadline.</summary>
 void NoteChatSaveScheduled(AppState& app, const ChatSession& chat);
+// Read-only: ready but unconsumed save futures still own their publication/receipt boundary.
+bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
@@ -377,9 +455,9 @@ void UpdateAcpModelsFromJson(AcpSessionState& session, const nlohmann::json& mod
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
 bool ReplayPersistedInteractionResponseIfMatched(
     AppState& app, AcpSessionState& session, ChatSession& chat,
-    const nlohmann::json& request);
+    const nlohmann::json& request, const AcpPendingPermissionState* pending = nullptr);
 std::string DiscoveryWorkspace(const AppState& app, const ChatSession& chat);
-void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, const ChatSession& chat);
+void RememberDiscoveredModels(AppState& app, AcpSessionState& session, const ChatSession& chat);
 void StopBackgroundModelDiscovery(AppState& app, AcpSessionState& session);
 
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);

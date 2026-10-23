@@ -3,7 +3,7 @@
 
 import { ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ConversationTurn } from './ConversationTurn'
+import { ConversationTurn, type ConversationDelivery } from './ConversationTurn'
 import { useSubAgentDisclosure } from './ConversationWork'
 import { useToolQuestionDialog } from './useToolQuestionDialog'
 import './ToolDetails.css'
@@ -425,7 +425,7 @@ function ToolCallDetails({
 				? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
 				: page.content)
 			.join('')
-		: tool.content || 'No tool output yet.'
+		: tool.content || (tool.contentDeferred && !chatId ? 'Tool output was not included in this stored transcript.' : 'No tool output yet.')
   )
   const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
   const toolCopyText = cleanToolOutput(contentPages.length
@@ -703,10 +703,14 @@ export function MessageFrame({
   actionsDisabled = false,
   streaming = false,
   goalReview = false,
+  delivery,
+  deliveryActions,
 }: {
   role: Message['role']
   children: ReactNode
   assistantLabel: string
+  delivery?: ConversationDelivery
+  deliveryActions?: ReactNode
   branchLabel?: string
   branchNavigation?: {
     current: number
@@ -725,7 +729,8 @@ export function MessageFrame({
     return <ConversationTurn role={role} assistantLabel={assistantLabel}
       branchLabel={branchLabel} branchNavigation={branchNavigation} onEdit={onEdit} onRevert={onRevert}
       revertLabel={revertLabel}
-      actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}>{children}</ConversationTurn>
+      actionsDisabled={actionsDisabled} streaming={streaming} goalReview={goalReview}
+      delivery={delivery} deliveryActions={deliveryActions}>{children}</ConversationTurn>
   }
   const accent = goalReview ? 'var(--purple)' : roleAccent(role)
   return (

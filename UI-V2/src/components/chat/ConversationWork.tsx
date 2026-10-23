@@ -9,10 +9,10 @@ import './conversation.css'
 
 const SubAgentDisclosureContext = createContext<Set<string> | null>(null)
 
-/** Keep expanded children across live/saved row replacement, only for this mounted chat. */
-export function SubAgentDisclosureProvider({ children }: { children: ReactNode }) {
-  const [expandedTools] = useState(() => new Set<string>())
-  return <SubAgentDisclosureContext.Provider value={expandedTools}>{children}</SubAgentDisclosureContext.Provider>
+/** Keep explicit child disclosures across row replacement and a parent pane visit. */
+export function SubAgentDisclosureProvider({ children, expandedTools }: { children: ReactNode; expandedTools?: Set<string> }) {
+  const [localTools] = useState(() => new Set<string>())
+  return <SubAgentDisclosureContext.Provider value={expandedTools ?? localTools}>{children}</SubAgentDisclosureContext.Provider>
 }
 
 export function useSubAgentDisclosure(toolId: string) {

@@ -1,5 +1,6 @@
 #include "common/config/provider_availability.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/runtime/terminal_polling.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -413,6 +414,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	}
 
 	CloseCliTerminalHandles(terminal);
+	if (terminal.native_history_generation) terminal.native_history_generation->stopped.store(true, std::memory_order_release);
 	terminal.running = false;
 	terminal.native_identity_query_phase = 0;
 	terminal.native_identity_output.clear();
@@ -505,15 +507,9 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	return true;
 }
 
-void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal)
+void SyncCliTerminalToNativeHistory(AppState& app, const CliTerminalState& terminal, bool wait_for_stop)
 {
-	const ChatSession* chat = ChatDomainService().FindChatById(app, terminal.attached_chat_id);
-	if (chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId) return;
-	const std::string sync_target_id = CliTerminalSyncTargetId(terminal);
-	if (!sync_target_id.empty())
-	{
-		SyncChatsFromNative(app, sync_target_id, true);
-	}
+	(void)SyncChatsFromFinalCliTerminal(app, terminal, wait_for_stop);
 }
 
 bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, bool sync_to_history)
@@ -527,7 +523,7 @@ bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 
 		if (sync_to_history)
 		{
-			SyncCliTerminalToNativeHistory(app, *terminal);
+			SyncCliTerminalToNativeHistory(app, *terminal, true);
 		}
 
 		StopCliTerminal(*terminal, true, CliTerminalStopMode::FastExit);
@@ -535,6 +531,9 @@ bool StopAndEraseCliTerminalForChat(AppState& app, std::string_view chat_id, boo
 	};
 
 	std::erase_if(app.cli_terminals, matches_chat_terminal);
+	// Includes sync=false delete/provider-switch. Keep a parser key while any
+	// other real running terminal consumes it; never cancel a final receipt.
+	SweepTerminalNativeChatLoads(app);
 	return std::ranges::none_of(app.cli_terminals, [chat_id](const std::unique_ptr<CliTerminalState>& terminal)
 	{
 		return terminal != nullptr && CliTerminalMatchesChatId(*terminal, chat_id);
@@ -554,6 +553,7 @@ void ClearStoppedCliTerminalAttachmentForChat(AppState& app, std::string_view ch
 		if (terminal != nullptr && !terminal->running && CliTerminalMatchesChatId(*terminal, target_chat_id))
 		{
 			StopCliTerminal(*terminal, true);
+			SweepTerminalNativeChatLoads(app);
 		}
 	}
 }
@@ -564,10 +564,11 @@ void StopAllCliTerminals(AppState& app, bool clear_identity)
 	{
 		if (terminal != nullptr)
 		{
-			SyncCliTerminalToNativeHistory(app, *terminal);
+			SyncCliTerminalToNativeHistory(app, *terminal, true);
 			StopCliTerminal(*terminal, clear_identity);
 		}
 	}
+	SweepTerminalNativeChatLoads(app);
 }
 
 void FastStopCliTerminalsForExit(AppState& app)
@@ -579,9 +580,10 @@ void FastStopCliTerminalsForExit(AppState& app)
 			continue;
 		}
 
-		SyncCliTerminalToNativeHistory(app, *terminal_ptr);
+		SyncCliTerminalToNativeHistory(app, *terminal_ptr, true);
 		StopCliTerminal(*terminal_ptr, true, CliTerminalStopMode::FastExit);
 	}
+	SweepTerminalNativeChatLoads(app);
 }
 
 } // namespace uam

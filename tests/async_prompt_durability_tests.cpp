@@ -1534,7 +1534,7 @@ static void CheckColdLocalConfigurationAdmission(std::string_view variation, boo
 	const fs::path provider_input = temp.root / "private-provider-input.jsonl";
 	const fs::path prompt_log = temp.root / "private-provider-prompts.jsonl";
 #if defined(_WIN32)
-	const fs::path shim = temp.root / "opencode.cmd";
+	const fs::path shim = temp.root / "fixture-opencode-acp.cmd";
 	const fs::path script = temp.root / "provider-fixture.ps1";
 	UAM_ASSERT(uam::io::WriteTextFile(shim, "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0provider-fixture.ps1\"\r\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(script, R"(
@@ -1571,7 +1571,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
 )"));
 	const char separator = ';';
 #else
-	const fs::path shim = temp.root / "opencode";
+	const fs::path shim = temp.root / "fixture-opencode-acp";
 	UAM_ASSERT(uam::io::WriteTextFile(shim, R"(#!/bin/sh
 held_id=
 held_once=0
@@ -1615,6 +1615,11 @@ done
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	// This fixture implements ACP only. Identify its custom wrapper explicitly so
+	// queue/configuration receipts do not impersonate the native HTTP companion.
+	ProviderProfile* fixture_profile = ProviderProfileStore::FindById(app.provider_profiles, "opencode-cli");
+	UAM_ASSERT(fixture_profile != nullptr);
+	fixture_profile->interactive_command = uam::shell::JoinEscapedArgs({uam::paths::Utf8PathString(shim)});
 	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
 	app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "uam";
 	app.settings.central_provider_configuration.enabled = true;
@@ -1666,7 +1671,7 @@ done
 	for (int index = 1; index < history_count; ++index)
 		app.chats.front().messages.push_back({.role = MessageRole::Assistant,
 		    .content = std::to_string(index) + std::string(128 * 1024, 'x')});
-	std::string expected_hash = "opencode-cli:builtin-build-v1";
+	std::string expected_hash = "opencode-cli:builtin-build-v2";
 	if (app.chats.front().uam_agent_id == "workspace-47")
 		expected_hash = "opencode-cli:fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(ReadFile(temp.root / ".uam/agents/workspace-47.md")));
 	ScopedEnvVar binding_hash("UAM_TEST_COLD_AGENT_HASH", expected_hash);
@@ -2226,6 +2231,7 @@ done
 	if (variation.empty() && !app.acp_sessions.front()->last_error.empty())
 		throw std::runtime_error("Cold configuration launch failed: " + app.acp_sessions.front()->last_error);
 	UAM_ASSERT(completed);
+	UAM_ASSERT(!app.acp_sessions.front()->opencode_native_companion);
 	if (scope_override) UAM_ASSERT(configuration_worker_used);
 	if (scope_disabled) UAM_ASSERT(!configuration_worker_used);
 	if (scope_override || scope_disabled) UAM_ASSERT(session_receipt_used);
@@ -2244,7 +2250,7 @@ done
 	{
 		// Native OpenCode adapters own the captured instructions; the inline-injection marker stays empty.
 		UAM_ASSERT(durable->last_prompt_agent_definition_hash.empty());
-		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_definition_hash, std::string("builtin-build-v1"));
+		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_definition_hash, std::string("builtin-build-v2"));
 		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability, std::string("opencode-native-agent-config"));
 	}
 	else UAM_ASSERT_EQ(durable->last_prompt_agent_definition_hash, expected_hash);

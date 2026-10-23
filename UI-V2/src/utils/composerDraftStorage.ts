@@ -1,6 +1,8 @@
+import { attachmentsEquivalent } from '../store/cpp/reconcile'
 import type { ContextReference } from '../types/contextReference'
 import { sanitizeContextReferences } from './contextReferences'
 import type { Attachment } from '../types/message'
+import { sanitizeAttachment } from '../store/cpp/sanitizers'
 
 export interface ChatComposerDraft {
   text: string
@@ -25,7 +27,9 @@ function attachment(value: unknown): Attachment | null {
   if (!value || typeof value !== 'object') return null
   const item = value as Partial<Attachment>
   if (typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.type !== 'string' || typeof item.size !== 'number') return null
-  return { id: item.id, name: item.name, type: item.type, size: item.size, ...(typeof item.mimeType === 'string' ? { mimeType: item.mimeType } : {}), ...(typeof item.path === 'string' ? { path: item.path } : {}), ...(typeof item.previewKey === 'string' && /^[a-f0-9]{64}$/.test(item.previewKey) ? { previewKey: item.previewKey } : {}), ...(typeof item.previewOriginPath === 'string' ? { previewOriginPath: item.previewOriginPath } : {}) }
+  const sanitized = sanitizeAttachment(item)
+  if (sanitized && item.path === undefined) delete sanitized.path
+  return sanitized
 }
 
 export function readChatComposerDraft(sessionId: string): ChatComposerDraft {
@@ -85,4 +89,24 @@ export function removeComposerDrafts(sessionIds: Iterable<string>): void {
       // Legacy terminal drafts are no longer read; cleanup is best effort.
     }
   }
+}
+
+
+// Successful admission owns the submitted snapshot even if its composer has remounted.
+const acknowledgementListeners = new Set<(sessionId: string, createdAt: number, submitted: ChatComposerDraft) => void>()
+
+export function withoutAcknowledgedComposerDraft(current: ChatComposerDraft, submitted: ChatComposerDraft): ChatComposerDraft {
+  return { ...current, text: current.text === submitted.text ? '' : current.text,
+    attachments: current.attachments.filter((attachment) => !submitted.attachments.some((sent) =>
+      attachmentsEquivalent([attachment], [sent]))) }
+}
+
+export function acknowledgeChatComposerDraft(sessionId: string, createdAt: number, submitted: ChatComposerDraft): void {
+  writeChatComposerDraft(sessionId, withoutAcknowledgedComposerDraft(readChatComposerDraft(sessionId), submitted))
+  for (const listener of acknowledgementListeners) listener(sessionId, createdAt, submitted)
+}
+
+export function subscribeComposerDraftAcknowledgements(listener: (sessionId: string, createdAt: number, submitted: ChatComposerDraft) => void): () => void {
+  acknowledgementListeners.add(listener)
+  return () => { acknowledgementListeners.delete(listener) }
 }

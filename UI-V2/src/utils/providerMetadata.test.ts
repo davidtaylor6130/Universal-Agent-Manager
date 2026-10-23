@@ -3,6 +3,8 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, SUPPORTED_TEXT
 
 describe('providerMetadata', () => {
   it('returns known provider labels and structured protocols', () => {
+    expect(providerMetadataForId('copilot-cli')).toMatchObject({ structuredProtocol: 'copilot-sdk', runtimeDescription: 'Copilot SDK + CLI' })
+    expect(providerRuntimeKindLabel(undefined, 'copilot-sdk')).toBe('Copilot SDK')
     expect(providerMetadataForId('claude-cli')).toMatchObject({
       id: 'claude-cli',
       name: 'Claude Code',
@@ -64,7 +66,7 @@ describe('providerMetadata', () => {
     expect(providerNpmPackageName('codex-cli', providerNoNpm)).toBe('@openai/codex')
   })
 
-  it('fallback table provider ids match the canonical five CLI providers (FE-1 parity)', () => {
+  it('fallback table provider ids match the supported CLI providers (FE-1 parity)', () => {
     const expectedIds = [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]
     for (const id of expectedIds) {
       expect(providerMetadataForId(id)).toBeDefined()
@@ -74,7 +76,7 @@ describe('providerMetadata', () => {
     expect(providerMetadataForId(COPILOT_CLI_PROVIDER_ID).capabilities.reasoningOptions.map((option) => option.id))
       .toContain('max')
 
-    for (const id of [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]) {
+    for (const id of [DEFAULT_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID]) {
       expect(providerMetadataForId(id).capabilities).toMatchObject({
         hasAcceptEditsMode: true,
         structuredPermissionControl: 'uam',
@@ -82,7 +84,7 @@ describe('providerMetadata', () => {
       })
     }
     expect(providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).capabilities).toMatchObject({
-      hasAcceptEditsMode: false,
+      hasAcceptEditsMode: true,
       structuredPermissionControl: 'uam',
       terminalPermissionControl: 'provider',
     })

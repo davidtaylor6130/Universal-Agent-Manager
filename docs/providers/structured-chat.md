@@ -5,3 +5,7 @@ Structured chat presents assistant text, reasoning when available, tools and res
 [Provider architecture](../architecture/provider-sessions.md).
 
 [Runtime controls](runtime-lifecycle.md) define cancellation, stopping and recovery independently of display state.
+
+## Input delivery
+
+Each submitted user input follows the shared [admission and delivery agreement](../chat/sending.md), independently of later provider activity. Saved input identity and delivery facts remain historical data; they do not grant retry or execution permission. **Implementation note — Partial:** exact per-input confirmation is being completed; a local write observation does not establish remote delivery or provider acceptance, and confirmation across every supported provider and execution environment remains unverified.

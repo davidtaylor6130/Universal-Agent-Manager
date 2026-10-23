@@ -210,7 +210,9 @@ export function assignChatToPane(sessionId: string, leafId: string): ChatGridLay
 /** Activate the pane that already displays this chat. */
 export function activateExistingChatPane(sessionId: string): void {
   const layout = readChatGridLayout()
-  const target = chatGridLeaves(layout.root).find((leaf) => leaf.sessionId === sessionId)
+  const leaves = chatGridLeaves(layout.root)
+  const target = leaves.find(leaf => leaf.id === layout.activeLeafId && leaf.sessionId === sessionId)
+    || leaves.find(leaf => leaf.sessionId === sessionId)
   if (!target) return
   if (layout.activeLeafId !== target.id) writeChatGridLayout({ ...layout, activeLeafId: target.id })
 }

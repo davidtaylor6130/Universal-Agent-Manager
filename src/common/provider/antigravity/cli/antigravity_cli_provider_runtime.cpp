@@ -8,6 +8,9 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/utils/uuid.h"
+#include "common/utils/time_utils.h"
+#include "common/usage/transcript_usage.h"
+#include <optional>
 #include "cef/cef_push.h"
 #include <algorithm>
 #include <limits>
@@ -15,6 +18,23 @@
 
 namespace
 {
+	/// <summary>Saved explicit effort overrides earlier expert flags without touching literal positional data.</summary>
+	void AppendAntigravityEffort(std::vector<std::string>& argv, const ChatSession& chat)
+	{
+		const std::string effort = uam::strings::ToLowerAscii(uam::strings::Trim(chat.reasoning_effort));
+		if (effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh" && effort != "max") return;
+		for (std::size_t index = 1; index < argv.size() && argv[index] != "--";)
+		{
+			const bool flag = argv[index] == "--effort" || argv[index] == "-effort";
+			const bool inline_flag = argv[index].starts_with("--effort=") || argv[index].starts_with("-effort=");
+			if (!flag && !inline_flag) { ++index; continue; }
+			const std::size_t count = flag && index + 1 < argv.size() && !argv[index + 1].starts_with('-') ? 2 : 1;
+			argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index + count));
+		}
+		const auto positional = std::find(argv.begin() + std::min(std::size_t{1}, argv.size()), argv.end(), "--");
+		argv.insert(positional, {"--effort", effort});
+	}
+
 	/// <summary>Preserves expert arguments while enforcing a required native Plan ceiling before positional data.</summary>
 	void AppendAntigravityModeArgs(std::vector<std::string>& argv, const ChatSession& chat)
 	{
@@ -56,6 +76,7 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	const AppSettings merged = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, uam::command_line::SplitWords(merged.provider_extra_flags));
+	AppendAntigravityEffort(argv, chat);
 	AppendAntigravityModeArgs(argv, chat);
 	return argv;
 }
@@ -95,6 +116,65 @@ namespace
 			return number <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ? static_cast<int64_t>(number) : 0;
 		}
 		return std::max<int64_t>(0, value->get<int64_t>());
+	}
+
+	/// <summary>Tool and native-child identity requires an actual nonnegative signed-range step index.</summary>
+	std::optional<int64_t> AntigravityStepIndex(const nlohmann::json& payload)
+	{
+		const auto value = payload.find("step_index");
+		if (value == payload.end() || !value->is_number_integer()) return std::nullopt;
+		if (value->is_number_unsigned())
+		{
+			const uint64_t index = value->get<uint64_t>();
+			return index <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+			    ? std::optional<int64_t>{static_cast<int64_t>(index)} : std::nullopt;
+		}
+		const int64_t index = value->get<int64_t>();
+		return index >= 0 ? std::optional<int64_t>{index} : std::nullopt;
+	}
+
+	/// <summary>Only exact reported integers establish an observed token count, including genuine zero.</summary>
+	std::optional<int64_t> AntigravityObservedCounter(const nlohmann::json& object, const char* key)
+	{
+		const auto value = object.find(key);
+		if (value == object.end() || !value->is_number_integer()) return std::nullopt;
+		if (value->is_number_unsigned() && value->get<uint64_t>() > static_cast<uint64_t>(uam::usage::kMaxExactTokenCount)) return std::nullopt;
+		const auto count = value->get<int64_t>();
+		return count >= 0 && count <= uam::usage::kMaxExactTokenCount ? std::optional<int64_t>{count} : std::nullopt;
+	}
+
+	/// <summary>Totals cover validated DONE steps observed by this attached process, never native cumulative result totals.</summary>
+	void ProjectAntigravityStepUsage(uam::AcpSessionState& session, const nlohmann::json& reported)
+	{
+		auto& usage = session.provider_usage.token_usage;
+		if (usage.session_id != session.session_id) { usage = {}; usage.session_id = session.session_id; }
+		usage.last_available = false;
+		const auto input = AntigravityObservedCounter(reported, "input_tokens");
+		const auto output = AntigravityObservedCounter(reported, "output_tokens");
+		if (!input || !output || *output > uam::usage::kMaxExactTokenCount - *input || *input + *output > uam::usage::kMaxExactTokenCount - usage.total.total_tokens)
+		{
+			session.antigravity_turn_usage_complete = false;
+			return;
+		}
+		usage.available = true;
+		usage.total.input_tokens += *input;
+		usage.total.output_tokens += *output;
+		usage.total.total_tokens += *input + *output;
+		usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	}
+
+	/// <summary>Missing or malformed step counts withhold the last-turn total without fabricating zero.</summary>
+	void FinishAntigravityUsage(uam::AcpSessionState& session)
+	{
+		auto& usage = session.provider_usage.token_usage;
+		if (usage.session_id != session.session_id) { usage = {}; usage.session_id = session.session_id; }
+		usage.last_available = false;
+		if (!usage.available || !session.antigravity_turn_usage_complete || session.antigravity_completed_steps.empty() || session.antigravity_input_tokens > uam::usage::kMaxExactTokenCount || session.antigravity_output_tokens > uam::usage::kMaxExactTokenCount - session.antigravity_input_tokens) return;
+		usage.last = {};
+		usage.last.input_tokens = session.antigravity_input_tokens;
+		usage.last.output_tokens = session.antigravity_output_tokens;
+		usage.last.total_tokens = session.antigravity_input_tokens + session.antigravity_output_tokens;
+		usage.last_available = true;
 	}
 
 	/// <summary>Native denial results identify action kinds, not individual tool steps.</summary>
@@ -147,6 +227,7 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildStructuredLaunchArg
 	argv.insert(argv.end(), {"--input-format", "stream-json", "--output-format", "stream-json"});
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
+	AppendAntigravityEffort(argv, chat);
 	AppendAntigravityModeArgs(argv, chat);
 	return argv;
 }
@@ -159,6 +240,7 @@ nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessi
 	session.antigravity_output_tokens = 0;
 	session.antigravity_completed_turns = 0;
 	session.antigravity_completed_steps.clear();
+	session.antigravity_turn_usage_complete = true;
 	session.agent_name = "antigravity";
 	session.agent_title = "Antigravity CLI";
 	return nullptr;
@@ -176,7 +258,14 @@ nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionSt
 	session.antigravity_input_tokens = 0;
 	session.antigravity_output_tokens = 0;
 	session.antigravity_completed_steps.clear();
+	session.antigravity_turn_usage_complete = true;
 	return {{"event", "user"}, {"message", {{"content", prompt}}}};
+}
+
+std::string AntigravityCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
+{
+	const std::string id = uam::strings::Trim(chat.native_session_id);
+	return uam::uuid::IsCanonicalUuid(id) ? id : std::string{};
 }
 
 nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string& method) const
@@ -226,13 +315,60 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			if (state != "ACTIVE" && state != "DONE") return true;
 			if (state == "DONE")
 			{
-				const int64_t index = AntigravityCounter(payload, "step_index");
-				if (!session.antigravity_completed_steps.insert(index).second) return true;
-				const nlohmann::json usage = JsonObjectValue(payload, "usage");
-				const int64_t input = AntigravityCounter(usage, "input_tokens");
-				const int64_t output = AntigravityCounter(usage, "output_tokens");
-				session.antigravity_input_tokens += std::min(input, std::numeric_limits<int64_t>::max() - session.antigravity_input_tokens);
-				session.antigravity_output_tokens += std::min(output, std::numeric_limits<int64_t>::max() - session.antigravity_output_tokens);
+				const auto observed_index = AntigravityObservedCounter(payload, "step_index");
+				if (!observed_index) session.antigravity_turn_usage_complete = false;
+				else
+				{
+					if (!session.antigravity_completed_steps.insert(*observed_index).second) return true;
+					const nlohmann::json usage = JsonObjectValue(payload, "usage");
+					const int64_t input = AntigravityCounter(usage, "input_tokens");
+					const int64_t output = AntigravityCounter(usage, "output_tokens");
+					session.antigravity_input_tokens += std::min(input, std::numeric_limits<int64_t>::max() - session.antigravity_input_tokens);
+					session.antigravity_output_tokens += std::min(output, std::numeric_limits<int64_t>::max() - session.antigravity_output_tokens);
+					ProjectAntigravityStepUsage(session, usage);
+				}
+			}
+			const auto step_index = AntigravityStepIndex(payload);
+			const nlohmann::json child_info = JsonObjectValue(payload, "subagent_info");
+			const auto children = child_info.find("subagents");
+			if (step_index && children != child_info.end() && children->is_array())
+			{
+				const auto safe_uri = [](const std::string& raw)
+				{
+					std::string value = uam::strings::SafeLine(raw, 8192, true);
+					value.erase(value.find_first_of("?#") == std::string::npos ? value.size() : value.find_first_of("?#"));
+					const auto scheme = value.find("://");
+					if (scheme != std::string::npos)
+					{
+						const auto slash = value.find('/', scheme + 3), at = value.find('@', scheme + 3);
+						if (at != std::string::npos && (slash == std::string::npos || at < slash)) value.erase(scheme + 3, at - scheme - 2);
+					}
+					return value;
+				};
+				for (std::size_t index = 0; index < std::min<std::size_t>(children->size(), 128); ++index)
+				{
+					const auto& child = (*children)[index];
+					if (!child.is_object()) continue;
+					const std::string child_id = JsonDiagnosticStringValue(child, "conversation_id");
+					const bool addressable = uam::uuid::IsCanonicalUuid(child_id) && child_id != identity;
+					const std::string title = uam::strings::SafeLine(JsonDiagnosticStringValue(child, "type_name"), 256, true);
+					const std::string role = uam::strings::SafeLine(JsonDiagnosticStringValue(child, "role"), 2048, true);
+					auto& tool = UpsertToolCall(session, "antigravity:" + identity + ":" + std::to_string(*step_index) + ":child:" + (addressable ? child_id : std::to_string(index)));
+					tool.is_sub_agent = true; tool.kind = "sub-agent";
+					tool.title = tool.sub_agent_title = title.empty() ? "Antigravity subagent" : title;
+					tool.sub_agent_id = addressable ? child_id : std::string{};
+					tool.status = state == "DONE" ? "completed" : "in_progress";
+					nlohmann::json metadata{{"type_name", title}, {"role", role}, {"conversation_id", uam::strings::SafeLine(child_id, 128, true)},
+					    {"log_uri", safe_uri(JsonDiagnosticStringValue(child, "log_uri"))}, {"workspace_uris", nlohmann::json::array()}};
+					const auto workspaces = child.find("workspace_uris");
+					if (workspaces != child.end() && workspaces->is_array())
+						for (std::size_t workspace_index = 0; workspace_index < std::min<std::size_t>(workspaces->size(), 32); ++workspace_index)
+							if ((*workspaces)[workspace_index].is_string()) metadata["workspace_uris"].push_back(safe_uri((*workspaces)[workspace_index].get<std::string>()));
+					tool.args_json = metadata.dump();
+					AppendToolTurnEventIfNeeded(session, tool.id);
+				}
+				SyncAcpToolCallsToAssistantMessage(chat, session, true);
+				ScheduleChatSave(app, chat, 0.5);
 			}
 			if (JsonDiagnosticStringValue(payload, "step_type") == "agent_response")
 			{
@@ -244,9 +380,9 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 					ScheduleChatSave(app, chat, 0.5);
 				}
 			}
-			else if (JsonDiagnosticStringValue(payload, "step_type") == "tool")
+			else if (step_index && JsonDiagnosticStringValue(payload, "step_type") == "tool")
 			{
-				const int64_t index = AntigravityCounter(payload, "step_index");
+				const int64_t index = *step_index;
 				const nlohmann::json details = JsonObjectValue(payload, "tool_info");
 				uam::AcpToolCallState& tool = UpsertToolCall(session, "antigravity:" + identity + ":" + std::to_string(index));
 				tool.title = JsonDiagnosticStringValue(payload, "tool_name");
@@ -271,6 +407,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			return true;
 		}
 		if (turn > 0 && turn <= session.antigravity_completed_turns) return true;
+		FinishAntigravityUsage(session);
 		ApplyAntigravityDenialEvidence(payload, session, chat);
 		if (status != "SUCCESS")
 		{
@@ -290,6 +427,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				answer.tokens_output = static_cast<int>(std::min<int64_t>(session.antigravity_output_tokens, std::numeric_limits<int>::max()));
 			}
 			session.antigravity_completed_turns = turn;
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
 			CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser);
 		}
 		if (browser) uam::PushStreamDone(browser, chat.id);

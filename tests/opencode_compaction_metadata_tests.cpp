@@ -1608,3 +1608,318 @@ UAM_TEST(OpenCodeMetadataWarmEmptyVersionRejectsMissingOwnershipAndUnsupportedVe
 		UAM_ASSERT(fixture.Boundaries().empty());
 	}
 }
+
+
+UAM_TEST(OpenCodeMetadataEmptyQuarantineReceiptAllowsProvenLegacySummary)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string id = "cmp_empty_receipt_legacy";
+	const std::string summary = "Exact legacy summary after its native prefix.";
+	fixture.Session().turn_events.push_back({.type = "context_compaction_summary", .request_id_json = "opencode-message:" + id});
+	(void)uam::acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(fixture.Chat(), fixture.Session());
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.size(), std::size_t{1});
+	fixture.Summary(id, 2);
+	fixture.SummaryText(id, summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	const std::string content = fixture.Chat().messages[1].content;
+	const Message user = fixture.Chat().messages.front();
+	UAM_ASSERT(fixture.AwaitBoundary(id));
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:" + id});
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.size(), std::size_t{2});
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().text, std::string("Preserve authored answer"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().text, summary);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, content);
+	UAM_ASSERT_EQ(fixture.Chat().messages.front(), user);
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+	    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	UAM_ASSERT_EQ(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Ordinary next output.", "opencode-message:msg_after_legacy"),
+	    std::string("Ordinary next output."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
+}
+
+UAM_TEST(OpenCodeMetadataNonemptyQuarantineReceiptRejectsLegacyFallback)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string id = "cmp_nonempty_receipt_legacy";
+	const std::string summary = "Exact native body also present as ordinary output.";
+	fixture.Session().turn_events.push_back({.type = "context_compaction_summary", .text = "Different native fragment.",
+	    .request_id_json = "opencode-message:" + id});
+	(void)uam::acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(fixture.Chat(), fixture.Session());
+	fixture.Summary(id, 2);
+	fixture.SummaryText(id, summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	const Message before = fixture.Chat().messages[1];
+	UAM_ASSERT(!fixture.AwaitBoundary(id, std::chrono::milliseconds(2300)));
+	UAM_ASSERT(fixture.Boundaries().empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages[1], before);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1].type, std::string("context_compaction_summary"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(before.blocks, uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+}
+
+UAM_TEST(OpenCodeMetadataEmptyReceiptDoesNotRetypeForeignNativeOutput)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string id = "cmp_empty_receipt_foreign_output";
+	const std::string summary = "Identical text carried by a different native message.";
+	fixture.Session().turn_events.push_back({.type = "context_compaction_summary", .request_id_json = "opencode-message:" + id});
+	fixture.Summary(id, 2);
+	fixture.SummaryText(id, summary);
+	UAM_ASSERT_EQ(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary, "opencode-message:msg_foreign_ordinary"), summary);
+	const Message before = fixture.Chat().messages[1];
+	UAM_ASSERT(!fixture.AwaitBoundary(id, std::chrono::milliseconds(2300)));
+	UAM_ASSERT(fixture.Boundaries().empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages[1], before);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, std::string("opencode-message:msg_foreign_ordinary"));
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(before.blocks, uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+}
+
+namespace
+{
+	void CheckOpenCodeMetadataNativeIdBoundary(std::size_t length, bool accepted)
+	{
+		NativeMetadataFixture fixture;
+		fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+		const std::string id(length, 'x');
+		const std::string summary = "Verified summary with a bounded native identity.";
+		fixture.Summary(id, 2);
+		fixture.SummaryText(id, summary, "part_bounded_metadata_body");
+		(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary, "opencode-message:" + id);
+		const std::string content = fixture.Chat().messages[1].content;
+		if (accepted)
+		{
+			UAM_ASSERT(fixture.AwaitBoundary(id));
+			UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:" + id});
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().text, summary);
+		}
+		else
+		{
+			UAM_ASSERT(!fixture.AwaitBoundary(id, std::chrono::milliseconds(2300)));
+			std::string error;
+			UAM_ASSERT(fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.Chat(), error) == uam::OpenCodeCompactionGateState::Failed);
+			UAM_ASSERT(error.find("invalid metadata identity") != std::string::npos);
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, "opencode-message:" + id);
+		}
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, content);
+		UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
+		UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+		    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	}
+
+	void CheckOpenCodeHistoryNativeIdBoundary(std::size_t length, bool accepted)
+	{
+		NativeMetadataFixture fixture;
+		const std::string id(length, 'x');
+		const std::string summary = "Saved quarantined summary with exact native proof.";
+		fixture.Parent();
+		fixture.Summary(id, 2);
+		fixture.SummaryText(id, summary, "part_bounded_history_body");
+		fixture.Chat().messages[1].content = summary;
+		fixture.Chat().messages[1].blocks = {{"context_compaction_summary", summary, "", "opencode-message:" + id}};
+		fixture.Session().running = fixture.Session().session_ready = fixture.Session().processing = false;
+		fixture.Session().queued_prompt.clear();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		fixture.Chat() = *saved;
+		fixture.app.selected_chat_index = 0;
+		const std::vector<Message> before = fixture.Chat().messages;
+		bool changed = false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			changed = fixture.service->Poll(fixture.app) || changed;
+			if (changed) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT_EQ(fixture.queries.load(), 1);
+		UAM_ASSERT_EQ(fixture.completed_queries.load(), 1);
+		UAM_ASSERT(changed == accepted);
+		const MessageBlock& block = fixture.Chat().messages[1].blocks.front();
+		UAM_ASSERT_EQ(block.type, accepted ? std::string("context_compaction") : std::string("context_compaction_summary"));
+		UAM_ASSERT_EQ(block.request_id_json, accepted ? id : "opencode-message:" + id);
+		UAM_ASSERT_EQ(block.text, summary);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before[1].content);
+		UAM_ASSERT_EQ(fixture.Chat().messages.front(), before.front());
+		const auto repaired = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(repaired.has_value());
+		UAM_ASSERT_EQ(repaired->messages, fixture.Chat().messages);
+		if (!accepted) UAM_ASSERT_EQ(fixture.Chat().messages, before);
+	}
+}
+
+UAM_TEST(OpenCodeMetadataNativeIdAccepts64Characters)
+{
+	CheckOpenCodeMetadataNativeIdBoundary(64, true);
+}
+
+UAM_TEST(OpenCodeMetadataNativeIdAccepts65Characters)
+{
+	CheckOpenCodeMetadataNativeIdBoundary(65, true);
+}
+
+UAM_TEST(OpenCodeMetadataNativeIdAccepts512Characters)
+{
+	CheckOpenCodeMetadataNativeIdBoundary(512, true);
+}
+
+UAM_TEST(OpenCodeMetadataNativeIdRejects513Characters)
+{
+	CheckOpenCodeMetadataNativeIdBoundary(513, false);
+}
+
+UAM_TEST(OpenCodeHistoryNativeIdAccepts64Characters)
+{
+	CheckOpenCodeHistoryNativeIdBoundary(64, true);
+}
+
+UAM_TEST(OpenCodeHistoryNativeIdAccepts65Characters)
+{
+	CheckOpenCodeHistoryNativeIdBoundary(65, true);
+}
+
+UAM_TEST(OpenCodeHistoryNativeIdAccepts512Characters)
+{
+	CheckOpenCodeHistoryNativeIdBoundary(512, true);
+}
+
+UAM_TEST(OpenCodeHistoryNativeIdRejects513Characters)
+{
+	CheckOpenCodeHistoryNativeIdBoundary(513, false);
+}
+
+
+UAM_TEST(OpenCodeHistoryRejectsForeignOrdinaryNativeIdentityWithoutPublication)
+{
+	const std::string id = "cmp_history_identity_proof";
+	for (const std::string identity : {"opencode-message:cmp_history_identity_proof", "", "opencode-message:msg_foreign_ordinary"})
+	{
+		NativeMetadataFixture fixture;
+		const bool accepted = identity.empty() || identity == "opencode-message:" + id;
+		const std::string summary = "Exact historical summary bytes with authoritative native position.";
+		fixture.Parent();
+		fixture.Summary(id, 2);
+		fixture.SummaryText(id, summary, "part_history_identity_body");
+		fixture.Chat().messages[1].content = summary;
+		fixture.Chat().messages[1].blocks = {{"assistant_text", summary, "", identity}};
+		fixture.Session().running = fixture.Session().session_ready = fixture.Session().processing = false;
+		fixture.Session().queued_prompt.clear();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		fixture.Chat() = *saved;
+		fixture.app.selected_chat_index = 0;
+		fixture.Session().current_assistant_message_index = fixture.Session().turn_assistant_message_index = 1;
+		uam::acp_detail::RestoreTurnEventsFromMessageBlocks(fixture.Session(), fixture.Chat().messages[1]);
+		const std::vector<Message> before = fixture.Chat().messages;
+		const std::vector<MessageBlock> runtime_before = uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session());
+		const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, fixture.Chat().id);
+		const fs::path summary_file = AppPaths::UamChatSummaryFilePath(fixture.app.data_root, fixture.Chat().id);
+		const std::string primary_before = uam::io::ReadTextFile(primary);
+		const std::string summary_before = uam::io::ReadTextFile(summary_file);
+		bool changed = false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			changed = fixture.service->Poll(fixture.app) || changed;
+			if (changed) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT_EQ(fixture.queries.load(), 1);
+		UAM_ASSERT_EQ(fixture.completed_queries.load(), 1);
+		UAM_ASSERT(changed == accepted);
+		UAM_ASSERT_EQ(fixture.Chat().messages.front(), before.front());
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before[1].content);
+		UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+		    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+		if (accepted)
+		{
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().type, std::string("context_compaction"));
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().request_id_json, id);
+			const auto repaired = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+			UAM_ASSERT(repaired.has_value());
+			UAM_ASSERT_EQ(repaired->messages, fixture.Chat().messages);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(fixture.Chat().messages, before);
+			UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(runtime_before, uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), primary_before);
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(summary_file), summary_before);
+		}
+	}
+}
+
+UAM_TEST(OpenCodeMetadataPublishedReceiptDoesNotRediscoverOrDelaySecondBatch)
+{
+	const std::string first_id = "cmp_trace_first_batch";
+	const std::string second_id = "cmp_trace_second_batch";
+	const std::string first_summary = "First published summary in the query trace.";
+	const std::string second_summary = "Second published summary in the query trace.";
+	std::atomic<bool> first_published{false};
+	std::atomic<int> published_identity_queries{0};
+	std::mutex trace_mutex;
+	std::vector<std::string> published_identity_sql;
+	NativeMetadataFixture fixture;
+	fixture.service = std::make_unique<uam::OpenCodeCompactionSyncService>([&](const uam::OpenCodeCompactionSyncService::Query& query, std::stop_token stop)
+	{
+		UAM_ASSERT(!stop.stop_requested());
+		UAM_ASSERT(std::ranges::find(query.argv, query.sql) != query.argv.end());
+		UAM_ASSERT(std::ranges::find(query.argv, "db") != query.argv.end());
+		if (first_published.load(std::memory_order_acquire) && query.sql.find(" AND m.id IN (") != std::string::npos &&
+		    query.sql.find("'" + first_id + "'") != std::string::npos)
+		{
+			std::lock_guard<std::mutex> lock(trace_mutex);
+			if (published_identity_sql.size() < 2) published_identity_sql.push_back(query.sql);
+			published_identity_queries.fetch_add(1, std::memory_order_release);
+		}
+		++fixture.queries;
+		const ProcessExecutionResult result = fixture.Execute(query.sql);
+		fixture.completed_queries.fetch_add(1, std::memory_order_release);
+		return result;
+	});
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary(first_id, 2);
+	fixture.SummaryText(first_id, first_summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), first_summary);
+	UAM_ASSERT(fixture.AwaitBoundary(first_id));
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().turn_events, [&](const uam::AcpTurnEventState& event)
+	{ return event.type == "context_compaction_summary" && event.text.empty() && event.request_id_json == "opencode-message:" + first_id; }));
+	first_published.store(true, std::memory_order_release);
+	fixture.Summary(second_id, 3);
+	fixture.SummaryText(second_id, second_summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), second_summary);
+	// Keep AwaitBoundary's existing four-second budget: a retired-ID probe must not add another two-second interval.
+	const bool second_published = fixture.AwaitBoundary(second_id);
+	const int rediscovered = published_identity_queries.load(std::memory_order_acquire);
+	if (rediscovered != 0 || !second_published)
+	{
+		std::lock_guard<std::mutex> lock(trace_mutex);
+		throw std::runtime_error("Published native identity query trace: rediscovered=" + std::to_string(rediscovered) +
+		    " second_boundary=" + std::to_string(second_published) + " queries=" + std::to_string(fixture.queries.load()) +
+		    " SQL=" + (published_identity_sql.empty() ? std::string("none") : published_identity_sql.front()));
+	}
+	UAM_ASSERT_EQ(published_identity_queries.load(), 0);
+	UAM_ASSERT(second_published);
+	UAM_ASSERT_EQ(fixture.Boundaries(), (std::vector<std::string>{"acp-compaction:" + first_id, "acp-compaction:" + second_id}));
+	UAM_ASSERT(fixture.queries.load() <= 6);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, std::string("Preserve authored answer") + first_summary + second_summary);
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().turn_events, [&](const uam::AcpTurnEventState& event)
+	{ return event.type == "context_compaction_summary" && event.text.empty() && event.request_id_json == "opencode-message:" + first_id; }));
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+	    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Late summary chunk.", "opencode-message:" + first_id).empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction_summary"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, "opencode-message:" + first_id);
+	UAM_ASSERT_EQ(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Ordinary next output.", "opencode-message:msg_after_trace"),
+	    std::string("Ordinary next output."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
+}

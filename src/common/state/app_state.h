@@ -29,15 +29,28 @@
 #include <unordered_set>
 #include <vector>
 
+class IProviderRuntime;
 struct PreparedChatSave;
 struct PreparedMemoryOutput;
 
 namespace uam
 {
+	namespace claude_preinput { class Observation; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class OpenCodeNativeActivityService;
+	class ManagedSubagentCancellationReceipt;
+	struct ManagedInitialHistoryCatalogue;
+	struct OpenCodeNativeCompanion;
+	struct OpenCodeTerminalActivityObserver;
 	struct WorktreeLaunchPreparationTask;
+	struct TerminalNativeMediaCoordinator;
+	struct CliTerminalHistoryGeneration
+	{
+		std::atomic<bool> revoked{false};
+		std::atomic<bool> stopped{false};
+	};
 	enum class OpenCodeCompactionGateState;
 
 	namespace fs = std::filesystem;
@@ -99,8 +112,14 @@ namespace uam
 		int token_expected_bytes = 0;
 	};
 
+	struct PendingManagedInitialMention;
+	struct PendingManagedFollowup;
+	struct ManagedFollowupCompletedOwnerWitness;
+	struct ManagedInitialRuntimeOwner;
 	struct AcpSessionState;
 	struct PendingAcpPromptDelivery;
+	struct LocalInputWriteObservation;
+	struct ManagedParentContinuationLease;
 	struct PendingAcpCompaction;
 	struct PendingLocalAcpLaunch;
 	struct PendingLocalSessionReceipt;
@@ -109,9 +128,12 @@ namespace uam
 	struct ClaudeQuotaHistoryTask;
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
+		std::shared_ptr<OpenCodeTerminalActivityObserver> opencode_activity_observer;
 		std::shared_ptr<AcpSessionState> uam_control_session;
 		std::unique_ptr<std::jthread> uam_control_relay;
 		std::string terminal_id;
+		// A final history receipt survives handle close/row erasure, never a new launch.
+		std::shared_ptr<CliTerminalHistoryGeneration> native_history_generation = std::make_shared<CliTerminalHistoryGeneration>();
 		std::string frontend_chat_id;
 		bool running = false;
 		std::string attached_chat_id;
@@ -192,6 +214,8 @@ namespace uam
 		std::string approval_status;
 		std::string task_id;
 		std::string child_activity;
+		std::vector<SubAgentChild> sub_agent_children;
+		bool sub_agent_children_authoritative = false;
 	};
 
 	struct AcpPlanEntryState
@@ -383,6 +407,8 @@ namespace uam
 		bool safety_requires_approval = false;
 		bool version_controlled_workspace = false;
 		std::vector<AcpPermissionOptionState> options;
+		// Typed native command only; display content and reason text cannot prove execution authority.
+		std::string execution_command;
 	};
 
 	struct AcpUserInputOptionState
@@ -420,6 +446,8 @@ namespace uam
 		std::string execution_host_id = "local";
 	};
 
+	struct UamAgentWait;
+
 	struct UamControlCapability
 	{
 		struct PendingApproval
@@ -431,6 +459,10 @@ namespace uam
 			std::string idempotency_key;
 			std::string question;
 			std::vector<std::string> question_options;
+			std::string computer_use_task;
+			std::string computer_use_origin;
+			std::shared_ptr<const std::uint8_t> computer_use_chat_incarnation;
+			std::shared_ptr<const std::uint8_t> computer_use_root_incarnation;
 			int64_t expires_at_epoch_ms = 0;
 		};
 
@@ -455,7 +487,16 @@ namespace uam
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
 		std::unordered_set<std::string> owned_agent_run_ids;
+		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
+		std::unordered_set<std::string> cancelled_wait_ids;
+		bool wait_cancellation_overflow = false;
 		std::optional<PendingApproval> pending_approval;
+		std::shared_ptr<UamAgentWait> pending_agent_wait;
+		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
+		std::optional<ExecutionHost> wait_host_at_launch;
+		std::shared_ptr<const std::uint8_t> wait_root_incarnation_at_launch, wait_chat_incarnation_at_launch;
+		std::string wait_workspace_at_launch, wait_worktree_at_launch;
+		std::string wait_root_workspace_at_launch, wait_root_worktree_at_launch;
 	};
 
 	struct AcpPendingSteerState
@@ -534,6 +575,29 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	/// Captured only by explicit Retry on an already bound remote process.
+	/// A replacement process requires a fresh invocation, never scope promotion.
+	struct SavedImageRetryRemoteScope
+	{
+		ExecutionHost host;
+		std::string native_session_id, runtime_session_id, process_id, proxy_token, configuration;
+		int proxy_protocol = 0;
+	};
+
+	/// Invocation-only permission from an explicit saved-row Retry; never serialized or reconstructed.
+	struct SavedImageRetryPermission
+	{
+		std::filesystem::path root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::string chat_id, provider_id, execution_host_id, chat_created_at;
+		int row_index = -1;
+		std::string row_created_at, content;
+		std::vector<MessageAttachment> attachments;
+		std::string queued_id;
+		int queued_revision = 0;
+		std::optional<SavedImageRetryRemoteScope> remote_scope;
+	};
+
 	struct ClaudeInputIdentity
 	{
 		std::string chat_id;
@@ -553,6 +617,11 @@ namespace uam
 		int first_message_index = -1;
 		int last_message_index = -1;
 		std::vector<MessageAttachment> images;
+		std::filesystem::path original_root;
+		std::shared_ptr<const std::uint8_t> original_incarnation;
+		std::shared_ptr<const SavedImageRetryPermission> saved_image_retry;
+		nlohmann::json native_metadata;
+		std::string remote_retry_ownership;
 		bool operator==(const ClaudeInputIdentity&) const = default;
 	};
 	struct ClaudeInputPreparation
@@ -560,6 +629,10 @@ namespace uam
 		ClaudeInputIdentity identity;
 		ExecutionHost host;
 		nlohmann::json message;
+		// Owner-thread seal is distinct from the worker's validated image coverage.
+		nlohmann::json sealed_message;
+		std::string sealed_method;
+		int sealed_request_id = 0;
 		std::string error;
 		std::stop_source cancel;
 		std::atomic<bool> finished{false};
@@ -568,10 +641,16 @@ namespace uam
 	struct ClaudeInputPreparationLease
 	{
 		std::shared_ptr<ClaudeInputPreparation> state;
-		explicit ClaudeInputPreparationLease(std::shared_ptr<ClaudeInputPreparation> preparation) : state(std::move(preparation)) {}
+		explicit ClaudeInputPreparationLease(std::shared_ptr<ClaudeInputPreparation> preparation) : state(std::move(preparation))
+		{
+		}
 		ClaudeInputPreparationLease(const ClaudeInputPreparationLease&) = delete;
 		ClaudeInputPreparationLease& operator=(const ClaudeInputPreparationLease&) = delete;
-		~ClaudeInputPreparationLease() { if (state != nullptr) state->cancel.request_stop(); }
+		~ClaudeInputPreparationLease()
+		{
+			if (state != nullptr)
+				state->cancel.request_stop();
+		}
 	};
 	struct ClaudeInputPreparationTask
 	{
@@ -581,6 +660,7 @@ namespace uam
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
+		std::shared_ptr<ManagedInitialRuntimeOwner> managed_initial_owner;
 		std::shared_ptr<const char> permission_review_incarnation = std::make_shared<const char>(0);
 		bool worktree_launch_pending = false;
 		std::shared_ptr<std::stop_source> worktree_launch_cancellation;
@@ -596,18 +676,33 @@ namespace uam
 		/// Catalog ownership captured when this provider process is launched; never persisted.
 		std::string model_catalog_scope_key;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
+		bool prompt_image_supported = false;
+		std::shared_ptr<OpenCodeNativeCompanion> opencode_native_companion;
+		// Optional guard captured from the actual process adapter, never mutable chat/provider selection.
+		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
+		// Ephemeral native query DATA; never serialized or an input permission.
+		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
+		bool claude_manual_compaction_supported = false;
+		bool claude_manual_compaction_boundary_seen = false;
+		nlohmann::json copilot_native_state = nlohmann::json::object();
 		std::string session_id;
 		std::string codex_thread_id;
 		std::string codex_turn_id;
+		/// Runtime-only exact original prompt RPC witness; notifications never create it.
+		std::string codex_origin_rpc_turn_id;
+		int codex_origin_rpc_turn_serial = 0;
 		/// Native child identities observed from this process's current parent, never restored from saved tools.
 		std::unordered_set<std::string> codex_known_child_thread_ids;
 		std::unordered_set<std::string> codex_live_background_thread_ids;
         /// Antigravity reports per-step usage separately from cumulative conversation results.
         int64_t antigravity_input_tokens = 0;
         int64_t antigravity_output_tokens = 0;
+        bool antigravity_turn_usage_complete = true;
         int64_t antigravity_completed_turns = 0;
         std::unordered_set<int64_t> antigravity_completed_steps;
 		std::string lifecycle_state = "stopped";
+		/// Volatile blocked-transport latch; last_error retains the original failure.
+		std::string transport_ownership_error;
 		bool running = false;
 		bool initialized = false;
 		bool session_ready = false;
@@ -652,6 +747,7 @@ namespace uam
 		int turn_user_message_index = -1;
 		int turn_assistant_message_index = -1;
 		int turn_serial = 0;
+		std::vector<AcpUnsentPromptRecovery> delivered_prompt_recoveries;
 		std::string active_uam_agent_id = "build";
 		std::string active_uam_agent_definition_hash;
 		std::string active_uam_agent_definition_snapshot;
@@ -664,6 +760,7 @@ namespace uam
 		std::string managed_agent_run_id;
 		std::unique_ptr<std::jthread> uam_control_relay;
 		std::filesystem::path provider_configuration_directory;
+		std::string launch_model_options_id;
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
@@ -682,6 +779,7 @@ namespace uam
 		std::shared_ptr<RemoteContextPreparation> attached_skill_preparation;
 		bool defer_prompt_save = false;
 		std::shared_ptr<PendingAcpPromptDelivery> pending_prompt_delivery;
+		std::shared_ptr<ManagedParentContinuationLease> managed_parent_continuation;
 		std::shared_ptr<PendingLocalAcpLaunch> pending_local_launch;
 		std::shared_ptr<PendingLocalSessionReceipt> pending_local_session_receipt;
 		std::shared_ptr<PendingAgentInputPreparation> pending_agent_input;
@@ -689,11 +787,16 @@ namespace uam
 		std::string pending_referenced_queue_launch_fingerprint;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		bool queue_held = false;
+		// Definite queued write rollback is not dispatchable until its complete history is saved.
+		// Survives runtime reset; a committed full save clears it, never a queue-only journal.
+		bool queued_rollback_save_pending = false;
 		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
 		std::optional<std::size_t> memory_recall_position;
 		std::string memory_recall_query;
 		std::unique_ptr<MemoryRecallPreparationLease> memory_recall_preparation;
 		std::unique_ptr<ClaudeInputPreparationLease> claude_input_preparation;
+		std::shared_ptr<const SavedImageRetryPermission> saved_image_retry;
+		int saved_image_retry_turn_serial = -1;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
 		// crash-looping provider cannot restart forever; cleared when a new user
@@ -877,6 +980,8 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		// Initial-v2 completion must not fall back to a replacement chat ID/serial.
+		std::shared_ptr<ManagedInitialRuntimeOwner> managed_initial_owner;
 		std::string chat_id;
 		std::string provider_id;
 		std::string execution_host_id = "local";
@@ -1060,6 +1165,8 @@ namespace uam
 		std::string check_error;
 		std::string install_output;
 		bool verify_failed_install = false;
+		// Numeric requested update floor; Homebrew still selects its current latest package.
+		std::string requested_minimum_version;
 	};
 
 	struct PendingCliUpdate
@@ -1109,6 +1216,7 @@ namespace uam
 
 	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>
 	struct PendingChatSaveTask;
+	struct PendingAcpCompletedPromptRecoveries;
 	struct MemoryActivityRefreshTask;
 	struct HiddenAgentChatOwnership
 	{
@@ -1157,11 +1265,26 @@ namespace uam
 		std::vector<ChatSession> chats;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		std::vector<AgentRun> agent_runs;
+		// Read-only restart metadata, never an execution or capacity inventory.
+		std::shared_ptr<const ManagedInitialHistoryCatalogue> managed_initial_history;
+		// Real creation tasks protect both IDs until worker retirement and callback settlement.
+		std::unordered_map<std::string, std::shared_ptr<PendingManagedInitialMention>> managed_initial_mentions;
+		// Real opt-in follow-up preparation, never restored or inferred from saved catalogue data.
+		std::unordered_map<std::string, std::shared_ptr<PendingManagedFollowup>> managed_followups;
+		// Private volatile origin proof retained only from genuinely completed/reaped owners, never startup-loaded.
+		std::unordered_map<std::string, std::shared_ptr<const ManagedFollowupCompletedOwnerWitness>> managed_followup_completed_owners;
+		std::unordered_map<std::string, std::shared_ptr<ManagedInitialRuntimeOwner>> managed_initial_runtime_owners;
+		bool managed_initial_shutdown = false;
 		std::vector<UamControlCapability> uam_control_capabilities;
+		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		std::size_t managed_parent_continuation_cursor = 0;
 		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
 		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
+		/// GUI-only ephemeral admission; native/internal cancellation intent remains independent.
+		std::shared_ptr<const std::uint8_t> managed_subagent_control_incarnation = std::make_shared<const std::uint8_t>(0);
+		std::unordered_map<std::string, std::shared_ptr<const ManagedSubagentCancellationReceipt>> managed_subagent_cancellation_receipts;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;
@@ -1185,6 +1308,8 @@ namespace uam
 		std::string native_chat_refresh_error_status;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
+		// Bounded pending local sink observations; retiring one never retires input/cleanup authority.
+		std::vector<std::shared_ptr<LocalInputWriteObservation>> local_input_write_observations;
 		/// Application-owned hooks keep native compaction queries outside runtime and transport state.
 		std::function<void(AcpSessionState&, const ChatSession&)> opencode_compaction_before_turn_reset;
 		std::function<OpenCodeCompactionGateState(AcpSessionState&, ChatSession&, std::string&)> opencode_compaction_before_dispatch;
@@ -1228,9 +1353,12 @@ namespace uam
 		platform::AsyncNativeChatLoadTask native_chat_load_task;
 		std::size_t open_code_history_scan_offset = 0;
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
+		std::uint64_t terminal_native_history_load_generation = 0;
+		std::shared_ptr<TerminalNativeMediaCoordinator> terminal_native_media;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
+		std::unordered_map<std::string, std::shared_ptr<PendingAcpCompletedPromptRecoveries>> pending_acp_completed_prompt_recoveries;
 		// A failed durable barrier can retain a scoped retry after removing its active task.
 		std::unordered_map<std::string, std::weak_ptr<PendingChatSaveTask>> pending_chat_save_retry_owners;
 		std::shared_ptr<MemoryActivityRefreshTask> memory_activity_refresh_task;
@@ -1258,6 +1386,7 @@ namespace uam
 		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;
 
 		std::unique_ptr<ProviderModelCatalogService> provider_model_catalog;
+		std::shared_ptr<OpenCodeNativeActivityService> opencode_native_activity;
 	};
 
 } // namespace uam

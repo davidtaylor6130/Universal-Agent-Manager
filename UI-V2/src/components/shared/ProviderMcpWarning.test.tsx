@@ -201,3 +201,57 @@ it('checks a background Stop and same-ID resume while preserving another running
   expect(bridge).not.toHaveBeenCalled()
   expect(host.querySelector('[role="alert"]')).toBeNull()
 })
+
+const status = (value: string, detail = 'Status') => ({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: value, detail }] } })
+
+it.each(['idle', 'starting', 'processing'])('does not alarm on configured-unverified while %s', async lifecycleState => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: lifecycleState !== 'idle', sessionId: 'runtime', lifecycleState } as never } })
+  bridge.mockResolvedValue(status('configured-unverified', 'Enabled; no handshake yet'))
+  await render()
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('keeps the warning for an explicit failure while the provider is starting', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'runtime', lifecycleState: 'starting' } as never } })
+  bridge.mockResolvedValue(status('failed', 'UAM MCP server failed to start'))
+  await render()
+  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  expect(host.textContent).toContain('UAM MCP server failed to start')
+})
+
+it('shows Enabling… on the repair button, then settles to no alert once status is configured-unverified', async () => {
+  bridge.mockResolvedValueOnce(status('missing', 'Not configured')).mockResolvedValue(status('configured-unverified', 'Enabled; applies next start'))
+  let finish!: (value: { ok: boolean }) => void
+  const enableChat = vi.fn(async (id: string, enabled: boolean) => {
+    useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === id ? { ...session, uamControlEnabled: enabled } : session) }))
+    return true
+  })
+  useAppStore.setState({
+    setCentralProviderConfiguration: configuration => new Promise<{ ok: boolean }>(resolve => {
+      finish = value => { useAppStore.setState({ centralProviderConfiguration: configuration }); resolve(value) }
+    }),
+    setSessionUamControlEnabled: enableChat,
+  })
+  await render()
+  const repair = () => [...host.querySelectorAll('button')].find(button => button.getAttribute('aria-busy') === 'true' || button.textContent === 'Enable UAM connection')!
+  await act(async () => repair().click())
+  expect(repair().textContent).toBe('Enabling…')
+  expect(repair().disabled).toBe(true)
+  await act(async () => finish({ ok: true }))
+  expect(enableChat).toHaveBeenCalledWith('one', true, true)
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  expect(host.textContent).not.toContain('Enabling…')
+})
+
+it('retains a genuine failure after enable when the provider still reports failed', async () => {
+  bridge.mockResolvedValue(status('failed', 'Handshake rejected'))
+  useAppStore.setState({
+    setCentralProviderConfiguration: async configuration => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } },
+    setSessionUamControlEnabled: async () => true,
+  })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
+  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  expect(host.textContent).toContain('Handshake rejected')
+  expect(host.textContent).not.toContain('It applies when this provider session next starts')
+})

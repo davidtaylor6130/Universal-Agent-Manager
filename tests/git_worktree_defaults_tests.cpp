@@ -253,3 +253,206 @@ UAM_TEST(ManagedSnapshotOptOutDoesNotBypassUnknownWorkspaceValidation)
 	UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
 	UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
 }
+
+
+UAM_TEST(ManagedSnapshotUnbornSkipsIgnoredDependencyLinks)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-unborn-ignored-dependencies");
+	const fs::path source = temp.root / "source";
+	const fs::path dependency = source / ".build/checkouts/swift-argument-parser/Plugins";
+	fs::create_directories(dependency);
+	fs::create_directories(temp.root / "external");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".gitignore", ".build/\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "authored source\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "external/private.txt", "must not snapshot\n"));
+	fs::create_directory_symlink(temp.root / "external", dependency / "GenerateCommon");
+	const std::string original_head = ReadFile(source / ".git/HEAD");
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+	    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+	if (!result.ok) throw std::runtime_error(result.message);
+	UAM_ASSERT(result.ok);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT_EQ(ReadFile(isolated / "app.txt"), std::string("authored source\n"));
+	UAM_ASSERT(!fs::exists(isolated / ".build"));
+	UAM_ASSERT_EQ(ReadFile(source / ".git/HEAD"), original_head);
+	UAM_ASSERT_EQ(ReadFile(temp.root / "external/private.txt"), std::string("must not snapshot\n"));
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(dependency / "GenerateCommon")));
+}
+
+UAM_TEST(ManagedSnapshotPreservesRelativeSymlinkNodes)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const int kind : {0, 1, 2})
+	{
+		TempDir temp("uam-managed-relative-link");
+		const fs::path source = temp.root / "source";
+		fs::create_directories(source / "Sources/Common");
+		fs::create_directories(source / "Plugins");
+		if (kind == 1) fs::create_directories(source / ".svn");
+		if (kind == 2) UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "Sources/Common/code.swift", "original source\n"));
+		fs::create_directory_symlink("../Sources/Common", source / "Plugins/GenerateCommon");
+		fs::create_symlink("Sources/Common/code.swift", source / "entry.swift");
+		uam::AppState app; app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+		const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+		    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+		if (!result.ok) throw std::runtime_error(result.message);
+	UAM_ASSERT(result.ok);
+		const fs::path isolated = chat.workspace_worktree_directory;
+		UAM_ASSERT(fs::is_symlink(fs::symlink_status(isolated / "Plugins/GenerateCommon")));
+		UAM_ASSERT_EQ(fs::read_symlink(isolated / "Plugins/GenerateCommon"), fs::path("../Sources/Common"));
+		UAM_ASSERT_EQ(fs::read_symlink(isolated / "entry.swift"), fs::path("Sources/Common/code.swift"));
+		UAM_ASSERT_EQ(ReadFile(isolated / "Plugins/GenerateCommon/code.swift"), std::string("original source\n"));
+		const auto mode = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(isolated.string()) + " ls-files --stage -- Plugins/GenerateCommon entry.swift", 10000);
+		UAM_ASSERT(mode.ok && mode.exit_code == 0 && mode.output.starts_with("120000 "));
+		UAM_ASSERT(mode.output.find("\n120000 ") != std::string::npos);
+		// The guarded UAM file writer deliberately refuses linked ancestors; a normal
+		// filesystem write still must resolve into the isolated target, never the source.
+		{ std::ofstream edit(isolated / "Plugins/GenerateCommon/code.swift"); edit << "isolated edit\n"; UAM_ASSERT(edit.good()); }
+		UAM_ASSERT_EQ(ReadFile(source / "Sources/Common/code.swift"), std::string("original source\n"));
+		UAM_ASSERT_EQ(fs::read_symlink(source / "Plugins/GenerateCommon"), fs::path("../Sources/Common"));
+	}
+}
+
+UAM_TEST(ManagedSnapshotPreservesBrokenInternalSymlink)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-managed-broken-link");
+	const fs::path source = temp.root / "source"; fs::create_directories(source);
+	fs::create_symlink("generated/missing.swift", source / "future.swift");
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
+	if (!result.ok) throw std::runtime_error(result.message);
+	UAM_ASSERT(result.ok);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(isolated / "future.swift")));
+	UAM_ASSERT_EQ(fs::read_symlink(isolated / "future.swift"), fs::path("generated/missing.swift"));
+	UAM_ASSERT(!fs::exists(isolated / "future.swift"));
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "future.swift")));
+}
+
+UAM_TEST(ManagedSnapshotRejectsEscapingSymlinkNodes)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const int kind : {0, 1, 2})
+	{
+		TempDir temp("uam-managed-escaping-link");
+		const fs::path source = temp.root / "source"; fs::create_directories(source);
+		fs::create_directories(temp.root / "outside");
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside/keep.txt", "external survivor"));
+		if (kind == 0) fs::create_directory_symlink("../outside", source / "escape");
+		if (kind == 1) fs::create_directory_symlink(temp.root / "outside", source / "escape");
+		if (kind == 2) { fs::create_directory_symlink("../outside", source / "indirect"); fs::create_directory_symlink("indirect", source / "escape"); }
+		uam::AppState app; app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+		const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
+		UAM_ASSERT(!result.ok && !result.message.empty());
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(ReadFile(temp.root / "outside/keep.txt"), std::string("external survivor"));
+		UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "escape")));
+	}
+}
+
+
+UAM_TEST(ManagedSnapshotUnbornUsesWorkingTreeAfterStagedDeletion)
+{
+	UAM_ASSERT(GitAvailableForTests()); TempDir temp("uam-snapshot-staged-deletion");
+	const fs::path source = temp.root / "source"; fs::create_directories(source);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "deleted.txt", "old staged bytes"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "current source"));
+	UAM_ASSERT(RunGitForTest(source, "add deleted.txt")); fs::remove(source / "deleted.txt");
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+	    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+	UAM_ASSERT(result.ok);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT(!fs::exists(isolated / "deleted.txt"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "keep.txt"), std::string("current source"));
+	UAM_ASSERT(!fs::exists(source / "deleted.txt"));
+}
+
+UAM_TEST(ManagedSnapshotUnbornRetainsNestedRepositoryFiles)
+{
+	UAM_ASSERT(GitAvailableForTests()); TempDir temp("uam-snapshot-nested-source");
+	const fs::path source = temp.root / "source"; fs::create_directories(source / "nested");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest((source / "nested").string())));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "nested/keep.txt", "nested current source"));
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+	    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+	UAM_ASSERT(result.ok);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT_EQ(ReadFile(isolated / "nested/keep.txt"), std::string("nested current source"));
+	UAM_ASSERT(!fs::exists(isolated / "nested/.git"));
+	UAM_ASSERT(fs::is_directory(source / "nested/.git"));
+}
+
+UAM_TEST(ManagedSnapshotUnbornRefusesStagedPathBehindReplacedLink)
+{
+	UAM_ASSERT(GitAvailableForTests()); TempDir temp("uam-snapshot-staged-parent-link");
+	const fs::path source = temp.root / "source"; fs::create_directories(source / "vendor");
+	fs::create_directories(temp.root / "outside");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".gitignore", "vendor\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "vendor/a.txt", "old staged bytes"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside/a.txt", "outside canary must not be imported"));
+	UAM_ASSERT(RunGitForTest(source, "add -f vendor/a.txt"));
+	fs::remove_all(source / "vendor"); fs::create_directory_symlink(temp.root / "outside", source / "vendor");
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+	    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+	UAM_ASSERT(!result.ok);
+	UAM_ASSERT(chat.workspace_worktree_directory.empty());
+	UAM_ASSERT_EQ(ReadFile(temp.root / "outside/a.txt"), std::string("outside canary must not be imported"));
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "vendor")));
+}
+
+
+UAM_TEST(ManagedSnapshotAcceptsEquivalentSourceRootSpellings)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const int kind : {0, 1, 2})
+	{
+		for (const int spelling : {0, 1, 2})
+		{
+			TempDir temp("uam-snapshot-root-spelling");
+			const fs::path source = temp.root / "source";
+			fs::create_directories(source / "Sources/Common");
+			fs::create_directories(source / "Plugins");
+			if (kind == 1) fs::create_directories(source / ".svn");
+			if (kind == 2) UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+			UAM_ASSERT(uam::io::WriteTextFile(source / "Sources/Common/code.swift", "authored bytes\n"));
+			fs::create_directory_symlink("../Sources/Common", source / "Plugins/GenerateCommon");
+			fs::path stored = source / "";
+			if (spelling == 1) stored = source / ".";
+			if (spelling == 2) stored = source / "Sources/..";
+			uam::AppState app; app.data_root = temp.root / "data";
+			ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+			chat.workspace_directory = stored.string();
+			const auto result = uam::GitWorktreeService().PrepareForChat(app, chat,
+			    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+			if (!result.ok) throw std::runtime_error(result.message);
+			UAM_ASSERT(result.ok);
+			const fs::path isolated = chat.workspace_worktree_directory;
+			UAM_ASSERT_EQ(ReadFile(isolated / "Sources/Common/code.swift"), std::string("authored bytes\n"));
+			UAM_ASSERT(fs::is_symlink(fs::symlink_status(isolated / "Plugins/GenerateCommon")));
+			UAM_ASSERT_EQ(fs::read_symlink(isolated / "Plugins/GenerateCommon"), fs::path("../Sources/Common"));
+			UAM_ASSERT_EQ(ReadFile(isolated / "Plugins/GenerateCommon/code.swift"), std::string("authored bytes\n"));
+			UAM_ASSERT_EQ(ReadFile(source / "Sources/Common/code.swift"), std::string("authored bytes\n"));
+			UAM_ASSERT_EQ(fs::read_symlink(source / "Plugins/GenerateCommon"), fs::path("../Sources/Common"));
+		}
+	}
+}

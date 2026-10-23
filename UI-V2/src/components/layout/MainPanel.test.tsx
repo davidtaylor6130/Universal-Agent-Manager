@@ -1,3 +1,4 @@
+import { rememberSubagentParent } from '../../utils/subagentNavigation'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1161,6 +1162,24 @@ describe('MainPanel', () => {
       await act(async () => root.unmount())
       delete window.cefQuery
     }
+  })
+
+  it('opens a validated native child in its parent pane while retaining the unrelated pane', async () => {
+    const parent = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli' }
+    const other = { ...parent, id: 'unrelated-pane', name: 'Unrelated chat' }
+    const child = { ...parent, id: 'native-child-pane', name: 'Native child', importedReadOnly: true, parentChatId: parent.id }
+    rememberSubagentParent(parent, child.id)
+    useAppStore.setState({ sessions: [parent, other, child], activeSessionId: other.id, messages: { [parent.id]: [], [other.id]: [], [child.id]: [] }, acpBindingBySessionId: {} })
+    const layout = paneLayout(parent.id, other.id)
+    writeChatGridLayout({ ...layout, activeLeafId: chatGridLeaves(layout.root)[1].id })
+    const host = document.createElement('div'); const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => useAppStore.getState().setActiveSession(child.id))
+      expect(chatGridLeaves(readChatGridLayout().root).map(leaf => leaf.sessionId)).toEqual([parent.id, other.id])
+      expect(host.querySelector('[data-testid="subagent-pane-chat-1"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Subagent lineage"]')?.textContent).toContain('Subagent of Gemini Session')
+    } finally { await act(async () => root.unmount()); host.remove() }
   })
 
 })

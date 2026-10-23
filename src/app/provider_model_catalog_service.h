@@ -43,6 +43,13 @@ class ProviderModelCatalogService
 
 	/// Start an explicit background read of local OpenCode configuration, retaining the current cache.
 	bool StartConfiguredOpenCodeRefresh();
+	/// <summary>Lists the native Antigravity catalogue without opening a conversation on the selected host.</summary>
+	bool StartAntigravityModelDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, std::string* error_out = nullptr);
+	bool StartAntigravityEffortDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out = nullptr);
+	static std::optional<nlohmann::json> ParseAntigravityEffort(std::string_view output, const std::string& model_id);
+	std::size_t ActiveNativeModelDiscoveries() const;
+	/// <summary>Accepts only the bounded native ID-tab-name catalogue; no model-specific effort support is inferred.</summary>
+	static std::optional<nlohmann::json> ParseAntigravityModels(std::string_view output);
 
 	/// Poll completed refresh tasks without reading local configuration files.
 	/// Returns true when a refresh result was consumed.
@@ -65,6 +72,8 @@ class ProviderModelCatalogService
 
 	/// Return the isolated persistent cache for the provider's current configuration.
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// Return at most 32 exact same-scope advertised IDs, native model-config choices take precedence, without local/global fallbacks.
+	nlohmann::json GetCachedProviderModelChoices(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	/// Read models, config and discovery state together, resolving the scope once.
@@ -82,6 +91,9 @@ class ProviderModelCatalogService
 
 	/// Append unseen runtime models to the fallback list.
 	/// Live metadata can replace matching fallbacks without changing selector order.
+	/// Decorate launch-configured models only from the same host's checked installation, clearing stale choices.
+	static void ApplyLaunchOptionMetadata(nlohmann::json& models, std::string_view provider_id, std::string_view checked_version);
+
 	static nlohmann::json MergeAcpModelArrays(nlohmann::json fallback_models, nlohmann::json runtime_models, bool prefer_runtime = false);
 
 	/// Parse OpenCode Zen's model-list response into free model options (pure; for tests and refresh).
@@ -133,6 +145,23 @@ class ProviderModelCatalogService
 	};
 	std::shared_ptr<ConfiguredOpenCodeRefresh> m_configuration_refresh;
 	std::unique_ptr<std::jthread> m_configuration_worker;
+	struct NativeModelDiscoveryState
+	{
+		std::optional<nlohmann::json> models;
+		std::string error;
+		std::atomic<bool> completed{false};
+	};
+	struct NativeModelDiscovery
+	{
+		std::string scope_key;
+		bool metadata_only = false;
+		std::string workspace;
+		std::string host_id;
+		std::shared_ptr<NativeModelDiscoveryState> state;
+		// Last member joins the worker before its output fields can be destroyed.
+		std::unique_ptr<std::jthread> worker;
+	};
+	std::map<std::string, std::unique_ptr<NativeModelDiscovery>> m_native_model_discoveries;
 
 	// Async refresh state (heap-allocated to avoid complete type issues in header).
 	std::unique_ptr<AsyncCommandTask> m_refresh_task;

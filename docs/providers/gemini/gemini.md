@@ -2,33 +2,41 @@
 
 Gemini CLI uses ACP. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
-**Assessment:** source routes and retained base evidence only, 2026-10-16. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
+**Assessment:** source routes and retained base evidence only, 2026-10-17. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Implemented | Native protocol normalised into UAM messages. |
+| `structured-chat` | Both | Partial | Native protocol normalised into UAM messages. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
-| `terminal-sync` | Both | Needs verification | Native history overlay exists; exact Chat/Terminal continuation is not established here. |
+| `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves bound history; current JSONL folding and guarded publication have focused native verification, while controller-local terminal originals have a guarded background import with focused native verification and other media callers, live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching exists; empty-chat and compacted-context follow-ups retain outstanding work/acceptance. |
-| `editing-messages` | UAM | Partial | Delivered edits branch and known-unsent edits have a route; recovery cases retain outstanding acceptance. |
+| `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |
 | `mcp-connections` | Both | Implemented | Shared launch setup supplies connections; transport and observed status vary. |
-| `skills` | UAM | Partial | Shared resource/index delivery exists; attached-skill discovery and live model compliance remain open. |
-| `attachments` | Both | Needs verification | Context and delivery routes exist; complete file/image consumption across local and SSH is unverified. |
-| `compaction` | Both | Partial | Compaction state may be emitted; a complete manual/native/UAM fallback route is not established. |
+| `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
+| `attachments` | Both | Partial | Current input uses executing-host paths, negotiated ACP or native blocks; bounded native-media mapping, guarded local refresh and controller-local discovered batches, owned PNG/JPEG previews and UAM portable-original transfer exist, while local saved-image Retry and fresh edited-branch regeneration now use current negotiated ACP image blocks with private warm/cold PNG and refusal verification; controller-local terminal history originals have a verified guarded background import, and exact local passive child originals now have a guarded background publication route with focused private CEF verification; explicit remote saved-owner history refresh now has a guarded original-publication route with focused private helper/CEF verification, same-process SSH saved-original Retry now has a negotiated-image adapter route under shared ownership and durable-admission safeguards with focused private matching-helper verification, while other remote imports, cold or replacement-process remote saved-image input and live/platform acceptance remain pending. |
+| `compaction` | Both | Partial | Automatic native state is recognized while structured manual compaction has no exposed ACP control; a UAM equivalent remains a decision. |
 | `computer-use` | UAM | Implemented | Local UAM companion route exists; SSH desktop control is outside the current supported scope. |
 | `side-chats` | UAM | Implemented | Shared related conversations; no automatic worktree request. |
 | `models` | Both | Implemented | Provider discovery or configured catalogue with saved selection; current availability must be checked. |
-| `agent-selection` | Both | Partial | Shared selection/adaptation exists; native import restrictions and GUI acceptance remain open. |
-| `agent-history` | Both | Partial | Tool recognition and addressable children vary; full native/remote history is not established. |
+| `agent-selection` | Both | Partial | Shared selection/adaptation exists; native import restrictions and GUI acceptance remain open. Shared [built-in delegation](../../settings/central-setup/agents.md#built-in-delegation) retains parent ceilings. |
+| `agent-history` | Both | Partial | Exact parent-owned JSON and JSONL child journals have readers and a guarded local inline-original publication route, and saved native agent IDs can link reported child state; live ACP still omits IDs, focused reader verification is retained, and the local media bridge has focused private CEF verification while full platform acceptance remains pending. Shared inline presentation remains pending integration and acceptance. |
+| `subagents` | Both | Partial | UAM nested catalogue and child-only pane source is unit-verified; Native journal controls remain limited to exposed APIs; [same-child follow-up, lineage and acceptance remain partial](../../chat/subagents.md). Shared [active-turn wait](../../chat/subagents.md#active-turn-result-wait) is source-integrated with focused private fixtures; canonical verification, this provider's long-call deadline and live local/SSH invocation remain unverified. |
+| `goals` | UAM | Partial | Shared goal inspection, approval-gated creation and bounded continuation exist; native lifecycle interoperability and full runtime verification remain outstanding. |
 | `resume` | Both | Implemented | UAM history plus a returned native session ID; invalid or unavailable IDs require an explicit outcome. |
-| `reasoning` | Both | Needs verification | Display emitted reasoning; verify supported effort choices against the selected model. |
+| `reasoning` | Both | Implemented | Emitted reasoning is displayed and inspected native versions/concrete models expose named thinking through immutable executing-host settings with idle restart; unverified combinations retain Default and live acceptance remains pending. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
-| `permissions` | Both | Implemented | ACP permission requests map to UAM policy; opaque terminal approvals remain native. |
+| `permissions` | Both | Partial | ACP requests map to UAM policy through the [implemented captured-read boundary](../permissions/permissions.md#captured-read-restrictions), with protocol verification and scoped source review; complete environment scoping and desktop/live/platform acceptance remain open, and opaque terminal approvals remain native. |
 | `usage` | Both | Partial | Token/history and an independent local quota reader exist; current account eligibility can deny acquisition, and custom commands, remote feeds and platform acceptance remain limited. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
 
 **Source:** [provider runtime](../../../src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
+
+Named thinking pins the selected concrete model rather than following native alias upgrades or substitutions; a retired preview can therefore fail where Default follows native routing. Each launch captures the executing host’s native trust/settings state and checked CLI version, so later TUI trust changes or external CLI upgrades require a fresh launch/check. Named thinking requires a directly resolved Gemini executable and fails explicitly when IDE or workspace trust cannot be established safely; Default remains available to clear an unsupported saved choice.
+
+Native history discovery follows the executing CLI’s home: a configured `GEMINI_CLI_HOME` replaces the home directory and history remains under its `.gemini` directory; otherwise the platform user home applies. Registry and workspace ownership evidence must agree; imported parent files and exact child reads cannot cross the selected project or parent through a path alias. An unrelated rejected project must not hide an independently attested workspace, while contradictions or ambiguity affecting the selected workspace reject the read. UAM does not use the undocumented `GEMINI_HOME` override for this history route.
+
+When a launch needs Windows native-home resolution, UAM uses `USERPROFILE` and then the OS profile lookup; a required settings or trust location that cannot be resolved fails explicitly rather than guessing another profile. Equivalence with Node’s profile-token lookup in restricted service accounts and long-profile-path environments remains unverified.

@@ -287,3 +287,23 @@ it('handles queued edit shortcuts without escaping into chat cancellation', asyn
   expect(escaped).not.toHaveBeenCalled()
   document.removeEventListener('keydown', escaped)
 })
+
+
+it('offers local editing only for ordinary unsent rows and leaves direct receipts without an edit action', async () => {
+  props.prompts = []
+  props.unsentPrompts = [
+    { messageIndex: 7, text: 'Ordinary unsent', attachments: [], retryable: true },
+    { messageIndex: 8, text: 'Direct recovery receipt', attachments: [], retryable: false, receipt: { id: 'direct', revision: 1 } },
+  ]
+  props.onEditUnsent = vi.fn()
+  act(() => root.render(<InlinePromptQueue {...props} />))
+  const ordinary = host.querySelector('[data-unsent-message-index="7"]')!
+  const receipt = host.querySelector('[data-unsent-receipt-id="direct"]')!
+  const edit = ordinary.querySelector<HTMLButtonElement>('[aria-label="Edit unsent message"]')!
+  expect(edit.disabled).toBe(false)
+  expect(receipt.querySelector('[aria-label="Edit unsent message"]')).toBeNull()
+  expect(host.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
+  await click(edit)
+  expect(props.onEditUnsent).toHaveBeenCalledExactlyOnceWith(7, 'Ordinary unsent')
+  expect(props.onEdit).not.toHaveBeenCalled()
+})

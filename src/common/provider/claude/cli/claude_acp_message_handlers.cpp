@@ -1,12 +1,18 @@
 #include "common/utils/time_utils.h"
+#include "common/provider/claude/cli/claude_preinput_identity.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/provider/claude/cli/claude_tool_projection.h"
+#include "common/provider/native_agent_history.h"
+#include "common/provider/native_child_timing.h"
+#include "remote/native_history_snapshot.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "app/provider_model_catalog_service.h"
+#include "app/agent_run_scheduler.h"
+#include "common/security/command_safety.h"
 #include "cef/cef_push.h"
 #include "common/config/approval_modes.h"
 #include "common/runtime/acp/acp_claude_stream.h"
@@ -14,6 +20,7 @@
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/uuid.h"
 #include "common/usage/transcript_usage.h"
 
 #include <algorithm>
@@ -26,6 +33,82 @@ namespace uam::acp_detail
 
 	namespace
 	{
+		void ObserveManagedInitialClaudeExecution(AppState& app, AcpSessionState& session, const ChatSession& chat, const nlohmann::json& message, bool complete_init)
+		{
+			if (!session.managed_initial_owner)
+				return;
+			// Subagent result metadata does not describe the owning top-level native conversation.
+			const auto parent = message.find("parent_tool_use_id");
+			if (parent != message.end() && !parent->is_null())
+			{
+				if (!parent->is_string())
+				{
+					AgentRunScheduler::InitialExecutionObserved(app, session, chat, {}, {}, {}, true);
+					return;
+				}
+				if (!parent->get_ref<const std::string&>().empty())
+					return;
+			}
+			bool valid = true;
+			const auto raw = [&](const char* name, std::size_t limit) -> std::string_view
+			{
+				const auto field = message.find(name);
+				if (field == message.end())
+				{
+					if (complete_init)
+						valid = false;
+					return {};
+				}
+				if (!field->is_string())
+				{
+					valid = false;
+					return {};
+				}
+				const auto& value = field->get_ref<const std::string&>();
+				if (value.empty() || value.size() > limit || strings::TrimAsciiView(value) != value || std::ranges::any_of(value, [](unsigned char ch) { return ch < 32 || ch == 127; }))
+				{
+					valid = false;
+					return {};
+				}
+				return value;
+			};
+			const auto native = raw("session_id", 256);
+			const auto model = raw("model", 160);
+			const auto mode = raw("permissionMode", 64);
+			if (complete_init && valid)
+			{
+				// Same native permission semantics as the Claude structured launcher; never a current-mode fallback.
+				const auto tier = command_safety::ParseTier(chat.command_safety_tier);
+				const std::string_view expected = strings::TrimAsciiView(chat.approval_mode) == approval_modes::kPlanApprovalMode ? approval_modes::kPlanApprovalMode : tier == command_safety::Tier::AiReview ? approval_modes::kProviderAutoApprovalMode : tier == command_safety::Tier::AcceptEdits ? approval_modes::kAcceptEditsApprovalMode : approval_modes::kDefaultApprovalMode;
+				valid = mode == expected;
+			}
+			// Invalid-present fields permanently withhold this attempt; result omission cannot mint missing init proof.
+			AgentRunScheduler::InitialExecutionObserved(app, session, chat, valid ? native : std::string_view{}, valid ? model : std::string_view{}, valid ? mode : std::string_view{}, valid ? complete_init : true);
+		}
+
+		nlohmann::json ClaudeMaintenanceTerminalReceipt(const AcpSessionState& session, const ChatSession& chat)
+		{
+			if (chat.remote_manual_compaction_boundary_json.empty() || chat.remote_manual_compaction_boundary_json.size() > 2048 || chat.provider_id != "claude-cli" || session.provider_id != chat.provider_id || session.chat_id != chat.id || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" || session.process_execution_host_id != chat.execution_host_id || chat.remote_process_control_token.empty() || session.remote_output_delivery_token != chat.remote_process_control_token || session.session_id != chat.native_session_id || !uam::uuid::IsCanonicalUuid(session.session_id))
+				return {};
+			const auto receipt = nlohmann::json::parse(chat.remote_manual_compaction_boundary_json, nullptr, false);
+			if (!receipt.is_object() || JsonDiagnosticStringValue(receipt, "kind") != "claude_manual_compaction_terminal" || JsonDiagnosticStringValue(receipt, "providerId") != chat.provider_id || JsonDiagnosticStringValue(receipt, "sessionId") != session.session_id || JsonDiagnosticStringValue(receipt, "executionHostId") != chat.execution_host_id || JsonDiagnosticStringValue(receipt, "processControlToken") != chat.remote_process_control_token || !uam::uuid::IsCanonicalUuid(JsonDiagnosticStringValue(receipt, "resultId")) || uam::nlohmann_json::IntFieldStrict(receipt, "requestId").value_or(0) <= 0 || JsonDiagnosticStringValue(receipt, "deliveryId").empty())
+				return {};
+			return receipt;
+		}
+
+		nlohmann::json MakeClaudeMaintenanceTerminalReceipt(const AcpSessionState& session, const ChatSession& chat, const std::string& result_id, const std::string& boundary_id)
+		{
+			if (!uam::uuid::IsCanonicalUuid(result_id) || chat.provider_id != "claude-cli" || session.provider_id != chat.provider_id || session.chat_id != chat.id || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" || session.process_execution_host_id != chat.execution_host_id || chat.execution_host_id.size() > 128 || chat.remote_process_control_token.empty() || chat.remote_process_control_token.size() > 256 || session.remote_output_delivery_token != chat.remote_process_control_token || session.session_id != chat.native_session_id || !uam::uuid::IsCanonicalUuid(session.session_id))
+				return {};
+			for (const auto& request : chat.remote_pending_requests)
+			{
+				if (request.method != "claude/compact" || request.response_consumed || request.request_id <= 0 || request.delivery_id.empty() || request.delivery_id.size() > 128 || !session.pending_request_methods.contains(request.request_id) || session.pending_request_methods.at(request.request_id) != "claude/compact")
+					continue;
+				return {{"kind", "claude_manual_compaction_terminal"}, {"providerId", chat.provider_id}, {"sessionId", session.session_id}, {"executionHostId", chat.execution_host_id}, {"processControlToken", chat.remote_process_control_token}, {"resultId", result_id}, {"requestId", request.request_id}, {"deliveryId", request.delivery_id}, {"boundaryId", boundary_id}};
+			}
+			return {};
+		}
+
 		/// <summary>Projects only declared generic subscription windows from the owning native session.</summary>
 		void ObserveClaudeAllowance(AcpSessionState& session, const ChatSession& chat, const nlohmann::json& message)
 		{
@@ -123,6 +206,8 @@ namespace uam::acp_detail
 					tool.is_sub_agent = saved.is_sub_agent;
 					tool.sub_agent_id = saved.sub_agent_id;
 					tool.sub_agent_title = saved.sub_agent_title;
+					tool.sub_agent_children = saved.sub_agent_children;
+					tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
 					tool.approval_status = saved.approval_status;
 					tool.task_id = saved.task_id;
 					tool.child_activity = saved.child_activity;
@@ -131,6 +216,46 @@ namespace uam::acp_detail
 				}
 			}
 			return tool;
+		}
+
+		/// <summary>Only an attested native child can supply its own terminal duration.</summary>
+		void ApplyClaudeChildDuration(const AcpSessionState& session, const ChatSession& chat,
+		    AcpToolCallState& tool, const nlohmann::json& message, const std::string& subtype)
+		{
+			const std::string task_id = JsonDiagnosticStringValue(message, "task_id");
+			const std::string host = chat.execution_host_id.empty() ? "local" : chat.execution_host_id;
+			if (!tool.is_sub_agent || session.provider_id != "claude-cli" || chat.provider_id != session.provider_id ||
+			    session.chat_id != chat.id || session.session_id != chat.native_session_id ||
+			    JsonDiagnosticStringValue(message, "session_id") != session.session_id ||
+			    !uam::uuid::IsCanonicalUuid(session.session_id) || !uam::remote::native_history::SafeId(task_id)) return;
+			const auto reference = uam::native_agents::ParseHistoryId(tool.sub_agent_id);
+			if (!reference || reference->provider_id != "claude-cli" || reference->parent_session_id != session.session_id ||
+			    reference->agent_id != task_id || reference->execution_host_id != host) return;
+
+			auto found = std::ranges::find(tool.sub_agent_children, tool.sub_agent_id, &SubAgentChild::id);
+			if (found == tool.sub_agent_children.end())
+			{
+				tool.sub_agent_children.push_back({tool.sub_agent_id, tool.sub_agent_title.empty() ? tool.title : tool.sub_agent_title, ""});
+				found = std::prev(tool.sub_agent_children.end());
+			}
+			SubAgentChild& child = *found;
+			const auto terminal = [](const std::string& status)
+			{
+				return status == uam::acp_statuses::kCompleted || status == uam::acp_statuses::kFailed || status == uam::acp_statuses::kCancelled;
+			};
+			std::string observed_status;
+			if (subtype == "task_started") observed_status = uam::acp_statuses::kRunning;
+			else if (subtype == "task_progress") observed_status = child.status.empty() ? uam::acp_statuses::kRunning : child.status;
+			else
+			{
+				observed_status = JsonDiagnosticStringValueOr(JsonObjectValue(message, "patch"), "status", JsonDiagnosticStringValue(message, "status"));
+				if (observed_status == "stopped" || observed_status == "killed") observed_status = uam::acp_statuses::kCancelled;
+			}
+			if (!terminal(child.status)) child.status = observed_status;
+			// Native progress supplies only a sampled duration. It is not a start epoch
+			// or a terminal receipt, and cannot create a live clock or replace a result.
+			if (subtype != "task_notification" || !terminal(observed_status) || child.status != observed_status || child.duration_ms) return;
+			child.duration_ms = uam::native_agents::ReportedDurationMilliseconds(JsonObjectValue(message, "usage"), "duration_ms");
 		}
 
 		bool HandleClaudeTaskEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
@@ -155,11 +280,32 @@ namespace uam::acp_detail
 				if (task_id.empty()) return true;
 				tool_id = "claude-task:" + task_id;
 			}
+			// Reject conflicting identity before restoring or mutating the launch.
+			// Normal progress uses the live association without rescanning history.
+			if (!task_id.empty())
+			{
+				const auto known = std::ranges::find(session.tool_calls, tool_id, &AcpToolCallState::id);
+				if (known != session.tool_calls.end() && !known->task_id.empty())
+				{
+					if (known->task_id != task_id) return true;
+				}
+				else
+				{
+					for (const Message& saved : chat.messages)
+						for (const ToolCall& launch : saved.tool_calls)
+							if (launch.id == tool_id && !launch.task_id.empty() && launch.task_id != task_id) return true;
+				}
+			}
 			AcpToolCallState& tool = RestoreClaudeTool(session, chat, tool_id);
 			const bool first_task_event = tool.task_id.empty() && !task_id.empty();
 			if (!task_id.empty()) tool.task_id = task_id;
 			if (tool.title.empty()) tool.title = JsonDiagnosticStringValueOr(message, "description", "Background task");
-			if (JsonDiagnosticStringValue(message, "task_type") == "local_agent") tool.is_sub_agent = true;
+			if (JsonDiagnosticStringValue(message, "task_type") == "local_agent")
+			{
+				tool.is_sub_agent = true;
+				if (JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id && uam::uuid::IsCanonicalUuid(session.session_id) && uam::remote::native_history::SafeId(task_id))
+					tool.sub_agent_id = uam::native_agents::BuildHistoryId("claude-cli", session.session_id, task_id, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+			}
 			if (subtype == "task_notification" || subtype == "task_updated")
 			{
 				const nlohmann::json patch = JsonObjectValue(message, "patch");
@@ -200,6 +346,7 @@ namespace uam::acp_detail
 				}
 				else session.claude_live_background_task_ids.erase(tool.task_id);
 			}
+			ApplyClaudeChildDuration(session, chat, tool, message, subtype);
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 			if (subtype == "task_progress" || (subtype == "task_updated" &&
@@ -284,6 +431,24 @@ namespace uam::acp_detail
 				(void)WriteAcpMessage(session, uam::acp_claude_stream::ControlResponse(id, {{"behavior", "deny"}, {"message", "Turn cancelled."}}));
 				return;
 			}
+			AcpPendingPermissionState permission;
+			if (tool_name != "AskUserQuestion")
+			{
+				permission.request_id_json = JsonRpcIdToStableString(id);
+				permission.provider_request_method = "can_use_tool";
+				permission.provider_request_kind = "claude-tool";
+				permission.provider_input_json = input.dump();
+				permission.tool_call_id = tool_id;
+				permission.title = uam::claude::ToolTitle(tool_name, input);
+				permission.kind = uam::claude::ToolKind(tool_name);
+				permission.status = uam::acp_statuses::kPending;
+				permission.content = tool_name == "Bash" ? JsonDiagnosticStringValue(input, "command") : input.dump(2);
+				if (tool_name == "Bash")
+					if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(input, "command"))
+						permission.execution_command = command->get_ref<const std::string&>();
+				permission.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
+				if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &permission)) return;
+			}
 			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
 			tool.title = uam::claude::ToolTitle(tool_name, input);
 			tool.kind = uam::claude::ToolKind(tool_name);
@@ -335,19 +500,8 @@ namespace uam::acp_detail
 			}
 			else
 			{
-				AcpPendingPermissionState pending;
-				pending.request_id_json = JsonRpcIdToStableString(id);
-				pending.provider_request_method = "can_use_tool";
-				pending.provider_request_kind = "claude-tool";
-				pending.provider_input_json = input.dump();
-				pending.tool_call_id = tool_id;
-				pending.title = tool.title;
-				pending.kind = tool_name == "Bash" ? "execute" : tool_name == "Edit" || tool_name == "Write" || tool_name == "NotebookEdit" ? "edit" : tool_name;
-				pending.status = uam::acp_statuses::kPending;
-				pending.content = tool_name == "Bash" ? JsonDiagnosticStringValue(input, "command") : input.dump(2);
-				pending.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
-				ApplyCommandSafetyDecision(app, chat, pending);
-				QueueAcpPermission(app, session, chat, std::move(pending));
+				ApplyCommandSafetyDecision(app, chat, permission);
+				QueueAcpPermission(app, session, chat, std::move(permission));
 			}
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 			SaveChatQuietly(app, chat);
@@ -357,6 +511,7 @@ namespace uam::acp_detail
 
 void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
+	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 	if (JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !identity.empty() &&
 	    !session.claude_seen_parent_messages.insert(identity).second) return;
@@ -450,6 +605,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
+	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const nlohmann::json user_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = JsonArrayValue(user_message, "content");
 	if (!content.is_array())
@@ -477,6 +633,10 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 		}
 
 		AcpToolCallState& tool_call = RestoreClaudeTool(session, chat, tool_id);
+		const std::string native_agent = JsonDiagnosticStringValue(JsonObjectValue(message, "tool_use_result"), "agentId");
+		if (tool_call.is_sub_agent && JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id && uam::uuid::IsCanonicalUuid(session.session_id) && uam::remote::native_history::SafeId(native_agent))
+			tool_call.sub_agent_id = uam::native_agents::BuildHistoryId("claude-cli", session.session_id, native_agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+
 		if (JsonBooleanValueOr(item, "is_error", false)) tool_call.status = uam::acp_statuses::kFailed;
 		else if (tool_call.task_id.empty()) tool_call.status = uam::acp_statuses::kCompleted;
 		const nlohmann::json* content_value = uam::nlohmann_json::FindField(item, "content");
@@ -551,6 +711,75 @@ static void HandleClaudeResultUsage(AcpSessionState& session, const nlohmann::js
 
 void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
+	if (claude_preinput::Consume(app, session, chat, message)) return;
+	const nlohmann::json* reported_native = uam::nlohmann_json::FindStringField(message, "session_id");
+	if (!AgentRunScheduler::ManagedResumeIdentityAllowed(app, session, chat,
+	        reported_native ? std::string_view(reported_native->get_ref<const std::string&>()) : std::string_view{}))
+		return;
+	const auto retired = ClaudeMaintenanceTerminalReceipt(session, chat);
+	if (retired.is_object() && JsonDiagnosticStringValue(message, "session_id") == session.session_id && JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && JsonDiagnosticStringValue(message, "uuid") == JsonDiagnosticStringValue(retired, "resultId"))
+		return;
+	if (session.manual_compaction_pending && (JsonDiagnosticStringValue(message, "session_id") != session.session_id || session.session_id != chat.native_session_id || !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty()))
+		return;
+	const bool completed_native_scope = !session.session_id.empty() && session.session_id == chat.native_session_id && JsonDiagnosticStringValue(message, "session_id") == session.session_id && JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
+	const std::string result_uuid = JsonDiagnosticStringValue(message, "uuid");
+	bool completion_result_fresh = false;
+	if (!result_uuid.empty())
+	{
+		const bool fresh = session.claude_seen_parent_messages.insert("result:" + result_uuid).second;
+		completion_result_fresh = fresh;
+		if (session.manual_compaction_pending && !fresh)
+			return;
+	}
+	if (session.manual_compaction_pending)
+	{
+		const bool cancelled = uam::AcpSessionHasPendingCancel(session);
+		const bool failed = JsonBooleanValueOr(message, "is_error", false) || uam::acp_claude_stream::IsResultErrorSubtype(JsonDiagnosticStringValue(message, "subtype"));
+		const auto boundary = std::ranges::find_if(session.turn_events, [](const AcpTurnEventState& event) { return event.type == "claude_manual_compaction_boundary"; });
+		const bool completed = !cancelled && !failed && JsonDiagnosticStringValue(message, "subtype") == "success" && session.claude_manual_compaction_boundary_seen && boundary != session.turn_events.end();
+		const auto terminal_receipt = MakeClaudeMaintenanceTerminalReceipt(session, chat, result_uuid, boundary == session.turn_events.end() ? std::string{} : boundary->request_id_json);
+		std::optional<AcpTurnEventState> settled;
+		if (completed)
+			settled = *boundary;
+		std::erase_if(session.turn_events, [](const AcpTurnEventState& event) { return event.type == "claude_manual_compaction_boundary"; });
+		if (settled)
+			AppendContextCompactionEvent(app, session, chat, settled->text, settled->request_id_json, settled->compaction_tokens_before, settled->compaction_tokens_after);
+		else
+			session.last_error = cancelled ? "Claude manual compaction was interrupted." : failed ? "Claude manual compaction failed." : "Claude completed the command without a compaction boundary; context was not confirmed compacted.";
+		for (AcpRemotePendingRequestState& request : chat.remote_pending_requests)
+		{
+			if (request.method != "claude/compact" && (session.cancel_request_id == 0 || request.request_id != session.cancel_request_id))
+				continue;
+			request.response_consumed = true;
+			request.payload.clear();
+		}
+		std::erase_if(session.pending_request_methods, [](const auto& request) { return request.second == "claude/compact"; });
+		session.pending_request_methods.erase(session.cancel_request_id);
+		session.manual_compaction_pending = false;
+		session.claude_manual_compaction_boundary_seen = false;
+		session.context_compaction_in_progress = false;
+		session.processing = false;
+		session.recovering_remote_turn = false;
+		session.inactivity_timeout_pending = false;
+		session.cancel_requested = false;
+		session.cancel_requested_time_s = 0.0;
+		session.cancel_request_id = 0;
+		session.lifecycle_state = failed ? kAcpLifecycleError : kAcpLifecycleReady;
+		if (chat.execution_host_id != "local" && !chat.execution_host_id.empty())
+		{
+			chat.remote_manual_compaction_pending = false;
+			// Keep the exact terminal identity across a save/ACK gap. Its UUID can
+			// never settle a later ordinary result or a new maintenance request.
+			chat.remote_manual_compaction_boundary_json = terminal_receipt.is_object() ? terminal_receipt.dump() : std::string{};
+			chat.remote_turn_reconnect_pending = false;
+			if (!SaveChatQuietly(app, chat))
+				return;
+		}
+		// This maintenance result owns no user turn, goal iteration or checkpoint.
+		(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
+		return;
+	}
+	ObserveManagedInitialClaudeExecution(app, session, chat, message, false);
 	const bool quota_wait = OwnClaudeQuotaWait(app, session, chat, message, uam::time::TimestampNowSec());
 	if (!quota_wait && chat.claude_quota_continuation.state == "continued")
 		chat.claude_quota_continuation.state = "completed";
@@ -621,6 +850,8 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	else
 	{
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		if (completed_native_scope && completion_result_fresh && !cancelled && !is_error && !quota_wait && subtype == "success")
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 	}
 
@@ -640,7 +871,15 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 
 void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
+	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const std::string type = JsonDiagnosticStringValue(message, "type");
+	if (session.manual_compaction_pending && type == "result")
+	{
+		HandleClaudeResult(app, session, chat, message, browser);
+		return;
+	}
+	if (session.manual_compaction_pending && (type == "assistant" || type == "user"))
+		return;
 	if (type == "assistant" && session.processing && session.turn_serial > 0 && session.queued_prompt.empty() &&
 	    JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id &&
 	    JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && JsonDiagnosticStringValue(message, "error") == "rate_limit")
@@ -660,11 +899,16 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	}
 	if (type == "system" && JsonDiagnosticStringValue(message, "subtype") == "status")
 	{
+		if (session.manual_compaction_pending && JsonDiagnosticStringValue(message, "session_id") != session.session_id)
+			return;
 		session.context_compaction_in_progress = JsonDiagnosticStringValue(message, "status") == "compacting";
 		return;
 	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == "compact_boundary")
 	{
+		const auto retired = ClaudeMaintenanceTerminalReceipt(session, chat);
+		if (retired.is_object() && JsonDiagnosticStringValue(message, "session_id") == session.session_id && JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !JsonDiagnosticStringValue(retired, "boundaryId").empty() && JsonDiagnosticStringValue(message, "uuid") == JsonDiagnosticStringValue(retired, "boundaryId"))
+			return;
 		const nlohmann::json metadata = JsonObjectValue(message, "compact_metadata");
 		const auto reported_count = [&metadata](const char* key) -> int64_t
 		{
@@ -678,6 +922,28 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 			const int64_t count = value->get<int64_t>();
 			return count >= 0 && count <= 9'007'199'254'740'991LL ? count : -1;
 		};
+		if (session.manual_compaction_pending)
+		{
+			const std::string identity = JsonDiagnosticStringValue(message, "uuid");
+			if (JsonDiagnosticStringValue(message, "session_id") != session.session_id || session.session_id != chat.native_session_id || !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() || !uam::uuid::IsCanonicalUuid(identity) || JsonDiagnosticStringValue(metadata, "trigger") != "manual" || reported_count("pre_tokens") < 0)
+				return;
+			AcpTurnEventState boundary;
+			boundary.type = "claude_manual_compaction_boundary";
+			boundary.text = JsonDiagnosticStringValue(message, "summary");
+			boundary.request_id_json = identity;
+			boundary.compaction_tokens_before = reported_count("pre_tokens");
+			boundary.compaction_tokens_after = reported_count("post_tokens");
+			std::erase_if(session.turn_events, [](const AcpTurnEventState& event) { return event.type == "claude_manual_compaction_boundary"; });
+			session.turn_events.push_back(std::move(boundary));
+			session.claude_manual_compaction_boundary_seen = true;
+			session.context_compaction_in_progress = true;
+			if (chat.execution_host_id != "local" && !chat.execution_host_id.empty())
+			{
+				chat.remote_manual_compaction_boundary_json = nlohmann::json{{"sessionId", session.session_id}, {"identity", identity}, {"summary", JsonDiagnosticStringValue(message, "summary")}, {"tokensBefore", reported_count("pre_tokens")}, {"tokensAfter", reported_count("post_tokens")}}.dump();
+				(void)SaveChatQuietly(app, chat);
+			}
+			return;
+		}
 		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"), reported_count("pre_tokens"), reported_count("post_tokens"));
 		return;
 	}
@@ -756,6 +1022,15 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == uam::acp_claude_stream::kSubtypeInit)
 	{
+		const nlohmann::json* reported_native = uam::nlohmann_json::FindStringField(message, "session_id");
+		if (!AgentRunScheduler::ManagedResumeIdentityAllowed(app, session, chat,
+		        reported_native ? std::string_view(reported_native->get_ref<const std::string&>()) : std::string_view{}))
+			return;
+		if (session.manual_compaction_pending && JsonDiagnosticStringValue(message, "session_id") != session.session_id)
+			return;
+		ObserveManagedInitialClaudeExecution(app, session, chat, message, true);
+		if (const auto* commands = uam::nlohmann_json::FindArrayField(message, "slash_commands"))
+			session.claude_manual_compaction_supported = std::ranges::any_of(*commands, [](const nlohmann::json& command) { return command.is_string() && command == "compact"; });
 		if (session.initialize_request_id == 0)
 			session.initialized = true;
 		const std::string session_id = uam::nlohmann_json::TrimmedStringValueOr(message, "session_id", "");

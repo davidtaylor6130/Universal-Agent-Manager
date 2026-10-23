@@ -2,16 +2,22 @@
 
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/message_attachment_sources.h"
+#include "common/chat/native_attachment_assets.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/base64.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -28,20 +34,34 @@ namespace uam
 		constexpr std::size_t kMaxBundleChatCount = 10000;
 		constexpr std::size_t kMaxChatBytes = 64ULL * 1024ULL * 1024ULL;
 		constexpr std::size_t kMaxTotalChatBytes = 256ULL * 1024ULL * 1024ULL;
+		constexpr std::size_t kMaxNativeMetadataBytes = 1024U * 1024U;
+
+		struct BundleOriginal
+		{
+			native_assets::AssetReference reference;
+			native_assets::Payload payload;
+		};
 
 		struct ExportCandidate
 		{
 			std::string id;
 			std::string canonical_text;
+			ChatSession chat;
+			nlohmann::json document;
+			std::vector<BundleOriginal> originals;
+			std::unique_ptr<native_assets::PreparedBatch> prepared;
 		};
 
 		struct ImportCandidate
 		{
 			ChatSession chat;
+			nlohmann::json document;
 			std::string source_id;
 			std::string imported_id;
 			std::string imported_title;
 			bool renamed = false;
+			std::vector<BundleOriginal> originals;
+			std::unique_ptr<native_assets::PreparedBatch> prepared;
 		};
 
 		struct StoredChatSizes
@@ -78,17 +98,224 @@ namespace uam
 		{
 			if (value.is_number_unsigned())
 			{
-				return static_cast<std::size_t>(value.get<std::uint64_t>());
+				const auto size = value.get<std::uint64_t>();
+				if (size <= std::numeric_limits<std::size_t>::max()) return static_cast<std::size_t>(size);
+				return std::nullopt;
 			}
 			if (value.is_number_integer())
 			{
 				const std::int64_t parsed = value.get<std::int64_t>();
-				if (parsed >= 0)
+				if (parsed >= 0 && static_cast<std::uint64_t>(parsed) <= std::numeric_limits<std::size_t>::max())
 				{
 					return static_cast<std::size_t>(parsed);
 				}
 			}
 			return std::nullopt;
+		}
+
+		std::string OriginalIdentity(const native_assets::AssetReference& reference)
+		{
+			return reference.key + '\n' + reference.mime_type;
+		}
+
+		native_assets::AssetReference OriginalReference(const MessageAttachment& attachment)
+		{
+			return {attachment.native_asset_key, attachment.mime_type, attachment.content_digest,
+			    static_cast<std::size_t>(attachment.size_bytes)};
+		}
+
+		template <typename Visit> bool VisitAttachments(ChatSession& chat, const Visit& visit)
+		{
+			for (auto& message : chat.messages)
+				for (auto& attachment : message.attachments) if (!visit(attachment)) return false;
+			for (auto& prompt : chat.acp_queued_prompts)
+				for (auto& attachment : prompt.attachments) if (!visit(attachment)) return false;
+			return true;
+		}
+
+		bool RawAttachmentMatches(const nlohmann::json& raw, const MessageAttachment& attachment)
+		{
+			for (const auto& [field, value] : {
+			         std::pair{"id", &attachment.id}, std::pair{"name", &attachment.name}, std::pair{"kind", &attachment.kind},
+			         std::pair{"mime_type", &attachment.mime_type}, std::pair{"path", &attachment.path},
+			         std::pair{"sourceUri", &attachment.source_uri}, std::pair{"originExecutionHostId", &attachment.origin_execution_host_id},
+			         std::pair{"nativePartKey", &attachment.native_part_key}, std::pair{"nativeToolCallId", &attachment.native_tool_call_id},
+			         std::pair{"nativeSourceField", &attachment.native_source_field}, std::pair{"nativeAssetKey", &attachment.native_asset_key},
+			         std::pair{"contentDigest", &attachment.content_digest}, std::pair{"previewKey", &attachment.preview_key},
+			         std::pair{"previewOriginPath", &attachment.preview_origin_path}})
+			{
+				const auto stored = raw.find(field);
+				if (stored == raw.end() ? !value->empty() : (!stored->is_string() || stored->get<std::string>() != *value)) return false;
+			}
+			const auto source = raw.find("source");
+			if (source != raw.end() && (!source->is_string() || source->get<std::string>() != attachment_sources::Name(attachment.source))) return false;
+			const auto size = raw.find("size_bytes");
+			if (size != raw.end())
+			{
+				const auto bytes = NonNegativeSize(*size);
+				if (!bytes || *bytes != attachment.size_bytes) return false;
+			}
+			const auto copied = raw.find("copied");
+			return copied == raw.end() || (copied->is_boolean() && copied->get<bool>() == attachment.copied);
+		}
+
+		bool NativeMetadataWithinBounds(const nlohmann::json& document, const ChatSession& chat, std::size_t& metadata_bytes)
+		{
+			const auto inspect = [&](const nlohmann::json& rows, const auto& model_rows)
+			{
+				if (!rows.is_array() || rows.size() != model_rows.size()) return false;
+				for (std::size_t row = 0; row < rows.size(); ++row)
+				{
+					if (!rows[row].is_object()) return false;
+					const auto parts = rows[row].find("attachments");
+					if (parts == rows[row].end()) continue;
+					if (!parts->is_array()) return false;
+					bool native = false;
+					for (const auto& part : *parts)
+					{
+						if (!part.is_object()) return false;
+						if (part.contains("source") || part.contains("nativeAssetKey") || part.contains("sourceUri") ||
+						    part.contains("nativePartKey") || part.contains("contentDigest") || part.contains("originExecutionHostId") ||
+						    part.contains("nativeToolCallId") || part.contains("nativeSourceField"))
+						{
+							native = true;
+							const auto bytes = part.dump().size();
+							if (bytes > kMaxNativeMetadataBytes - metadata_bytes) return false;
+							metadata_bytes += bytes;
+						}
+					}
+					// Native rows may not be silently truncated or normalized away.
+					if (native && parts->size() != model_rows[row].attachments.size()) return false;
+					if (native)
+						for (std::size_t index = 0; index < parts->size(); ++index)
+							if (!RawAttachmentMatches((*parts)[index], model_rows[row].attachments[index])) return false;
+				}
+				return true;
+			};
+			const auto messages = document.find("messages");
+			if (messages != document.end() && !inspect(*messages, chat.messages)) return false;
+			const auto queue = document.find("acp_queued_prompts");
+			return queue == document.end() || inspect(*queue, chat.acp_queued_prompts);
+		}
+
+		bool CollectOriginals(const fs::path& root, ChatSession& chat, const std::string& canonical,
+		    const nlohmann::json& document, const std::shared_ptr<native_assets::PayloadBudget>& budget,
+		    std::size_t& metadata_bytes, std::vector<BundleOriginal>& originals, std::vector<std::string>& errors)
+		{
+			const auto archive = ChatRepository::ParseArchivalQueuedPrompts(canonical, chat.id);
+			if (!archive)
+			{
+				AppendError(errors, "Canonical queued attachment archive is invalid: " + chat.id);
+				return false;
+			}
+			chat.acp_queued_prompts = *archive;
+			if (!NativeMetadataWithinBounds(document, chat, metadata_bytes))
+			{
+				AppendError(errors, "Canonical native attachment metadata exceeds the archive bounds: " + chat.id);
+				return false;
+			}
+			std::unordered_set<std::string> seen;
+			const bool valid = VisitAttachments(chat, [&](const MessageAttachment& attachment)
+			{
+				if (!attachment_sources::IsPersistable(attachment, chat.id)) return false;
+				if (attachment.source != AttachmentSource::OwnedNativeAsset) return true;
+				const auto reference = OriginalReference(attachment);
+				if (!seen.insert(OriginalIdentity(reference)).second) return true;
+				if (budget->UsedCount() >= native_assets::kMaxAssetCount ||
+				    reference.size_bytes > native_assets::kMaxBatchBytes - budget->UsedBytes()) return false;
+				// The receipt-backed reader is the only source of transferable bytes.
+				const auto original = native_assets::ReadOwned(fs::absolute(root), chat.id, reference.key);
+				if (!original.ok || original.bytes.size() != reference.size_bytes) return false;
+				std::string error;
+				auto payload = native_assets::MakeInlinePayload(uam::base64::Encode(original.bytes), reference.mime_type, budget, error);
+				if (!payload || payload->Digest() != reference.digest || payload->DecodedSize() != reference.size_bytes) return false;
+				originals.push_back({reference, std::move(payload)});
+				return true;
+			});
+			if (!valid) AppendError(errors, "A native original is missing, invalid or exceeds the operation budget: " + chat.id);
+			return valid;
+		}
+
+		bool PrepareOriginals(const fs::path& root, std::string_view final_owner, const std::vector<BundleOriginal>& originals,
+		    std::unique_ptr<native_assets::PreparedBatch>& prepared, std::vector<std::string>& errors)
+		{
+			if (originals.empty()) return true;
+			std::vector<native_assets::Payload> payloads;
+			for (const auto& original : originals) payloads.push_back(original.payload);
+			std::string error;
+			prepared = native_assets::PreparedBatch::Prepare(fs::absolute(root), final_owner, payloads, error);
+			if (!prepared) AppendError(errors, "Could not prepare portable native originals: " + error);
+			return prepared != nullptr;
+		}
+
+		void RebindOriginals(ChatSession& chat, nlohmann::json* document, const std::vector<BundleOriginal>& originals,
+		    const native_assets::PreparedBatch& prepared)
+		{
+			std::unordered_map<std::string, std::string> keys;
+			for (std::size_t index = 0; index < originals.size(); ++index)
+				keys.emplace(OriginalIdentity(originals[index].reference), prepared.Assets().at(index).key);
+			VisitAttachments(chat, [&](MessageAttachment& attachment)
+			{
+				if (attachment.source == AttachmentSource::OwnedNativeAsset)
+					attachment.native_asset_key = keys.at(OriginalIdentity(OriginalReference(attachment)));
+				return true;
+			});
+			if (!document) return;
+			for (const auto collection : {"messages", "acp_queued_prompts"})
+			{
+				auto rows = document->find(collection);
+				if (rows == document->end()) continue;
+				for (auto& row : *rows)
+				{
+					auto attachments = row.find("attachments");
+					if (attachments == row.end()) continue;
+					for (auto& part : *attachments)
+						if (part.value("source", "") == "owned_native_asset")
+							part["nativeAssetKey"] = keys.at(part.at("nativeAssetKey").get<std::string>() + '\n' + part.at("mime_type").get<std::string>());
+				}
+			}
+		}
+
+		nlohmann::json OriginalInventory(const native_assets::PreparedBatch* prepared)
+		{
+			auto inventory = nlohmann::json::array();
+			std::map<std::string, native_assets::AssetReference> declared;
+			if (prepared)
+				for (const auto& reference : prepared->Assets())
+				{
+					const auto [found, inserted] = declared.emplace(OriginalIdentity(reference), reference);
+					if (!inserted)
+					{
+						if (found->second.digest != reference.digest || found->second.size_bytes != reference.size_bytes)
+							throw std::length_error("Converged native original inventory metadata disagrees.");
+						continue;
+					}
+					inventory.push_back({{"key", reference.key}, {"mimeType", reference.mime_type},
+					    {"digest", reference.digest}, {"byteSize", reference.size_bytes}});
+				}
+			return inventory;
+		}
+
+		bool ValidateOriginalInventory(const nlohmann::json& entry, std::size_t version,
+		    const std::vector<BundleOriginal>& originals)
+		{
+			const auto inventory = entry.find("originals");
+			if (version == 1) return originals.empty() && inventory == entry.end();
+			if (inventory == entry.end() || !inventory->is_array() || inventory->size() != originals.size()) return false;
+			std::map<std::string, native_assets::AssetReference> remaining;
+			for (const auto& original : originals) remaining.emplace(OriginalIdentity(original.reference), original.reference);
+			for (const auto& item : *inventory)
+			{
+				native_assets::AssetReference reference;
+				if (!item.is_object() || !ReadRequiredString(item, "key", reference.key) ||
+				    !ReadRequiredString(item, "mimeType", reference.mime_type) || !ReadRequiredString(item, "digest", reference.digest)) return false;
+				const auto size = item.find("byteSize");
+				const auto bytes = size == item.end() ? std::nullopt : NonNegativeSize(*size);
+				const auto found = remaining.find(OriginalIdentity(reference));
+				if (!bytes || found == remaining.end() || found->second.digest != reference.digest || found->second.size_bytes != *bytes) return false;
+				remaining.erase(found);
+			}
+			return remaining.empty();
 		}
 
 		bool ValidateEmptyOrNewBundleDestination(const fs::path& bundle_path, std::vector<std::string>& errors)
@@ -205,6 +432,7 @@ namespace uam
 			nlohmann::json manifest = {
 			    {"schema", LocalChatBundleService::kSchema},
 			    {"version", LocalChatBundleService::kVersion},
+			    {"nativeAssetStorage", native_assets::kStoreDirectory},
 			    {"chatCount", stored.size()},
 			    {"chats", nlohmann::json::array()},
 			};
@@ -221,6 +449,7 @@ namespace uam
 				    {"id", id},
 				    {"file", CanonicalRelativeChatPath(id)},
 				    {"byteSize", size},
+				    {"originals", nlohmann::json::array()},
 				});
 				chat_ids_out.push_back(id);
 			}
@@ -246,11 +475,13 @@ namespace uam
 			std::vector<ExportCandidate> candidates;
 			candidates.reserve(chat_ids.size());
 			std::size_t total_bytes = 0;
+			std::size_t metadata_bytes = 0;
+			const auto budget = std::make_shared<native_assets::PayloadBudget>();
 			for (const std::string& chat_id : chat_ids)
 			{
 				std::string validation_warning;
-				const std::optional<ChatSession> validated =
-				    ChatRepository::LoadLocalChat(data_root, chat_id, true, &validation_warning);
+				std::optional<ChatSession> validated =
+				    ChatRepository::LoadLocalChatBounded(data_root, chat_id, kMaxChatBytes);
 				if (!validation_warning.empty())
 				{
 					warnings.push_back(validation_warning);
@@ -265,7 +496,7 @@ namespace uam
 				const fs::path canonical_path = AppPaths::UamChatFilePath(data_root, chat_id);
 				std::string canonical_text;
 				if (!uam::paths::IsRegularFileNoThrow(canonical_path) ||
-				    !uam::io::TryReadTextFile(canonical_path, canonical_text) || canonical_text.empty())
+				    !uam::io::TryReadTextFile(canonical_path, canonical_text, kMaxChatBytes) || canonical_text.empty())
 				{
 					AppendError(errors, "Could not read canonical chat file for export: " +
 					                        uam::paths::Utf8PathString(canonical_path));
@@ -279,7 +510,42 @@ namespace uam
 				}
 				total_bytes += canonical_text.size();
 
-				candidates.push_back({chat_id, std::move(canonical_text)});
+				{
+					// Certify the original queue text before any DOM redaction/dump.
+					// This rejects inert numbers that the portable codec would round.
+					if (!ChatRepository::ParsePassiveQueuedPromptArchive(canonical_text, chat_id))
+					{
+						AppendError(errors, "Canonical queued archive cannot be preserved losslessly: " + chat_id);
+						return {};
+					}
+					auto portable = nlohmann::json::parse(canonical_text, nullptr, false);
+					if (!portable.is_object())
+					{
+						AppendError(errors, "Could not remove private process authority from the exported transcript: " + chat_id);
+						return {};
+					}
+					const bool has_authority =
+					    (portable.contains("remote_opencode_native_token") && portable["remote_opencode_native_token"] != "") ||
+					    (portable.contains("remote_process_control_token") && portable["remote_process_control_token"] != "") ||
+					    (portable.contains("remote_manual_compaction_boundary_json") && portable["remote_manual_compaction_boundary_json"] != "");
+					if (has_authority)
+					{
+						portable["remote_opencode_native_token"] = "";
+						portable["remote_opencode_native_port"] = 0;
+						portable["remote_process_control_token"] = "";
+						portable["remote_manual_compaction_pending"] = false;
+						portable["remote_manual_compaction_boundary_json"] = "";
+						canonical_text = portable.dump(2);
+					}
+				}
+				ExportCandidate candidate;
+				candidate.id = chat_id;
+				candidate.canonical_text = std::move(canonical_text);
+				candidate.chat = std::move(*validated);
+				candidate.document = nlohmann::json::parse(candidate.canonical_text, nullptr, false);
+				if (!CollectOriginals(data_root, candidate.chat, candidate.canonical_text, candidate.document,
+				        budget, metadata_bytes, candidate.originals, errors)) return {};
+				candidates.push_back(std::move(candidate));
 			}
 			return candidates;
 		}
@@ -296,7 +562,8 @@ namespace uam
 			}
 
 			const fs::path manifest_path = bundle_path / kManifestFilename;
-			if (!uam::paths::IsRegularFileNoThrow(manifest_path))
+			std::error_code link_error;
+			if (!fs::is_regular_file(fs::symlink_status(manifest_path, link_error)) || link_error)
 			{
 				AppendError(errors, "The selected folder does not contain a readable manifest.json.");
 				return false;
@@ -311,7 +578,7 @@ namespace uam
 			}
 
 			std::string manifest_text;
-			if (!uam::io::TryReadTextFile(manifest_path, manifest_text))
+			if (!uam::io::TryReadTextFile(manifest_path, manifest_text, kMaxManifestBytes))
 			{
 				AppendError(errors, "The selected folder does not contain a readable manifest.json.");
 				return false;
@@ -332,9 +599,15 @@ namespace uam
 			const auto version_it = manifest.find("version");
 			const std::optional<std::size_t> version =
 			    version_it == manifest.end() ? std::nullopt : NonNegativeSize(*version_it);
-			if (!version || *version != static_cast<std::size_t>(LocalChatBundleService::kVersion))
+			if (!version || (*version != 1 && *version != static_cast<std::size_t>(LocalChatBundleService::kVersion)))
 			{
 				AppendError(errors, "The local chat bundle version is not supported.");
+				return false;
+			}
+			std::string storage;
+			if (*version == 2 && (!ReadRequiredString(manifest, "nativeAssetStorage", storage) || storage != native_assets::kStoreDirectory))
+			{
+				AppendError(errors, "The local chat bundle native original storage version is not supported.");
 				return false;
 			}
 
@@ -350,7 +623,7 @@ namespace uam
 			}
 
 			const fs::path chats_path = bundle_path / kChatsDirectoryName;
-			if (!uam::paths::IsDirectoryNoThrow(chats_path))
+			if (!fs::is_directory(fs::symlink_status(chats_path, link_error)) || link_error)
 			{
 				AppendError(errors, "The local chat bundle is missing its chats folder.");
 				return false;
@@ -359,6 +632,8 @@ namespace uam
 			std::unordered_set<std::string> declared_ids;
 			std::unordered_set<std::string> declared_files;
 			std::size_t declared_total_bytes = 0;
+			std::size_t metadata_bytes = 0;
+			const auto budget = std::make_shared<native_assets::PayloadBudget>();
 			std::vector<ImportCandidate> validated;
 			validated.reserve(chats_it->size());
 			for (const nlohmann::json& entry : *chats_it)
@@ -375,7 +650,7 @@ namespace uam
 				}
 
 				const fs::path chat_path = AppPaths::UamChatFilePath(bundle_path, id);
-				if (!uam::paths::IsRegularFileNoThrow(chat_path))
+				if (!fs::is_regular_file(fs::symlink_status(chat_path, link_error)) || link_error)
 				{
 					AppendError(errors, "The local chat bundle is missing canonical chat file: " + relative_file);
 					return false;
@@ -398,17 +673,34 @@ namespace uam
 					return false;
 				}
 
+				std::string canonical;
+				if (!uam::io::TryReadTextFile(chat_path, canonical, *declared_size) || canonical.size() != *declared_size)
+				{
+					AppendError(errors, "Canonical chat changed or could not be read within its declared bound: " + relative_file);
+					return false;
+				}
 				std::string validation_warning;
-				std::optional<ChatSession> chat =
-				    ChatRepository::LoadLocalChat(bundle_path, id, true, &validation_warning);
+				std::optional<ChatSession> chat = ChatRepository::LoadLocalChatBounded(bundle_path, id, *declared_size);
 				if (!chat || chat->id != id || !chat->messages_loaded)
 				{
 					AppendError(errors, "Canonical chat failed validation: " + relative_file +
 					                        (validation_warning.empty() ? std::string{} : " (" + validation_warning + ")"));
 					return false;
 				}
-				const std::string imported_title = chat->title;
-				validated.push_back({std::move(*chat), id, id, imported_title, false});
+				ImportCandidate candidate;
+				candidate.chat = std::move(*chat);
+				candidate.source_id = id;
+				candidate.imported_id = id;
+				candidate.imported_title = candidate.chat.title;
+				candidate.document = nlohmann::json::parse(canonical, nullptr, false);
+				if (!candidate.document.is_object() || !CollectOriginals(bundle_path, candidate.chat, canonical, candidate.document,
+				        budget, metadata_bytes, candidate.originals, errors)) return false;
+				if (!ValidateOriginalInventory(entry, *version, candidate.originals))
+				{
+					AppendError(errors, "Canonical native originals do not match the versioned bundle inventory: " + relative_file);
+					return false;
+				}
+				validated.push_back(std::move(candidate));
 			}
 
 			std::error_code iteration_error;
@@ -510,6 +802,11 @@ namespace uam
 
 		void StripImportedExecutionAuthority(ChatSession& chat)
 		{
+			chat.acp_unsent_prompt_recoveries.clear();
+			// Imported transcripts are independent passive copies. Their source UAM
+			// parent may collide with a destination chat, even when IDs are remapped.
+			chat.subagent_parent_chat_id.clear();
+			chat.subagent_parent_created_at.clear();
 			chat.temporary_parent_chat_id.clear();
 			chat.side_cleanup_requested = false;
 			chat.provider_handoff_context.clear();
@@ -518,6 +815,13 @@ namespace uam
 			chat.native_session_id.clear();
 			chat.execution_host_id = "local";
 			chat.remote_turn_reconnect_pending = false;
+			chat.remote_process_exists = false;
+			chat.remote_structured_protocol.clear();
+			chat.remote_prompt_image_supported = false;
+			chat.remote_opencode_native_port = 0;
+			chat.remote_opencode_native_token.clear();
+			chat.remote_manual_compaction_pending = false;
+			chat.remote_manual_compaction_boundary_json.clear();
 			chat.remote_stop_cleanup_pending = false;
 			chat.remote_restart_pending = false;
 			chat.remote_process_control_token.clear();
@@ -559,74 +863,112 @@ namespace uam
 	{
 		LocalChatBundleExportResult result;
 		result.bundle_path = bundle_path;
-		if (!ValidateEmptyOrNewBundleDestination(bundle_path, result.errors))
+		try
 		{
-			return result;
-		}
-
-		std::vector<ExportCandidate> candidates =
-		    LoadExportCandidates(data_root, result.warnings, result.errors);
-		if (!result.errors.empty())
-		{
-			return result;
-		}
-		result.total_count = candidates.size();
-
-		nlohmann::json manifest = {
-		    {"schema", kSchema},
-		    {"version", kVersion},
-		    {"chatCount", candidates.size()},
-		    {"chats", nlohmann::json::array()},
-		};
-		for (const ExportCandidate& candidate : candidates)
-		{
-			const std::string relative_file = CanonicalRelativeChatPath(candidate.id);
-			manifest["chats"].push_back({
-			    {"id", candidate.id},
-			    {"file", relative_file},
-			    {"byteSize", candidate.canonical_text.size()},
-			});
-		}
-		const std::string manifest_text = manifest.dump(2);
-		if (manifest_text.size() > kMaxManifestBytes)
-		{
-			AppendError(result.errors, "Local chat storage exceeds the safe bundle manifest limit.");
-			return result;
-		}
-
-		std::error_code directory_error;
-		if (!uam::paths::CreateDirectoriesNoThrow(bundle_path / kChatsDirectoryName, &directory_error))
-		{
-			AppendError(result.errors, "Could not create the local chat bundle folder: " + directory_error.message());
-			return result;
-		}
-
-		for (const ExportCandidate& candidate : candidates)
-		{
-			const std::string relative_file = CanonicalRelativeChatPath(candidate.id);
-			const fs::path destination = AppPaths::UamChatFilePath(bundle_path, candidate.id);
-			if (!uam::io::WriteTextFile(destination, candidate.canonical_text))
+			if (!ValidateEmptyOrNewBundleDestination(bundle_path, result.errors))
 			{
-				AppendError(result.errors, "Failed to export canonical chat file: " + relative_file);
-				continue;
+				return result;
 			}
-			++result.exported_count;
-		}
 
-		if (!result.errors.empty())
-		{
-			result.degraded = result.exported_count > 0;
+			std::vector<ExportCandidate> candidates =
+			    LoadExportCandidates(data_root, result.warnings, result.errors);
+			if (!result.errors.empty())
+			{
+				return result;
+			}
+			result.total_count = candidates.size();
+
+			std::error_code directory_error;
+			if (!uam::paths::CreateDirectoriesNoThrow(bundle_path / kChatsDirectoryName, &directory_error))
+			{
+				AppendError(result.errors, "Could not create the local chat bundle folder: " + directory_error.message());
+				return result;
+			}
+			std::size_t total_chat_bytes = 0;
+			for (auto& candidate : candidates)
+			{
+				if (!PrepareOriginals(bundle_path, candidate.id, candidate.originals, candidate.prepared, result.errors)) return result;
+				if (candidate.prepared)
+				{
+					RebindOriginals(candidate.chat, &candidate.document, candidate.originals, *candidate.prepared);
+					candidate.canonical_text = candidate.document.dump(2);
+				}
+				if (candidate.canonical_text.size() > kMaxChatBytes || total_chat_bytes > kMaxTotalChatBytes - candidate.canonical_text.size())
+				{
+					AppendError(result.errors, "Portable chat data exceeds the safe bundle data limit.");
+					return result;
+				}
+				total_chat_bytes += candidate.canonical_text.size();
+			}
+
+			nlohmann::json manifest = {
+			    {"schema", kSchema},
+			    {"version", kVersion},
+			    {"nativeAssetStorage", native_assets::kStoreDirectory},
+			    {"chatCount", candidates.size()},
+			    {"chats", nlohmann::json::array()},
+			};
+			for (const ExportCandidate& candidate : candidates)
+			{
+				const std::string relative_file = CanonicalRelativeChatPath(candidate.id);
+				manifest["chats"].push_back({
+				    {"id", candidate.id},
+				    {"file", relative_file},
+				    {"byteSize", candidate.canonical_text.size()},
+				    {"originals", OriginalInventory(candidate.prepared.get())},
+				});
+			}
+			const std::string manifest_text = manifest.dump(2);
+			if (manifest_text.size() > kMaxManifestBytes)
+			{
+				AppendError(result.errors, "Local chat storage exceeds the safe bundle manifest limit.");
+				return result;
+			}
+
+			for (const ExportCandidate& candidate : candidates)
+			{
+				const std::string relative_file = CanonicalRelativeChatPath(candidate.id);
+				const fs::path destination = AppPaths::UamChatFilePath(bundle_path, candidate.id);
+				std::string receipt_error;
+				if (candidate.prepared && !candidate.prepared->MarkPublicationAttempted(receipt_error))
+				{
+					AppendError(result.errors, "Could not retain exported originals before publication: " + receipt_error);
+					continue;
+				}
+				if (!uam::io::WriteTextFile(destination, candidate.canonical_text))
+				{
+					AppendError(result.errors, "Failed to export canonical chat file: " + relative_file);
+					continue;
+				}
+				++result.exported_count;
+				// A true canonical write is the primary ACK; manifest/summary success
+				// alone cannot acknowledge originals, and uncertain generations stay retained.
+				if (candidate.prepared && !candidate.prepared->MarkPublished(receipt_error))
+					result.warnings.push_back("Exported originals were retained with an uncertain acknowledgement receipt.");
+			}
+
+			if (!result.errors.empty())
+			{
+				result.degraded = result.exported_count > 0;
+				return result;
+			}
+			if (!uam::io::WriteTextFile(bundle_path / kManifestFilename, manifest_text))
+			{
+				AppendError(result.errors, "Failed to write the local chat bundle manifest.");
+				result.degraded = result.exported_count > 0;
+				return result;
+			}
+
+			result.ok = true;
 			return result;
 		}
-		if (!uam::io::WriteTextFile(bundle_path / kManifestFilename, manifest_text))
+		catch (...)
 		{
-			AppendError(result.errors, "Failed to write the local chat bundle manifest.");
+			result.ok = false;
 			result.degraded = result.exported_count > 0;
+			AppendError(result.errors, "Local chat export failed; any attempted original generations were retained.");
 			return result;
 		}
-
-		result.ok = true;
-		return result;
 	}
 
 	LocalChatBundleImportResult LocalChatBundleService::Import(
@@ -635,69 +977,118 @@ namespace uam
 	{
 		LocalChatBundleImportResult result;
 		result.bundle_path = bundle_path;
-		std::vector<ImportCandidate> candidates;
-		if (!ValidateBundleManifest(bundle_path, candidates, result.errors))
+		try
 		{
+			std::vector<ImportCandidate> candidates;
+			if (!ValidateBundleManifest(bundle_path, candidates, result.errors))
+			{
+				return result;
+			}
+			result.total_count = candidates.size();
+			if (!candidates.empty())
+			{
+				result.warnings.push_back(
+				    "Imported chats are passive transcripts. Reconnect workspaces, provider sessions, agents, goals, attachments, and command permissions explicitly before running them.");
+			}
+
+			std::unordered_set<std::string> used_ids;
+			AppendStoredChatIds(data_root, used_ids, result.warnings);
+			std::unordered_map<std::string, std::string> id_map;
+			for (ImportCandidate& candidate : candidates)
+			{
+				candidate.imported_id = candidate.source_id;
+				candidate.imported_title = candidate.chat.title;
+				if (used_ids.contains(candidate.imported_id))
+				{
+					std::size_t suffix_number = 1;
+					candidate.imported_id = UniqueImportedId(candidate.source_id, used_ids, suffix_number);
+					candidate.imported_title = ImportedTitle(candidate.chat.title, candidate.source_id, suffix_number);
+					candidate.renamed = true;
+					++result.renamed_count;
+				}
+				else
+				{
+					used_ids.insert(candidate.imported_id);
+				}
+				id_map.emplace(candidate.source_id, candidate.imported_id);
+			}
+
+			const bool has_originals = std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate)
+			    { return !candidate.originals.empty(); });
+			if (has_originals)
+			{
+				std::error_code root_error;
+				if (!uam::paths::CreateDirectoriesNoThrow(data_root, &root_error))
+				{
+					AppendError(result.errors, "Could not create the native original destination root.");
+					return result;
+				}
+			}
+			// Complete validation of every incoming original happened above. Prepare
+			// all destination generations before publishing the first chat, binding
+			// each batch to the exact collision-resolved UAM identity.
+			for (auto& candidate : candidates)
+			{
+				if (!PrepareOriginals(data_root, candidate.imported_id, candidate.originals, candidate.prepared, result.errors)) return result;
+				if (candidate.prepared) RebindOriginals(candidate.chat, &candidate.document, candidate.originals, *candidate.prepared);
+				candidate.chat.id = candidate.imported_id;
+				candidate.chat.title = candidate.imported_title;
+				StripImportedExecutionAuthority(candidate.chat);
+				candidate.document["id"] = candidate.imported_id;
+				candidate.chat.passive_queued_prompt_archive = ChatRepository::ParsePassiveQueuedPromptArchive(
+				    candidate.document.dump(), candidate.imported_id);
+				if (!candidate.chat.passive_queued_prompt_archive)
+				{
+					AppendError(result.errors, "Could not prepare a complete final-owner passive attachment archive.");
+					return result;
+				}
+				candidate.chat.acp_queued_prompts.clear();
+				candidate.chat.acp_queue_held = false;
+				candidate.chat.acp_dispatched_queued_prompt_count = 0;
+				candidate.chat.acp_queue_storage_revision.clear();
+				candidate.chat.acp_queue_full_save_revision.clear();
+				candidate.chat.acp_queue_storage_error = false;
+				RemapChatReference(candidate.chat.parent_chat_id, id_map);
+				RemapChatReference(candidate.chat.branch_root_chat_id, id_map);
+			}
+
+			for (ImportCandidate& candidate : candidates)
+			{
+				LocalChatBundleImportItem item;
+				item.source_id = candidate.source_id;
+				item.imported_id = candidate.imported_id;
+				item.imported_title = candidate.imported_title;
+				item.renamed = candidate.renamed;
+				std::string receipt_error;
+				item.imported = (!candidate.prepared || candidate.prepared->MarkPublicationAttempted(receipt_error)) &&
+				    ChatRepository::SaveChatIfAbsent(data_root, candidate.chat);
+				if (item.imported)
+				{
+					++result.imported_count;
+					// SaveChatIfAbsent's actual primary ACK is required. No false save,
+					// normalization or prepared generation may call MarkPublished.
+					if (candidate.prepared && !candidate.prepared->MarkPublished(receipt_error))
+						result.warnings.push_back("Imported originals were retained with an uncertain acknowledgement receipt.");
+				}
+				else
+				{
+					++result.failed_count;
+					item.error = "Could not save imported chat without overwriting destination storage: " + candidate.imported_id;
+					result.errors.push_back(item.error);
+				}
+				result.items.push_back(std::move(item));
+			}
+
+			result.ok = result.failed_count == 0;
+			result.degraded = result.imported_count > 0 && result.failed_count > 0;
 			return result;
 		}
-		result.total_count = candidates.size();
-		if (!candidates.empty())
+		catch (...)
 		{
-			result.warnings.push_back(
-			    "Imported chats are passive transcripts. Reconnect workspaces, provider sessions, agents, goals, attachments, and command permissions explicitly before running them.");
+			result.ok = false;
+			result.degraded = result.imported_count > 0;
+			AppendError(result.errors, "Local chat import failed; any attempted original generations were retained.");
+			return result;
 		}
-
-		std::unordered_set<std::string> used_ids;
-		AppendStoredChatIds(data_root, used_ids, result.warnings);
-		std::unordered_map<std::string, std::string> id_map;
-		for (ImportCandidate& candidate : candidates)
-		{
-			candidate.imported_id = candidate.source_id;
-			candidate.imported_title = candidate.chat.title;
-			if (used_ids.contains(candidate.imported_id))
-			{
-				std::size_t suffix_number = 1;
-				candidate.imported_id = UniqueImportedId(candidate.source_id, used_ids, suffix_number);
-				candidate.imported_title = ImportedTitle(candidate.chat.title, candidate.source_id, suffix_number);
-				candidate.renamed = true;
-				++result.renamed_count;
-			}
-			else
-			{
-				used_ids.insert(candidate.imported_id);
-			}
-			id_map.emplace(candidate.source_id, candidate.imported_id);
-		}
-
-		for (ImportCandidate& candidate : candidates)
-		{
-			candidate.chat.id = candidate.imported_id;
-			candidate.chat.title = candidate.imported_title;
-			StripImportedExecutionAuthority(candidate.chat);
-			RemapChatReference(candidate.chat.parent_chat_id, id_map);
-			RemapChatReference(candidate.chat.branch_root_chat_id, id_map);
-
-			LocalChatBundleImportItem item;
-			item.source_id = candidate.source_id;
-			item.imported_id = candidate.imported_id;
-			item.imported_title = candidate.imported_title;
-			item.renamed = candidate.renamed;
-			item.imported = ChatRepository::SaveChatIfAbsent(data_root, candidate.chat);
-			if (item.imported)
-			{
-				++result.imported_count;
-			}
-			else
-			{
-				++result.failed_count;
-				item.error = "Could not save imported chat without overwriting destination storage: " + candidate.imported_id;
-				result.errors.push_back(item.error);
-			}
-			result.items.push_back(std::move(item));
-		}
-
-		result.ok = result.failed_count == 0;
-		result.degraded = result.imported_count > 0 && result.failed_count > 0;
-		return result;
 	}
 } // namespace uam

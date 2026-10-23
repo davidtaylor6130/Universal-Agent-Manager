@@ -6,6 +6,9 @@
 
 namespace uam
 {
+	/// Exact canonical projections shared with routing identity hashing; no execution authority.
+	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host);
+	std::string ExecutionRoutingProviderConfiguration(const AppState& app, const ProviderProfile& provider, std::string_view host_id = "local");
 	std::string ExecutionRoutingConnectionIdentity(const ExecutionHost& host);
 	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id = "local");
 	/// Persist assignment and its reservation before the caller starts any provider operation.

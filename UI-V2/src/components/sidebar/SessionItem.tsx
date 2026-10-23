@@ -1,13 +1,14 @@
+import { returnToSubagentParent, subagentRouteFor, subscribeSubagentNavigation, subagentNavigationRevision, hasNativeSubagentLineage, subagentParentFor } from '../../utils/subagentNavigation'
 import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus, Bot,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -165,6 +166,8 @@ interface SessionItemProps {
   activityHostLabel?: string
   activityHostRemote?: boolean
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
+  /** Verified native subagent child: same row, robot glyph instead of the provider/custom icon. */
+  subagentRow?: boolean
 }
 
 const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
@@ -230,7 +233,11 @@ function CopyDetailItems({ items }: { items: CopyDetail[] }) {
   </>
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, subagentRow = false }: SessionItemProps) {
+  useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
+  // Verified native lineage, not only the catalogue's prop, decides the robot icon on every sidebar path.
+  const lineageSubagent = useAppStore(state => { const candidate = session ?? state.sessions.find(item => item.id === sessionId); return candidate ? hasNativeSubagentLineage(candidate) : false })
+  const isSubagentRow = subagentRow || lineageSubagent
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -281,10 +288,23 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const showWorktreePath = useAppStore((s) => s.showWorktreePathInSidebar)
   const addSession = useAppStore((s) => s.addSession)
   const familySessionIds = useAppStore(useShallow((s) => providedFamilySessionIds ?? s.sessions
-    .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
+    .filter((candidate) => candidate.id === sessionId || (!subagentParentFor(candidate, s.sessions) && (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId))
     .map((candidate) => candidate.id)))
   const isActive = useAppStore((s) => familySessionIds.includes(s.activeSessionId ?? ''))
-  const isSelectedChat = useAppStore((s) => s.activeSessionId === sessionId)
+  // Subscribe to this row's selection result, so unrelated selection changes do not render every row.
+  const [childSelected, isSelectedChat, hasNavigationRoute] = useAppStore(useShallow(state => {
+    const activeId = state.activeSessionId
+    if (activeId !== sessionId && !familySessionIds.includes(activeId ?? '')) {
+      const candidate = session ?? state.sessions.find(candidate => candidate.id === sessionId)
+      const parentId = candidate?.subagentParentChatId
+      if (parentId !== activeId && (!candidate || !hasNativeSubagentLineage(candidate))) return [false, false, false] as const
+    }
+    const currentSession = session ?? state.sessions.find(candidate => candidate.id === sessionId)
+    const navigationParent = currentSession && subagentParentFor(currentSession, state.sessions)
+    const route = currentSession && subagentRouteFor(readChatGridLayout().activeLeafId, navigationParent || currentSession)
+    const selectedChild = (navigationParent?.id === activeId || activeId === sessionId) && route?.kind === 'native' && route.chatId === sessionId
+    return [selectedChild, selectedChild || (activeId === sessionId && !route), Boolean(route)] as const
+  }))
   const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
@@ -301,6 +321,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const setChatSettled = useAppStore((s) => s.setChatSettled)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const selectChat = () => {
+    const current = useAppStore.getState()
+    const child = current.sessions.find(candidate => candidate.id === sessionId)
+    const parent = child && subagentParentFor(child, current.sessions)
+    if (parent) { setActiveSession(sessionId); return }
+    returnToSubagentParent(sessionId)
     if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
     const state = useAppStore.getState()
     const sessions = state.sessions
@@ -364,11 +389,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       }
       const chatId = deepestChat?.id ?? sessionId
       activateExistingChatPane(chatId)
-      if (state.activeSessionId !== chatId) setActiveSession(chatId)
+      setActiveSession(chatId)
       return
     }
     activateExistingChatPane(sessionId)
-    if (state.activeSessionId !== sessionId) setActiveSession(sessionId)
+    setActiveSession(sessionId)
   }
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
@@ -559,7 +584,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100${selected || isActive ? ' uam-sb-row--selected' : ''}`}
+        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
           opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,
@@ -698,7 +723,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             ))}
           </span>
         )}
-        {!editing && (chatIcon || (showProviderIcon && sessionSummary.providerId)) && (
+        {!editing && isSubagentRow && (
+          <span role="img" aria-label="Subagent" className="inline-flex shrink-0"><Bot size={16} aria-hidden /></span>
+        )}
+        {!editing && !isSubagentRow && (chatIcon || (showProviderIcon && sessionSummary.providerId)) && (
           // The chat's own icon replaces the provider glyph; the glyph stays the fallback.
           <span role="img" aria-label={chatIcon ? 'Chat icon' : `Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={chatIcon ? undefined : providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
             <CustomIcon icon={sessionSummary.customIcon} fallback={<ProviderLogo providerId={sessionSummary.providerId} size={16} />} />

@@ -8,6 +8,7 @@
 #include "common/usage/usage_collector.h"
 #include "common/paths/workspace_file_reader.h"
 #include "common/provider/provider_native_context.h"
+#include "common/provider/opencode_native_http.h"
 #include "remote/runner_startup.h"
 #include "remote/runner_startup_observation.h"
 
@@ -727,6 +728,7 @@ namespace uam::remote
 				m_retiringProcesses.erase(found);
 		}
 		std::scoped_lock lock(m_stateMutex);
+		std::erase_if(m_nativeHistorySnapshots, [](const auto& entry) { return std::chrono::steady_clock::now() >= entry.second->expires; });
 		for (auto iterator = m_textWorkers.begin(); iterator != m_textWorkers.end();)
 		{
 			if (now >= iterator->second.expires_at_ms && !m_processes.contains(iterator->first) && !m_retiringProcesses.contains(iterator->first))
@@ -775,6 +777,10 @@ namespace uam::remote
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+#if !UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		if (type == "opencode.native" || type == "opencode.terminal.observe")
+			return ProcessError(request, "unsupported_request", "This request is unavailable in this build.");
+#endif
 		if (type == "path.inspect")
 		{
 			state_lock.unlock();
@@ -987,8 +993,37 @@ namespace uam::remote
 			}
 			return ProcessSuccess(request, {{"text", text}});
 		}
-		if (type == "workspace.file.read")
+		if (type == "opencode.terminal.observe")
 		{
+			// The random credential is delivered only to this TUI through its private launch channel.
+			// This endpoint exposes bounded read-only routes; ACP mutation authority remains separate.
+			if (!request.contains("port") || !request["port"].is_number_integer() ||
+			    !request.contains("token") || !request["token"].is_string() ||
+			    !request.contains("workspace") || !request["workspace"].is_string() ||
+			    !request.contains("operation") || !request["operation"].is_object())
+				return ProcessError(request, "invalid_request", "A private native terminal observation is required.");
+			const std::string workspace = request["workspace"].get<std::string>();
+			const nlohmann::json operation = request["operation"];
+			if (!operation.contains("operation") || !operation["operation"].is_string() ||
+			    !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) || !paths::PathFromUtf8(workspace).is_absolute())
+				return ProcessError(request, "invalid_request", "An absolute bounded terminal workspace is required.");
+			const std::string kind = operation["operation"].get<std::string>();
+			if (kind != "session" && kind != "status" && kind != "messages")
+				return ProcessError(request, "unsupported_operation", "Terminal observation only permits native read operations.");
+			const auto port = request["port"].get<std::int64_t>();
+			if (port < 1024 || port > 65535) return ProcessError(request, "invalid_request", "The native terminal port is invalid.");
+			const opencode_native::Endpoint endpoint{static_cast<int>(port), request["token"].get<std::string>()};
+			if (!opencode_native::ValidEndpoint(endpoint)) return ProcessError(request, "invalid_request", "The native terminal authority is invalid.");
+			state_lock.unlock();
+			nlohmann::json result;
+			std::string error;
+			if (!opencode_native::Query(ProcessService(), endpoint, workspace, operation, result, error))
+				return ProcessError(request, "native_observation_unavailable", error);
+			return ProcessSuccess(request, std::move(result));
+		}
+		if (type == "workspace.file.read" || type == "workspace.attachment.read")
+		{
+			const bool attachment = type == "workspace.attachment.read";
 			state_lock.unlock();
 			if (!request.contains("workspace") || !request["workspace"].is_string() ||
 			    !request.contains("path") || !request["path"].is_string() ||
@@ -996,7 +1031,7 @@ namespace uam::remote
 			    !IsBoundedText(request["path"].get_ref<const std::string&>(), 16384))
 				return ProcessError(request, "invalid_request", "Choose a bounded workspace file path.");
 			const uam::workspace_files::TextFile file = uam::workspace_files::Read(
-			    uam::paths::PathFromUtf8(request["workspace"].get_ref<const std::string&>()), request["path"].get_ref<const std::string&>());
+			    uam::paths::PathFromUtf8(request["workspace"].get_ref<const std::string&>()), request["path"].get_ref<const std::string&>(), attachment);
 			if (!file.ok) return ProcessError(request, "file_preview_failed", file.error);
 			if (request.contains("offset") && (!request["offset"].is_number_integer() ||
 			    request["offset"].get<std::int64_t>() < 0 || request["offset"].get<std::int64_t>() > static_cast<std::int64_t>(file.text.size())))
@@ -1009,6 +1044,72 @@ namespace uam::remote
 			const std::string_view chunk(file.text.data() + offset, std::min<std::size_t>(512 * 1024, file.text.size() - offset));
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
 			    {"offset", offset}, {"totalBytes", file.text.size()}, {"fingerprint", fingerprint}});
+		}
+		if (type == "provider.history.read" || type == "provider.history.release")
+		{
+			const std::string provider = native_history::String(request, "providerId");
+			const std::string session = native_history::String(request, "sessionId");
+			const std::string agent = native_history::String(request, "agentId");
+			const std::string workspace = native_history::String(request, "workspace");
+			std::string token = native_history::String(request, "snapshotId");
+			const bool existing_snapshot = !token.empty();
+			if ((provider != "claude-cli" && provider != "copilot-cli" && provider != "gemini-cli") ||
+			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != "claude-cli" && provider != "gemini-cli"))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
+			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace) ||
+			    (!token.empty() && !native_history::SafeId(token)))
+				return ProcessError(request, "invalid_request", "An exact provider, native session and workspace are required.");
+			std::shared_ptr<native_history::Snapshot> snapshot;
+			if (!token.empty())
+			{
+				const auto found = m_nativeHistorySnapshots.find(token);
+				if (found == m_nativeHistorySnapshots.end()) return ProcessError(request, "snapshot_expired", "The native history snapshot expired. Retry refresh.");
+				snapshot = found->second;
+				if (snapshot->provider != provider || snapshot->session_id != session || snapshot->agent_id != agent || !native_history::SameWorkspace(snapshot->workspace, workspace))
+					return ProcessError(request, "identity_mismatch", "Native history snapshot ownership does not match.");
+			}
+			if (type == "provider.history.release")
+			{
+				if (snapshot) m_nativeHistorySnapshots.erase(token);
+				return ProcessSuccess(request, {{"released", true}});
+			}
+			const auto offset_field = request.find("offset");
+			if (offset_field == request.end() || !offset_field->is_number_integer() || *offset_field < 0 || *offset_field > native_history::kMaxSnapshotBytes)
+				return ProcessError(request, "invalid_request", "A bounded native history offset is required.");
+			const std::size_t offset = offset_field->get<std::size_t>();
+			if (!snapshot)
+			{
+				if (offset != 0 || !native_history::String(request, "fingerprint").empty()) return ProcessError(request, "invalid_request", "A new native snapshot starts at offset zero.");
+				if (m_nativeHistorySnapshots.size() >= native_history::kMaxSnapshots) return ProcessError(request, "history_busy", "Two native history snapshots are already active. Retry shortly.");
+				token = ProcessService().GenerateUuid();
+				if (!native_history::SafeId(token)) return ProcessError(request, "snapshot_failed", "Could not allocate a native history snapshot.");
+				snapshot = std::make_shared<native_history::Snapshot>();
+				snapshot->provider = provider; snapshot->session_id = session; snapshot->agent_id = agent; snapshot->workspace = workspace;
+				snapshot->expires = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+				m_nativeHistorySnapshots.emplace(token, snapshot);
+				state_lock.unlock();
+				native_history::Snapshot loaded;
+				std::string load_error;
+				bool ok = false;
+				try { ok = native_history::Load(provider, session, workspace, loaded, load_error, agent); }
+				catch (const std::exception&) { load_error = "The native transcript could not be read safely."; }
+				state_lock.lock();
+				const auto reserved = m_nativeHistorySnapshots.find(token);
+				if (!ok || reserved == m_nativeHistorySnapshots.end() || reserved->second != snapshot)
+				{
+					m_nativeHistorySnapshots.erase(token);
+					return ProcessError(request, "history_unavailable", load_error.empty() ? "The native snapshot expired while loading." : load_error);
+				}
+				loaded.expires = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+				*snapshot = std::move(loaded);
+			}
+			if (!snapshot->ready || offset > snapshot->text.size() ||
+			    (existing_snapshot && native_history::String(request, "fingerprint") != snapshot->fingerprint))
+				return ProcessError(request, "snapshot_changed", "The native history snapshot identity or offset changed.");
+			const std::size_t count = std::min(native_history::kChunkBytes, snapshot->text.size() - offset);
+			return ProcessSuccess(request, {{"providerId", provider}, {"sessionId", session}, {"agentId", agent}, {"workspace", snapshot->workspace},
+			    {"snapshotId", token}, {"fingerprint", snapshot->fingerprint}, {"offset", offset}, {"totalBytes", snapshot->text.size()},
+			    {"data", base64::Encode(std::string_view(snapshot->text).substr(offset, count))},
+			    {"workspaceYaml", offset == 0 ? snapshot->workspace_yaml : std::string{}}});
 		}
 		if (type == "context.read")
 		{
@@ -1619,6 +1720,37 @@ namespace uam::remote
 			return ProcessError(request, "session_starting",
 			                    "The remote process is still starting.");
 		RenewLease(process);
+		if (type == "opencode.native")
+		{
+			if (process.exited.load(std::memory_order_acquire) || !request.contains("operation") || !request["operation"].is_object())
+				return ProcessError(request, "invalid_request", "Native OpenCode control requires a running owned process and typed operation.");
+			opencode_native::Endpoint endpoint;
+			for (const auto& item : process.environment)
+				if (item.first == "OPENCODE_SERVER_PASSWORD") endpoint.token = item.second;
+			bool acp = false, loopback = false;
+			for (std::size_t index = 0; index < process.arguments.size(); ++index)
+			{
+				if (process.arguments[index] == "acp") acp = true;
+				if (index + 1 >= process.arguments.size()) continue;
+				if (process.arguments[index] == "--hostname") loopback = process.arguments[index + 1] == "127.0.0.1";
+				if (process.arguments[index] == "--port")
+				{
+					const std::string& port = process.arguments[index + 1];
+					if (port.empty() || port.size() > 5 || !std::ranges::all_of(port, [](char c) { return c >= '0' && c <= '9'; }))
+						return ProcessError(request, "invalid_native_endpoint", "The owned native OpenCode server port is invalid.");
+					endpoint.port = std::stoi(port);
+				}
+			}
+			if (!acp || !loopback || !opencode_native::ValidEndpoint(endpoint))
+				return ProcessError(request, "invalid_native_endpoint", "This process has no authenticated native OpenCode companion.");
+			const std::string workspace = uam::paths::Utf8PathString(process.working_directory);
+			state_lock.unlock();
+			nlohmann::json result;
+			std::string error;
+			if (!opencode_native::Query(ProcessService(), endpoint, workspace, request["operation"], result, error))
+				return ProcessError(request, "native_control_failed", error);
+			return ProcessSuccess(request, std::move(result));
+		}
 		if (type == "process.remove")
 		{
 			if (!process.exited.load(std::memory_order_acquire))

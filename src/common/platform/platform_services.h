@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/platform/async_byte_writer.h"
 
 #include <filesystem>
 #include <ctime>
@@ -35,6 +36,13 @@ namespace uam
 			}
 			return !result.output_truncated;
 		}
+
+		enum class StandardInputReadStatus { Data, Pending, EndOfStream, Error };
+		struct StandardInputReadResult
+		{
+			StandardInputReadStatus status = StandardInputReadStatus::Error;
+			std::size_t size = 0;
+		};
 
 		struct StdioProcessPlatformFields;
 
@@ -85,12 +93,29 @@ class IPlatformProcessService
 	virtual bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const = 0;
 	virtual int NormalizeCapturedCommandExitCode(int raw_status) const = 0;
 	virtual ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const = 0;
+	/// Nonblocking redirected-stdin read for the process's sole input consumer. Never owns/closes stdin.
+	/// Unsupported services return Error; there is no hidden reader thread or console read.
+	virtual uam::platform::StandardInputReadResult ReadStandardInput(char*, std::size_t) const
+	{
+		return {};
+	}
 	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
 	// blocking the caller while a child delays or refuses to consume stdin.
 	virtual bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string_view standard_input, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	virtual void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	virtual bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const = 0;
+	/// Opt-in exact sink-write observation. True means accepted by the legacy write, not completed or provider-processed.
+	/// A null receipt is a supported unobserved legacy write; never retry merely because no receipt was produced.
+	/// The opaque receipt binds the actual writer only; callers retain and validate process/row ownership separately.
+	virtual bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+	    const char* bytes, std::size_t len,
+	    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+	    std::string* error_out = nullptr) const
+	{
+		receipt_out.reset();
+		return WriteToStdioProcess(process, bytes, len, error_out);
+	}
 	virtual void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const = 0;
 	// Stops and reaps the process tree while leaving output handles open for a final drain.
 	virtual void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields& process, bool fast_exit) const = 0;

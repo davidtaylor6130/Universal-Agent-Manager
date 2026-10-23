@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
+#include "common/companion/connection_lifecycle.h"
+#include "common/companion/pairing_certificate.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -590,27 +592,54 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+nlohmann::json UamQueryHandler::CompanionConnectionStatus(const nlohmann::json& config) const
 {
-	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config))
-	{
-		cb->Success(nlohmann::json{{"configured", false}, {"enabled", false}, {"url", ""}, {"restartRequired", true}}.dump());
-		return;
-	}
-	nlohmann::json response = CompanionSettingsResponse(config);
+#if UAM_ENABLE_MOBILE_COMPANION
+	if (m_companion) return m_companion->Status();
+	return UamCompanionService::ConfigurationStatus(m_app.data_root);
+#endif
+	const auto saved = CompanionSettingsResponse(config);
+	const bool enabled = saved["enabled"].get<bool>();
+	const bool configured = saved["configured"].get<bool>();
+	auto response = uam::companion::ConnectionStatus(
+	    {configured, enabled, configured ? saved["url"].get<std::string>() : std::string{}, 0}, enabled ? "failed" : "disabled", enabled ? "configurationInvalid" : "disabled");
 #if defined(__APPLE__)
 	response["localAddresses"] = uam::platform::MacLocalIpv4Addresses();
 #endif
-#if UAM_ENABLE_MOBILE_COMPANION
-	response["proxyRunning"] = m_companion && m_companion->IsProxyRunning();
-#else
-	response["proxyRunning"] = false;
-#endif
-	cb->Success(response.dump());
+	return response;
 }
 
-void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& config)
+{
+#if UAM_ENABLE_MOBILE_COMPANION
+	if (!m_companion) StartCompanion(browser);
+	const auto saved = CompanionSettingsResponse(config);
+	if (m_companion) m_companion->Reload(saved["enabled"].get<bool>());
+#else
+	(void)browser;
+	(void)config;
+#endif
+}
+
+void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.is_object() || !payload.empty())
+	{ cb->Failure(400, "Restart phone access does not accept configuration changes."); return; }
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	{ cb->Failure(409, "Phone access is not configured in Universal Agent Manager."); return; }
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	nlohmann::json config = nlohmann::json::object();
+	(void)ReadCompanionConfig(m_app, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
 	if (!enabled)
@@ -636,7 +665,8 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlo
 	    !config["origin"].get_ref<const std::string&>().empty())
 		uam::platform::RequestMacLocalNetworkAccess();
 #endif
-	cb->Success(CompanionSettingsResponse(config).dump());
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
 }
 
 void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
@@ -659,7 +689,17 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 		cb->Failure(404, "Phone access token is invalid or unavailable.");
 		return;
 	}
-	cb->Success(nlohmann::json{{"token", token}, {"url", CompanionUrl(config)}}.dump());
+	const auto status = CompanionConnectionStatus(config);
+	nlohmann::json response{{"token", token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
+	    {"state", status["state"]}, {"reasonCode", status["reasonCode"]}, {"reason", status["reason"]}};
+	// The public CA is optional and is never a reason to expose an unready saved URL.
+	try
+	{
+		const std::string certificate = uam::companion::ReadCompanionPairingCertificate(config);
+		if (!certificate.empty()) response["certificate"] = certificate;
+	}
+	catch (...) {}
+	cb->Success(response.dump());
 }
 
 void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -744,7 +784,7 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 #endif
 }
 
-void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 #if defined(__APPLE__)
 	const std::string address = uam::nlohmann_json::TrimmedStringValue(payload, {"address"});
@@ -769,7 +809,8 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, con
 		cb->Failure(500, "Cannot save phone URL. The proxy configuration was restored."); return;
 	}
 	uam::platform::RequestMacLocalNetworkAccess();
-	cb->Success(CompanionSettingsResponse(config).dump());
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
 #else
 	(void)payload;
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
@@ -1059,13 +1100,17 @@ void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, co
 {
 	const std::optional<int> logs = uam::nlohmann_json::IntFieldStrict(payload, "backupLogRetentionDays");
 	const std::optional<int> cache = uam::nlohmann_json::IntFieldStrict(payload, "httpCacheClearIntervalDays");
-	if (!logs || !cache || *logs < 0 || *logs > 3650 || *cache < 0 || *cache > 3650)
+	if ((!payload.contains("backupLogRetentionDays") && !payload.contains("httpCacheClearIntervalDays")) ||
+	    (payload.contains("backupLogRetentionDays") && (!logs || *logs < 0 || *logs > 3650)) ||
+	    (payload.contains("httpCacheClearIntervalDays") && (!cache || *cache < 0 || *cache > 3650)))
 	{ cb->Failure(400, "Storage policy requires integer day values from 0 to 3650; zero disables cleanup."); return; }
 	if (!m_app.storage_retention_service)
 	{ cb->Failure(409, "Storage policy is still loading."); return; }
+	// Adopt a just-published policy before resolving omitted fields from current values.
 	m_app.storage_retention_service->Poll(m_app);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
-	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root, {*logs, *cache}, lifetime,
+	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root,
+	    {logs.value_or(m_app.settings.backup_log_retention_days), cache.value_or(m_app.settings.http_cache_clear_interval_days)}, lifetime,
 	    [this, browser, cb, lifetime](bool saved, const std::string& error)
 	    {
 		    if (lifetime.expired()) return;

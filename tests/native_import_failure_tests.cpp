@@ -131,3 +131,135 @@ UAM_TEST(CodexDiscoveryKeepsMalformedHistoryFailClosed)
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, id)));
 #endif
 }
+
+UAM_TEST(CodexDiscoveredUnknownChronologyReachesSavedReconciliationBeforeOverlay)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const bool native_unknown : {false, true})
+	{
+		for (const bool grow : {false, true})
+		{
+			TempDir temp("uam-codex-unknown-reconciliation");
+			const auto private_home = temp.root / "home";
+			fs::create_directories(private_home);
+			ScopedEnvVar home("HOME", private_home.string());
+			ScopedEnvVar userprofile("USERPROFILE", private_home.string());
+			ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+			uam::AppState app;
+			app.data_root = temp.root / "data";
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			const auto workspace = temp.root / "workspace";
+			fs::create_directories(workspace);
+			app.folders.push_back({"unknown-workspace", "Unknown workspace", workspace.string(), false, "local"});
+			UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+			const std::string id = "44444444-4444-4444-8444-444444444444";
+			const auto rollout = temp.root / "codex" / "sessions" / ("rollout-" + id + ".jsonl");
+			const auto write = [&](const std::string& stamp, const std::string& answer, bool add_row)
+			{
+				std::string records = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}, {"timestamp", "2026-10-16T09:00:00Z"}}}}.dump() + "\n";
+				const auto message = [&](const std::string& role, const std::string& content)
+				{
+					return nlohmann::json{{"type", "response_item"}, {"timestamp", stamp}, {"payload", {{"type", "message"}, {"role", role}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", content}}})}}}}.dump() + "\n";
+				};
+				records += message("user", "Genuine private rollout question") + message("assistant", answer);
+				if (add_row)
+				{
+					records += message("user", "Additional genuine rollout row");
+				}
+				UAM_ASSERT(uam::io::WriteTextFile(rollout, records));
+			};
+			const ChatHistorySyncService service;
+			const auto discover = [&]
+			{
+				// Existing provider filter avoids other provider discovery/execution.
+				auto discovery = service.DiscoverProviderChatsForFolder(app.folders.front(), nullptr, {}, 0, false, {}, {}, "codex-cli");
+				UAM_ASSERT(discovery.result.success && discovery.chats.empty() && discovery.codex_rollouts.size() == 1);
+				UAM_ASSERT_EQ(discovery.codex_rollouts.front().second, rollout);
+				UAM_ASSERT_EQ(discovery.codex_rollouts.front().first.native_session_id, id);
+				return discovery;
+			};
+			const auto drain = [&](ChatHistorySyncService::LocalHistoryDiscovery& discovery)
+			{
+				ChatHistorySyncService::ImportResult result;
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+				while (discovery.Pending())
+				{
+					UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+					result.Merge(service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly));
+					std::this_thread::yield();
+				}
+				UAM_ASSERT(result.success && result.confirmed_empty_native_keys.empty());
+				return result;
+			};
+			write("2026-10-16T09:01:00Z", "Initial saved rollout answer", false);
+			auto initial = discover();
+			UAM_ASSERT_EQ(drain(initial).imported_count, 1);
+			auto saved = ChatRepository::LoadLocalChat(app.data_root, id, true);
+			UAM_ASSERT(saved && saved->messages_loaded && saved->messages.size() == 2);
+			saved->updated_at = native_unknown ? "2026-10-16T12:00:00Z" : "recorded";
+			saved->title = "Preserve owned rollout title";
+			saved->pinned = true;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, *saved));
+			saved = ChatRepository::LoadLocalChat(app.data_root, id, true);
+			UAM_ASSERT(saved && saved->messages.size() == 2);
+			app.chats = {*saved}; // Genuine complete persisted owner; no inferred/forged ownership.
+			const auto baseline = *saved;
+			const auto primary = AppPaths::UamChatFilePath(app.data_root, id);
+			const auto summary = AppPaths::UamChatSummaryFilePath(app.data_root, id);
+			const auto before = uam::io::ReadTextFile(primary), summary_before = uam::io::ReadTextFile(summary);
+			write(native_unknown ? "recorded" : "2026-10-16T13:00:00Z", "Different actual native rollout answer", grow);
+			const auto source_bytes = uam::io::ReadTextFile(rollout);
+			// Existing public reader resolves this exact genuine session and reads
+			// the complete rollout; it neither changes eligibility nor overlays UAM.
+			std::string source_error;
+			const auto source = service.LoadLocalCodexChildChat(baseline, &source_error);
+			UAM_ASSERT(source && source_error.empty() && source->messages_loaded);
+			UAM_ASSERT_EQ(source->provider_id, std::string("codex-cli"));
+			UAM_ASSERT_EQ(source->native_session_id, id);
+			UAM_ASSERT_EQ(source->workspace_directory, workspace.string());
+			UAM_ASSERT_EQ(source->updated_at, native_unknown ? std::string("recorded") : std::string("2026-10-16T13:00:00Z"));
+			UAM_ASSERT_EQ(source->messages.size(), grow ? std::size_t{3} : std::size_t{2});
+			UAM_ASSERT_EQ(source->messages[1].content, std::string("Different actual native rollout answer"));
+			UAM_ASSERT(source->messages != baseline.messages);
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(rollout), source_bytes);
+			auto update = discover();
+			const auto admitted = service.ImportDiscoveredProviderChatsBatch(app, {}, update, 8, ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly);
+			UAM_ASSERT(admitted.success && admitted.imported_count == 0 && update.preparation.valid());
+			UAM_ASSERT_EQ(update.preparation.wait_for(std::chrono::seconds(15)), std::future_status::ready);
+			{
+				const auto prepared = update.preparation.get();
+				UAM_ASSERT(prepared && prepared->chats.size() == 1);
+				const auto& candidate = prepared->chats.front();
+				UAM_ASSERT(candidate.expected_live && candidate.expected_live->messages == baseline.messages);
+				UAM_ASSERT(candidate.error.empty() && !candidate.confirmed_empty);
+				UAM_ASSERT_EQ(candidate.skipped, !grow);
+				if (!grow)
+				{
+					UAM_ASSERT(!candidate.files && !candidate.native_media);
+					UAM_ASSERT_EQ(candidate.chat.messages, baseline.messages);
+				}
+			}
+			UAM_ASSERT_EQ(drain(update).imported_count, grow ? 1 : 0);
+			const auto after = ChatRepository::LoadLocalChat(app.data_root, id, true);
+			UAM_ASSERT(after && after->messages_loaded);
+			if (grow)
+			{
+				UAM_ASSERT_EQ(after->messages.size(), std::size_t{3});
+				UAM_ASSERT_EQ(after->messages[1].content, std::string("Different actual native rollout answer"));
+				UAM_ASSERT_EQ(after->messages.back().content, std::string("Additional genuine rollout row"));
+			}
+			else
+			{
+				UAM_ASSERT_EQ(after->messages, baseline.messages);
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), before);
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(summary), summary_before);
+			}
+			UAM_ASSERT_EQ(after->title, baseline.title);
+			UAM_ASSERT_EQ(after->pinned, baseline.pinned);
+			UAM_ASSERT_EQ(after->native_session_id, id);
+			UAM_ASSERT_EQ(after->provider_id, std::string("codex-cli"));
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(rollout), source_bytes);
+		}
+	}
+#endif
+}

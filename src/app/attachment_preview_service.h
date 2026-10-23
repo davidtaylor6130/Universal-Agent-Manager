@@ -31,6 +31,8 @@ namespace uam::attachment_preview
 		std::size_t message_count = 0;
 		std::string messages_digest;
 		bool messages_loaded = false;
+		bool storage_revision_required = false;
+		std::optional<std::string> storage_revision;
 	};
 
 	struct AttachmentSnapshot
@@ -38,7 +40,7 @@ namespace uam::attachment_preview
 		MessageAttachment attachment;
 	};
 
-	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat);
+	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat, const std::filesystem::path& data_root = {});
 	/// Resolve one attachment from saved history without hydrating or adopting into the live chat.
 	std::optional<AttachmentSnapshot> LoadPersistedAttachmentSnapshot(
 	    const std::filesystem::path& data_root, const ChatSnapshot& chat, std::size_t message_index,
@@ -73,5 +75,8 @@ namespace uam::attachment_preview
 	/// Cache an immutable thumbnail from bytes already owned by attachment staging. Failure is optional.
 	std::string Store(const std::filesystem::path& data_root, std::string_view source);
 	/// Resolve a native saved attachment, never a renderer-supplied filesystem path or execution host.
-	Image Read(const std::filesystem::path& data_root, const MessageAttachment& attachment, bool local_host);
+	/// Owned originals require the final saved UAM owner admitted by exact attachment resolution.
+	/// Validate the original before selecting an explicit preview key; failed keys never fall back.
+	Image Read(const std::filesystem::path& data_root, const MessageAttachment& attachment, bool local_host,
+	    std::string_view saved_owner = {});
 }

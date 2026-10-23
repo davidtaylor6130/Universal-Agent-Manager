@@ -599,92 +599,159 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings)
 {
-	uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
+	return Save(settings_file, settings, nullptr);
+}
 
-	AppSettings normalized = settings;
-	ClampSettings(normalized);
-
-	std::ostringstream lines;
-	WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
-	WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
-	WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
-	WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
-	WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
-	WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
-	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
-	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
-	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
-	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
-	WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
-	WriteBoolSetting(lines, kGitSnapshotSvnKey, normalized.git_snapshot_svn);
-	WriteBoolSetting(lines, kGitSnapshotPlainFoldersKey, normalized.git_snapshot_plain_folders);
-	WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
-	WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
-	WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
-	WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
-	WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
-	WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
-	WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
-	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
-	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
-	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
-	WriteEncodedSetting(lines, kLastSelectedChatIdKey, normalized.last_selected_chat_id);
-	WriteSettingValue(lines, kUiScaleMultiplierKey, normalized.ui_scale_multiplier);
-	WriteSettingValue(lines, kSidebarWidthKey, normalized.sidebar_width);
-	WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
-	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
-	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
-	WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
-	WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
-	WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
-	WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
-	WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
-	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
-	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
-	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
-	WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
-	WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
-	WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
-	WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
-	WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
-	WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
-	WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
-	WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
-	WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id);
-	WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
-	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
-	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
-	nlohmann::json host_settings = nlohmann::json::object();
-	for (const std::pair<const std::string, HostScopedSettings>& entry : normalized.host_scoped_settings)
+bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSettings& settings,
+    SettingsMemoryWriteReceipt* memory_receipt,
+    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate)
+{
+	if (memory_receipt != nullptr) *memory_receipt = SettingsMemoryWriteReceipt{};
+	const auto save_settings = [&]() -> bool
 	{
-		const ExecutionHost* host = uam::execution_hosts::Find(normalized.execution_hosts, entry.first);
-		if (host == nullptr || host->transport != "ssh") continue;
-		nlohmann::json scoped = {{"defaults", EncodeProviderChatDefaults(entry.second.provider_chat_defaults)}};
-		if (entry.second.default_new_chat_provider_id) scoped["defaultProviderId"] = *entry.second.default_new_chat_provider_id;
-		if (entry.second.mcp_servers) scoped["servers"] = uam::mcp_server_config::Serialize(*entry.second.mcp_servers);
-		host_settings[entry.first] = std::move(scoped);
+		uam::paths::CreateDirectoriesNoThrow(settings_file.parent_path());
+
+		AppSettings normalized = settings;
+		ClampSettings(normalized);
+
+		std::ostringstream lines;
+		WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
+		WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
+		WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
+		WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
+		WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
+		WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
+		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
+		WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
+		WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+		WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
+		WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+		WriteBoolSetting(lines, kGitSnapshotSvnKey, normalized.git_snapshot_svn);
+		WriteBoolSetting(lines, kGitSnapshotPlainFoldersKey, normalized.git_snapshot_plain_folders);
+		WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
+		WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
+		WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
+		WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
+		WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
+		WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
+		WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
+		WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
+		WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
+		WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
+		WriteEncodedSetting(lines, kLastSelectedChatIdKey, normalized.last_selected_chat_id);
+		WriteSettingValue(lines, kUiScaleMultiplierKey, normalized.ui_scale_multiplier);
+		WriteSettingValue(lines, kSidebarWidthKey, normalized.sidebar_width);
+		WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
+		WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
+		WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
+		WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
+		WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
+		WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
+		WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
+		WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
+		WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
+		WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
+		WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
+		WriteSettingValue(lines, kMemoryRecallBudgetBytesKey, normalized.memory_recall_budget_bytes);
+		WriteSettingValue(lines, kGoalMaxLoopIterationsKey, normalized.goal_max_loop_iterations);
+		WriteSettingValue(lines, kAcpTurnOutputLimitMiBKey, normalized.acp_turn_output_limit_mib);
+		WriteBoolSetting(lines, kUpdateChecksEnabledKey, normalized.update_checks_enabled);
+		WriteBoolSetting(lines, "automatic_provider_updates", normalized.automatic_provider_updates);
+		WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
+		WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
+		WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
+		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id);
+		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
+		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
+		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
+		nlohmann::json host_settings = nlohmann::json::object();
+		for (const std::pair<const std::string, HostScopedSettings>& entry : normalized.host_scoped_settings)
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(normalized.execution_hosts, entry.first);
+			if (host == nullptr || host->transport != "ssh") continue;
+			nlohmann::json scoped = {{"defaults", EncodeProviderChatDefaults(entry.second.provider_chat_defaults)}};
+			if (entry.second.default_new_chat_provider_id) scoped["defaultProviderId"] = *entry.second.default_new_chat_provider_id;
+			if (entry.second.mcp_servers) scoped["servers"] = uam::mcp_server_config::Serialize(*entry.second.mcp_servers);
+			host_settings[entry.first] = std::move(scoped);
+		}
+		WriteEncodedSetting(lines, "host_scoped_settings", host_settings.dump());
+		WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
+		WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
+		WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
+		WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
+		WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
+		WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
+		WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
+		WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+		WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
+		WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
+		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
+		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
+		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
+		nlohmann::json allowed = nlohmann::json::array();
+		for (const auto& rule : normalized.computer_use_allowed_applications)
+			allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
+		WriteEncodedSetting(lines, kComputerUseAllowedApplicationsKey, allowed.dump());
+		WriteRawSetting(lines, kSettingsCompleteKey, "1");
+		if (memory_receipt == nullptr)
+		{
+			return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
+		}
+
+		const std::string content = lines.str();
+		memory_receipt->canonical = SettingsMemoryCanonicalValues{
+		    normalized.memory_enabled_default,
+		    normalized.memory_level_default,
+		    normalized.memory_idle_delay_seconds,
+		    normalized.memory_recall_budget_bytes,
+		    normalized.goal_max_loop_iterations,
+		    normalized.acp_setup_inactivity_timeout_seconds,
+		    normalized.acp_turn_output_limit_mib,
+		    normalized.memory_worker_bindings,
+		    normalized.permission_reviewer_provider_id,
+		    normalized.permission_reviewer_model_id};
+		memory_receipt->canonical_values_ready = true;
+		const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
+		{
+			// Reaching the hook is not permission: a rejecting or throwing gate comes first.
+			if (stage_gate && !stage_gate(stage)) return false;
+			if (stage == uam::io::AtomicWriteStage::BeforeReplace)
+			{
+				memory_receipt->before_replace_permitted = true;
+			}
+			return true;
+		};
+		const uam::io::AtomicWriteResult result = uam::io::AtomicWriteFileDetailed(
+		    settings_file, content, observe_stage, true);
+		memory_receipt->atomic_write_returned = true;
+		memory_receipt->write_success = result.success;
+		memory_receipt->primary_committed = result.primary_committed;
+		memory_receipt->backup_degraded = result.backup_degraded;
+		memory_receipt->outcome = result.success && result.primary_committed
+		    ? SettingsMemoryWriteOutcome::Committed
+		    : memory_receipt->before_replace_permitted
+		    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+		    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+		return result.success;
+	};
+	// Preserve legacy bool callers, including exception propagation and generic I/O behavior.
+	if (memory_receipt == nullptr) return save_settings();
+	try
+	{
+		return save_settings();
 	}
-	WriteEncodedSetting(lines, "host_scoped_settings", host_settings.dump());
-	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
-	WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
-	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
-	WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
-	WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
-	WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
-	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
-	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
-	WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
-	WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
-	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
-	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
-	WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
-	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
-	nlohmann::json allowed = nlohmann::json::array();
-	for (const auto& rule : normalized.computer_use_allowed_applications)
-		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
-	WriteEncodedSetting(lines, kComputerUseAllowedApplicationsKey, allowed.dump());
-	WriteRawSetting(lines, kSettingsCompleteKey, "1");
-	return uam::io::WriteTextFileWithBackup(settings_file, lines.str());
+	catch (...)
+	{
+		memory_receipt->exception_observed = true;
+		if (memory_receipt->outcome != SettingsMemoryWriteOutcome::Committed)
+		{
+			memory_receipt->outcome = memory_receipt->before_replace_permitted
+			    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+			    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+		}
+		return false;
+	}
 }
 
 SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_file, AppSettings& settings)

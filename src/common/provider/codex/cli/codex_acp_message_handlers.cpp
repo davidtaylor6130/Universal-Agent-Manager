@@ -1,4 +1,6 @@
+#include "app/managed_parent_continuation_service.h"
 #include "common/provider/codex/cli/codex_acp_message_handlers.h"
+#include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -494,9 +496,7 @@ void RemoveCodexPlanDeltaEntryForItem(AcpSessionState& session, const std::strin
 /// <summary>Normalizes an observed native UUID without manufacturing an identity for missing or malformed data.</summary>
 static std::string CodexChildThreadKey(const std::string& value)
 {
-	std::string key = uam::codex::ValidThreadIdOrEmpty(value);
-	if (key.starts_with(uam::codex::kUuidUrnPrefix)) key.erase(0, uam::codex::kUuidUrnPrefix.size());
-	return uam::strings::ToLowerAscii(key);
+	return uam::codex::ThreadIdKey(value);
 }
 
 /// <summary>Tracks only the current parent's reported receivers; saved collaboration tool text is never proof of live work.</summary>
@@ -585,12 +585,6 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	if (type == uam::acp_tool_items::kCollabAgentToolCall)
 	{
 		if (current_parent_scope) ObserveCodexNativeChildren(session, item);
-		tool_call.is_sub_agent = true;
-		const nlohmann::json receiver_ids = JsonArrayValue(item, "receiverThreadIds");
-		if (!receiver_ids.empty() && receiver_ids.front().is_string())
-		{
-			tool_call.sub_agent_id = receiver_ids.front().get<std::string>();
-		}
 	}
 	AppendToolTurnEventIfNeeded(session, item_id);
 	(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
@@ -618,6 +612,8 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.title = "Command approval";
 		pending.kind = uam::acp_tool_items::kCommandExecution;
 		pending.content = JsonDiagnosticStringValueOr(params, "command", JsonDiagnosticStringValue(params, "reason"));
+		if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(params, "command"))
+			pending.execution_command = command->get_ref<const std::string&>();
 		const nlohmann::json decisions = JsonArrayValue(params, "availableDecisions");
 		if (decisions.is_array())
 		{
@@ -651,6 +647,8 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.options.push_back(AcpPermissionOptionState{uam::acp_permissions::kDeclineDecision, "Deny", uam::acp_permissions::kDecisionOptionKind});
 	}
 	pending.options.push_back(AcpPermissionOptionState{uam::acp_permissions::kCancelledOptionId, "Cancel", uam::acp_permissions::kCancelOptionKind});
+
+	if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, message, &pending)) return;
 
 	if (!pending.tool_call_id.empty())
 	{
@@ -771,6 +769,113 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 {
 	const std::string method = JsonDiagnosticStringValue(message, "method");
 	const nlohmann::json params = JsonObjectValue(message, "params");
+
+	if (method == "mcpServer/startupStatus/updated" && !message.contains("id"))
+	{
+		// Observe only this pipe's fixed UAM server status; never admit a turn or bind an identity.
+		if (!session.running || !session.initialized ||
+		    session.remote_source_exit_reported || session.last_process_id.empty() ||
+		    session.provider_id != "codex-cli" || chat.provider_id != session.provider_id ||
+		    chat.id != session.chat_id) return;
+		const auto thread = params.find("threadId");
+		const auto name = params.find("name");
+		const auto status = params.find("status");
+		if (thread == params.end() || !thread->is_string() || name == params.end() ||
+		    !name->is_string() || name->get_ref<const std::string&>() != "uam-control" ||
+		    status == params.end() || !status->is_string()) return;
+		for (const char* field : {"error", "failureReason"})
+		{
+			const auto ignored = params.find(field);
+			if (ignored != params.end() && !ignored->is_null() && !ignored->is_string()) return;
+		}
+		const std::string& native = thread->get_ref<const std::string&>();
+		const std::string& state = status->get_ref<const std::string&>();
+		if (!uam::codex::IsValidThreadId(native) ||
+		    (state != "starting" && state != "ready" && state != "failed" && state != "cancelled")) return;
+		const bool bound = !session.session_id.empty();
+		if (bound)
+		{
+			if (uam::codex::ThreadIdKey(native) != uam::codex::ThreadIdKey(session.session_id) ||
+			    uam::codex::ThreadIdKey(native) != uam::codex::ThreadIdKey(session.codex_thread_id)) return;
+		}
+		else
+		{
+			const auto pending = session.pending_request_methods.find(session.session_setup_request_id);
+			if (session.session_ready || !session.codex_thread_id.empty() || session.session_setup_request_id == 0 ||
+			    pending == session.pending_request_methods.end() || pending->second != uam::acp_methods::kThreadStart) return;
+		}
+		const std::string detail = "server=uam-control status=" + state +
+		    (bound ? " owned_thread_match=1 scope=bound_thread" : " owned_thread_match=0 scope=unbound_current_process");
+		if (!session.diagnostics.empty())
+		{
+			const auto& previous = session.diagnostics.back();
+			if (previous.reason == "codex_uam_mcp_startup" && previous.method == method && previous.detail == detail) return;
+		}
+		AppendAcpDiagnostic(session, "notification", "codex_uam_mcp_startup", method, "", false, 0, "", detail);
+		return;
+	}
+	// Native metadata can only revoke provisional managed proof, never supply omitted setup fields.
+	try
+	{
+		if (session.managed_initial_owner && !session.session_id.empty())
+		{
+			bool valid = true;
+			const auto raw_text = [&valid](const nlohmann::json& object, const char* key, std::size_t maximum) -> std::string_view
+			{
+				const auto field = object.find(key);
+				if (field == object.end()) return {};
+				if (!field->is_string()) { valid = false; return {}; }
+				const auto& text = field->get_ref<const std::string&>();
+				if (text.empty() || text.size() > maximum || text.find('\0') != std::string::npos) { valid = false; return {}; }
+				return text;
+			};
+			if (method == "thread/started")
+			{
+				const auto thread = params.find("thread");
+				if (thread != params.end() && thread->is_object() && raw_text(*thread, "id", 160) == session.session_id)
+				{
+					const auto cwd = raw_text(*thread, "cwd", 4096);
+					if (thread->contains("modelProvider") && raw_text(*thread, "modelProvider", 160) != "openai") valid = false;
+					AgentRunScheduler::InitialExecutionProofObserved(session, session.session_id, {}, cwd, valid);
+				}
+			}
+			if (raw_text(params, "threadId", 160) == session.session_id)
+			{
+				if (method == "model/rerouted" || method == "model/verification")
+					AgentRunScheduler::InitialExecutionProofObserved(session, {}, {}, {}, false); // Unknown routing/verification variants stay unavailable.
+				if (method == "thread/settings/updated")
+				{
+					const auto settings = params.find("threadSettings");
+					if (settings == params.end() || !settings->is_object()) AgentRunScheduler::InitialExecutionProofObserved(session, {}, {}, {}, false);
+					else
+					{
+						const auto model = raw_text(*settings, "model", 160);
+						const auto cwd = raw_text(*settings, "cwd", 4096);
+						if ((settings->contains("modelProvider") && raw_text(*settings, "modelProvider", 160) != "openai") || (settings->contains("approvalPolicy") && (*settings)["approvalPolicy"] != "on-request") || (settings->contains("approvalsReviewer") && (*settings)["approvalsReviewer"] != "user") || (settings->contains("sandboxPolicy") && (*settings)["sandboxPolicy"] != nlohmann::json({{"type", "readOnly"}, {"networkAccess", false}}))) valid = false;
+						std::string_view collaboration_model, effective_mode;
+						if (const auto collaboration = settings->find("collaborationMode"); collaboration != settings->end())
+						{
+							if (!collaboration->is_object() || raw_text(*collaboration, "mode", 64) != "plan" || !collaboration->contains("settings") || !(*collaboration)["settings"].is_object()) valid = false;
+							else
+							{
+								effective_mode = raw_text(*collaboration, "mode", 64);
+								collaboration_model = raw_text((*collaboration)["settings"], "model", 160);
+								if (collaboration_model.empty()) valid = false;
+							}
+						}
+						AgentRunScheduler::InitialExecutionProofObserved(session, session.session_id, model, cwd, valid);
+						AgentRunScheduler::InitialExecutionProofObserved(session, {}, collaboration_model, {}, valid);
+						const bool complete_policy = valid && !model.empty() && !cwd.empty() && settings->contains("modelProvider") && (*settings)["modelProvider"] == "openai" && settings->contains("approvalPolicy") && (*settings)["approvalPolicy"] == "on-request" && settings->contains("approvalsReviewer") && (*settings)["approvalsReviewer"] == "user" && settings->contains("sandboxPolicy") && (*settings)["sandboxPolicy"] == nlohmann::json({{"type", "readOnly"}, {"networkAccess", false}});
+						(void)AgentRunScheduler::InitialResumeSetupExecutionObserved(app, session, chat, {}, session.session_id, model, cwd, complete_policy, effective_mode, collaboration_model, settings->contains("collaborationMode"));
+					}
+				}
+			}
+		}
+	}
+	catch (...)
+	{
+		AgentRunScheduler::InitialExecutionProofObserved(session, {}, {}, {}, false);
+	}
 	if (method == "thread/goal/updated")
 	{
 		if (JsonDiagnosticStringValue(params, "threadId") != session.session_id) return;
@@ -860,6 +965,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			return;
 		}
 		if (!session.codex_thread_id.empty() && !thread_id.empty() && thread_id != session.codex_thread_id) return;
+		if ((method == uam::acp_methods::kTurnStarted || method == uam::acp_methods::kTurnCompleted) &&
+		    ManagedParentContinuationService::ObserveNativeTurnNotification(app, session, chat, thread_id,
+		        (JsonObjectValue(params, "turn").contains("id") && JsonObjectValue(params, "turn")["id"].is_string()) ?
+		            JsonObjectValue(params, "turn")["id"].get<std::string>() : std::string{}, method == uam::acp_methods::kTurnStarted) == ManagedNativeTurnObservation::Quarantined) return;
 		const std::string turn_id = method == uam::acp_methods::kTurnCompleted
 		    ? JsonDiagnosticStringValue(JsonObjectValue(params, "turn"), "id")
 		    : JsonDiagnosticStringValue(params, "turnId");
@@ -1011,6 +1120,13 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		if (!completed_cancelled_turn)
 		{
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		}
+		if (!completed_cancelled_turn && turn_status == "completed" && !session.codex_turn_id.empty() &&
+		    JsonDiagnosticStringValue(params, "threadId") == session.codex_thread_id && JsonDiagnosticStringValue(turn, "id") == session.codex_turn_id)
+		{
+			if (turn.contains("id") && turn["id"].is_string())
+				ManagedParentContinuationService::ObserveNormalCompletion(app, session, chat, turn["id"].get<std::string>());
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
 		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
 		StartPendingCodexNativeGoalTurn(app, session, chat);

@@ -1,0 +1,11 @@
+.uam-inline-subagents { min-width: 0; margin-block: 8px; color: var(--text-2); font-size: var(--fs-sm); }
+.uam-inline-subagents ul { list-style: none; margin: 0; padding: 0; }
+.uam-inline-subagents li { min-width: 0; padding-block: 4px; }
+.uam-inline-subagents__row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.uam-inline-subagents__status, .uam-inline-subagents__meta { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-inline-subagents__status[data-failed] { color: var(--red); }
+.uam-inline-subagents p { margin-block: 4px; overflow-wrap: anywhere; }
+.uam-inline-subagents summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding-block: 4px; transition: color var(--dur-fast) var(--ease); }
+.uam-inline-subagents summary:hover { color: var(--text); }
+.uam-inline-subagents summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .uam-inline-subagents summary { transition: none; } }

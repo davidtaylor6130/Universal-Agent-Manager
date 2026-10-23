@@ -1,0 +1,31 @@
+# UAMKit integration
+
+Foundation-only Swift 6 package/product/module `UAMKit`, iOS 26 and macOS 15; no dependencies. Add the local package at `Mobile/iOS/UAMKit`. Its `Tests` symlink points to sibling `UAMKitTests` so SwiftPM and the parent Xcode target share tests.
+
+```swift
+import UAMKit
+
+let client = try CompanionClient(
+    baseURL: URL(string: "https://main-device.example:8443/companion")!,
+    token: tokenFromKeychain
+)
+let value = try await client.request(action: "getInitialState", payload: ["summaryOnly": true])
+let state = try InitialState(json: value)
+let page = try await client.messages(ChatMessagesRequest(chatId: chatID, limit: 100))
+let dictionary = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+await client.disconnect()
+```
+
+**Connection:** `CompanionClient` is an actor. HTTPS origins, `/companion` and `/api` normalize to `/api`; URL credentials, query, fragments and other paths are rejected. `allowLoopbackHTTP` defaults false. Only DEBUG plus explicit true permits exact localhost/127.0.0.1/::1; Release always rejects HTTP. ATS/debug exceptions belong to the parent. A phone's localhost refers to the phone.
+
+Each CompanionClient owns one persistent ephemeral URLSession connection pool, without credential/cookie/response caching, with 30-second request/60-second resource timeouts and TLS 1.2 minimum. A central delegate routes task identifiers to independent bounded operations; completion, rejection or cancellation removes only that operation and never invalidates sibling requests. Disconnect and client/transport teardown invalidate the pool; the delegate holds operations weakly to avoid owner retention cycles. TLS challenges use OS default trust and hostname validation unless a connection supplies a QR-paired public root certificate. Such an anchor applies only to that exact HTTPS host and port; Security validates its chain, hostname, validity and server-auth policy with no trust-all bypass or global trust changes. The parent persists this optional public root with the saved origin and keeps the token in Keychain. All redirects are refused. The parent owns Keychain, pairing and connection UI. Disconnect cancels all requests, clears the token and permanently disables that client. Errors retain HTTP/URL error codes and local actionable messages; untrusted server strings/NSError userInfo are excluded to avoid credential echoes. No logging/persistence occurs here.
+
+**Responses:** Existing bearer `POST /api` accepts raw JSON or `{ok,data,error}`. Wrapped success without data returns `.null`; failure throws `.serverRejected`. Decoded bodies, including gzip expansion, and assembled transfers are capped at 32 MiB during receipt. Transfer IDs are bounded; chunks are 1–128 KiB, at most 4096. Canonical base64, exact length/nextOffset/done and final UTF-8 JSON are checked. Sequential loading leaves the destructive final chunk last; nested transfers are rejected. The server provides **no transfer digest**; none is claimed. HTTPS provides transport integrity. `messagesDigest` is an opaque transcript revision.
+
+**Requests:** Encoded envelopes through 60 KiB are direct. Larger envelopes through 32 MiB negotiate `getCompanionCapabilities` (protocolVersion 1, features.requestChunks, limits.maxRequestBytes/requestChunkBytes). Upload uses beginCompanionRequestTransfer, ordered appendCompanionRequestChunk (maximum 32 KiB decoded), then one commitCompanionRequestTransfer. IDs, totals and offsets must match. Each wire request is bounded to 64 KiB. Missing support throws `.requestTransferUnavailable` before the original action is sent. Abandoned uploads expire server-side. Actions/commits never retry automatically; cancellation or a lost response can follow successful execution. Refresh before a user-authorized retry.
+
+**Models:** `JSONValue` is Codable/Sendable/Equatable and preserves signed/unsigned 64-bit integers. Subscripts, objectValue/arrayValue/stringValue/boolValue/intValue/doubleValue, named string/bool/int/array/object accessors and `decode(T.self)` support flexible UI. ChatSummary maps StateSerializer/CppChat camelCase fields; ChatMessage maps role/content/createdAt and optional provider, thought, plan, tool, block, attachment and delivery fields. Runtime/provider objects stay dynamic. Every record retains every key via fields/jsonValue/subscript and Codable round trips; no closed provider/status enum drops future data.
+
+**Paging:** ChatMessagesRequest sends chatId, limit (1–200), exclusive before, messagesDigest, deferToolCallContent (default true), refreshNative (default false). ChatMessagesPage exposes messages/startIndex/totalCount/messagesDigest/unchanged and navigation/unsent indices. Nil messages on unchanged means retain existing content. `olderPageBefore` returns positive startIndex. Indices are transcript-global. Changed windows and chat identity are validated. Merge older pages only when messagesDigest agrees; otherwise refresh the tail. Deferred tool content uses generic request actions. Phone selection must remain local, without selectSession.
+
+**Verification:** `swift test --package-path Mobile/iOS/UAMKit` and `swift test -c release --package-path Mobile/iOS/UAMKit` exercise model/protocol parsing, endpoint policy, bearer envelopes, bounded receipt, response/request chunks, cancellation/disconnect, redirects and commit failures without replay. Fixtures use URLProtocol, including concurrent cancellation/overflow isolation and release without explicit disconnect. On macOS, a disposable HTTP/1.1 keep-alive fixture additionally verifies 50 sequential bounded requests use one TCP connection; DEBUG verifies an actual 20 MiB attachment upload uses one connection for 857 requests (854 append chunks and one commit). The loopback CompanionClient upload test is deliberately absent from Release, whose public endpoint policy continues to reject HTTP; the lower-level keep-alive test runs in both configurations. These tests use only fixture data and do not execute provider actions. Real TLS/ATS, backend/device/UI acceptance remain parent-owned and unverified here. No simulator tooling or commit; only UAMKit/UAMKitTests changed. Parent owns project, App UI, backend, docs and V5 ledger.

@@ -19,12 +19,13 @@ UAM_TEST(DeletionNativeCleanupFailurePreservesRecoveryEvidence)
 	fs::create_directories(chat.workspace_directory);
 	app.chats = {chat};
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
-	const fs::path provider_root = temp.root / "provider-home";
+	const fs::path provider_root = temp.root / "provider-home" / ".gemini";
 	fs::create_directories(provider_root / "tmp" / "private-project");
 	UAM_ASSERT(uam::io::WriteTextFile(provider_root / "projects.json",
 	    nlohmann::json{{"projects", {{chat.workspace_directory, "private-project"}}}}.dump()));
 	const fs::path native_directory = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat);
 	UAM_ASSERT(!native_directory.empty());
+	UAM_ASSERT(fs::equivalent(native_directory, provider_root / "tmp" / "private-project" / "chats"));
 	const fs::path collision = native_directory / "native-victim.json";
 	fs::create_directories(collision);
 	UAM_ASSERT(uam::io::WriteTextFile(collision / "keep.txt", "private failure fixture"));

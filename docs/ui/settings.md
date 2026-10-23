@@ -2,6 +2,8 @@
 
 Settings use the single approved V5 row language, modelled on MCP Servers and Chat Defaults. The shell supplies a title-only page header; short section labels organise related rows without decorative descriptions or nested cards. Each row has one concept, a concise consequence where needed and a right-aligned control. This page owns presentation; [Settings](../settings/settings.md) and its feature pages own behaviour.
 
+The native iPhone counterpart uses iOS grouped list rows and navigation sheets with large touch targets. Each group retains one heading and each row one concept; values and connection status remain distinct from save success. Phone-only preferences stay local, while controller-owned changes use the shared authenticated protocol and disclose unsupported desktop-only operations.
+
 ## Controls and disclosure
 
 Use [settings primitives](primitives.md#settings-primitives), with `Switch hideLabel` inside a SettingRow to avoid duplicate labels, MenuSelect for choices and small secondary/ghost buttons for actions. Neutral switches are the default; reserve `uam-switch--accent` for safety-important choices. Labels sit above wide text inputs. Primary settings stay visible; disclose genuinely optional advanced details. No hard-coded colours, ad-hoc boxes, repeated headings or wrapper cards that only add a heading.
@@ -12,7 +14,7 @@ Use sentence case and plain consequences. A row description is roughly one short
 
 ## State and drafts
 
-Observed connected/running/version/failed state is a status line, separate from saved configuration. Keep current content during refresh and disable only the control being saved. Loading uses SettingsLoading. Save/Discard and unsaved-changes handling follow the feature’s real draft state: unchanged saves stay disabled, validation blocks invalid saves, and failures retain drafts and show useful nearby feedback. Group collapse must retain drafts.
+Observed connected/running/version/failed state is a status line, separate from saved configuration. Keep current content during refresh and disable only the control being saved. Loading uses SettingsLoading. Save/Discard and unsaved-changes handling follow the feature’s real draft state: unchanged saves stay disabled, validation blocks invalid saves, and failures retain drafts and show useful nearby feedback. Group collapse must retain drafts. When applying a connection change needs a restart, put Restart Universal Agent Manager beside the status. A definitive pairing scan or confirmation advances to a dedicated progress step and an explicit success/failure result, with recovery and completion actions visible above the keyboard and safe area.
 
 ## Navigation and motion
 

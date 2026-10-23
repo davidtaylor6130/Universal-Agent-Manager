@@ -22,6 +22,7 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState&, int, const std::string&, const ChatSession&, std::string&) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string&) const override;
 	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&, const nlohmann::json&, const CefRefPtr<CefBrowser>&) const override;
+	std::string OnAcpValidateResumeId(const ChatSession&) const override;
 	bool OnAcpCanSendPromptWithoutSessionId() const override { return true; }
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::RestartSession; }
 	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::RestartSession; }

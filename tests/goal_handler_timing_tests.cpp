@@ -1,5 +1,5 @@
 #include "test_harness.h"
-#include "cef/uam_query_handler.h"
+#include "cef_handler_fixture.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include <future>
 #if defined(__APPLE__)
@@ -90,7 +90,8 @@ namespace
 		session.codex_goal_owner.binding_created_at = 100;
 		session.codex_goal_native_active = action == 0;
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
-		UamQueryHandler handler(app, "file:///private/index.html");
+		auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+		auto& handler = *handler_owner;
 		CefRefPtr<GoalTimingCallback> callback = new GoalTimingCallback;
 		ChatSession blocker;
 		blocker.id = "unrelated-full-publication";

@@ -19,7 +19,7 @@ function page(startIndex = 9950, totalCount = 10000, messagesDigest = 'snapshot'
     role: 'assistant', content: `message ${startIndex + i}`, createdAt: '2026-01-01T00:00:00Z',
   })) }
 }
-afterEach(() => { delete window.cefQuery; vi.restoreAllMocks() })
+afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); vi.useRealTimers() })
 describe('desktop bounded history', () => {
   it('loads only the recent tail of a long chat and fetches older messages only on demand', async () => {
     const { get, requests } = fixture()
@@ -97,5 +97,114 @@ describe('desktop bounded history', () => {
     requests[1].reply({ ...page(9850, 9950), chatId: 'other' })
     expect(await older).toBe(false)
     expect(get().messages.chat).toBe(original)
+  })
+})
+
+
+describe('truthful initial history read state', () => {
+  it('bounds a silent history read without replay and rejects its late page', async () => {
+    vi.useFakeTimers()
+    const { get, set, requests } = fixture()
+    const binding = { queueHeld: true, queuedPrompts: [{ id: 'held', revision: 1, text: 'Keep this input', attachments: [] }] }
+    set({ acpBindingBySessionId: { chat: binding } } as Partial<AppState>)
+    const load = get().loadSessionMessages('chat')
+    let outcome: unknown = 'pending'
+    void Promise.resolve(load).then(value => { outcome = value })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(outcome).toBe(false)
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    expect(get().chatHistoryErrorBySessionId.chat ?? '').toContain('timed out')
+    expect(get().messages.chat).toBeUndefined()
+    expect(get().acpBindingBySessionId.chat).toBe(binding)
+    const settled = get()
+    requests[0].reply(page())
+    await Promise.resolve()
+    expect(get()).toBe(settled)
+    expect(requests.map(request => request.action)).toEqual(['getChatMessages'])
+  })
+
+  it('settles an empty successful history as empty rather than still reading', async () => {
+    const { get, requests } = fixture()
+    const load = get().loadSessionMessages('chat')
+    expect(get().chatHistoryReadBySessionId?.chat).toBeTruthy()
+    requests[0].reply(page(0, 0)); await load
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    expect(get().messages.chat).toEqual([])
+    expect(get().chatHistoryErrorBySessionId.chat).toBeUndefined()
+  })
+
+  it('does not let an older deadline clear or fail the replacement read', async () => {
+    vi.useFakeTimers()
+    const { get, requests } = fixture()
+    const old = get().loadSessionMessages('chat')
+    await vi.advanceTimersByTimeAsync(10_000)
+    const fresh = get().loadSessionMessages('chat', true)
+    const pending = get().chatHistoryReadBySessionId?.chat
+    expect(pending).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(20_000); await old
+    expect(get().chatHistoryReadBySessionId?.chat).toBe(pending)
+    expect(get().chatHistoryErrorBySessionId.chat).toBeUndefined()
+    requests[1].reply(page(0, 1)); await fresh
+    expect(get().messages.chat[0].content).toBe('message 0')
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    requests[0].reply(page())
+  })
+
+  it('retires a discarded invalid page without claiming a read is still pending', async () => {
+    const { get, requests } = fixture()
+    const load = get().loadSessionMessages('chat')
+    requests[0].reply({ ...page(), chatId: 'foreign' }); await load
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    expect(get().messages.chat).toBeUndefined()
+    expect(requests).toHaveLength(1)
+  })
+
+  it('bounds a silent selection prerequisite without rolling back or hydrating from its late ACK', async () => {
+    vi.useFakeTimers()
+    const { get, set, requests } = fixture()
+    set({ sessions: [{ ...get().sessions[0], messageCount: 1 }], activeSessionId: null })
+    get().setActiveSession('chat')
+    expect(requests.map(request => request.action)).toEqual(['selectSession'])
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    expect(get().chatHistoryErrorBySessionId.chat ?? '').toContain('timed out')
+    expect(get().activeSessionId).toBe('chat')
+    requests[0].reply({}); await Promise.resolve()
+    expect(requests.map(request => request.action)).toEqual(['selectSession'])
+    expect(get().messages.chat).toBeUndefined()
+  })
+
+  it('does not replace newly hydrated history with an old read timeout', async () => {
+    vi.useFakeTimers()
+    const { get, set, requests } = fixture()
+    const load = get().loadSessionMessages('chat')
+    const hydrated = [{ id: 'current', role: 'user' as const, content: 'Current saved input', createdAt: new Date(0) }]
+    set({ messages: { chat: hydrated } })
+    await vi.advanceTimersByTimeAsync(30_000); await load
+    expect(get().messages.chat).toBe(hydrated)
+    expect(get().chatHistoryErrorBySessionId.chat).toBeUndefined()
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    requests[0].reply(page())
+    await Promise.resolve()
+    expect(get().messages.chat).toBe(hydrated)
+  })
+
+  it('cannot timeout into a deleted or same-id replacement chat', async () => {
+    vi.useFakeTimers()
+    const { get, set, requests } = fixture()
+    const old = get().loadSessionMessages('chat')
+    get().unloadSessionMessages('chat')
+    expect(get().chatHistoryReadBySessionId?.chat).toBeUndefined()
+    set({ sessions: [{ ...get().sessions[0], createdAt: new Date(1) }] })
+    const fresh = get().loadSessionMessages('chat')
+    requests.filter(request => request.action === 'getChatMessages').at(-1)!.reply(page(0, 0)); await fresh
+    const current = get()
+    let settled = false
+    void Promise.resolve(old).then(() => { settled = true })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(settled).toBe(true)
+    expect(get()).toBe(current)
+    expect(get().chatHistoryErrorBySessionId.chat).toBeUndefined()
+    requests[0].reply(page())
   })
 })

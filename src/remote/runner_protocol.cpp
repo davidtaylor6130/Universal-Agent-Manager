@@ -169,7 +169,13 @@ namespace uam::remote
 			                          {"directoryBrowsing", state != nullptr},
 			                          {"safePathInspection", state != nullptr},
 			                          {"contextRead", state != nullptr},
+			                          {"providerHistoryRead", state != nullptr},
 			                          {"workspaceFileRead", state != nullptr},
+			                          {"workspaceAttachmentRead", state != nullptr},
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+			                          {"openCodeNativeControl", state != nullptr},
+			                          {"openCodeTerminalObservation", state != nullptr},
+#endif
 			                          {"usageAccounting", state != nullptr},
 			                          {"usageAccountingStream", state != nullptr},
 		                          {"projectMemory", state != nullptr},
@@ -183,6 +189,8 @@ namespace uam::remote
 		                          {"leasedChannelTake", state != nullptr},
 		                          {"providerNativeContext", state != nullptr},
 		                          {"centralProviderConfiguration", state != nullptr},
+		                          {"geminiThinkingConfiguration", state != nullptr},
+		                          {"claudeTerminalFastConfiguration", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}
 }

@@ -1,5 +1,7 @@
 # UAM companion
 
+The [native iPhone client](iOS/README.md) provides a separate SwiftUI interface over this same connection. The instructions below describe the retained browser companion and its desktop host.
+
 The companion reuses `UI-V2`: the desktop theme, chat transcript, composer and workspace tree. Activity opens first, with Chats available in the bottom navigation.
 
 Configured installations start phone access with the normal desktop app. Settings → Defaults → Phone Access contains the enable switch, connection URL and Copy token button. Restart UAM after changing the switch. The phone uses the same data root and chats as the desktop.

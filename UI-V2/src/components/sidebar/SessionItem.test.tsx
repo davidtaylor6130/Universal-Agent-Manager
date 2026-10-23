@@ -571,8 +571,8 @@ describe('SessionItem status icons', () => {
       act(() => root.render(<SessionItem sessionId={clicked} session={session} familySessionIds={familySessionIds} activityLayout={activity} />))
       expect(setActiveSession).not.toHaveBeenCalled()
       act(() => host.querySelector<HTMLElement>(`[data-testid="session-row-${clicked}"]`)!.click())
-      if (expected === selected) expect(setActiveSession).not.toHaveBeenCalled()
-      else expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(expected)
+      // An explicit click publishes selection intent even when the resolved chat is already selected.
+      expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(expected)
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -981,7 +981,7 @@ describe('SessionItem status icons', () => {
     act(() => sessionRow.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
     expect(readChatGridLayout().activeLeafId).toBe(leaves[1].id)
-    expect(setActiveSession).not.toHaveBeenCalled()
+    expect(setActiveSession).toHaveBeenCalledExactlyOnceWith('chat-branch')
 
     act(() => root.unmount())
     host.remove()
@@ -1003,8 +1003,7 @@ describe('SessionItem status icons', () => {
     const root = createRoot(host)
     act(() => root.render(<SessionItem sessionId={rootSession.id} session={rootSession} familySessionIds={[rootSession.id, parent.id, sibling.id, deepest.id, malformed.id, cycleParent.id]} />))
     act(() => host.querySelector<HTMLElement>('[data-testid="session-row-depth-root"]')!.click())
-    if (scenario === 'active parent') expect(setActiveSession).not.toHaveBeenCalled()
-    else expect(setActiveSession).toHaveBeenCalledWith(scenario === 'preferred sibling' || scenario === 'preferred over active' ? sibling.id : deepest.id)
+    expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(scenario === 'active parent' ? parent.id : scenario === 'preferred sibling' || scenario === 'preferred over active' ? sibling.id : deepest.id)
     act(() => root.unmount())
     host.remove()
   })

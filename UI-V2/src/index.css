@@ -384,7 +384,7 @@ details[open]::details-content { block-size: auto; }
 }
 
 /* Press feedback: controls give slightly under the finger/cursor. */
-.uam-btn:active:not(:disabled),
+.uam-btn:active:not(:disabled):not([aria-disabled="true"]),
 .uam-iconbtn:active:not(:disabled),
 .uam-layout-button:active:not(:disabled),
 .uam-segment-button:active:not(:disabled),
@@ -1543,21 +1543,22 @@ summary,
   outline: none;
   box-shadow: var(--focus-ring);
 }
-.uam-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.uam-btn:disabled,
+.uam-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 
 .uam-btn--primary {
   background: var(--accent);
   color: #fff;
   border-color: color-mix(in srgb, var(--accent) 80%, #000);
 }
-.uam-btn--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+.uam-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--accent) 88%, #fff); }
 
 .uam-btn--secondary {
   background: var(--surface);
   color: var(--text);
   border-color: var(--border-bright);
 }
-.uam-btn--secondary:hover:not(:disabled) {
+.uam-btn--secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-up);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-bright));
 }
@@ -1566,14 +1567,14 @@ summary,
   background: transparent;
   color: var(--text-2);
 }
-.uam-btn--ghost:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-btn--ghost:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
 
 .uam-btn--danger {
   background: var(--error-dim);
   color: var(--error);
   border-color: color-mix(in srgb, var(--error) 45%, transparent);
 }
-.uam-btn--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
+.uam-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
 .uam-btn__spinner { opacity: 0.85; }
 .uam-btn__kbd {
@@ -1789,7 +1790,8 @@ summary,
 }
 
 /* Primary buttons read as "not ready yet" when disabled, not as a dim orange. */
-.uam-btn--primary:disabled {
+.uam-btn--primary:disabled,
+.uam-btn--primary[aria-disabled="true"] {
   background: var(--surface-high);
   border-color: var(--border);
   color: var(--text-3);

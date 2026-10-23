@@ -1,5 +1,6 @@
 #include "transcript_retention_service.h"
 #include "app/chat_domain_service.h"
+#include "app/managed_subagent_control_service.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
 #include "common/chat/chat_repository.h"
@@ -193,6 +194,9 @@ namespace uam
 	std::optional<ManagedAgentTranscriptReadIdentity> CaptureManagedAgentTranscriptRead(
 	    const AppState& app, std::string_view root_chat_id, std::string_view transcript_chat_id)
 	{
+		ManagedAgentTranscriptReadIdentity inspection;
+		if (ManagedSubagentControlService::CaptureRestartTranscript(app, root_chat_id, transcript_chat_id, inspection))
+			return inspection;
 		const ChatSession* root = ChatDomainService().FindChatById(app, std::string(root_chat_id));
 		if (root == nullptr || !root->agent_run_id.empty()) return std::nullopt;
 		const auto run = std::ranges::find_if(app.agent_runs, [&](const AgentRun& candidate) {
@@ -238,6 +242,28 @@ namespace uam
 	    const std::filesystem::path& data_root, const ManagedAgentTranscriptReadIdentity& expected)
 	{
 		ManagedAgentTranscriptReadResult result;
+		if (!expected.history_error.empty())
+		{
+			result.error = expected.history_error;
+			return result;
+		}
+		if (expected.initial_history)
+		{
+			if (data_root != expected.history_data_root)
+			{
+				result.error = "Saved managed data root changed.";
+				return result;
+			}
+			auto read = ManagedSubagentControlService::ReadDetached(*expected.initial_history, false);
+			if (!read.ready || !read.history_transcript)
+			{
+				result.error = read.error.empty() ? "Saved managed transcript is unavailable within the 4 MiB read limit." : read.error;
+				return result;
+			}
+			result.status = ManagedAgentTranscriptReadStatus::Ready;
+			result.transcript = std::move(*read.history_transcript);
+			return result;
+		}
 		std::string warning;
 		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, expected.transcript_chat_id, true, &warning);
 		if (!loaded)
@@ -261,6 +287,10 @@ namespace uam
 	                                      const ManagedAgentTranscriptReadIdentity& expected,
 	                                      const ChatSession& loaded_transcript)
 	{
+		if (!expected.history_error.empty())
+			return false;
+		if (expected.initial_history)
+			return app.data_root == expected.history_data_root && !app.worktree_operation_chat_ids.contains(expected.root_chat_id) && !app.worktree_operation_chat_ids.contains(expected.transcript_chat_id) && ManagedSubagentControlService::MatchesSnapshot(app, *expected.initial_history) && loaded_transcript.id == expected.transcript_chat_id && loaded_transcript.agent_run_id == expected.run_id && loaded_transcript.managed_followup_incarnation == expected.history_transcript_birth;
 		const ChatSession* root = ChatDomainService().FindChatById(app, expected.root_chat_id);
 		if (root == nullptr || !root->agent_run_id.empty() || root->provider_id != expected.root_provider_id ||
 		    root->execution_host_id != expected.root_execution_host_id ||

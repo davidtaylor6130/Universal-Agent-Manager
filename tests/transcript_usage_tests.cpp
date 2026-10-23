@@ -306,3 +306,133 @@ UAM_TEST(UsageOpenCodeAddsDisjointReasoningAndKeepsProviderEstimatesSeparateFrom
 		UAM_ASSERT(!uam::usage::OpenCodeRecord(message, "session", "message", 100));
 	}
 }
+
+
+#include "common/utils/history_timestamp_order.h"
+
+namespace
+{
+	struct HistoryTimestampTestZone
+	{
+		std::unique_ptr<ScopedEnvVar> zone;
+		static void Reload()
+		{
+#if defined(_WIN32)
+			_tzset();
+#else
+			tzset();
+#endif
+		}
+		explicit HistoryTimestampTestZone(const std::string& value) : zone(std::make_unique<ScopedEnvVar>("TZ", value))
+		{
+			Reload();
+		}
+		~HistoryTimestampTestZone()
+		{
+			zone.reset();
+			Reload();
+		}
+	};
+}
+
+UAM_TEST(HistoryTimestampOffsetOrderingPreservesNanosecondsAndEquivalentInstants)
+{
+	using namespace uam::time;
+	const auto equivalent = CompareHistoryTimestamps("2026-10-16T12:00:00.123456789Z", "2026-10-16T14:30:00.123456789+02:30");
+	UAM_ASSERT_EQ(equivalent.order, HistoryTimestampOrder::Equal);
+	UAM_ASSERT_EQ(equivalent.provenance, HistoryTimestampProvenance::ExplicitOffset);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T12:00:00.1231Z", "2026-10-16T12:00:00.1239Z").order, HistoryTimestampOrder::Before);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T12:00:00.000000001Z", "2026-10-16T12:00:00Z").order, HistoryTimestampOrder::After);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T12:00:00.1Z", "2026-10-16T12:00:00.100000000+00:00").order, HistoryTimestampOrder::Equal);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T00:00:00-02:00", "2026-10-16T01:59:59.999999999Z").order, HistoryTimestampOrder::After);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2024-02-29T12:00:00Z", "2024-03-01T12:00:00Z").order, HistoryTimestampOrder::Before);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("9999-12-31T23:59:59Z", "9999-12-31T23:59:58.999999999Z").order, HistoryTimestampOrder::After);
+}
+
+UAM_TEST(HistoryTimestampMalformedAndUnqualifiedInstantsRemainUnknown)
+{
+	using namespace uam::time;
+	for (const std::string invalid : {"", "recorded", "2026-02-29T12:00:00Z", "2026-13-10T12:00:00Z", "2026-10-16T24:00:00Z", "2026-10-16T12:60:00Z", "2026-10-16T12:00:60Z", "2026-10-16T12:00:00", "2026-10-16T12:00:00.Z", "2026-10-16T12:00:00.1234567890Z", "2026-10-16T12:00:00Zjunk", "2026-10-16T12:00:00+24:00", "2026-10-16T12:00:00+01:60", "2026-10-16T12:00:00-00:00", "2026-10-16 12:00:00Z", "2026-02-29 12:00:00", "2026-10-16 12:00:00 ", "1969-12-31T23:59:59Z"})
+	{
+		UAM_ASSERT_EQ(CompareHistoryTimestamps(invalid, "2026-10-16T12:00:00Z").order, HistoryTimestampOrder::Unknown);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T12:00:00Z", invalid).order, HistoryTimestampOrder::Unknown);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps(invalid, invalid).order, HistoryTimestampOrder::Unknown);
+	}
+}
+
+UAM_TEST(HistoryTimestampLegacyExplicitlyAssumesCurrentControllerZone)
+{
+	using namespace uam::time;
+	{
+		HistoryTimestampTestZone zone("UTC0");
+		const auto epoch = std::chrono::sys_days{std::chrono::year{2026}/10/16} + std::chrono::hours{12};
+		const auto civil = detail::LocalTimeSnapshot(std::chrono::system_clock::to_time_t(epoch));
+		UAM_ASSERT_EQ(civil.tm_hour, 12);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T13:00:00Z", "2026-10-16 12:00:00").order, HistoryTimestampOrder::After);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T11:00:00Z", "2026-10-16 12:00:00").order, HistoryTimestampOrder::Before);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16 12:00:00", "2026-10-16 12:00:00").order, HistoryTimestampOrder::Equal);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16 11:00:00", "2026-10-16 12:00:00").order, HistoryTimestampOrder::Before);
+	}
+	{
+		HistoryTimestampTestZone zone("JST-9");
+		const auto epoch = std::chrono::sys_days{std::chrono::year{2026}/10/16} + std::chrono::hours{3};
+		const auto civil = detail::LocalTimeSnapshot(std::chrono::system_clock::to_time_t(epoch));
+		UAM_ASSERT_EQ(civil.tm_hour, 12);
+		const auto equivalent = CompareHistoryTimestamps("2026-10-16 12:00:00", "2026-10-16T03:00:00Z");
+		UAM_ASSERT_EQ(equivalent.order, HistoryTimestampOrder::Equal);
+		UAM_ASSERT_EQ(equivalent.provenance, HistoryTimestampProvenance::AssumedCurrentLocalZone);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T04:00:00Z", "2026-10-16 12:00:00").order, HistoryTimestampOrder::After);
+		UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-10-16T02:00:00Z", "2026-10-16 12:00:00").order, HistoryTimestampOrder::Before);
+	}
+}
+
+UAM_TEST(HistoryTimestampLegacyRejectsExposedDstFoldAndGap)
+{
+	using namespace uam::time;
+	HistoryTimestampTestZone zone("EST5EDT");
+	// Real C-runtime observations establish these US-rule transition premises.
+	const auto first_epoch = std::chrono::sys_days{std::chrono::year{2026}/11/1} + std::chrono::hours{5} + std::chrono::minutes{30};
+	const auto first = detail::LocalTimeSnapshot(std::chrono::system_clock::to_time_t(first_epoch));
+	const auto second = detail::LocalTimeSnapshot(std::chrono::system_clock::to_time_t(first_epoch + std::chrono::hours{1}));
+	UAM_ASSERT(first.tm_year == 126 && first.tm_mon == 10 && first.tm_mday == 1 && first.tm_hour == 1 && first.tm_min == 30 && first.tm_isdst > 0);
+	UAM_ASSERT(second.tm_year == 126 && second.tm_mon == 10 && second.tm_mday == 1 && second.tm_hour == 1 && second.tm_min == 30 && second.tm_isdst == 0);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-11-01 01:30:00", "2026-11-01T06:30:00Z").order, HistoryTimestampOrder::Unknown);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-03-08 02:30:00", "2026-03-08T07:30:00Z").order, HistoryTimestampOrder::Unknown);
+	UAM_ASSERT_EQ(CompareHistoryTimestamps("2026-03-08 03:30:00", "2026-03-08T07:30:00Z").order, HistoryTimestampOrder::Equal);
+}
+
+
+UAM_TEST(HistoryTimestampUnknownOverlayDoesNotInventLoadedSummaryMessages)
+{
+	TempDir temporary("uam-history-timestamp-summary");
+	ChatSession saved;
+	saved.id = "timestamp-summary-owner";
+	saved.provider_id = "gemini-cli";
+	saved.native_session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	saved.created_at = "2026-10-16T09:00:00Z";
+	saved.updated_at = "legacy-with-unknown-time";
+	saved.messages = {{MessageRole::User, "Saved question"}, {MessageRole::Assistant, "Saved answer"}};
+	UAM_ASSERT(ChatRepository::SaveChat(temporary.root, saved));
+	const auto cold = ChatRepository::LoadLocalChat(temporary.root, saved.id, false);
+	const auto loaded = ChatRepository::LoadLocalChat(temporary.root, saved.id, true);
+	UAM_ASSERT(cold && !cold->messages_loaded && cold->messages.empty() && cold->persisted_message_count == 2);
+	UAM_ASSERT(loaded && loaded->messages_loaded && loaded->messages.size() == 2);
+	ChatSession incoming = *loaded;
+	incoming.updated_at = "2026-10-16T13:00:00Z";
+	incoming.messages.back().content = "Different native answer";
+	const auto native_messages = incoming.messages;
+	ChatHistorySyncService().OverlayPreparedLocalHistory(*cold, incoming);
+	UAM_ASSERT(incoming.messages_loaded);
+	UAM_ASSERT_EQ(incoming.messages, native_messages);
+	UAM_ASSERT_EQ(incoming.updated_at, std::string("2026-10-16T13:00:00Z"));
+	ChatHistorySyncService().OverlayPreparedLocalHistory(*loaded, incoming);
+	UAM_ASSERT_EQ(incoming.messages, loaded->messages);
+	UAM_ASSERT_EQ(incoming.updated_at, loaded->updated_at);
+	incoming.messages = native_messages;
+	incoming.messages.push_back({MessageRole::Assistant, "Additional native message"});
+	incoming.updated_at = "2026-10-16T13:00:00Z";
+	const auto longer_native = incoming.messages;
+	ChatHistorySyncService().OverlayPreparedLocalHistory(*loaded, incoming);
+	UAM_ASSERT_EQ(incoming.messages, longer_native);
+	UAM_ASSERT_EQ(incoming.updated_at, std::string("2026-10-16T13:00:00Z"));
+}

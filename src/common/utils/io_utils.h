@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/paths/path_utils.h"
+#include "common/platform/published_file_change_witness.h"
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
@@ -603,6 +604,93 @@ namespace uam::io
 		catch (...) { close_file(); throw; }
 	}
 
+	/// Opt-in actual-writer origin only; default writer body/sharing contract above is unchanged.
+	inline bool WriteAndSyncAtomicTempWithOrigin(const std::filesystem::path& temp_path,
+	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result,
+	    std::shared_ptr<const uam::platform::AtomicTempWriterOrigin>& origin_out)
+	{
+		origin_out.reset();
+		bool file_closed = false;
+#if defined(_WIN32)
+		std::filesystem::path native_path;
+		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = CloseHandle(file) != 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(GetLastError());
+			return closed;
+		};
+#else
+		const int file = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (file < 0) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(errno); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = close(file) == 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
+			return closed;
+		};
+#endif
+		try
+		{
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterCreate, result)) { close_file(); return false; }
+			bool writing_started = false;
+			const std::function<bool(std::string_view)> append = [&](std::string_view chunk)
+			{
+				if (!writing_started)
+				{
+					writing_started = true;
+					if (!ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) return false;
+				}
+				std::size_t offset = 0;
+				while (offset < chunk.size())
+				{
+					const std::size_t count = std::min<std::size_t>(chunk.size() - offset, 1024U * 1024U);
+#if defined(_WIN32)
+					DWORD written = 0;
+					if (!WriteFile(file, chunk.data() + offset, static_cast<DWORD>(count), &written, nullptr) || written == 0)
+					{
+						result.error = "Failed to write temporary file: " + AtomicWriteSystemError(GetLastError()); return false;
+					}
+#else
+					const ssize_t written = write(file, chunk.data() + offset, count);
+					if (written < 0 && errno == EINTR) continue;
+					if (written <= 0) { result.error = "Failed to write temporary file: " + AtomicWriteSystemError(errno); return false; }
+#endif
+					offset += static_cast<std::size_t>(written);
+				}
+				return true;
+			};
+			if (!produce(append) || (!writing_started && !ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) ||
+			    !ContinueAtomicWrite(hook, AtomicWriteStage::AfterFlush, result)) { close_file(); return false; }
+#if defined(_WIN32)
+			const bool synced = FlushFileBuffers(file) != 0;
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
+#else
+#if defined(__APPLE__)
+			const bool synced = fcntl(file, F_FULLFSYNC) == 0 || fsync(file) == 0;
+#else
+			const bool synced = fsync(file) == 0;
+#endif
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
+#endif
+			// Mint from the ACTUAL exclusive writer while it remains alive, never from a path reopen.
+			auto origin = synced ? uam::platform::AtomicTempWriterOrigin::Retain(file) : nullptr;
+			if (synced && !origin && result.error.empty()) result.error = "Could not retain actual atomic writer identity.";
+			const bool closed = close_file();
+			if (!synced || !origin || !closed) return false;
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result)) return false;
+			origin_out = std::move(origin);
+			return true;
+		}
+		catch (...) { close_file(); throw; }
+	}
+
 	inline AtomicWriteResult CommitSyncedAtomicTemp(const std::filesystem::path& path,
 	    const std::filesystem::path& temp_path, bool preserve_backup = false,
 	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true, bool sync_replace = true)
@@ -719,6 +807,173 @@ namespace uam::io
 #endif
 		}
 
+		result.success = true;
+		result.primary_committed = true;
+		result.stage = AtomicWriteStage::Complete;
+		return result;
+	}
+	// Opt-in private evidence handoff; the six-argument legacy path above is unchanged.
+	inline AtomicWriteResult CommitSyncedAtomicTemp(
+	    const std::filesystem::path& path, const std::filesystem::path& temp_path, bool preserve_backup,
+	    const AtomicWriteStageHook& hook, bool sync_directory, bool sync_replace,
+	    const std::filesystem::path& private_backup_temp_path)
+	{
+		AtomicWriteResult result;
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const auto normalized = [&](const fs::path& value)
+		{
+			if (value.empty()) return fs::path{};
+			const auto absolute = fs::absolute(value, ec);
+			return ec ? fs::path{} : absolute.lexically_normal();
+		};
+		const fs::path destination = normalized(path);
+		if (destination.empty()) { result.error = "Invalid conditional destination."; return result; }
+		const fs::path candidate = normalized(temp_path);
+		if (candidate.empty()) { result.error = "Invalid conditional candidate."; return result; }
+		const fs::path evidence = normalized(private_backup_temp_path);
+		if (evidence.empty()) { result.error = "Invalid private predecessor path."; return result; }
+		const fs::path backup = MakeBackupPath(destination);
+		const auto same = [](const fs::path& left, const fs::path& right)
+		{
+#if defined(_WIN32)
+			return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+			return left == right;
+#endif
+		};
+		if (!same(destination.parent_path(), candidate.parent_path()) || !same(destination.parent_path(), evidence.parent_path()) ||
+		    same(destination, candidate) || same(destination, evidence) || same(candidate, evidence) || same(backup, evidence) || same(backup, candidate))
+		{
+			result.error = "Conditional candidate and private evidence must be distinct siblings.";
+			return result;
+		}
+		fs::path native_path, native_candidate, native_evidence, native_parent;
+		if (!NativeFilePath(destination, native_path, result.error) || !NativeFilePath(candidate, native_candidate, result.error) ||
+		    !NativeFilePath(evidence, native_evidence, result.error) || !NativeFilePath(destination.parent_path(), native_parent, result.error, true))
+			return result;
+		const auto parent_status = fs::symlink_status(native_parent, ec);
+		if (ec || !fs::is_directory(parent_status) || paths::IsLinkOrReparsePointNoThrow(native_parent))
+		{
+			result.error = "Conditional publication parent is not an available directory.";
+			return result;
+		}
+		const auto absent = [&](const fs::path& value)
+		{
+			std::error_code error;
+			const auto status = fs::symlink_status(value, error);
+			return status.type() == fs::file_type::not_found &&
+			    (!error || error == std::errc::no_such_file_or_directory);
+		};
+		if (!absent(native_evidence))
+		{
+			result.error = "Private predecessor path already has storage evidence.";
+			return result;
+		}
+		const auto candidate_status = fs::symlink_status(native_candidate, ec);
+		if (ec || !fs::is_regular_file(candidate_status) || paths::IsLinkOrReparsePointNoThrow(native_candidate))
+		{
+			result.error = "Conditional candidate must be a regular non-link file.";
+			return result;
+		}
+		const auto status = fs::symlink_status(native_path, ec);
+		if (ec && ec != std::errc::no_such_file_or_directory)
+		{
+			result.error = "Could not inspect conditional destination: " + ec.message();
+			return result;
+		}
+		const bool destination_exists = !ec && status.type() != fs::file_type::not_found;
+		if (destination_exists && (!fs::is_regular_file(status) || paths::IsLinkOrReparsePointNoThrow(native_path)))
+		{
+			result.error = "Conditional destination must be a regular non-link file.";
+			return result;
+		}
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeReplace, result)) return result;
+		// The final callback is read-only; still recheck this reserved absence before native replacement.
+		if (!absent(native_evidence))
+		{
+			result.error = "Private predecessor path changed before replacement.";
+			return result;
+		}
+#if defined(_WIN32)
+		// Capture predecessors for secondary files too. Failed ReplaceFileW can be partial:
+		// do not delete either possible evidence location after replacement permission.
+		if (!ReplaceAtomicTemp(destination, candidate, evidence, destination_exists, destination_exists, result, sync_replace)) return result;
+		result.primary_committed = true;
+#else
+		if (destination_exists)
+		{
+#if defined(__APPLE__)
+			const int swapped = renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP);
+#else
+			const long swapped = syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE);
+#endif
+			if (swapped != 0) { result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno); return result; }
+		}
+		else if (rename(candidate.c_str(), destination.c_str()) != 0)
+		{
+			result.error = "Failed to atomically install destination: " + AtomicWriteSystemError(errno);
+			return result;
+		}
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterReplaceBeforeDirectorySync, result)) return result;
+#if !defined(_WIN32)
+		if (sync_directory && !SyncAtomicWriteDirectory(destination.parent_path(), result)) return result;
+		result.primary_committed = true;
+#endif
+		if (!ContinueAtomicWrite(hook, AtomicWriteStage::BeforeBackupCleanup, result))
+		{
+			result.success = result.primary_committed;
+			result.backup_degraded = preserve_backup && destination_exists;
+			return result;
+		}
+		if (destination_exists)
+		{
+			if (!preserve_backup)
+			{
+#if defined(_WIN32)
+				const fs::path& predecessor = native_evidence;
+#else
+				const fs::path& predecessor = native_candidate;
+#endif
+				std::error_code error;
+				fs::remove(predecessor, error);
+				result.success = true;
+				if (error)
+				{
+					result.error = "Destination committed; private predecessor cleanup degraded: " + error.message();
+					return result;
+				}
+			}
+			else
+			{
+#if defined(_WIN32)
+				fs::path native_backup;
+				if (!NativeFilePath(backup, native_backup, result.error) ||
+				    !MoveFileExW(native_evidence.c_str(), native_backup.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+				{
+					if (result.error.empty()) result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(GetLastError());
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+#else
+				if (rename(candidate.c_str(), backup.c_str()) != 0)
+				{
+					result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(errno);
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+				if (sync_directory && !SyncAtomicWriteDirectory(destination.parent_path(), result))
+				{
+					result.success = true;
+					result.backup_degraded = true;
+					return result;
+				}
+#endif
+			}
+		}
 		result.success = true;
 		result.primary_committed = true;
 		result.stage = AtomicWriteStage::Complete;

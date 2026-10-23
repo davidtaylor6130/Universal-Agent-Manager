@@ -71,7 +71,7 @@ namespace uam
 			ModelDiscoveryScope scope{provider_ids::NormalizeCliProviderAliasOrSelf(provider_id), {}, HostId(host_id)};
 			scope.workspace_directory = Workspace(app, directory, scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
-			if (provider == nullptr || !provider->supports_structured || scope.provider_id == provider_ids::kAntigravityCli || !RegisteredWorkspace(app, scope)) return;
+			if (provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope)) return;
 			if (std::ranges::find_if(scopes, [&](const ModelDiscoveryScope& existing) {
 			    return existing.provider_id == scope.provider_id && existing.execution_host_id == scope.execution_host_id &&
 			           WorkspaceIdentity(app, existing.workspace_directory, existing.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id);
@@ -111,6 +111,7 @@ namespace uam
 		std::size_t active = std::ranges::count_if(app.acp_sessions, [](const std::unique_ptr<AcpSessionState>& session) {
 			return session != nullptr && session->ephemeral_model_discovery && session->running;
 		});
+		active += app.provider_model_catalog->ActiveNativeModelDiscoveries();
 		bool changed = false;
 		for (std::vector<ModelDiscoveryScope>::iterator item = m_pending_scopes.begin(); item != m_pending_scopes.end() && active < kMaxConcurrentDiscoveries;)
 		{
@@ -165,6 +166,29 @@ namespace uam
 				diagnostics::Write("Startup model discovery launch failed for " + scope.provider_id + ": " + error);
 			}
 			changed = true;
+		}
+		// Query only the visible saved Antigravity model; native /effort is a read-only builtin, never a model turn.
+		// The catalogue deduplicates attempts and retains scoped metadata so idle polling cannot spawn repeated probes.
+		const ChatSession* selected = ChatDomainService().SelectedChat(app);
+		if (active < kMaxConcurrentDiscoveries && selected != nullptr && !selected->imported_read_only &&
+		    provider_ids::IsCliProviderAliasOf(selected->provider_id, provider_ids::kAntigravityCli))
+		{
+			const std::string host_id = HostId(selected->execution_host_id);
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
+			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_ids::kAntigravityCli);
+			const std::string workspace = paths::ResolveWorkspaceRootPath(app, *selected).generic_string();
+			std::string model = selected->model_id;
+			if (model.empty())
+				for (const auto& entry : app.provider_model_catalog->GetCachedProviderModels(selected->provider_id, workspace, host_id))
+					if (entry.value("isDefault", false)) { model = entry.value("id", ""); break; }
+			if (host != nullptr && provider != nullptr && !model.empty() && provider_availability::IsEnabled(app.settings, selected->provider_id, host_id) &&
+			    ProviderCliLaunchBlockReason(app, selected->provider_id, host_id).empty())
+			{
+				const auto before = app.provider_model_catalog->ActiveNativeModelDiscoveries();
+				std::string error;
+				(void)app.provider_model_catalog->StartAntigravityEffortDiscovery(*provider, *host, workspace, model, &error);
+				changed = app.provider_model_catalog->ActiveNativeModelDiscoveries() > before || changed;
+			}
 		}
 		return changed;
 	}

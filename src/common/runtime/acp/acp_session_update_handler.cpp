@@ -5,6 +5,7 @@
 #include "app/provider_resolution_service.h"
 #include "common/config/approval_modes.h"
 #include "common/config/execution_host_config.h"
+#include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_statuses.h"
@@ -338,7 +339,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			if (message_id && message_id->is_string())
 			{
 				const std::string& id = message_id->get_ref<const std::string&>();
-				if (id.size() <= 512 && execution_hosts::IsPortableId(id) && !id.starts_with('-'))
+				if (opencode::IsNativeId(id))
 					identity = "opencode-message:" + id;
 			}
 		}

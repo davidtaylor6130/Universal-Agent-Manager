@@ -20,6 +20,7 @@ namespace uam::provider_profile_constants
 	inline constexpr const char* kProtocolClaudeCodeStreamJson = "claude-code-stream-json";
 	inline constexpr const char* kProtocolOpenCodeAcp = "opencode-acp";
 	inline constexpr const char* kProtocolCopilotAcp = "copilot-acp";
+	inline constexpr const char* kProtocolCopilotSdk = "copilot-sdk";
 
 	inline constexpr const char* kHistoryAdapterGeminiCliJson = "gemini-cli-json";
 	inline constexpr const char* kHistoryAdapterLocalJson = "local-json";

@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+namespace uam
+{
+	class PreparedNativeMediaChatSave;
+}
 
 class ChatHistorySyncService
 {
@@ -75,6 +79,8 @@ class ChatHistorySyncService
 		bool success = true;
 		std::vector<std::string> errors;
 		std::vector<std::string> confirmed_empty_native_keys;
+		// Exact rows saved by the partial local importer, eligible for sidebar adoption.
+		std::vector<std::string> published_chat_ids;
 
 		bool partial() const { return imported_count > 0 && !success; }
 		void Fail(std::string error)
@@ -89,10 +95,30 @@ class ChatHistorySyncService
 			if (!other.success) success = false;
 			errors.insert(errors.end(), other.errors.begin(), other.errors.end());
 			confirmed_empty_native_keys.insert(confirmed_empty_native_keys.end(), other.confirmed_empty_native_keys.begin(), other.confirmed_empty_native_keys.end());
+			published_chat_ids.insert(published_chat_ids.end(), other.published_chat_ids.begin(), other.published_chat_ids.end());
 		}
 	};
-	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	/// Final reconciliation may supply its still-attached terminal; ownership is revalidated before publication.
+	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "", const uam::CliTerminalState* final_terminal = nullptr) const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
+	/// A loaded snapshot has no final-terminal permission; an error-free failure requests retry without a new diagnostic.
+	ImportResult ImportLoadedNativeChatsToLocal(uam::AppState& app, std::vector<ChatSession> native_chats, const std::string& target_chat_id) const;
+	// nullopt means the existing synchronous/non-media route owns this request.
+	// Borrowed input remains caller-owned on capacity deferral; production supplies
+	// its pre-admitted parser owner, transferred through preparation and retirement.
+	std::optional<ImportResult> QueueLoadedTerminalNativeMedia(uam::AppState& app,
+	    std::vector<ChatSession>& input, bool consume_input, std::string_view target,
+	    bool preserve_selection, const std::shared_ptr<uam::platform::AsyncNativeChatLoadTask::State>& owner = {},
+	    std::string_view digest = {}, const std::shared_ptr<uam::CliTerminalHistoryGeneration>& producer = {}) const;
+	std::optional<ImportResult> QueueFinalTerminalNativeMedia(uam::AppState& app,
+	    const uam::CliTerminalState& terminal, bool wait_for_stop) const;
+	bool PollTerminalNativeMedia(uam::AppState& app) const;
+	/// Includes final-stop waits and real prepare/publication/ACK completion.
+	bool TerminalNativeMediaPending(const uam::AppState& app) const;
+	/// Final captures take priority over admitting new periodic parser payloads.
+	bool TerminalNativeMediaFinalPending(const uam::AppState& app) const;
+	void CancelTerminalNativeMediaForChat(uam::AppState& app, std::string_view chat_id) const;
+	void SettleTerminalNativeMediaForExit(uam::AppState& app) const;
 	enum class ImportPolicy { ExplicitImport, RegisteredWorkspacesOnly, SelectedNewChatsOnly };
 	struct PreparedHistoryChat
 	{
@@ -102,6 +128,8 @@ class ChatHistorySyncService
 		std::optional<ChatFolder> expected_folder;
 		std::string expected_fingerprint;
 		std::shared_ptr<PreparedChatSave> files;
+		std::shared_ptr<uam::PreparedNativeMediaChatSave> native_media;
+		bool native_media_acknowledged = false;
 		std::filesystem::path codex_rollout;
 		uam::opencode_import::Spool open_code_export;
 		std::string error;
@@ -113,6 +141,9 @@ class ChatHistorySyncService
 	{
 		std::filesystem::path expected_data_root;
 		std::vector<PreparedHistoryChat> chats;
+		// Consumed media inputs rejected before preparation still retire on the armed worker.
+		std::vector<ChatSession> retired_inputs;
+		bool native_media_worker_owned = false;
 		std::string expected_folders;
 		std::vector<ChatFolder> folders;
 		std::shared_ptr<PreparedFolderSave> folder_files;
@@ -137,7 +168,7 @@ class ChatHistorySyncService
 	};
 	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
-	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}) const;
+	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
 	/// <summary>Removes owned, declined, duplicate and unregistered startup candidates without writing history.</summary>
 	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
 	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr) const;
@@ -159,20 +190,27 @@ class ChatHistorySyncService
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;
 	/// Reads a local rollout without touching application state; run off the GUI thread.
+	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
+	/// <summary>Reads exact Gemini, Claude or Copilot native history through an authenticated immutable runner snapshot.</summary>
+	std::optional<ChatSession> LoadRemoteNativeTranscript(const ExecutionHost& host, const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
+	/// <summary>Validates snapshot ownership and reuses provider-native parsers without changing environment variables.</summary>
+	std::optional<ChatSession> ParseRemoteNativeHistorySnapshot(const ExecutionHost& host, const ChatSession& chat, const nlohmann::json& snapshot, std::string* error = nullptr, std::stop_token stop_token = {}) const;
 	std::optional<ChatSession> LoadLocalCodexChildChat(const ChatSession& chat, std::string* error = nullptr) const;
 	RemoteCodexTranscript LoadRemoteCodexTranscript(
 	    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token = {}) const;
 	static bool AppendRemoteCodexSessions(
 	    const nlohmann::json& result, std::vector<RemoteCodexSession>& sessions,
 	    std::string* error = nullptr);
-	static RemoteCodexTranscript ParseRemoteCodexTranscript(const nlohmann::json& result);
+	static RemoteCodexTranscript ParseRemoteCodexTranscript(const nlohmann::json& result, const ChatSession* input_receipt_owner = nullptr);
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys, const std::unordered_set<std::string>& retained_keys = {}) const;
 	bool FilterDeletedNativeHistory(const std::filesystem::path& data_root, std::vector<ChatSession>& chats, std::string* error_out = nullptr) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
+	/// Build a loaded detached candidate without storage or live-runtime access; false preserves a longer baseline.
+	bool BuildNativeTranscriptCandidate(ChatSession& detached, std::vector<Message> messages) const;
 	bool SaveNativeTranscript(uam::AppState& app, ChatSession& current, std::vector<Message> messages) const;
-	bool SaveChatWithStatus(uam::AppState& app, const ChatSession& chat, const std::string& success, const std::string& failure) const;
+	bool SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure) const;
 	bool RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const;
 	std::vector<ChatSession> LoadNativeSessionChats(const std::filesystem::path& chats_dir, const ProviderProfile& provider, std::stop_token stop_token = {}) const;
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& workspace_root) const;
@@ -180,12 +218,13 @@ class ChatHistorySyncService
 	void LoadSidebarChats(uam::AppState& app) const;
 	/// <summary>Retains hidden agent identity without transcript bodies or additional storage reads.</summary>
 	void RetainHiddenAgentChatOwnership(uam::AppState& app, const ChatSession& chat) const;
-	void MergeSidebarChatsPreservingCurrent(uam::AppState& app) const;
+	/// Keep current rows except explicitly published IDs whose saved history should be adopted.
+	void MergeSidebarChatsPreservingCurrent(uam::AppState& app, const std::vector<std::string>& published_chat_ids = {}) const;
 	void RefreshNativeSessionDirectory(uam::AppState& app) const;
 	bool StartAsyncNativeChatLoad(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir) const;
 	bool TryConsumeAsyncNativeChatLoad(uam::AppState& app, std::vector<ChatSession>& chats_out, std::string& error_out) const;
 	std::vector<std::string> SessionIdsFromChats(const std::vector<ChatSession>& chats) const;
-	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& chats_dir, const std::string& session_id) const;
+	std::optional<std::filesystem::path> FindNativeSessionFilePath(const std::filesystem::path& chats_dir, const std::string& session_id, std::stop_token stop_token = {}) const;
 	bool DeleteNativeSessionFileForChat(const uam::AppState& app, const ChatSession& chat, std::error_code* error_out = nullptr) const;
 	bool DeleteNativeWorkspaceHistoryForFolder(const uam::AppState& app, const ChatFolder& folder, std::error_code* error_out = nullptr) const;
 	std::string ResolveResumeSessionIdForChat(const uam::AppState& app, const ChatSession& chat) const;
@@ -217,5 +256,7 @@ class ChatHistorySyncService
 	void OverlayPreparedLocalHistory(const ChatSession& local_chat, ChatSession& native_chat) const;
 
 	/// Applies persisted metadata to candidates without replacing live chats or session mappings.
-	std::vector<ChatSession> OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links, const std::vector<ChatSession>* prepared_local_summaries = nullptr) const;
+	/// Required hydration failure clears candidates/returned rows and sets the optional retry error.
+	/// Earlier completed inferred-link saves retain their existing ownership; this is not a batch rollback.
+	std::vector<ChatSession> OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links, const std::vector<ChatSession>* prepared_local_summaries = nullptr, std::string* error_out = nullptr) const;
 };

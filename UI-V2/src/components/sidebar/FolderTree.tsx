@@ -1,7 +1,10 @@
+import { OrphanSubagentItem, SubagentSearchMatches, SubagentSessionItem } from './SubagentSessionItem'
+import { hasNativeSubagentLineage, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { useSnoozeClock } from './useSnoozeClock'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
+import { reportAppFailure } from '../../utils/appFailure'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -33,7 +36,7 @@ interface FolderTreeProps {
 }
 
 const VISIBLE_SESSION_LIMIT = 5
-const EMPTY_SEARCH_INDEX = {}
+const EMPTY_SEARCH_INDEX: Record<string, string> = {}
 const EMPTY_SELECTION_IDS = new Set<string>()
 type FolderDropEdge = 'before' | 'after'
 type CompactRuntimeStatus = '' | 'processing' | 'done' | `attention:${AcpAttentionKind}`
@@ -145,6 +148,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
 }
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
+  const navigationRevision = useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const companionContext = isCompanionContext()
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
@@ -215,6 +219,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const selectionAnchorRowRef = useRef<HTMLElement | null>(null)
   const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[] | null>(null)
   const [bulkDeleteFailed, setBulkDeleteFailed] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const bulkDeleteInFlightRef = useRef(false)
   const [unsortedMenuPoint, setUnsortedMenuPoint] = useState<{ x: number; y: number } | null>(null)
   const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false)
   const [recoveryPreview, setRecoveryPreview] = useState<WorkspaceFolderRecoveryPreview | null>(null)
@@ -308,7 +314,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       filters,
       runtimeBindings
     ),
-    [folders, sessions, searchIndex, searchTokens, deepSearchSet, filters, runtimeBindings]
+    [folders, sessions, searchIndex, searchTokens, deepSearchSet, filters, runtimeBindings, navigationRevision]
   )
   const sessionsById = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
@@ -338,10 +344,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const snoozedList = usePresence(snoozedExpanded)
   const pinnedList = usePresence(pinnedExpanded)
   const allChatsList = usePresence(allChatsExpanded)
+  const nativeChildIds = useMemo(() => new Set(sessions.filter(hasNativeSubagentLineage).map(session => session.id)), [sessions, navigationRevision])
+  const orphanSubagents = useMemo(() => searchModel.orphanSessionIds.flatMap(id => {
+    const session = sessionsById.get(id)
+    return session ? [session] : []
+  }), [searchModel.orphanSessionIds, sessionsById])
   const previousFamiliesRef = useRef(new Map<string, string[]>())
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
+      if (nativeChildIds.has(session.id)) continue
       const rootId = session.branchRootChatId || session.parentChatId || session.id
       const family = families.get(rootId)
       if (family) family.push(session.id)
@@ -353,7 +365,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       if (previous && shallow(previous, family)) families.set(rootId, previous)
     }
     return families
-  }, [sessions])
+  }, [sessions, nativeChildIds])
   useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
@@ -778,6 +790,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   }
 
   return (
+    <SubagentSearchMatches.Provider value={searchModel.matchedSubagentChildIds}>
     <div ref={treeRef} className="select-none"
       onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
@@ -916,7 +929,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
-      {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0 || searchModel.unfolderedSessionIds.length > 0) && (
+      {!searchModel.isSearching && (searchModel.folderRows.length > 0 || resourceCollections.length > 0 || searchModel.unfolderedSessionIds.length > 0 || orphanSubagents.length > 0) && (
         <div data-testid="all-chats">
           <SidebarSectionHeader
             label="All chats"
@@ -1039,18 +1052,22 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           >
             <div className="min-h-0 overflow-hidden">
               {searchModel.unfolderedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              <SubagentSessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
               ))}
             </div>
           </div>
         </div>
       )}
 
+      {orphanSubagents.length > 0 && <section className="mt-2 px-2" aria-label="Subagents with unavailable parents">
+        <p className="text-xs" style={{ color: 'var(--text-3)' }}>Subagents · Parent unavailable</p>
+        {orphanSubagents.map(child => <OrphanSubagentItem key={child.id} child={child} />)}
+      </section>}
       </>}
       </div>
       </div>
 
-      {searchModel.isSearching && !searchModel.hasMatches && (
+      {searchModel.isSearching && !searchModel.hasMatches && orphanSubagents.length === 0 && (
         <div className="mx-3 my-6 flex flex-col items-center gap-1 text-center animate-fade-in" style={{ color: 'var(--text-3)' }}>
           <SearchX size={22} strokeWidth={1.5} aria-hidden />
           <div className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>No chats match this search</div>
@@ -1064,13 +1081,26 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         label={`Delete ${pendingBulkDeleteIds?.length ?? 0} selected chats`}
         confirmLabel="Delete chats"
         error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
-        onCancel={() => setPendingBulkDeleteIds(null)}
+        busy={bulkDeleting}
+        onCancel={() => { if (!bulkDeleteInFlightRef.current) setPendingBulkDeleteIds(null) }}
         onConfirm={() => {
-          if (!pendingBulkDeleteIds) return
-          void deleteSessions(pendingBulkDeleteIds).then((deleted) => {
-            if (deleted) clearBulkSelection()
-            else setBulkDeleteFailed(true)
-          })
+          if (!pendingBulkDeleteIds || bulkDeleteInFlightRef.current) return
+          const ids = [...pendingBulkDeleteIds]
+          bulkDeleteInFlightRef.current = true
+          setBulkDeleting(true)
+          setBulkDeleteFailed(false)
+          void (async () => {
+            try {
+              if (await deleteSessions(ids)) clearBulkSelection()
+              else setBulkDeleteFailed(true)
+            } catch (cause) {
+              setBulkDeleteFailed(true)
+              reportAppFailure('Could not confirm chat deletion.', cause instanceof Error ? cause.message : 'Check the chat state before trying again.')
+            } finally {
+              bulkDeleteInFlightRef.current = false
+              setBulkDeleting(false)
+            }
+          })()
         }}
       >
         {pendingBulkDeleteIds?.length ?? 0} chats will be permanently deleted. This cannot be undone.
@@ -1252,6 +1282,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         />
       )}
     </div>
+    </SubagentSearchMatches.Provider>
   )
 }
 
@@ -2137,7 +2168,7 @@ const FolderRow = memo(function FolderRow({
                 </div>
               ) : (
                 visibleSessionIds.map((id) => (
-                  <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
+                  <SubagentSessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
                 ))
               )}
               {shouldLimitSessions && (

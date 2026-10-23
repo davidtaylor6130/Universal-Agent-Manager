@@ -1,3 +1,4 @@
+import { canExecuteNativeSubagent, hasNativeSubagentLineage, subagentParentFor, openSubagentView, returnToSubagentParent, rememberSubagentParent } from '../../utils/subagentNavigation'
 import type { ContextReference } from '../../types/contextReference'
 import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
@@ -15,6 +16,7 @@ import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
 import type { CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
+import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -26,8 +28,9 @@ import {
   normalizeCliProviderIdAlias,
   providerCapabilities,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
+  acpBindingsEquivalent,
   attachmentsEquivalent,
   buildMessageFromCpp,
   clearPendingRequest,
@@ -69,7 +72,7 @@ import type {
   VcsFileDiffResponse,
   VcsType,
 } from '../cpp/types'
-import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
+import type { AppState, AcpPromptPresentationObserver, ZustandSet, ZustandGet } from '../storeTypes'
 import { removeChatsFromGrid, writeChatViewMode } from '../../utils/chatGridStorage'
 import { removeComposerDrafts } from '../../utils/composerDraftStorage'
 import { discardPendingPushesForChats, discardPendingTranscriptPushesForChat } from '../push/pushBuffers'
@@ -165,6 +168,7 @@ export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>
     messages: withoutDeletedKeys(state.messages, deletedIds),
     historyStartIndexBySessionId: withoutDeletedKeys(state.historyStartIndexBySessionId, deletedIds),
     chatHistoryErrorBySessionId: withoutDeletedKeys(state.chatHistoryErrorBySessionId, deletedIds),
+    chatHistoryReadBySessionId: withoutDeletedKeys(state.chatHistoryReadBySessionId ?? {}, deletedIds),
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
     activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
     goalModeByChatId: withoutDeletedKeys(state.goalModeByChatId, deletedIds),
@@ -200,7 +204,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
 
-  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false) => {
+  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0): Promise<void | false> | undefined => {
     if (!isCefContext() || !chatId) return
     if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
@@ -208,6 +212,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     const messagesAtRequestStart = current.messages[chatId]
     const bindingAtRequestStart = current.acpBindingBySessionId[chatId]
     const sessionAtRequestStart = current.sessions.find((session) => session.id === chatId)
+    const chatBirthAtRequestStart = sessionAtRequestStart?.createdAt.getTime()
+    if (!sessionAtRequestStart || !Number.isFinite(chatBirthAtRequestStart)) return
+    const cliBindingAtRequestStart = current.cliBindingBySessionId[chatId]
     // A held native summary can predate an opaque optimistic echo, including while another chat was selected.
     force ||= Boolean(bindingAtRequestStart?.queueHeld && bindingAtRequestStart.queuedPrompts?.length &&
       bindingAtRequestStart.queuedPrompts.every((entry) => entry.id && Number.isSafeInteger(entry.revision) && entry.revision! > 0) &&
@@ -217,7 +224,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
-    return sendToCEF<ChatMessagesResponse>({
+    set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId,
+      [chatId]: { requestId, birth: chatBirthAtRequestStart! } } }))
+    let timedOut = false
+    let deadline: ReturnType<typeof setTimeout>
+    const timeout = new Promise<CEFResponse<ChatMessagesResponse>>(resolve => {
+      deadline = setTimeout(() => {
+        timedOut = true
+        resolve({ ok: false, requestId,
+          error: 'Reading saved chat history timed out. Retry to refresh it; retained messages have not been resent.' })
+      }, 30_000)
+    })
+    const read = sendToCEF<ChatMessagesResponse>({
       action: 'getChatMessages',
       payload: {
         chatId,
@@ -229,12 +247,38 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           : loadedMessagesDigestByChatId.get(chatId) ?? '',
       },
       requestId,
-    }).then((response) => {
+    })
+    return Promise.race([read, timeout]).then((response) => {
       if (!isLatestPendingRequest(requestKey, response.requestId)) return
       clearPendingRequest(requestKey, response.requestId)
+      const stateAtResponse = get()
+      const sessionAtResponse = stateAtResponse.sessions.find((session) => session.id === chatId)
       if ((messageHydrationGenerationByChatId.get(chatId) ?? 0) !== hydrationGeneration ||
-          !get().sessions.some((session) => session.id === chatId)) return
+          !sessionAtResponse || sessionAtResponse.createdAt.getTime() !== chatBirthAtRequestStart) return
+      const bindingAtResponse = stateAtResponse.acpBindingBySessionId[chatId]
+      const sameHistoryOwner = sessionAtRequestStart &&
+        sessionAtResponse.providerId === sessionAtRequestStart.providerId &&
+        sessionAtResponse.executionHostId === sessionAtRequestStart.executionHostId &&
+        sessionAtResponse.workspaceDirectory === sessionAtRequestStart.workspaceDirectory
+      if (!sameHistoryOwner || (timedOut && stateAtResponse.messages[chatId] !== messagesAtRequestStart)) return false as const
+      const sameBindingAuthority = bindingAtResponse === bindingAtRequestStart ||
+        Boolean(bindingAtRequestStart && bindingAtResponse && acpBindingsEquivalent(bindingAtRequestStart, { ...bindingAtResponse,
+          idleCountdownStartsAtMs: bindingAtRequestStart.idleCountdownStartsAtMs,
+          idleShutdownAtMs: bindingAtRequestStart.idleShutdownAtMs,
+          diagnostics: bindingAtRequestStart.diagnostics }))
+      const mayReadColdHistoryOnce = presentationRetry === 0 && !refreshNative &&
+        messagesAtRequestStart === undefined && stateAtResponse.messages[chatId] === undefined &&
+        Number.isFinite(chatBirthAtRequestStart) && sameHistoryOwner && sameBindingAuthority &&
+        stateAtResponse.cliBindingBySessionId[chatId] === cliBindingAtRequestStart &&
+        (stateAtResponse.historyStartIndexBySessionId[chatId] ?? 0) === historyStartAtRequestStart &&
+        stateAtResponse.chatSearchNavigation?.chatId !== chatId && !boundedTailReloads.has(chatId) &&
+        !pendingRequestIdsByKey.has(`sendAcpPrompt:${chatId}`)
       if (!response.ok || !response.data) {
+        if (!response.ok && response.error === 'Chat history changed while loading. Retry to refresh it.' && mayReadColdHistoryOnce) {
+          // A refusal contains no page to adopt. Share the presentation reread's single budget.
+          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+          if (fresh) return fresh
+        }
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
         set((state) => ({
           chatHistoryErrorBySessionId: {
@@ -247,6 +291,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       const data = response.data
       if (data.chatId && data.chatId !== chatId) return
+      if (mayReadColdHistoryOnce &&
+          unsentIndicesFromPage(data) && bindingAtRequestStart && bindingAtResponse && bindingAtResponse !== bindingAtRequestStart &&
+          acpBindingsEquivalent(bindingAtRequestStart, { ...bindingAtResponse,
+            idleCountdownStartsAtMs: bindingAtRequestStart.idleCountdownStartsAtMs,
+            idleShutdownAtMs: bindingAtRequestStart.idleShutdownAtMs,
+            diagnostics: bindingAtRequestStart.diagnostics })) {
+        // Discard this page; presentation changes only permit one new read, never stale unsent adoption.
+        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+        if (fresh) return fresh
+      }
       if (data.unchanged) {
         set((state) => {
           if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId)
@@ -344,6 +398,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ...(historyErrorChanged ? { chatHistoryErrorBySessionId } : {}),
         }
       })
+    }).catch(() => {
+      const state = get()
+      if (state.chatHistoryReadBySessionId[chatId]?.requestId !== requestId ||
+          (messageHydrationGenerationByChatId.get(chatId) ?? 0) !== hydrationGeneration ||
+          state.sessions.find(session => session.id === chatId)?.createdAt.getTime() !== chatBirthAtRequestStart) return
+      set({ chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
+        [chatId]: 'Saved chat history could not be read. Retry to refresh it.' } })
+      return false as const
+    }).finally(() => {
+      clearTimeout(deadline)
+      const state = get()
+      if (state.chatHistoryReadBySessionId[chatId]?.requestId !== requestId) return
+      clearPendingRequest(requestKey, requestId)
+      const chatHistoryReadBySessionId = { ...state.chatHistoryReadBySessionId }
+      delete chatHistoryReadBySessionId[chatId]
+      set({ chatHistoryReadBySessionId })
     })
   }
 
@@ -356,6 +426,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     historyStartIndexBySessionId: {} as Record<string, number>,
     chatSearchNavigation: null as ChatSearchNavigation | null,
     chatHistoryErrorBySessionId: {} as Record<string, string>,
+    chatHistoryReadBySessionId: {} as Record<string, { requestId: string; birth: number }>,
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
     acpBindingBySessionId: {} as Record<string, AcpBinding>,
@@ -426,7 +497,25 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
-    setActiveSession: (id: string | null) => {
+    setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => {
+      const selected = get().sessions.find(candidate => candidate.id === id)
+      const parent = selected && subagentParentFor(selected, get().sessions)
+      if (parent && id) {
+        if (!canExecuteNativeSubagent(selected!)) {
+          get().setActiveSession(parent.id, { preserveSubagentRoute: true, leafId: navigation?.leafId })
+          openSubagentView(parent, { kind: 'native', chatId: id }, navigation?.leafId)
+          return
+        }
+        openSubagentView(parent, { kind: 'native', chatId: id }, navigation?.leafId)
+      }
+      if (selected && hasNativeSubagentLineage(selected) && !canExecuteNativeSubagent(selected)) {
+        // An orphan is a passive history destination, never an ordinary runtime selection.
+        if (!navigation?.preserveSubagentRoute) returnToSubagentParent(selected.id, navigation?.leafId)
+        intentionalSelectionRevision += 1
+        set({ activeSessionId: selected.id, chatSearchNavigation: null })
+        return
+      }
+      if (id && !navigation?.preserveSubagentRoute) returnToSubagentParent(id, navigation?.leafId)
       intentionalSelectionRevision += 1
       if (get().chatSearchNavigation && get().chatSearchNavigation!.chatId !== id) set({ chatSearchNavigation: null })
       const persistSelection = () => {
@@ -443,22 +532,50 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = 'selectSession'
         const requestId = createRequestId('selectSession')
         rememberPendingRequest(requestKey, requestId)
-        set({ activeSessionId: id })
+        const waitsForHistory = Boolean(id && selected && Number.isFinite(selected.createdAt.getTime()) &&
+          get().messages[id] === undefined && (selected.messageCount ?? 0) > 0 && get().chatSearchNavigation?.chatId !== id)
+        let selectionHistoryExpired = false
+        let selectionHistoryDeadline: ReturnType<typeof setTimeout> | undefined
+        const finishHistorySelection = (expired = false) => {
+          clearTimeout(selectionHistoryDeadline)
+          if (!id) return
+          const state = get()
+          if (state.chatHistoryReadBySessionId[id]?.requestId !== requestId) return
+          const chatHistoryReadBySessionId = { ...state.chatHistoryReadBySessionId }
+          delete chatHistoryReadBySessionId[id]
+          const live = state.sessions.find(session => session.id === id)
+          const sameOwner = selected && live && live.createdAt.getTime() === selected.createdAt.getTime() &&
+            live.providerId === selected.providerId && live.executionHostId === selected.executionHostId &&
+            live.workspaceDirectory === selected.workspaceDirectory
+          // This only expires history presentation. A slow selection's mutation outcome stays unknown.
+          const fail = expired && sameOwner && state.activeSessionId === id && state.messages[id] === undefined &&
+            state.chatSearchNavigation?.chatId !== id
+          set({ chatHistoryReadBySessionId, ...(fail ? { chatHistoryErrorBySessionId: {
+            ...state.chatHistoryErrorBySessionId, [id]: 'Opening saved chat history timed out. Retry to refresh it; retained messages have not been resent.' } } : {}) })
+        }
+        set({ activeSessionId: id, ...(waitsForHistory ? { chatHistoryReadBySessionId: {
+          ...get().chatHistoryReadBySessionId, [id!]: { requestId, birth: selected!.createdAt.getTime() } } } : {}) })
+        if (waitsForHistory) selectionHistoryDeadline = setTimeout(() => {
+          selectionHistoryExpired = true
+          finishHistorySelection(true)
+        }, 30_000)
         sendToCEF({ action: 'selectSession', payload: { chatId: id ?? '' }, requestId }).then((resp) => {
-          if (resp.ok) {
-			if (!isLatestPendingRequest(requestKey, resp.requestId)) return
-            clearPendingRequest(requestKey, resp.requestId)
-            if (get().activeSessionId === id) persistSelection()
-            if (id) requestChatMessagesFromCef(id)
+          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+            finishHistorySelection()
             return
           }
-
-          if (!isLatestPendingRequest(requestKey, resp.requestId)) {
+          clearPendingRequest(requestKey, resp.requestId)
+          if (resp.ok) {
+            if (get().activeSessionId === id) persistSelection()
+            const pendingRead = id ? get().chatHistoryReadBySessionId[id] : undefined
+            if (id && !selectionHistoryExpired && (!pendingRead || pendingRead.requestId === requestId) &&
+                (!waitsForHistory || get().messages[id] === undefined)) requestChatMessagesFromCef(id)
+            finishHistorySelection()
             return
           }
 
           set({ activeSessionId: previousActiveSessionId })
-          pendingRequestIdsByKey.delete(requestKey)
+          finishHistorySelection()
         })
         return
       }
@@ -626,17 +743,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (current.acpBindingBySessionId[id]?.processing || current.cliBindingBySessionId[id]?.processing) return
       messageHydrationGenerationByChatId.set(id, (messageHydrationGenerationByChatId.get(id) ?? 0) + 1)
       discardPendingTranscriptPushesForChat(id)
-      if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id]) return
+      if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id] && !current.chatHistoryReadBySessionId[id]) return
       loadedMessagesDigestByChatId.delete(id)
       const messages = { ...current.messages }
       const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
       const cliTranscriptBySessionId = { ...current.cliTranscriptBySessionId }
       const chatHistoryErrorBySessionId = { ...current.chatHistoryErrorBySessionId }
+      const chatHistoryReadBySessionId = { ...current.chatHistoryReadBySessionId }
       delete messages[id]
       delete historyStartIndexBySessionId[id]
       delete cliTranscriptBySessionId[id]
       delete chatHistoryErrorBySessionId[id]
-      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
+      delete chatHistoryReadBySessionId[id]
+      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId, chatHistoryReadBySessionId })
       if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
@@ -795,6 +914,98 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    editUnsentMessage: async (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => {
+      const changed = () => ({ ok: false, error: 'The unsent message changed. Your edit is kept; reopen it before saving.' })
+      if (!isCefContext() || isCompanionContext()) return { ok: false, error: 'Editing unsent messages requires the desktop runtime.' }
+      const initialChat = get().sessions.find((session) => session.id === id)
+      const ownsRow = (state: AppState, message = expectedMessage) => {
+        if (!isCefContext() || isCompanionContext()) return false
+        const chat = state.sessions.find((session) => session.id === id)
+        const binding = state.acpBindingBySessionId[id]
+        const cli = state.cliBindingBySessionId[id]
+        const index = messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)
+        const rows = state.messages[id] ?? []
+        if (!chat || chat.importedReadOnly || !initialChat || chat.providerId !== initialChat.providerId ||
+            chat.createdAt.getTime() !== initialChat.createdAt.getTime() || chat.executionHostId !== initialChat.executionHostId || !Number.isSafeInteger(messageIndex) || messageIndex < 0 ||
+            rows[index] !== message || message.nativeMessageIndex !== messageIndex ||
+            message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded ||
+            !binding?.unsentMessageIndices?.includes(messageIndex) || binding.processing || binding.pendingPermission || binding.pendingUserInput ||
+            binding.queuedPrompts?.length || binding.pendingDirectPrompts?.length || binding.unsentDirectPrompts?.length ||
+            cli?.processing || cli?.turnState === 'busy') return false
+        const providerId = normalizeCliProviderIdAlias(chat.providerId || binding.providerId)
+        if (normalizeCliProviderIdAlias(binding.providerId) !== providerId ||
+            (message.providerId && normalizeCliProviderIdAlias(message.providerId) !== providerId)) return false
+        // An allowlist cannot override substantive output already visible after the input.
+        for (let next = index + 1; next < rows.length && rows[next].role !== 'user'; next += 1) {
+          const output = rows[next]
+          if (output.role !== 'assistant' || output.content.trim() || output.thoughts?.trim() || output.planSummary?.trim() ||
+              output.planEntries?.length || output.toolCalls?.length || output.blocks?.length || output.attachments?.length) return false
+        }
+        return true
+      }
+      if (!ownsRow(get())) return changed()
+      const originalAttachments = expectedMessage.attachments ?? []
+      const key = (attachment: Attachment) => `${attachment.type === 'markdown-store' ? 'skill' : 'file'}:${attachment.id}`
+      const selected = new Set(retainedAttachments.map(key))
+      if (selected.size !== retainedAttachments.length || retainedAttachments.some((attachment) => !attachment.id ||
+          !originalAttachments.some((original) => key(original) === key(attachment) && attachmentsEquivalent([original], [attachment])))) {
+        return { ok: false, error: 'The retained files or skills changed. Your edit is kept.' }
+      }
+      const retained = originalAttachments.filter((attachment) => selected.has(key(attachment)))
+      // Match native strings::Trim; JavaScript trim would also remove authored non-ASCII edge characters.
+      const normalizedText = text.replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g, '')
+      if ((!normalizedText && retained.length === 0) || new TextEncoder().encode(normalizedText).length > 1024 * 1024) {
+        return { ok: false, error: 'Enter a message or retain context, within the message size limit.' }
+      }
+      const validPage = (data: ChatMessagesResponse | undefined) => Boolean(data && data.chatId === id && data.startIndex === messageIndex &&
+        Number.isSafeInteger(data.totalCount) && data.totalCount! > messageIndex && /^[a-f0-9]{16}$/i.test(data.messagesDigest ?? '') &&
+        data.unchanged !== true && Array.isArray(data.messages) && data.messages.length === 1)
+      try {
+        const probe = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: {
+          chatId: id, limit: 1, before: messageIndex + 1, deferToolCallContent: true, messagesDigest: '',
+        } })
+        if (!probe.ok) return { ok: false, error: probe.error || 'Could not check the unsent message. Your edit is kept.' }
+        if (!validPage(probe.data) || !ownsRow(get()) ||
+            reconcileCppMessages(id, [expectedMessage], probe.data!.messages!, true, messageIndex)[0] !== expectedMessage) return changed()
+        const observedChat = get().sessions.find((session) => session.id === id)
+        const response = await sendToCEF<ChatMessagesResponse>({ action: 'manageQueuedAcpPrompt', payload: {
+          chatId: id, operation: 'editUnsent', messageIndex, expectedMessagesDigest: probe.data!.messagesDigest,
+          text, retainedAttachmentIds: retained.filter((attachment) => attachment.type !== 'markdown-store').map((attachment) => attachment.id),
+          retainedMarkdownStoreFiles: retained.filter((attachment) => attachment.type === 'markdown-store').map((attachment) => attachment.id),
+        } })
+        if (!response.ok) return { ok: false, error: response.error || 'Could not save the unsent message. Your edit is kept.' }
+        const data = response.data
+        const expectedEdited = { ...expectedMessage, content: normalizedText, attachments: retained }
+        // A generic ACK, another row, changed immutable data or omitted retained context is not a committed edit page.
+        if (!validPage(data) || data!.unchanged !== false || data!.totalCount !== probe.data!.totalCount ||
+            reconcileCppMessages(id, [expectedEdited], data!.messages!, true, messageIndex)[0] !== expectedEdited) {
+          return { ok: false, error: 'The saved message could not be confirmed. Your edit is kept; check the chat before retrying.' }
+        }
+        loadedMessagesDigestByChatId.delete(id)
+        let applied = false
+        set((state) => {
+          const index = messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)
+          if (!ownsRow(state)) {
+            // The native commit may push its exact row before this ACK. Confirm it without rewriting a newer projection.
+            const pushed = state.messages[id]?.[index]
+            const currentChat = state.sessions.find((session) => session.id === id)
+            applied = Boolean(pushed && currentChat && ownsRow(state, pushed) && currentChat.messagesDigest === data!.messagesDigest &&
+              currentChat.messageCount === data!.totalCount && reconcileCppMessages(id, [pushed], data!.messages!, true, messageIndex)[0] === pushed)
+            return state
+          }
+          const messages = [...state.messages[id]]
+          messages[index] = reconcileCppMessages(id, [expectedMessage], data!.messages!, true, messageIndex)[0]
+          applied = true
+          return { messages: { ...state.messages, [id]: messages },
+            sessions: state.sessions.map((session) => session === observedChat
+              ? { ...session, messagesDigest: data!.messagesDigest, messageCount: data!.totalCount } : session) }
+        })
+        return applied ? { ok: true } : changed()
+      } catch {
+        return { ok: false, error: 'Could not save the unsent message. Your edit is kept; check the chat before retrying.' }
+      }
+    },
+
     retryFailedMessage: async (id: string, messageIndex: number) => {
       if (!isCefContext()) return { ok: false, error: 'Retry requires the desktop runtime.' }
       const response = await sendToCEF({ action: 'retryFailedMessage', payload: { chatId: id, messageIndex } })
@@ -802,16 +1013,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: response.ok, error: response.error }
     },
 
-    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]): Promise<string | null> => {
+    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]): Promise<string | null> => {
+      const nativeSelection = retainedAttachmentIds === undefined ? undefined : Object.freeze([...retainedAttachmentIds])
+      const skillSelection = retainedMarkdownStoreFiles === undefined ? undefined : Object.freeze([...retainedMarkdownStoreFiles])
       if (isCefContext()) {
         const operationId = createRequestId('branch')
-        const payload = {
+        const payload = Object.freeze({
           chatId: id,
           messageIndex,
           ...(content === undefined ? {} : { content }),
-          ...(retainedAttachmentIds === undefined ? {} : { retainedAttachmentIds }),
+          ...(nativeSelection === undefined ? {} : { retainedAttachmentIds: nativeSelection }),
+          ...(skillSelection === undefined ? {} : { retainedMarkdownStoreFiles: skillSelection }),
           ...(operationId ? { operationId } : {}),
-        }
+        })
         let response = await sendToCEF<{ chatId?: string; warning?: string }>({
           action: 'branchFromMessage',
           payload,
@@ -831,10 +1045,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const sourceMessages = get().messages[id] ?? []
       const sourceMessage = sourceMessages[messageIndex]
       if (!source || sourceMessage?.role !== 'user') return null
-      const retainedAttachments = retainedAttachmentIds === undefined ? sourceMessage.attachments ?? []
-        : (sourceMessage.attachments ?? []).filter((attachment) => retainedAttachmentIds.includes(attachment.id))
-      if (retainedAttachmentIds && (new Set(retainedAttachmentIds).size !== retainedAttachmentIds.length || retainedAttachmentIds.some((id) => !id || !sourceMessage.attachments?.some((attachment) => attachment.id === id)))) return null
-      if (!(content ?? sourceMessage.content).trim() && retainedAttachments.length === 0) return null
+      const attachments = sourceMessage.attachments ?? []
+      const validSelection = (selection: readonly string[] | undefined, markdownStore: boolean) => selection === undefined ||
+        (new Set(selection).size === selection.length && selection.every((id) => id && attachments.filter((attachment) =>
+          (attachment.type === 'markdown-store') === markdownStore && attachment.id === id).length === 1))
+      if (!validSelection(nativeSelection, false) || !validSelection(skillSelection, true)) return null
+      const retainedAttachments = attachments.filter((attachment) => {
+        const selection = attachment.type === 'markdown-store' ? skillSelection : nativeSelection
+        return selection === undefined || selection.includes(attachment.id)
+      })
+      const hasContext = retainedAttachments.some((attachment) => attachment.type !== 'markdown-store') ||
+        (skillSelection !== undefined && retainedAttachments.some((attachment) => attachment.type === 'markdown-store'))
+      if (content === undefined) {
+        if (!sourceMessage.content.trim() && retainedAttachments.length === 0) return null
+      } else if (!content.trim() && !hasContext) return null
 
       sessionCounter++
       const branchId = makeId('branch', sessionCounter)
@@ -843,7 +1067,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ...message,
         sessionId: branchId,
         ...(index === messageIndex && content !== undefined ? { content } : {}),
-        ...(index === messageIndex && retainedAttachmentIds !== undefined ? { attachments: retainedAttachments } : {}),
+        ...(index === messageIndex && (nativeSelection !== undefined || skillSelection !== undefined) ? { attachments: retainedAttachments } : {}),
       }))
       const branch: Session = {
         ...source,
@@ -943,6 +1167,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true) => {
       if (isCefContext()) {
+        const source = get().sessions.find(candidate => candidate.id === sourceChatId)
         const selectionRevision = selectChat ? ++intentionalSelectionRevision : intentionalSelectionRevision
         const response = await sendToCEF<OpenNativeSessionChatResponse>({
           action: 'openNativeSessionChat',
@@ -962,7 +1187,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         const chatId = response.data?.chatId?.trim() ?? ''
         if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
-        if (chatId && selectChat) get().setActiveSession(chatId)
+        const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
+        if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
+            source.providerId !== currentSource.providerId || source.executionHostId !== currentSource.executionHostId ||
+            source.workspaceDirectory !== currentSource.workspaceDirectory || source.workspaceWorktreeDirectory !== currentSource.workspaceWorktreeDirectory || source.folderId !== currentSource.folderId) return null
+        if (chatId) rememberSubagentParent(source, chatId)
+        if (chatId && selectChat) {
+          const child = get().sessions.find(candidate => candidate.id === chatId)
+          if (child && canExecuteNativeSubagent(child)) get().setActiveSession(chatId)
+          else {
+            get().setActiveSession(source.id, { preserveSubagentRoute: true })
+            openSubagentView(source, { kind: 'native', chatId })
+          }
+        }
         else if (chatId) requestChatMessagesFromCef(chatId)
         return chatId || null
       }
@@ -2324,7 +2561,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'deleteSessions',
           payload: { chatIds },
         })
-        if (!response.ok) return false
+        if (!response.ok) {
+          reportAppFailure('Could not confirm chat deletion.', response.error || 'Check the chat state before trying again.')
+          return false
+        }
 		if (intentionalSelectionRevision === selectionRevisionAtStart) {
 		  selectedChatId = response.data?.selectedChatId
 		}
@@ -2447,7 +2687,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }))
     },
 
-    sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = [], steerNow = false): Promise<boolean> => {
+    sendAcpPrompt: async (sessionId: string, text: string, attachments: Attachment[] = [], steerNow = false, onStarted?: AcpPromptPresentationObserver): Promise<boolean> => {
       const prompt = text.trim()
       if (!prompt && attachments.length === 0) {
         return false
@@ -2465,9 +2705,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const state = get()
       const stateAtAdmission = state
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
-      const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
-      const userMessageIndex = Math.max((state.historyStartIndexBySessionId[sessionId] ?? 0) + (state.messages[sessionId]?.length ?? 0),
-        state.sessions.find((session) => session.id === sessionId)?.messageCount ?? 0)
+
+      // Synchronous presentation only: publish the store-minted ID before IPC may synchronously push.
+      // An observer failure must not turn a requested send into a cancelled or falsely failed input.
+      const presentationOwner = stateAtAdmission.sessions.find((session) => session.id === sessionId)
+      if (presentationOwner && onStarted) {
+        try { onStarted({ requestId: actionErrorId, sessionId, createdAtMs: presentationOwner.createdAt.getTime() }) }
+        catch { /* Presentation is optional and cannot cancel or change the native send outcome. */ }
+      }
 
       if (isCefContext()) {
         const requestKey = `sendAcpPrompt:${sessionId}`
@@ -2489,8 +2734,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
         clearPendingRequest(requestKey, actionErrorId)
 		if (!get().sessions.some((session) => session.id === sessionId)) return false
-        if (!response.ok) {
-          if (!ownsAttempt) return false
+        const recordPromptError = (message: string, inputRecorded = false) => {
+          if (!ownsAttempt) return
           set((state) => ({
             acpBindingBySessionId: {
               ...state.acpBindingBySessionId,
@@ -2498,10 +2743,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
                 ...(state.acpBindingBySessionId[sessionId] ?? {
                   sessionId: '',
                   providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-                  protocolKind: 'gemini-acp',
+                  protocolKind: inputRecorded ? '' : 'gemini-acp',
                   threadId: '',
                   running: false,
-                  lifecycleState: 'error' as AcpLifecycleState,
+                  lifecycleState: (inputRecorded ? 'stopped' : 'error') as AcpLifecycleState,
                   processing: false,
                   readySinceLastSelect: false,
                   processingStartedAtMs: null,
@@ -2527,47 +2772,85 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
                   pendingUserInput: null,
                   agentInfo: null,
                 }),
-                promptActionError: { id: actionErrorId, message: response.error || 'Failed to send ACP prompt.' },
+                promptActionError: { id: actionErrorId, message: message },
               },
             },
           }))
+        }
+        const hasManagedReceipt = isRecord(response.data) && Object.prototype.hasOwnProperty.call(response.data, 'managedMention')
+        const receipt = hasManagedReceipt && isRecord(response.data) && isRecord(response.data.managedMention)
+          ? response.data.managedMention : null
+        const sentAttachments = messageAttachments({ markdownStoreFiles, attachments })
+        const parentMessage = receipt?.inputRecorded === true ? sanitizeCppMessage(receipt.parentMessage) : null
+        const delegationState = receipt?.delegationState
+        const validState = delegationState === 'committed' || delegationState === 'rejected' || delegationState === 'uncertain'
+        const validIds = delegationState === 'committed'
+          ? typeof receipt?.runId === 'string' && receipt.runId.length > 0 && typeof receipt.transcriptChatId === 'string' && receipt.transcriptChatId.length > 0
+          : receipt?.runId === undefined && receipt?.transcriptChatId === undefined
+        const validReceipt = receipt !== null && validState && validIds && typeof receipt.inputRecorded === 'boolean' && (
+          receipt.inputRecorded
+            ? parentMessage?.role === 'user' && parentMessage.content === prompt &&
+              typeof receipt.parentMessageIndex === 'number' && Number.isSafeInteger(receipt.parentMessageIndex) && receipt.parentMessageIndex >= 0 &&
+              Boolean(parentMessage.createdAt) && Number.isFinite(Date.parse(parentMessage.createdAt)) &&
+              attachmentsEquivalent(messageAttachments(parentMessage), sentAttachments)
+            : delegationState !== 'committed' && receipt.parentMessage === undefined && receipt.parentMessageIndex === undefined)
+        if (!response.ok || (hasManagedReceipt && (!validReceipt || !receipt?.inputRecorded))) {
+          recordPromptError(!response.ok ? response.error || 'Failed to send ACP prompt.'
+            : !validReceipt ? 'The saved request could not be confirmed. Check the chat before retrying.'
+              : typeof receipt?.error === 'string' && receipt.error ? receipt.error.slice(0, 4096) : 'The parent request was not confirmed as saved. Check the saved chat before retrying.')
           return false
         }
-        set((state) => {
-          const existing = state.messages[sessionId] ?? []
-          const sentAttachments = messageAttachments({ markdownStoreFiles, attachments })
-          const binding = state.acpBindingBySessionId[sessionId]
-          const previousQueue = stateAtAdmission.acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
-          // A late acknowledgement confirms admission, not delivery. Preserve a recovered held input as outbox only.
-          const recoveredToOutbox = binding?.queueHeld && binding.queuedPrompts?.some((entry) =>
-            entry.id && Number.isSafeInteger(entry.revision) && entry.revision! > 0 &&
-            !previousQueue.some((previous) => previous.id === entry.id) &&
-            entry.text === prompt && attachmentsEquivalent(messageAttachments(entry), sentAttachments))
-
-          const hydratedUser = existing[userMessageIndex - (state.historyStartIndexBySessionId[sessionId] ?? 0)]
-          const alreadyHydrated = hydratedUser?.role === 'user' && hydratedUser.content === prompt &&
-            attachmentsEquivalent(hydratedUser.attachments ?? [], sentAttachments)
-          const messages = ownsAttempt && appendUserMessage && !alreadyHydrated && !recoveredToOutbox
-            ? {
-                ...state.messages,
-                [sessionId]: [...existing, {
-                  id: `sent-user-${Date.now()}`,
-                  sessionId,
-                  role: 'user' as const,
-                  content: prompt,
-                  attachments: sentAttachments,
-                  createdAt: new Date(),
-                }],
-              }
-            : state.messages
-          return {
-            messages,
-            markdownStoreAttachedBySessionId: {
-              ...state.markdownStoreAttachedBySessionId,
-              [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => !sentMarkdownEntries.has(entry)),
-            },
+        if (hasManagedReceipt && receipt && parentMessage) {
+          const admitted = stateAtAdmission.sessions.find((session) => session.id === sessionId)
+          const current = get().sessions.find((session) => session.id === sessionId)
+          if (!admitted || !current || admitted.createdAt.getTime() !== current.createdAt.getTime()) return false
+          const canProject = admitted.providerId === current.providerId && admitted.executionHostId === current.executionHostId &&
+            admitted.workspaceDirectory === current.workspaceDirectory && admitted.folderId === current.folderId &&
+            admitted.workspaceWorktreeDirectory === current.workspaceWorktreeDirectory
+          const incoming = buildMessageFromCpp(sessionId, parentMessage, receipt.parentMessageIndex as number)
+          const recordedProjection: { message?: Message } = {}
+          set((state) => {
+            const existing = state.messages[sessionId] ?? []
+            const localIndex = (receipt.parentMessageIndex as number) - (state.historyStartIndexBySessionId[sessionId] ?? 0)
+            // A receipt owns one recorded row; it cannot replace a newer window or unrelated history.
+            const append = canProject && localIndex === existing.length
+            if (append) recordedProjection.message = incoming
+            else if (canProject && localIndex >= 0 && localIndex < existing.length &&
+                reconcileCppMessages(sessionId, [existing[localIndex]], [parentMessage], true, receipt.parentMessageIndex as number)[0] === existing[localIndex])
+              recordedProjection.message = existing[localIndex]
+            // The coordinate above comes from this validated action-local native receipt. No arbitrary row search.
+            return {
+              messages: append ? { ...state.messages, [sessionId]: [...existing, incoming] } : state.messages,
+              sessions: !canProject ? state.sessions : state.sessions.map((session) => session.id === sessionId && (session.messageCount ?? 0) < (receipt.parentMessageIndex as number) + 1
+                ? { ...session, messageCount: (receipt.parentMessageIndex as number) + 1 } : session),
+              markdownStoreAttachedBySessionId: {
+                ...state.markdownStoreAttachedBySessionId,
+                [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => !sentMarkdownEntries.has(entry)),
+              },
+            }
+          })
+          const projectedRecordedInput = recordedProjection.message
+          const afterProjection = get()
+          const projectedOwner = afterProjection.sessions.find((session) => session.id === sessionId)
+          if (projectedRecordedInput && sanitizeManagedOriginRunId(projectedRecordedInput.managedOriginRunId) && afterProjection.messages[sessionId]?.includes(projectedRecordedInput) && projectedOwner &&
+              projectedOwner.createdAt.getTime() === admitted.createdAt.getTime() && projectedOwner.providerId === admitted.providerId &&
+              projectedOwner.executionHostId === admitted.executionHostId && projectedOwner.workspaceDirectory === admitted.workspaceDirectory &&
+              projectedOwner.folderId === admitted.folderId && projectedOwner.workspaceWorktreeDirectory === admitted.workspaceWorktreeDirectory) {
+            try { onStarted?.onInputRecorded?.({ requestId: actionErrorId, sessionId, createdAtMs: admitted.createdAt.getTime(), message: projectedRecordedInput }) }
+            catch { /* Optional observation cannot alter publication, saved input, draft ownership or child outcome. */ }
           }
-        })
+          if (delegationState !== 'committed') recordPromptError(typeof receipt.error === 'string' && receipt.error
+            ? receipt.error.slice(0, 4096) : 'The parent request was saved, but child creation was not confirmed.', true)
+          return true
+        }
+        // A generic success acknowledges admission only. Native history/typed producer facts own real rows;
+        // ChatView's exact submitted-input presentation retains immediate feedback without fabricating messages[].
+        set((state) => ({
+          markdownStoreAttachedBySessionId: {
+            ...state.markdownStoreAttachedBySessionId,
+            [sessionId]: (state.markdownStoreAttachedBySessionId[sessionId] ?? []).filter((entry) => !sentMarkdownEntries.has(entry)),
+          },
+        }))
         return true
       }
 
@@ -2620,6 +2903,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'manageQueuedAcpPrompt',
           payload: { chatId: sessionId, operation: 'remove', index, ...(expected ? { expected } : {}) },
         })
+        if (!response.ok && response.error) throw new Error(response.error)
         return response.ok
       }
       const observed = get().acpBindingBySessionId[sessionId]?.queuedPrompts?.[index]
@@ -2634,6 +2918,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
       }))
       return true
+    },
+
+    retryUnsentAcpPrompt: async (sessionId: string, expected: { id: string; revision: number }): Promise<boolean> => {
+      if (!isCefContext() || isCompanionContext() || !expected.id || !Number.isSafeInteger(expected.revision) || expected.revision < 1) return false
+      const state = get()
+      const session = state.sessions.find(entry => entry.id === sessionId)
+      const binding = state.acpBindingBySessionId[sessionId]
+      const matches = binding?.unsentDirectPrompts?.filter(prompt => prompt.id === expected.id && prompt.revision === expected.revision) ?? []
+      if (!session || session.importedReadOnly || matches.length !== 1 || matches[0].prepared ||
+          !Number.isSafeInteger(matches[0].existingUserMessageIndex) || matches[0].existingUserMessageIndex! < 0) return false
+      // This asks native recovery to check the exact receipt. It neither duplicates history nor confirms delivery.
+      const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: {
+        chatId: sessionId, operation: 'retry', index: 0, expected: { id: expected.id, revision: expected.revision },
+      } })
+      if (!response.ok && response.error) throw new Error(response.error)
+      return response.ok
     },
 
     steerQueuedAcpPrompt: async (sessionId: string, index: number, expected?: { id: string; revision: number }): Promise<boolean> => {
@@ -2718,32 +3018,63 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
-	  if (!isCefContext()) return false
-	  if (sessionId) set((state) => ({
-		acpBindingBySessionId: {
+      if (!isCefContext()) return false
+      const initial = get()
+      const session = sessionId ? initial.sessions.find((entry) => entry.id === sessionId) : undefined
+      const initialBinding = initial.acpBindingBySessionId[sessionId]
+      // These witnesses fence selector UI only; the transport outcome never grants input authority.
+      const owner = session ? {
+        birth: session.createdAt.getTime(), providerId: session.providerId, host: session.executionHostId,
+        workspace: session.workspaceDirectory, worktree: session.workspaceWorktreeDirectory,
+        folderId: session.folderId,
+        folderDirectory: initial.folders.find((entry) => entry.id === session.folderId)?.directory,
+      } : undefined
+      const native = {
+        sessionId: initialBinding?.sessionId, threadId: initialBinding?.threadId,
+        providerId: initialBinding?.providerId, protocol: initialBinding?.protocolKind,
+      }
+      const stillOwnsSelector = (state: AppState) => {
+        const current = state.sessions.find((entry) => entry.id === sessionId)
+        const binding = state.acpBindingBySessionId[sessionId]
+        if (owner) {
+          if (!Number.isFinite(owner.birth) || !current || current.createdAt.getTime() !== owner.birth ||
+            current.providerId !== owner.providerId || current.executionHostId !== owner.host ||
+            current.workspaceDirectory !== owner.workspace || current.workspaceWorktreeDirectory !== owner.worktree ||
+            current.folderId !== owner.folderId ||
+            state.folders.find((entry) => entry.id === current.folderId)?.directory !== owner.folderDirectory) return false
+        } else if (current || !initialBinding) return false
+        return binding?.sessionId === native.sessionId && binding?.threadId === native.threadId &&
+          binding?.providerId === native.providerId && binding?.protocolKind === native.protocol
+      }
+      if (sessionId) set((state) => stillOwnsSelector(state) ? ({
+        acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelRefreshError: '' },
         },
-      }))
-	  const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
-		action: 'discoverProviderModels',
-		payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
-	  })
-	  if (!response.ok) {
-		if (sessionId) set((state) => ({
+      }) : state)
+      const preparedBinding = sessionId ? get().acpBindingBySessionId[sessionId] : undefined
+      const mayProjectReply = (state: AppState) => Boolean(preparedBinding && stillOwnsSelector(state) &&
+        // A binding-only or identity-less selector must remain the exact object prepared by this call.
+        ((owner && (native.sessionId || native.threadId)) || state.acpBindingBySessionId[sessionId] === preparedBinding))
+      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
+        action: 'discoverProviderModels',
+        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
+      })
+      if (!response.ok) {
+        if (sessionId) set((state) => mayProjectReply(state) ? ({
           acpBindingBySessionId: {
             ...state.acpBindingBySessionId,
             [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: false, modelRefreshError: response.error ?? 'Model discovery failed.' },
           },
-        }))
+        }) : state)
         return false
       }
-	  if (sessionId && response.data?.pending) set((state) => ({
+      if (sessionId && response.data?.pending) set((state) => mayProjectReply(state) ? ({
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
         },
-      }))
+      }) : state)
       return Boolean(response.data?.started || response.data?.pending)
     },
 

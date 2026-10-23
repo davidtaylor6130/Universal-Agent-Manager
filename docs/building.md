@@ -64,6 +64,11 @@ brew install zig mingw-w64
 
 The interactive script lets you exclude provider runtimes, but at least one provider must remain enabled.
 
+Linux helper compilation, static archive creation and archive indexing all use Zig;
+macOS `ar` and `ranlib` cannot supply the ELF archive index. The checked-in wrappers
+under `cmake/` pass arguments directly to `zig ar` and `zig ranlib`. Set `UAM_ZIG`
+to a specific Zig executable when needed. Windows helpers retain MinGW-w64's tools.
+
 ### Release-compatible direct build
 
 Full app packaging fails closed unless these helper artifacts, checksums, and version files exist:

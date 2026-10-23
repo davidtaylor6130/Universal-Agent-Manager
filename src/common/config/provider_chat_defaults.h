@@ -64,6 +64,7 @@ namespace uam::provider_chat_defaults
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
+		if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kClaudeCli) && defaults.service_tier != "fast") defaults.service_tier.clear();
 		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
@@ -89,7 +90,8 @@ namespace uam::provider_chat_defaults
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
 	{
 		defaults = Normalize(defaults, chat.provider_id);
-		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli))
+		if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kCodexCli) &&
+		    !uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kClaudeCli))
 		{
 			defaults.service_tier.clear();
 		}

@@ -7,7 +7,9 @@
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
 #include "common/provider/provider_native_context.h"
+#include "common/provider/opencode_native_http.h"
 #include "remote/runner_client.h"
+#include "common/runtime/structured_framing.h"
 
 #include <nlohmann/json.hpp>
 
@@ -473,6 +475,14 @@ namespace uam::remote
 				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
 				{ std::cerr << error << '\n'; return 70; }
 			}
+			if (private_launch)
+			{
+#if defined(_WIN32)
+				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "windows");
+#else
+				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "posix");
+#endif
+			}
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
@@ -522,7 +532,7 @@ namespace uam::remote
 			if (chdir(spec->working_directory.c_str()) != 0) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
 				if (setenv(entry.first.c_str(), entry.second.c_str(), 1) != 0) return 70;
-			if (!private_launch) AddInteractiveCliPaths();
+			if (!private_launch || (spec->context_provider_id.empty() && spec->configuration_directory.empty())) AddInteractiveCliPaths();
 			std::vector<char*> native_arguments;
 			native_arguments.reserve(spec->argv.size() + 1);
 			for (std::string& argument : spec->argv) native_arguments.push_back(argument.data());
@@ -734,6 +744,8 @@ namespace uam::remote
 		}
 		#endif
 		bool input_closed = false;
+		const bool native_framing = std::ranges::find(spec->argv, "--headless") != spec->argv.end() &&
+		    std::ranges::find(spec->argv, "--stdio") != spec->argv.end();
 		std::string pending_input;
 		std::optional<std::jthread> mcp_relay;
 		std::array<char, 16 * 1024> input{};
@@ -890,9 +902,27 @@ namespace uam::remote
 					std::cerr << "Remote process proxy could not read stdin.\n";
 					return 70;
 				}
-				for (std::size_t newline = pending_input.find('\n'); newline != std::string::npos;
-				     newline = pending_input.find('\n'))
+				while (!pending_input.empty())
 				{
+					if (native_framing && pending_input.front() != '\x1e')
+					{
+						const auto frame = uam::structured_framing::Read(pending_input, 4 * 1024 * 1024);
+						if (frame.status == uam::structured_framing::Status::Incomplete) break;
+						if (frame.status == uam::structured_framing::Status::Invalid)
+						{
+							std::cerr << "Remote native protocol input framing is invalid.\n";
+							return 70;
+						}
+						if (!input_rejected_after_exit && !write_remote(std::string_view(pending_input).substr(0, frame.consumed_bytes)))
+						{
+							std::cerr << error << '\n';
+							return 70;
+						}
+						pending_input.erase(0, frame.consumed_bytes);
+						continue;
+					}
+					const std::size_t newline = pending_input.find('\n');
+					if (newline == std::string::npos) break;
 					const std::string line = pending_input.substr(0, newline + 1);
 					pending_input.erase(0, newline + 1);
 					if (line == kRemoteStopControlLine)
@@ -1008,7 +1038,7 @@ namespace uam::remote
 						return 70;
 					}
 				}
-				if (!input_rejected_after_exit && !pending_input.starts_with('\x1e') &&
+				if (!native_framing && !input_rejected_after_exit && !pending_input.starts_with('\x1e') &&
 				    pending_input.size() > kRemoteStopControlLine.size() &&
 				    !write_remote(std::exchange(pending_input, {})))
 				{
@@ -1068,7 +1098,21 @@ namespace uam::remote
 			{
 				if (source_output_drained && (!pending_stdout.empty() || !pending_stderr.empty()))
 				{
-					if (!queue_output_delivery(pending_stdout.size(), !pending_stdout.empty()))
+					if (native_framing && !pending_stdout.empty())
+					{
+						std::size_t verified = 0;
+						while (verified < pending_stdout.size())
+						{
+							const auto frame = uam::structured_framing::Read(std::string_view(pending_stdout).substr(verified));
+							if (frame.status != uam::structured_framing::Status::Complete)
+							{
+								std::cerr << "Remote native protocol exited with an incomplete frame.\n";
+								return 70;
+							}
+							verified += frame.consumed_bytes;
+						}
+					}
+					if (!queue_output_delivery(pending_stdout.size(), !native_framing && !pending_stdout.empty()))
 					{
 						std::cerr << error << '\n';
 						return 70;
@@ -1169,11 +1213,26 @@ namespace uam::remote
 				source_output_drained = true;
 				source_exit_code = polled.exit_code;
 			}
-			const std::size_t newline = pending_stdout.rfind('\n');
-			if (newline != std::string::npos || !pending_stderr.empty())
+			std::size_t complete_stdout_bytes = 0;
+			if (native_framing)
 			{
-				const std::size_t stdout_bytes = newline == std::string::npos ? 0 : newline + 1;
-				if (!queue_output_delivery(stdout_bytes, false))
+				while (complete_stdout_bytes < pending_stdout.size())
+				{
+					const auto frame = uam::structured_framing::Read(std::string_view(pending_stdout).substr(complete_stdout_bytes));
+					if (frame.status == uam::structured_framing::Status::Incomplete) break;
+					if (frame.status == uam::structured_framing::Status::Invalid)
+					{
+						std::cerr << "Remote native protocol output framing is invalid.\n";
+						return 70;
+					}
+					complete_stdout_bytes += frame.consumed_bytes;
+				}
+			}
+			else if (const std::size_t newline = pending_stdout.rfind('\n'); newline != std::string::npos)
+				complete_stdout_bytes = newline + 1;
+			if (complete_stdout_bytes != 0 || !pending_stderr.empty())
+			{
+				if (!queue_output_delivery(complete_stdout_bytes, false))
 				{
 					std::cerr << error << '\n';
 					return 70;

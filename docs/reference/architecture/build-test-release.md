@@ -12,7 +12,19 @@ Reuse the task's build folder and dependencies between edits. `cmake/ui_build.cm
 
 Make/Ninja builds automatically use an installed `ccache` unless a compiler launcher was explicitly set. The changing remote-runner source fingerprint lives in a generated header included by `runner_main.cpp` alone; other helper objects retain reusable compile commands. Release artifact validation and checksums remain enabled on packaging builds.
 
+The macOS packaging script sets Linux cross-build `CMAKE_AR` and `CMAKE_RANLIB`,
+including their C/C++ compiler-specific variants, to the `cmake/zig-ar.sh` and
+`cmake/zig-ranlib.sh` wrappers. They forward each argument unchanged to Zig's target-aware
+archive tools, using `UAM_ZIG` when supplied and `zig` on PATH otherwise. Reconfiguring
+an existing helper folder also loads `cmake/zig-archive-tools.cmake` through
+`CMAKE_PROJECT_INCLUDE` after cached compiler metadata, so cached host-tool variables
+cannot silently override the selected archive tools. This relinks static archives without cleaning
+or recompiling unchanged source objects. Host macOS archive indexing is not compatible
+with the Linux ELF objects; Windows cross-builds continue using MinGW-w64's archive tools.
+
 For focused native checks, build `uam_core_tests` and pass exact names to `scripts/run_native_tests.py`; `--list-tests` on the binary reports the compiled inventory. The `uam_check_core` target runs that complete inventory in batches across two separate processes, validating that every requested case passes exactly once. Processes isolate environment variables and singleton state; individual timing budgets and assertions remain unchanged. `UAM_TEST_TIMINGS=1` reports per-case durations on direct binary runs. The original serial `ctest` registration remains available. When using `uam_check_core` as the final core gate, exclude `uam_core_tests` from the subsequent CTest run to avoid executing the same inventory twice. Build all required test targets before running the remaining gates. Full commands are in [AGENTS.md](../../../AGENTS.md).
+
+Unrelated CEF handler fixtures use `tests/cef_handler_fixture.h` to construct the real handler through its private test seam before either usage-history or account-allowance service is created. Configuring a private provider command or avoiding allowance actions does not isolate the ordinary constructor, which starts background readers. These fixtures exclude usage actions; usage tests require explicit isolated services. The public application constructor retains its existing startup behavior.
 
 The supported release slice has six provider implementations and the React/CEF, ACP, terminal, workspace and memory paths. Do not add excluded engines or remove a provider without explicit direction. Update the root V5 log in the same implementation commit and retain review/user acceptance flags until they are actually complete.
 

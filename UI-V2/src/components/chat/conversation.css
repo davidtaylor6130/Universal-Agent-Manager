@@ -270,3 +270,28 @@
   .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
   .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
 }
+
+/* Undelivered direct input keeps its transcript slot: dotted grey until native delivery state changes. */
+.conversation-turn[data-delivery] > .conversation-turn__body {
+  border: 1px dotted var(--text-3);
+  background: transparent;
+  color: var(--text-2);
+}
+.conversation-turn__delivery {
+  border-radius: var(--r-sm);
+  padding-inline: 2px;
+  color: var(--text-3);
+  cursor: default;
+  outline: none;
+}
+.conversation-turn__delivery:focus-visible { box-shadow: var(--focus-ring); }
+.conversation-turn__delivery-error { flex-basis: 100%; text-align: right; color: var(--red); }
+
+/* Message navigation gutter: the rail's widest expanded footprint is 54px from left 0, so a present rail reserves 64px
+   of the local pane. Previews size against this pane (container units), never the window. */
+.uam-chat-viewport { --message-navigation-gutter: 0px; container-type: inline-size; }
+.uam-chat-viewport[data-message-navigation] { --message-navigation-gutter: 64px; }
+.uam-chat-pane .uam-chat-viewport[data-message-navigation] .uam-chat-transcript .uam-chat-content {
+  padding-left: max(24px, var(--message-navigation-gutter));
+}
+.uam-chat-viewport[data-message-navigation] .conversation-rail-preview { max-width: calc(100cqi - 70px); }

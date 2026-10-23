@@ -6,6 +6,13 @@ import { sanitizeCustomIcon } from '../../types/customIcon'
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  ManualCompactionAvailability,
+  CopilotAutoRoutingProjection,
+  CopilotAutoTierDescriptor,
+  NativeModelOptionOwnership,
+  NativeModelOptions,
+  NativeOptionPresence,
+  NativeOptionStatus,
   AcpAgentInfo,
   AcpAttentionKind,
   AcpCommand,
@@ -259,6 +266,26 @@ export function sanitizePlanEntry(value: unknown): AcpPlanEntry | null {
   }
 }
 
+function sanitizeSubAgentChildren(value: unknown): AcpToolCall['subAgentChildren'] {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const children: NonNullable<AcpToolCall['subAgentChildren']> = []
+  for (const entry of value) {
+    if (!isRecord(entry) || !isString(entry.id) || !entry.id.trim() || seen.has(entry.id)) continue
+    seen.add(entry.id)
+    children.push({
+      id: entry.id,
+      ...(isString(entry.title) && entry.title ? { title: entry.title } : {}),
+      ...(isString(entry.status) && entry.status ? { status: entry.status } : {}),
+      ...Object.fromEntries(['startedAtEpochMs', 'finishedAtEpochMs', 'durationMs'].flatMap(key => {
+        const clock = entry[key]
+        return typeof clock === 'number' && Number.isSafeInteger(clock) && clock >= 0 && clock <= 8640000000000000 ? [[key, clock]] : []
+      })),
+    })
+  }
+  return children
+}
+
 export function sanitizeToolCall(value: unknown): AcpToolCall | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id)
@@ -272,9 +299,12 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),
+    managedLaunchRunId: value.contentDeferred === true ? sanitizeManagedOriginRunId(value.managedLaunchRunId) : undefined,
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
     subAgentTitle: stringOr(value.subAgentTitle),
+    subAgentResultContent: isString(value.subAgentResultContent) && value.subAgentResultContent.length <= 8192 ? value.subAgentResultContent : undefined,
+    subAgentChildren: sanitizeSubAgentChildren(value.subAgentChildren),
     currentActivity: stringOr(value.currentActivity).slice(0, 240),
   }
 }
@@ -344,7 +374,9 @@ export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
 
 export function sanitizeAttachment(value: unknown): Attachment | null {
   if (!isRecord(value)) return null
-  const path = isString(value.path) ? value.path : ''
+  const legacy = value.source === undefined || value.source === 'legacy_path'
+  const source = value.source === 'legacy_path' || value.source === 'native_inline_pending' || value.source === 'owned_native_asset' || value.source === 'provider_uri' ? value.source : undefined
+  const path = legacy && isString(value.path) ? value.path : ''
   const name = isString(value.name) ? value.name : path.split(/[\\/]/).pop() || ''
   const id = isString(value.id) ? value.id : path || name
   if (!id || !name) return null
@@ -359,10 +391,18 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     name,
     type,
     ...(mimeType ? { mimeType } : {}),
-    ...(isString(value.previewKey) && /^[a-f0-9]{64}$/.test(value.previewKey) ? { previewKey: value.previewKey } : {}),
-    ...(isString(value.previewOriginPath) ? { previewOriginPath: value.previewOriginPath } : {}),
+    ...((legacy || source === 'owned_native_asset') && isString(value.previewKey) && /^[a-f0-9]{64}$/.test(value.previewKey) ? { previewKey: value.previewKey } : {}),
+    ...(legacy && isString(value.previewOriginPath) ? { previewOriginPath: value.previewOriginPath } : {}),
+    ...(source ? { source } : {}),
+    ...(isString(value.sourceUri) ? { sourceUri: value.sourceUri } : {}),
+    ...(isString(value.originExecutionHostId) ? { originExecutionHostId: value.originExecutionHostId } : {}),
+    ...(isString(value.nativePartKey) ? { nativePartKey: value.nativePartKey } : {}),
+    ...(isString(value.nativeToolCallId) ? { nativeToolCallId: value.nativeToolCallId } : {}),
+    ...(isString(value.nativeSourceField) ? { nativeSourceField: value.nativeSourceField } : {}),
+    ...(isString(value.nativeAssetKey) ? { nativeAssetKey: value.nativeAssetKey } : {}),
+    ...(isString(value.contentDigest) ? { contentDigest: value.contentDigest } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
-    path,
+    ...(legacy ? { path } : {}),
   }
 }
 
@@ -384,32 +424,56 @@ export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles
   return [...markdownAttachments, ...attachments]
 }
 
+export function sanitizeNativeInputId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : undefined
+}
+
+export function sanitizeOriginRequestId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && /^[\x20-\x7e]+$/.test(value) ? value : undefined
+}
+
 export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
-  if (!isRecord(value)) return null
-  const text = stringOr(value.text).trim()
-  if (!text) return null
+  if (!isRecord(value) || !isString(value.text)) return null
+  const text = value.text
+  const attachments = Array.isArray(value.attachments)
+    ? value.attachments.flatMap((attachment) => {
+        const sanitized = sanitizeAttachment(attachment)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+  // Native admission permits attachment-only input. Preserve authored bytes for
+  // exact receipt matching; only the native ASCII blank set determines emptiness.
+  if (!text.replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g, '') && attachments.length === 0) return null
   return {
+    nativeInputId: sanitizeNativeInputId(value.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(value.originRequestId),
     ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
     ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
     ...(value.prepared === true ? { prepared: true } : {}),
+    ...(typeof value.retryAllowed === 'boolean' ? { retryAllowed: value.retryAllowed } : {}),
     ...(Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0 ? { existingUserMessageIndex: Number(value.existingUserMessageIndex) } : {}),
+    ...(isString(value.referencedMessageCreatedAt) && value.referencedMessageCreatedAt.length <= 128 &&
+      Number.isFinite(Date.parse(value.referencedMessageCreatedAt)) && Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0
+      ? { referencedMessageCreatedAt: value.referencedMessageCreatedAt } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
       ? value.markdownStoreFiles.filter(isString)
       : [],
-    attachments: Array.isArray(value.attachments)
-      ? value.attachments.flatMap((attachment) => {
-          const sanitized = sanitizeAttachment(attachment)
-          return sanitized ? [sanitized] : []
-        })
-      : [],
+    attachments,
     goalMode: Boolean(value.goalMode),
     goalId: stringOr(value.goalId),
     ...(value.computerUseMode === true ? { computerUseMode: true } : {}),
     prioritySteer: typeof value.prioritySteer === 'boolean' ? value.prioritySteer : undefined,
   }
 }
+
+export function sanitizeManagedOriginRunId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length === 36 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : undefined
+}
+
+// Same validated set buildMessageFromCpp accepts; anything else is dropped rather than shown as a stop label.
+const KNOWN_STOP_REASONS = new Set(['timeout', 'provider-update', 'forced', 'failed', 'unknown', 'interrupt'])
 
 export function sanitizeCppMessage(value: unknown): CppMessage | null {
   if (!isRecord(value)) return null
@@ -419,6 +483,10 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
 
   return {
     role,
+    managedOriginRunId: sanitizeManagedOriginRunId(value.managedOriginRunId),
+    nativeInputId: sanitizeNativeInputId(value.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(value.originRequestId),
+    inputWriteCompleted: role === 'user' && sanitizeNativeInputId(value.nativeInputId) && value.inputWriteCompleted === true ? true : undefined,
     content: value.content,
     modelId: isString(value.modelId) ? value.modelId : undefined,
     providerId: isString(value.providerId) ? value.providerId : undefined,
@@ -457,6 +525,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
 		acpPromptDiscarded: value.acpPromptDiscarded === true,
 		prioritySteer: booleanOr(value.prioritySteer),
 		continuesTurn: booleanOr(value.continuesTurn),
+    stopReason: isString(value.stopReason) && KNOWN_STOP_REASONS.has(value.stopReason) ? value.stopReason : undefined,
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
     createdAt: stringOr(value.createdAt),
@@ -753,6 +822,79 @@ function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
   return tokenUsage || rateLimits || contextUsage ? { tokenUsage, rateLimits, contextUsage } : null
 }
 
+// Native model options are an allowlist, never a bridge for private adapter JSON.
+function nativeOptionString(value: unknown, maximum: number, nonempty = true): value is string {
+  return typeof value === 'string' && value.length <= maximum && (!nonempty || value.length > 0)
+    && new TextEncoder().encode(value).length <= maximum
+}
+
+function nativeOptionPresence<T>(value: unknown, parse: (raw: unknown) => T | undefined): NativeOptionPresence<T> | undefined {
+  if (!isRecord(value) || typeof value.present !== 'boolean') return undefined
+  if (!value.present) return { present: false }
+  const parsed = parse(value.value)
+  return parsed === undefined ? undefined : { present: true, value: parsed }
+}
+
+function nativeOptionOwner(value: unknown): NativeModelOptionOwnership | undefined {
+  if (!isRecord(value) || !nativeOptionString(value.chatId, 512) || !nativeOptionString(value.nativeSessionId, 512)
+    || !nativeOptionString(value.executionHostId, 512) || !nativeOptionString(value.lifetime, 128)) return undefined
+  return { chatId: value.chatId, nativeSessionId: value.nativeSessionId, executionHostId: value.executionHostId, lifetime: value.lifetime }
+}
+
+function nativeAutoTiers(value: unknown): CopilotAutoTierDescriptor[] | undefined {
+  if (!Array.isArray(value) || value.length > 64) return undefined
+  const seen = new Set<string>()
+  const result: CopilotAutoTierDescriptor[] = []
+  for (const tier of value) {
+    if (!isRecord(tier) || !nativeOptionString(tier.id, 512) || seen.has(tier.id)
+      || !nativeOptionString(tier.displayName, 256, false) || !nativeOptionString(tier.description, 2048, false)
+      || !nativeOptionString(tier.type, 64) || !isRecord(tier.status) || typeof tier.status.enabled !== 'boolean'
+      || (tier.status.reason !== undefined && !nativeOptionString(tier.status.reason, 128, false))
+      || (tier.status.message !== undefined && !nativeOptionString(tier.status.message, 2048, false))) return undefined
+    seen.add(tier.id)
+    result.push({ id: tier.id, displayName: tier.displayName, description: tier.description, type: tier.type,
+      status: { enabled: tier.status.enabled,
+        ...(tier.status.reason !== undefined ? { reason: tier.status.reason as string } : {}),
+        ...(tier.status.message !== undefined ? { message: tier.status.message as string } : {}) } })
+  }
+  return new TextEncoder().encode(JSON.stringify(result)).length <= 65536 ? result : undefined
+}
+
+export function sanitizeNativeModelOptions(value: unknown): NativeModelOptions | undefined {
+  if (!isRecord(value) || !isRecord(value.autoRouting)) return undefined
+  const raw = value.autoRouting
+  const statuses: NativeOptionStatus[] = ['unknown', 'ready', 'invalid', 'unsupported']
+  if (!statuses.includes(raw.catalogStatus as NativeOptionStatus) || !statuses.includes(raw.stateStatus as NativeOptionStatus)
+    || typeof raw.available !== 'boolean' || typeof raw.requestPending !== 'boolean'
+    || !nativeOptionString(raw.disabledCode, 128, false) || !nativeOptionString(raw.disabledReason, 2048, false)
+    || !nativeOptionString(raw.lastError, 2048, false) || !['', 'pending', 'unchanged'].includes(raw.lastAckStatus as string)) return undefined
+  const parseTier = (entry: unknown) => nativeOptionString(entry, 512) ? entry : undefined
+  const parseNullableTier = (entry: unknown) => entry === null ? null : parseTier(entry)
+  const eligibleTiers = nativeOptionPresence(raw.eligibleTiers, nativeAutoTiers)
+  const providerDefault = nativeOptionPresence(raw.providerDefault, parseTier)
+  const currentModel = nativeOptionPresence(raw.currentModel, parseTier)
+  const effective = nativeOptionPresence(raw.effective, parseTier)
+  const pending = nativeOptionPresence(raw.pending, parseNullableTier)
+  const activating = nativeOptionPresence(raw.activating, parseNullableTier)
+  const ownership = raw.ownership === undefined ? undefined : nativeOptionOwner(raw.ownership)
+  if (!eligibleTiers || !providerDefault || !currentModel || !effective || !pending || !activating
+    || (raw.ownership !== undefined && !ownership)) return undefined
+  const autoRouting: CopilotAutoRoutingProjection = {
+    ...(ownership ? { ownership } : {}), catalogStatus: raw.catalogStatus as NativeOptionStatus, stateStatus: raw.stateStatus as NativeOptionStatus,
+    eligibleTiers, providerDefault, currentModel, effective, pending, activating,
+    requestPending: raw.requestPending, available: raw.available, disabledCode: raw.disabledCode, disabledReason: raw.disabledReason,
+    lastAckStatus: raw.lastAckStatus as CopilotAutoRoutingProjection['lastAckStatus'], lastError: raw.lastError,
+  }
+  return { autoRouting }
+}
+
+export function sanitizeManualCompaction(value: unknown): ManualCompactionAvailability | undefined {
+  if (!isRecord(value) || typeof value.available !== 'boolean' || !isString(value.providerId)
+    || !isString(value.modelId) || !isString(value.nativeSessionId)) return undefined
+  if (value.available && (!value.providerId || !value.nativeSessionId)) return undefined
+  return { available: value.available, providerId: value.providerId, modelId: value.modelId, nativeSessionId: value.nativeSessionId }
+}
+
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
 
@@ -767,6 +909,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
     compacting: value.compacting === true,
+    manualCompaction: sanitizeManualCompaction(value.manualCompaction),
     backgroundTaskCount: nonNegativeInteger(value.backgroundTaskCount) ?? 0,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
     attentionKind: sanitizeAcpAttentionKind(value.attentionKind),
@@ -814,6 +957,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
           return sanitized ? [sanitized] : []
         })
       : [],
+    nativeModelOptions: sanitizeNativeModelOptions(value.nativeModelOptions),
     configOptions: Array.isArray(value.configOptions)
       ? value.configOptions.slice(0, 64).flatMap((option) => {
           const sanitized = sanitizeAcpConfigOption(option)
@@ -1004,6 +1148,10 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     settledAt: isString(value.settledAt) && value.settledAt ? value.settledAt : undefined,
     snoozedUntilMs: Number.isSafeInteger(value.snoozedUntilMs) && (value.snoozedUntilMs as number) >= 0 && (value.snoozedUntilMs as number) <= 8_640_000_000_000_000 ? value.snoozedUntilMs as number : 0,
     messageCount: typeof value.messageCount === 'number' && Number.isSafeInteger(value.messageCount) && value.messageCount >= 0 ? value.messageCount : undefined,
+    subagentParentChatId: isString(value.subagentParentChatId) ? value.subagentParentChatId : undefined,
+    subagentParentCreatedAt: isString(value.subagentParentCreatedAt) ? value.subagentParentCreatedAt : undefined,
+    managedSubagentCount: typeof value.managedSubagentCount === 'number' && Number.isSafeInteger(value.managedSubagentCount) && value.managedSubagentCount >= 0 ? value.managedSubagentCount : 0,
+    managedSubagentRevision: typeof value.managedSubagentRevision === 'number' && Number.isSafeInteger(value.managedSubagentRevision) && value.managedSubagentRevision >= 0 ? value.managedSubagentRevision : 0,
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {

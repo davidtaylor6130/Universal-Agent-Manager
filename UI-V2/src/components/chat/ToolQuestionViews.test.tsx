@@ -305,6 +305,8 @@ describe('production sequential questions', () => {
         const onResolve = vi.fn(() => new Promise<boolean>(done => { resolve = done }))
         await render(<UserInputInlineCard input={request} onResolve={onResolve} />)
         expect(document.querySelector('legend')?.textContent).toBe('Which scope?')
+        expect(document.querySelector('.qr-option-description')?.textContent).toBe('One fix')
+        expect(document.querySelector('.qr-option-copy .qr-sr-only')).toBeNull()
         expect(button('Next').disabled).toBe(true)
         await enter('  custom scope  ')
         act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())

@@ -6,6 +6,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -95,7 +96,7 @@ namespace
 
 	bool PortableId(std::string_view value)
 	{
-		return !value.empty() && value.size() <= 512 && !value.starts_with('-') && execution_hosts::IsPortableId(value);
+		return opencode::IsNativeId(value);
 	}
 
 	std::optional<Identity> Capture(const AppState& app, const ChatSession& chat)
@@ -386,7 +387,9 @@ namespace
 					exact_prefix = exact_prefix && block.text == source.text;
 					continue;
 				}
-				if (block.type == "context_compaction_summary" && block.request_id_json != "opencode-message:" + source.summary)
+				if ((block.type == "context_compaction_summary" ||
+				    (block.type == "assistant_text" && block.request_id_json.starts_with("opencode-message:"))) &&
+				    block.request_id_json != "opencode-message:" + source.summary)
 				{ matched = false; break; }
 				std::string type = "context_compaction";
 				if (!source.verified)

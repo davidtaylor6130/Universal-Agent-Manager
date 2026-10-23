@@ -27,6 +27,7 @@ vi.mock('./MainPanel', () => ({
 import { AppShell } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
+import { APP_FAILURE_EVENT, reportAppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -107,7 +108,7 @@ describe('AppShell', () => {
     const button = host.querySelector('button[aria-label="2 updates available"]') as HTMLButtonElement
     expect(button).toBeTruthy()
     const updateAlert = host.querySelector('[data-testid="transient-alert"]')
-    expect(updateAlert?.getAttribute('aria-live')).toBe('polite')
+    expect(host.querySelector('[data-testid="transient-alert-announcer"]')?.getAttribute('aria-live')).toBe('polite')
     expect(updateAlert?.textContent).toContain('2 updates available')
     expect(updateAlert?.textContent).toContain('0.130.0')
     expect(button.parentElement?.querySelector('span[aria-hidden]')?.textContent).toBe('1')
@@ -1049,7 +1050,7 @@ describe('AppShell', () => {
       expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
       const alert = host.querySelector('[data-testid="transient-alert"]')!
-      expect(alert.getAttribute('aria-live')).toBe('polite')
+      expect(host.querySelector('[data-testid="transient-alert-announcer"]')?.getAttribute('aria-live')).toBe('polite')
       expect(alert.textContent).toContain('Could not move "Workspace".')
       act(() => (host.querySelector('[aria-label="Dismiss alert"]') as HTMLButtonElement).click())
       act(() => vi.advanceTimersByTime(200))
@@ -1073,6 +1074,448 @@ describe('AppShell', () => {
       act(() => root.unmount())
       host.remove()
       useAppStore.setState({ moveResourceToCollection: originalMove })
+      vi.useRealTimers()
+    }
+  })
+
+  const mountShell = async () => {
+    // Real keyboard focus opens the shared Radix tooltip in this jsdom fixture.
+    const observed = new Set<Element>()
+    const callbacks = new Set<ResizeObserverCallback>()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) { callbacks.add(callback) }
+      observe(element: Element) { callbacks.add(this.callback); observed.add(element) }
+      unobserve(element: Element) { observed.delete(element) }
+      disconnect() { callbacks.delete(this.callback) }
+    })
+    const layoutRects = new Map<Element, DOMRect>()
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      if (layoutRects.has(this)) return layoutRects.get(this)!
+      if (this.classList.contains('uam-app')) return new DOMRect(0, 0, window.innerWidth, 800)
+      if (this.classList.contains('uam-side-rail--right')) return new DOMRect(window.innerWidth - 44, 44, 44, 756)
+      if (this.hasAttribute('data-notification-bell')) return new DOMRect(window.innerWidth - 37, 722, 30, 30)
+      if (this.dataset.testid === 'transient-alert') {
+        const width = Number.parseFloat(this.style.width) || 360
+        const height = Math.min(36, Number.parseFloat(this.style.maxHeight) || 36)
+        return new DOMRect(window.innerWidth - (Number.parseFloat(this.style.right) || 0) - width,
+          window.innerHeight - (Number.parseFloat(this.style.bottom) || 0) - height, width, height)
+      }
+      if (this.closest('[data-testid="transient-alert"]') && this.tagName === 'BUTTON')
+        return new DOMRect(0, 0, this.getAttribute('aria-label') === 'Dismiss alert' ? 26 : 140, 26)
+      return nativeRect.call(this)
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<AppShell />))
+    return {
+      host,
+      alertSurface: () => host.querySelector<HTMLElement>('[data-testid="transient-alert"]'),
+      bell: () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => /^(?:[0-9]+ alerts?|No new alerts)$/.test(button.getAttribute('aria-label') ?? ''))!,
+      layoutRects,
+      observed,
+      activeObserverCount: () => callbacks.size,
+      notifyResize: () => act(() => { callbacks.forEach((callback) => callback([], {} as ResizeObserver)); vi.advanceTimersByTime(20) }),
+      settle: (ms: number) => act(() => { vi.advanceTimersByTime(ms) }),
+      cleanup: () => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals() },
+    }
+  }
+
+  it('publishes into one pre-existing empty polite announcer without repeating duplicate, rerender or closing notices', async () => {
+    vi.useFakeTimers()
+    const originalHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, settle, cleanup } = await mountShell()
+    let observer: MutationObserver | undefined
+    try {
+      const announcer = host.querySelector<HTMLElement>('[data-testid="transient-alert-announcer"]')!
+      expect(announcer).toBeTruthy()
+      expect(announcer.textContent).toBe('')
+      expect(announcer.getAttribute('role')).toBe('status')
+      expect(announcer.getAttribute('aria-live')).toBe('polite')
+      expect(announcer.getAttribute('aria-atomic')).toBe('true')
+      expect(alertSurface()).toBeNull()
+      const failure = { id: 'fixture-announcement-a', time: '2026-01-01T12:00:00.000Z', message: 'Private announcement fixture', detail: 'Retained detail' }
+      const publish = (id = failure.id) => window.dispatchEvent(new CustomEvent(APP_FAILURE_EVENT, { detail: { ...failure, id } }))
+      await act(async () => { publish(); await Promise.resolve() })
+      expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
+      expect(alertSurface()!.hasAttribute('aria-live')).toBe(false)
+      expect(alertSurface()!.getAttribute('role')).not.toBe('status')
+      expect(alertSurface()!.querySelector('[aria-label="Notification message"]')?.textContent).toBe(failure.message)
+      expect(host.querySelectorAll('[data-testid="transient-alert-announcer"]')).toHaveLength(1)
+      expect(host.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1)
+      const firstAnnouncement = announcer.firstChild
+      const changes: MutationRecord[] = []
+      observer = new MutationObserver((records) => changes.push(...records))
+      observer.observe(announcer, { childList: true, characterData: true, subtree: true })
+
+      await act(async () => { publish(); useAppStore.setState({ statusLine: 'Unrelated shell rerender' }); await Promise.resolve() })
+      expect(announcer.firstChild).toBe(firstAnnouncement)
+      expect(changes).toEqual([])
+      // Distinct actual notifications with identical words still produce a live-region child update.
+      await act(async () => { publish('fixture-announcement-b'); await Promise.resolve() })
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.firstChild).not.toBe(firstAnnouncement)
+      expect(changes.length).toBeGreaterThan(0)
+      changes.length = 0
+      const secondAnnouncement = announcer.firstChild
+      await act(async () => { alertSurface()!.querySelector<HTMLButtonElement>('[aria-label="Dismiss alert"]')!.click(); await Promise.resolve() })
+      settle(200)
+      await act(async () => { await Promise.resolve() })
+      expect(alertSurface()).toBeNull()
+      expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
+      expect(announcer.firstChild).toBe(secondAnnouncement)
+      expect(changes).toEqual([])
+    } finally {
+      observer?.disconnect()
+      cleanup()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight })
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the same persistent announcer for a no-fit bell description without duplicate resize or panel announcements', async () => {
+    vi.useFakeTimers()
+    const originalWidth = window.innerWidth
+    const originalHeight = window.innerHeight
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 720 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 120 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, bell, layoutRects, notifyResize, settle, cleanup } = await mountShell()
+    let observer: MutationObserver | undefined
+    try {
+      const announcer = host.querySelector<HTMLElement>('[data-testid="transient-alert-announcer"]')!
+      expect(announcer).toBeTruthy()
+      expect(announcer.textContent).toBe('')
+      const rail = host.querySelector('.uam-side-rail--right')!
+      const header = document.createElement('div'); header.className = 'uam-chat-pane__header'
+      host.querySelector('.uam-app')!.append(header)
+      layoutRects.set(rail, new DOMRect(676, 44, 44, 76))
+      layoutRects.set(bell(), new DOMRect(683, 82, 30, 30))
+      layoutRects.set(header, new DOMRect(44, 44, 632, 44))
+      await act(async () => { reportAppFailure('No-fit private fixture', 'Retained detail'); await Promise.resolve() })
+      expect(alertSurface()!.getAttribute('aria-hidden')).toBe('true')
+      expect(document.getElementById(bell().getAttribute('aria-describedby')!)).toBe(announcer)
+      expect(announcer.textContent).toBe('No-fit private fixture Saved in Notifications. Use the Notifications button to read it.')
+      expect(host.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1)
+      expect(announcer.getAttribute('aria-atomic')).toBe('true')
+      expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
+      const announcedNode = announcer.firstChild
+      const changes: MutationRecord[] = []
+      observer = new MutationObserver((records) => changes.push(...records))
+      observer.observe(announcer, { childList: true, characterData: true, subtree: true })
+      notifyResize()
+      await act(async () => { await Promise.resolve() })
+      expect(announcer.firstChild).toBe(announcedNode)
+      expect(changes).toEqual([])
+      // Restoring usable space changes placement, not the already announced notification.
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 })
+      layoutRects.set(rail, new DOMRect(676, 44, 44, 256))
+      layoutRects.set(bell(), new DOMRect(683, 222, 30, 30))
+      notifyResize()
+      await act(async () => { await Promise.resolve() })
+      expect(alertSurface()!.getAttribute('aria-hidden')).toBeNull()
+      expect(bell().hasAttribute('aria-describedby')).toBe(false)
+      expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
+      expect(announcer.firstChild).toBe(announcedNode)
+      expect(changes).toEqual([])
+      act(() => bell().click())
+      settle(200)
+      await act(async () => { await Promise.resolve() })
+      expect(alertSurface()).toBeNull()
+      expect(announcer.firstChild).toBe(announcedNode)
+      expect(changes).toEqual([])
+    } finally {
+      observer?.disconnect()
+      cleanup()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight })
+      vi.useRealTimers()
+    }
+  })
+
+  it('anchors one shared alert beside the right rail and Review updates opens the updates panel', async () => {
+    vi.useFakeTimers()
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T20:00:00.000Z',
+      uam: { version: 'V4.2.0', url: 'https://example.test/uam' },
+      providers: { 'codex-cli': { version: '0.130.0', url: 'https://example.test/codex' } },
+    }))
+    useAppStore.setState({
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      cliVersionManager: { providers: [{ providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '0.124.0', availableVersions: [{ version: '0.124.0', preferred: true }], preferredVersion: '0.124.0', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' }] },
+    })
+    const { host, alertSurface, bell, settle, cleanup } = await mountShell()
+    try {
+      expect(host.querySelectorAll('[data-testid="transient-alert"]')).toHaveLength(1)
+      const surface = alertSurface()!
+      const announcer = host.querySelector('[data-testid="transient-alert-announcer"]')!
+      expect(announcer.getAttribute('role')).toBe('status')
+      expect(announcer.getAttribute('aria-live')).toBe('polite')
+      expect(announcer.getAttribute('aria-atomic')).toBe('true')
+      expect(surface.hasAttribute('aria-live')).toBe(false)
+      expect(surface.style.right).toBe('52px')
+      expect(surface.style.bottom).toBe('0px')
+      expect(surface.getBoundingClientRect().bottom).toBe(window.innerHeight)
+      expect(surface.style.left).toBe('')
+      expect(surface.getBoundingClientRect().right).toBeLessThan(bell().getBoundingClientRect().left)
+      expect(surface.getAttribute('aria-hidden')).toBeNull()
+
+      const review = Array.from(surface.querySelectorAll('button')).find((button) => button.textContent === 'Review updates')!
+      act(() => review.click())
+      settle(200)
+      expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
+      expect(alertSurface()).toBeNull()
+
+      // The update notice outlives the transient alert in the notifications panel.
+      act(() => bell().click())
+      expect(host.querySelector('[data-testid="notifications-panel"]')?.textContent).toContain('2 updates available')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds expiry while hovered or focused and keeps focus on the bell after explicit dismissal', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, bell, settle, cleanup } = await mountShell()
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      settle(20000)
+      expect(alertSurface()).toBeTruthy()
+      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(8000)
+      settle(200)
+      expect(alertSurface()).toBeNull()
+
+      act(() => reportAppFailure('Could not rename.', 'Name in use'))
+      const action = Array.from(alertSurface()!.querySelectorAll('button')).find((button) => button.textContent === 'View in notifications')!
+      act(() => action.focus())
+      settle(20000)
+      expect(alertSurface()).toBeTruthy()
+      expect(document.activeElement).toBe(action)
+
+      const dismiss = alertSurface()!.querySelector<HTMLButtonElement>('[aria-label="Dismiss alert"]')!
+      act(() => dismiss.focus())
+      act(() => dismiss.click())
+      settle(200)
+      expect(alertSurface()).toBeNull()
+      expect(document.activeElement).toBe(bell())
+
+      // Neither the expired nor the dismissed alert is lost from the panel.
+      expect(bell().getAttribute('aria-label')).toBe('2 alerts')
+      act(() => bell().click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(panel.querySelectorAll('time')).toHaveLength(2)
+      expect(panel.textContent).toContain('Disk full')
+      expect(panel.textContent).toContain('Name in use')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  // David explicitly superseded composer-clearance on 2026-10-21: bottom edge, allow covering Send.
+  // Prior R3 collision/R4 clearance receipts and the original test preimage remain immutable evidence.
+  it('stays at the GUI bottom edge as composers grow and permits covering Send while keeping the rail alignment', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const fixture = await mountShell()
+    const { host, alertSurface, layoutRects, notifyResize, cleanup } = fixture
+    const dock = document.createElement('div'); dock.className = 'uam-composer-dock'
+    const other = document.createElement('div'); other.className = 'uam-composer-dock'
+    const left = document.createElement('div'); left.className = 'uam-composer-dock'
+    host.querySelector('.uam-app')!.append(dock, other, left)
+    layoutRects.set(dock, new DOMRect(44, 612.85, 1192, 187.15))
+    layoutRects.set(other, new DOMRect(900, 500, 336, 300))
+    layoutRects.set(left, new DOMRect(44, 100, 400, 700))
+    try {
+      act(() => reportAppFailure('A private layout failure', 'Retained detail'))
+      const surface = alertSurface()!
+      const send = new DOMRect(1068, 750, 32, 32) // Prior collision is now intentionally permitted.
+      const rect = surface.getBoundingClientRect()
+      expect(surface.getAttribute('aria-hidden')).toBeNull()
+      expect(surface.style.bottom).toBe('0px')
+      expect(rect.bottom).toBe(800)
+      expect(rect.right).toBe(1228)
+      expect(rect.width).toBe(360)
+      expect(Math.min(rect.right, send.right) - Math.max(rect.left, send.left)).toBeGreaterThan(0)
+      expect(Math.min(rect.bottom, send.bottom) - Math.max(rect.top, send.top)).toBeGreaterThan(0)
+      expect(fixture.observed.has(dock)).toBe(false)
+      layoutRects.set(other, new DOMRect(900, 350, 336, 450))
+      layoutRects.set(dock, new DOMRect(44, 492.85, 1192, 307.15))
+      notifyResize()
+      expect(surface.getBoundingClientRect()).toEqual(rect)
+      // Horizontal placement still follows the real rail at a narrower viewport.
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 480 })
+      notifyResize()
+      expect(surface.getBoundingClientRect().right).toBe(428)
+      expect(surface.getBoundingClientRect().width).toBe(360)
+      expect(surface.getBoundingClientRect().bottom).toBe(800)
+    } finally {
+      cleanup()
+      expect(fixture.activeObserverCount()).toBe(0)
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps bottom and horizontal position fixed throughout first-send form FLIP transitions', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, layoutRects, notifyResize, cleanup } = await mountShell()
+    const dock = document.createElement('div'); dock.className = 'uam-composer-dock'
+    const form = document.createElement('form'); dock.append(form)
+    host.querySelector('.uam-app')!.append(dock)
+    layoutRects.set(dock, new DOMRect(44, 612.85, 1192, 187.15))
+    layoutRects.set(form, new DOMRect(172, 703, 936, 85))
+    const transition = (type: string) => {
+      const event = new Event(type, { bubbles: true })
+      Object.defineProperty(event, 'propertyName', { value: 'transform' })
+      act(() => form.dispatchEvent(event))
+    }
+    try {
+      act(() => reportAppFailure('Notice during the first turn', 'Retained detail'))
+      const surface = alertSurface()!
+      const initial = surface.getBoundingClientRect()
+      expect(initial.bottom).toBe(800)
+      expect(initial.right).toBe(1228)
+      for (const top of [250, 500, 703]) {
+        layoutRects.set(form, new DOMRect(172, top, 936, 85))
+        transition(top === 250 ? 'transitionrun' : top === 703 ? 'transitionend' : 'transitioncancel')
+        notifyResize()
+        expect(surface.style.bottom).toBe('0px')
+        expect(surface.getBoundingClientRect()).toEqual(initial)
+      }
+    } finally { cleanup(); vi.useRealTimers() }
+  })
+
+  it('bounds bottom-edge long messages and uses the retained bell when the viewport cannot fit accessible actions', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 720 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, bell, layoutRects, notifyResize, settle, cleanup } = await mountShell()
+    const rail = host.querySelector('.uam-side-rail--right')!
+    const dock = document.createElement('div'); dock.className = 'uam-composer-dock'
+    const header = document.createElement('div'); header.className = 'uam-chat-pane__header'
+    host.querySelector('.uam-app')!.append(dock, header)
+    layoutRects.set(rail, new DOMRect(676, 44, 44, 256))
+    layoutRects.set(bell(), new DOMRect(683, 222, 30, 30))
+    layoutRects.set(dock, new DOMRect(44, 180, 632, 120))
+    layoutRects.set(header, new DOMRect(44, 44, 632, 44))
+    try {
+      const message = 'Long notification '.repeat(100)
+      act(() => reportAppFailure(message, 'Long notification detail retained'))
+      const surface = alertSurface()!
+      const text = surface.querySelector<HTMLElement>('[aria-label="Notification message"]')!
+      expect(surface.getAttribute('aria-hidden')).toBeNull()
+      expect(surface.style.bottom).toBe('0px')
+      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.getBoundingClientRect().top).toBeGreaterThanOrEqual(96)
+      expect(Number.parseFloat(text.style.maxHeight)).toBe(194)
+      expect(text.style.overflowY).toBe('auto')
+      expect(text.tabIndex).toBe(0)
+      expect(text.textContent).toBe(message)
+      expect([...surface.querySelectorAll('button')].every(button => !button.disabled)).toBe(true)
+      act(() => text.focus())
+      settle(9000)
+      expect(document.activeElement).toBe(text)
+      expect(alertSurface()).toBe(surface)
+      // Composer growth cannot hide or lift a bottom-edge notification.
+      layoutRects.set(dock, new DOMRect(44, 110, 632, 190))
+      notifyResize()
+      expect(surface.getAttribute('aria-hidden')).toBeNull()
+      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(document.activeElement).toBe(text)
+      // An actually short viewport leaves insufficient room below the header for accessible actions.
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 120 })
+      layoutRects.set(rail, new DOMRect(676, 44, 44, 76))
+      layoutRects.set(bell(), new DOMRect(683, 82, 30, 30))
+      notifyResize()
+      expect(surface.getAttribute('aria-hidden')).toBe('true')
+      expect(surface.style.visibility).toBe('hidden')
+      expect(document.activeElement).toBe(bell())
+      const description = document.getElementById(bell().getAttribute('aria-describedby')!)!
+      expect(description.getAttribute('aria-live')).toBe('polite')
+      expect(description.textContent).toContain('Saved in Notifications')
+      expect(description.textContent).toContain(message)
+      expect(bell().getAttribute('aria-label')).toBe('1 alert')
+      // A narrow viewport cannot squeeze both actions and a readable message into the available width.
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 })
+      for (const width of [320, 240]) {
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+        layoutRects.set(rail, new DOMRect(width - 44, 44, 44, 256))
+        layoutRects.set(bell(), new DOMRect(width - 37, 222, 30, 30))
+        notifyResize()
+        expect(surface.getAttribute('aria-hidden')).toBe('true')
+        expect(surface.style.bottom).toBe('0px')
+        expect(bell().getAttribute('aria-label')).toBe('1 alert')
+      }
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 720 })
+      layoutRects.set(rail, new DOMRect(676, 44, 44, 256))
+      layoutRects.set(bell(), new DOMRect(683, 222, 30, 30))
+      notifyResize()
+      expect(surface.getAttribute('aria-hidden')).toBeNull()
+      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(bell().hasAttribute('aria-describedby')).toBe(false)
+      act(() => bell().click()); settle(200)
+      expect(alertSurface()).toBeNull()
+      expect(host.querySelector('[data-testid="notifications-panel"]')?.textContent).toContain('Long notification detail retained')
+    } finally { cleanup(); vi.useRealTimers() }
+  })
+
+  it('never shows the transient alert over an open right-side panel and keeps the message in the bell', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { host, alertSurface, bell, settle, cleanup } = await mountShell()
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      expect(alertSurface()).toBeTruthy()
+      act(() => bell().click())
+      settle(200)
+      expect(alertSurface()).toBeNull()
+
+      act(() => reportAppFailure('Could not rename.', 'Name in use'))
+      settle(200)
+      expect(alertSurface()).toBeNull()
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(panel.querySelectorAll('time')).toHaveLength(2)
+      expect(panel.textContent).toContain('Name in use')
+
+      act(() => (host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click())
+      act(() => reportAppFailure('Could not move.', 'Transport closed'))
+      settle(200)
+      expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
+      expect(alertSurface()).toBeNull()
+
+      // The suppressed failure is not erased: it is an unread bell entry and appears in the panel.
+      expect(bell().getAttribute('aria-label')).toBe('3 alerts')
+      act(() => bell().click())
+      expect(host.querySelector('[data-testid="notifications-panel"]')?.textContent).toContain('Transport closed')
+      act(() => bell().click())
+      settle(200)
+
+      // The commit panel is also a right-side panel the alert must not cover.
+      act(() => useAppStore.setState({ commitPanelOpen: true }))
+      act(() => reportAppFailure('Could not copy.', 'Clipboard denied'))
+      settle(200)
+      expect(alertSurface()).toBeNull()
+      expect(bell().getAttribute('aria-label')).toBe('4 alerts')
+      act(() => useAppStore.setState({ commitPanelOpen: false }))
+      settle(200)
+      expect(alertSurface()).toBeNull()
+    } finally {
+      cleanup()
       vi.useRealTimers()
     }
   })

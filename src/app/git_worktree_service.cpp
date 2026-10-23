@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -130,6 +131,8 @@ namespace uam
 			std::filesystem::path relative;
 			std::uintmax_t size = 0;
 			std::filesystem::file_time_type modified_at;
+			std::filesystem::path link_target;
+			bool directory_link = false;
 		};
 
 		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultGitCommandTimeoutMs, std::stop_token stop_token = {})
@@ -214,23 +217,55 @@ namespace uam
 			return true;
 		}
 
-		bool PullCheckedOutBase(const std::filesystem::path& repository, const std::string& configured_base, std::string& error, std::stop_token stop)
+		bool PullCheckedOutBase(const std::filesystem::path& repository, const std::string& configured_base, std::string& error, std::string& warning, std::stop_token stop)
 		{
-			std::string branch, upstream, dirty;
+			std::string branch, tracking, dirty;
 			if (!GitOutput(repository, "symbolic-ref --quiet --short HEAD", &branch, &error, stop))
 			{ error = "Pull before chat requires a checked-out local branch."; return false; }
+			const std::string local_ref = "refs/heads/" + branch;
+			if (!GitOutput(repository, "for-each-ref --format=" + uam::shell::EscapeArg("%(refname):%(upstream)") +
+			    " -- " + uam::shell::EscapeArg(local_ref), &tracking, &error, stop)) return false;
+			const std::string tracking_prefix = local_ref + ":";
+			if (tracking.empty())
+			{
+				const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository,
+				    "show-ref --verify --quiet " + uam::shell::EscapeArg(local_ref)), kDefaultGitCommandTimeoutMs, stop);
+				// An unborn symbolic branch has no ref or upstream; worktree creation still validates its base commit.
+				if (!reference.timed_out && !reference.canceled && reference.exit_code == 1 && uam::strings::Trim(reference.output).empty()) return true;
+			}
+			if (!tracking.starts_with(tracking_prefix) || tracking.find('\n') != std::string::npos)
+			{ error = "Pull before chat could not verify local branch tracking metadata."; return false; }
+			// Pull is optional for a local-only branch. A failed Git lookup never authorizes this bypass.
+			if (uam::strings::Trim(tracking.substr(tracking_prefix.size())).empty()) return true;
 			if (!configured_base.empty() && configured_base != branch)
 			{ error = "Pull before chat requires the default base to be the checked-out branch."; return false; }
-			if (!GitOutput(repository, "rev-parse --abbrev-ref --symbolic-full-name @{upstream}", &upstream, &error, stop) || upstream.empty())
-			{ error = "Pull before chat requires a configured upstream."; return false; }
-			if (!GitOutput(repository, "status --porcelain --untracked-files=no", &dirty, &error, stop) || !dirty.empty())
-			{ error = "Pull before chat requires a clean tracked workspace and index."; return false; }
+			const auto checked_output = [&](const std::string& arguments, std::string& output)
+			{
+				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, arguments), kDefaultGitCommandTimeoutMs, stop);
+				if (stop.stop_requested() || !CommandSucceeded(result) || result.output_truncated || !result.error.empty())
+				{ error = CommandOutputOrFallback(result, "Could not verify whether optional pull is safe."); return false; }
+				output = strings::Trim(result.output);
+				return true;
+			};
+			if (!checked_output("status --porcelain --untracked-files=no", dirty)) return false;
+			if (!dirty.empty())
+			{
+				warning = "Warning: optional pull was skipped because the source has tracked or staged changes. The verified committed base is used for isolation; source changes were preserved and were not copied.";
+				return true;
+			}
 			for (const std::string_view marker : {"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"})
 			{
 				std::string path;
-				if (!GitOutput(repository, "rev-parse --path-format=absolute --git-path " + uam::shell::EscapeArg(std::string(marker)), &path, &error, stop)) return false;
-				if (uam::paths::PathExistsNoThrow(uam::paths::PathFromUtf8(path)))
-				{ error = "Finish the current Git operation before pulling for a chat."; return false; }
+				if (!checked_output("rev-parse --path-format=absolute --git-path " + uam::shell::EscapeArg(std::string(marker)), path) || path.empty()) return false;
+				std::error_code marker_error;
+				const auto status = std::filesystem::symlink_status(paths::PathFromUtf8(path), marker_error);
+				if (marker_error && marker_error != std::errc::no_such_file_or_directory)
+				{ error = "Could not inspect the source Git operation state before optional pull."; return false; }
+				if (!marker_error && std::filesystem::exists(status))
+				{
+					warning = "Warning: optional pull was skipped because a Git operation is in progress. Isolation uses the verified committed base; the source operation and its changes were preserved.";
+					return true;
+				}
 			}
 			// Automatic preparation never prompts or runs user hooks; environment overrides affect only this child command.
 #if defined(_WIN32)
@@ -247,6 +282,23 @@ namespace uam
 			if (!CommandSucceeded(result))
 			{ error = CommandOutputOrFallback(result, "Pull before chat failed; no chat workspace was created."); return false; }
 			return true;
+		}
+
+		bool IsVerifiedUnbornRepository(const std::filesystem::path& repository, std::stop_token stop)
+		{
+			std::string symbolic;
+			if (!GitOutput(repository, "symbolic-ref --quiet HEAD", &symbolic, nullptr, stop) ||
+			    !symbolic.starts_with("refs/heads/") || symbolic.size() <= 11 || symbolic.find('\n') != std::string::npos) return false;
+			const auto absent = [&](const std::string& arguments)
+			{
+				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, arguments), kDefaultGitCommandTimeoutMs, stop);
+				return !stop.stop_requested() && !result.timed_out && !result.canceled && !result.output_truncated &&
+				    result.exit_code == 1 && result.output.empty() && result.error.empty();
+			};
+			if (!absent("show-ref --verify --quiet " + shell::EscapeArg(symbolic)) ||
+			    !absent("rev-parse --verify --quiet HEAD^{commit}")) return false;
+			std::string again;
+			return GitOutput(repository, "symbolic-ref --quiet HEAD", &again, nullptr, stop) && again == symbolic;
 		}
 
 		std::filesystem::path EffectiveSourceWorkspace(const AppState& app, const ChatSession& chat)
@@ -394,92 +446,124 @@ namespace uam
 			return value.empty() || relative.is_absolute() || value == ".." || value.starts_with("../") || value.find('\n') != std::string::npos || value.find('\r') != std::string::npos || value.find('\0') != std::string::npos;
 		}
 
-		bool CollectSnapshotFiles(const AppState& app, const std::filesystem::path& source_root, std::vector<SnapshotFile>& files, std::string& error)
+		bool CollectSnapshotFiles(const AppState& app, const std::filesystem::path& source_root,
+		    bool source_is_git, std::vector<SnapshotFile>& files, std::string& error)
 		{
 			files.clear();
 			error.clear();
 			if (!uam::paths::IsDirectoryNoThrow(source_root))
-			{
-				error = "Source workspace is not an available directory.";
-				return false;
-			}
+			{ error = "Source workspace is not an available directory."; return false; }
 			if (!app.data_root.empty() && PathIsWithin(source_root, app.data_root))
-			{
-				error = "Source workspace cannot be inside UAM's managed data directory.";
-				return false;
-			}
+			{ error = "Source workspace cannot be inside UAM's managed data directory."; return false; }
 
+			std::error_code root_error;
+			const auto physical_source = std::filesystem::canonical(source_root, root_error);
+			if (root_error) { error = "Source workspace could not be resolved."; return false; }
 			std::uintmax_t total_bytes = 0;
-			std::error_code ec;
-			std::filesystem::recursive_directory_iterator it(source_root, ec);
-			const std::filesystem::recursive_directory_iterator end;
-			if (ec)
+			std::set<std::filesystem::path> collected_paths, inspected_parents;
+			const auto collect = [&](const std::filesystem::path& path, const std::filesystem::path& relative, bool* directory = nullptr)
 			{
-				error = "Failed to enumerate source workspace: " + ec.message();
-				return false;
-			}
-			for (; it != end; it.increment(ec))
-			{
+				if (directory) *directory = false;
+				if (HasUnsafeSnapshotName(relative))
+				{ error = "Source workspace contains an unsafe path."; return false; }
+				if (IsExcludedSnapshotPath(relative) || (!app.data_root.empty() && PathIsWithin(path, app.data_root))) return true;
+				if (!collected_paths.insert(relative).second) return true;
+				// A staged path may survive replacement of one of its parent directories.
+				// Inspect parents before opening any leaf, including an ignored replacement link.
+				for (auto ancestor = relative.parent_path(); !ancestor.empty(); ancestor = ancestor.parent_path())
+				{
+					// Walk only authored relative ancestors; stored roots may end in a
+					// separator or contain ./ without changing the physical workspace.
+					const auto parent = source_root / ancestor;
+					if (inspected_parents.contains(parent)) break;
+					std::error_code parent_error;
+					const auto status = std::filesystem::symlink_status(parent, parent_error);
+					if (source_is_git && (parent_error == std::errc::no_such_file_or_directory || parent_error == std::errc::not_a_directory)) return true;
+					if (parent_error || !std::filesystem::is_directory(status) || paths::IsLinkOrReparsePointNoThrow(parent))
+					{ error = "Source file parent changed or contains a symbolic link: " + paths::PortablePathString(relative); return false; }
+					inspected_parents.insert(parent);
+				}
+				std::error_code ec;
+				const auto status = std::filesystem::symlink_status(path, ec);
+				// Snapshot current working files, not deleted entries left in an unborn index.
+				if (source_is_git && (ec == std::errc::no_such_file_or_directory || ec == std::errc::not_a_directory || status.type() == std::filesystem::file_type::not_found)) return true;
 				if (ec)
-				{
-					error = "Failed to enumerate source workspace: " + ec.message();
-					return false;
-				}
-				const std::filesystem::path path = it->path();
-				const std::filesystem::path relative = std::filesystem::relative(path, source_root, ec);
-				if (ec || HasUnsafeSnapshotName(relative))
-				{
-					error = "Source workspace contains an unsafe path.";
-					return false;
-				}
-				if (IsExcludedSnapshotPath(relative) || (!app.data_root.empty() && PathIsWithin(path, app.data_root)))
-				{
-					if (it->is_directory(ec))
-					{
-						it.disable_recursion_pending();
-					}
-					ec.clear();
-					continue;
-				}
-
-				const std::filesystem::file_status status = it->symlink_status(ec);
-				if (ec)
-				{
-					error = "Failed to inspect source path " + uam::paths::PortablePathString(relative) + ": " + ec.message();
-					return false;
-				}
+				{ error = "Failed to inspect source path " + paths::PortablePathString(relative) + ": " + ec.message(); return false; }
+				SnapshotFile file{path, relative};
 				if (std::filesystem::is_symlink(status))
 				{
-					error = "Source workspace contains a symbolic link that cannot be snapshotted safely: " + uam::paths::PortablePathString(relative);
-					return false;
+					file.link_target = std::filesystem::read_symlink(path, ec);
+					if (ec || file.link_target.empty() || file.link_target.has_root_name() || file.link_target.has_root_directory())
+					{ error = "Source symbolic link cannot be isolated: " + paths::PortablePathString(relative); return false; }
+					const auto resolved = std::filesystem::weakly_canonical(path.parent_path() / file.link_target, ec);
+					if (ec || !PathIsWithin(resolved, physical_source) || IsExcludedSnapshotPath(resolved.lexically_relative(physical_source)) ||
+					    (!app.data_root.empty() && PathIsWithin(resolved, app.data_root)))
+					{ error = "Source symbolic link leaves the isolated workspace: " + paths::PortablePathString(relative); return false; }
+					// Copy the link node, including a dangling internal link; never open its target.
+					file.size = paths::Utf8PathString(file.link_target).size();
+					file.directory_link = std::filesystem::is_directory(resolved, ec);
+					if (ec && ec != std::errc::no_such_file_or_directory)
+					{ error = "Could not inspect symbolic link target type: " + paths::PortablePathString(relative); return false; }
 				}
-				if (std::filesystem::is_directory(status))
+				else if (std::filesystem::is_directory(status)) { if (directory) *directory = true; return true; }
+				else if (!std::filesystem::is_regular_file(status))
+				{ error = "Source workspace contains an unsupported file type: " + paths::PortablePathString(relative); return false; }
+				else
 				{
-					continue;
+					file.size = std::filesystem::file_size(path, ec);
+					if (!ec) file.modified_at = std::filesystem::last_write_time(path, ec);
+					std::ifstream readable(path, std::ios::binary);
+					if (ec || !readable)
+					{ error = "Source file is unreadable: " + paths::PortablePathString(relative); return false; }
 				}
-				if (!std::filesystem::is_regular_file(status))
-				{
-					error = "Source workspace contains an unsupported file type: " + uam::paths::PortablePathString(relative);
-					return false;
-				}
-
-				const std::uintmax_t size = std::filesystem::file_size(path, ec);
-				const std::filesystem::file_time_type modified_at = std::filesystem::last_write_time(path, ec);
-				std::ifstream readable(path, std::ios::binary);
-				if (ec || !readable)
-				{
-					error = "Source file is unreadable: " + uam::paths::PortablePathString(relative);
-					return false;
-				}
-				total_bytes += size;
+				total_bytes += file.size;
 				if (files.size() >= kMaxManagedSnapshotFiles || total_bytes > kMaxManagedSnapshotBytes)
+				{ error = "Source workspace exceeds the managed snapshot limit (100000 files or 2 GiB)."; return false; }
+				files.push_back(std::move(file));
+				return true;
+			};
+			const auto collect_directory = [&](const std::filesystem::path& root)
+			{
+				std::error_code ec;
+				std::filesystem::recursive_directory_iterator it(root, ec), end;
+				while (!ec && it != end)
 				{
-					error = "Source workspace exceeds the managed snapshot limit (100000 files or 2 GiB).";
-					return false;
+					const auto path = it->path();
+					// relative() resolves links and can replace their authored path with their target.
+					const auto relative = path.lexically_relative(source_root);
+					if (IsExcludedSnapshotPath(relative) || (!app.data_root.empty() && PathIsWithin(path, app.data_root))) it.disable_recursion_pending();
+					else if (!collect(path, relative)) return false;
+					it.increment(ec);
 				}
-				files.push_back({path, relative, size, modified_at});
+				if (ec) { error = "Failed to enumerate source workspace: " + ec.message(); return false; }
+				return true;
+			};
+			if (source_is_git)
+			{
+				// Git owns ignore rules, including ignored dependency caches. Preserve staged paths too.
+				const auto listed = RunCommand("git --no-optional-locks -C " + shell::EscapeArg(paths::Utf8PathString(source_root)) +
+				    " ls-files --cached --others --exclude-standard --full-name -z -- .");
+				if (!CommandSucceeded(listed) || listed.output_truncated || !listed.error.empty())
+				{ error = "Could not enumerate source files for the isolation baseline."; return false; }
+				std::set<std::filesystem::path> seen;
+				std::size_t start = 0;
+				while (start < listed.output.size())
+				{
+					const auto end = listed.output.find('\0', start);
+					if (end == std::string::npos)
+					{ error = "Source file enumeration was incomplete."; return false; }
+					const auto relative = paths::PathFromUtf8(listed.output.substr(start, end - start));
+					if (seen.insert(relative).second)
+					{
+						bool directory = false;
+						if (!collect(source_root / relative, relative, &directory) ||
+						    (directory && !collect_directory(source_root / relative))) return false;
+					}
+					start = end + 1;
+				}
+				return true;
 			}
-			return true;
+			return collect_directory(source_root);
 		}
 
 		bool CopySnapshotFiles(const std::vector<SnapshotFile>& files, const std::filesystem::path& repository, std::string& error)
@@ -488,6 +572,22 @@ namespace uam
 			for (const SnapshotFile& file : files)
 			{
 				const std::filesystem::path target = repository / file.relative;
+				if (!file.link_target.empty())
+				{
+					const auto unchanged = [&]()
+					{
+						std::error_code status_error, target_error;
+						return std::filesystem::is_symlink(std::filesystem::symlink_status(file.source, status_error)) && !status_error &&
+						    std::filesystem::read_symlink(file.source, target_error) == file.link_target && !target_error;
+					};
+					if (!unchanged() || !paths::CreateDirectoriesNoThrow(target.parent_path(), &ec))
+					{ error = "Source symbolic link changed before snapshot: " + paths::PortablePathString(file.relative); return false; }
+					if (file.directory_link) std::filesystem::create_directory_symlink(file.link_target, target, ec);
+					else std::filesystem::create_symlink(file.link_target, target, ec);
+					if (ec || !unchanged())
+					{ error = "Could not preserve source symbolic link: " + paths::PortablePathString(file.relative); return false; }
+					continue;
+				}
 				if (!uam::paths::CreateDirectoriesNoThrow(target.parent_path(), &ec) || !std::filesystem::copy_file(file.source, target, std::filesystem::copy_options::none, ec))
 				{
 					error = "Failed to snapshot source file " + uam::paths::PortablePathString(file.relative) + ": " + ec.message();
@@ -1346,6 +1446,16 @@ namespace uam
 			return status;
 		}
 		PopulateSourceRepositoryStatus(status, source_candidate);
+		if (status.isolated && status.is_git_repository)
+		{
+			// A verified unborn source can have an owned snapshot baseline while remaining a Git repository.
+			const std::filesystem::path managed = ManagedRepositoryRoot(app, source_candidate, chat.id);
+			std::string common;
+			if (paths::IsDirectoryNoThrow(managed) && !paths::IsLinkOrReparsePointNoThrow(managed) &&
+			    GitOutput(paths::PathFromUtf8(status.worktree_directory), "rev-parse --path-format=absolute --git-common-dir", &common) &&
+			    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common)) == paths::NormalizeExistingOrAbsolutePath(managed / ".git"))
+				status.managed_repository = true;
+		}
 		if (status.isolated && !status.is_git_repository)
 		{
 			status.managed_repository = uam::paths::IsDirectoryNoThrow(ManagedRepositoryRoot(app, source_candidate, chat.id));
@@ -1548,7 +1658,69 @@ namespace uam
 			if (metadata.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind) metadata.workspace_isolation_kind.clear();
 			return {.ok = true};
 		}
-		return CreateForChatCore(snapshot, metadata, false, record, stop);
+		return CreateForChatCore(snapshot, metadata, false, record, stop, !explicit_create);
+	}
+
+	bool GitWorktreeService::ValidateUncreatedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop) const
+	{
+		try
+		{
+			if (stop.stop_requested() || !root.is_absolute() || !paths::IsControllerLocalWorkspace(metadata) ||
+			    metadata.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind ||
+			    paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(receipt) ||
+			    receipt.parent_path() != root / ".worktree-launch") return false;
+			const auto witness = platform::PublishedFileChangeWitness::Capture(receipt);
+			const auto bytes = witness ? witness->ReadBounded(64 * 1024, stop) : std::nullopt;
+			if (!bytes) return false;
+			const nlohmann::json record = nlohmann::json::parse(*bytes);
+			if (!record.is_object() || record.size() != 9 || record.at("chatId") != metadata.id ||
+			    record.at("createdAt") != metadata.created_at || !record.at("branch").get<std::string>().empty() ||
+			    !record.at("baseSha").get<std::string>().empty()) return false;
+			const std::filesystem::path source = paths::PathFromUtf8(record.at("source").get<std::string>());
+			std::error_code ec;
+			const std::filesystem::path physical_source = std::filesystem::canonical(source, ec);
+			if (ec || physical_source != source || !paths::IsDirectoryNoThrow(source)) return false;
+			const std::filesystem::path requested = std::filesystem::canonical(paths::PathFromUtf8(metadata.workspace_directory), ec);
+			if (ec || !paths::IsSameOrInsideRoot(source, requested)) return false;
+			const bool managed = record.at("managedRepository").get<bool>();
+			if (!managed)
+			{
+				std::string top;
+				if (!GitOutput(requested, "rev-parse --show-toplevel", &top, &error, stop) ||
+				    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(top)) != source) return false;
+			}
+			else if (requested != source) return false;
+			AppState snapshot;
+			snapshot.data_root = root;
+			std::filesystem::path preferred;
+			if (!PhysicalWorktreeRootForChat(snapshot, source, BranchNameForChat(metadata), preferred, error)) return false;
+			const std::filesystem::path worktree = paths::PathFromUtf8(record.at("worktree").get<std::string>());
+			const std::filesystem::path repository = paths::PathFromUtf8(record.at("repository").get<std::string>());
+			if (worktree != preferred || repository != (managed ? ManagedRepositoryRoot(snapshot, source, metadata.id) : source)) return false;
+			if (!managed && paths::IsLinkOrReparsePointNoThrow(repository / ".git")) return false;
+			const auto absent = [&](const std::filesystem::path& path)
+			{
+				std::error_code error;
+				const auto status = std::filesystem::symlink_status(path, error);
+				return error == std::errc::no_such_file_or_directory || (!error && status.type() == std::filesystem::file_type::not_found);
+			};
+			if (!absent(worktree) || (managed && !absent(repository))) return false;
+			std::vector<std::filesystem::path> artifacts{worktree, receipt};
+			if (managed) artifacts.push_back(repository);
+			const std::filesystem::path owned = paths::AbsolutePathNoThrow(root).lexically_normal();
+			for (const auto& artifact : artifacts)
+			{
+				if (!paths::IsSameOrInsideRoot(root, artifact)) return false;
+				for (auto path = paths::AbsolutePathNoThrow(artifact).lexically_normal(); ; path = path.parent_path())
+				{
+					if (paths::IsLinkOrReparsePointNoThrow(path)) return false;
+					if (path == owned) break;
+					if (path.empty() || path == path.parent_path()) return false;
+				}
+			}
+			return !stop.stop_requested() && witness->Current();
+		}
+		catch (const std::exception&) { return false; }
 	}
 
 	bool GitWorktreeService::ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop) const
@@ -1603,9 +1775,10 @@ namespace uam
 		catch (const std::exception&) { error = "Prepared workspace ownership could not be verified."; return false; }
 	}
 
-	GitWorktreeOperationResult GitWorktreeService::CreateForChatCore(AppState& app, ChatSession& chat, bool persist, const GitWorktreeIntentRecorder& record, std::stop_token stop) const
+	GitWorktreeOperationResult GitWorktreeService::CreateForChatCore(AppState& app, ChatSession& chat, bool persist, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool automatic_unborn_snapshot) const
 	{
 		GitWorktreeOperationResult result;
+		std::string pull_warning;
 		if (!ValidatePendingGitBaseOverrideScope(app, chat, result.message)) return result;
 		if (stop.stop_requested()) { result.message = "Workspace preparation was canceled."; return result; }
 		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
@@ -1621,8 +1794,13 @@ namespace uam
 			return result;
 		}
 		const std::filesystem::path source_root = result.status.is_git_repository ? uam::paths::PathFromUtf8(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
-		const bool managed_repository = !result.status.is_git_repository;
-		if (managed_repository)
+		const bool unborn_source = result.status.is_git_repository && automatic_unborn_snapshot && app.settings.git_auto_worktree &&
+		    !chat.git_base_branch_override && uam::strings::Trim(app.settings.git_default_base_branch).empty() &&
+		    IsVerifiedUnbornRepository(source_root, stop);
+		if (unborn_source && !app.settings.git_snapshot_plain_folders)
+		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled."; return result; }
+		const bool managed_repository = !result.status.is_git_repository || unborn_source;
+		if (managed_repository && !unborn_source)
 		{
 			const LocalSnapshotSource source_kind = ClassifyLocalSnapshotSource(source_root);
 			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
@@ -1653,7 +1831,7 @@ namespace uam
 			if (!GitOutput(repository, "rev-parse --path-format=absolute --git-common-dir", &common_directory, &result.message, stop)) return result;
 			// A directly selected UAM snapshot is still owned storage, even in a new chat.
 			const bool owned_baseline = !app.data_root.empty() && PathIsWithin(paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common_directory)), paths::NormalizeExistingOrAbsolutePath(app.data_root / "worktrees"));
-			if (!owned_baseline && !PullCheckedOutBase(repository, selected_base, result.message, stop)) return result;
+			if (!owned_baseline && !PullCheckedOutBase(repository, selected_base, result.message, pull_warning, stop)) return result;
 		}
 		if (chat.git_base_branch_override && record && app.settings.git_pull_before_chat)
 		{
@@ -1670,10 +1848,12 @@ namespace uam
 		if (managed_repository)
 		{
 			std::vector<SnapshotFile> files;
-			if (!CollectSnapshotFiles(app, source_root, files, result.message))
+			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message))
 			{
 				return result;
 			}
+			if (unborn_source && !IsVerifiedUnbornRepository(source_root, stop))
+			{ result.message = "The source repository changed before its isolation baseline was created."; return result; }
 			if (uam::paths::PathExistsNoThrow(repository))
 			{
 				result.message = "Managed repository path already exists: " + uam::paths::Utf8PathString(repository);
@@ -1694,6 +1874,7 @@ namespace uam
 			    !GitCommand(repository, "config user.email uam@local.invalid", &result.message, stop) ||
 			    !GitCommand(repository, "config user.name UAM", &result.message, stop) ||
 			    !GitCommand(repository, "config core.autocrlf false", &result.message, stop) ||
+			    !GitCommand(repository, "config core.symlinks true", &result.message, stop) ||
 			    !CopySnapshotFiles(files, repository, result.message) ||
 			    !GitCommand(repository, "add -A", &result.message, stop) ||
 			    !GitCommand(repository, "commit --allow-empty -m " + uam::shell::EscapeArg("UAM isolation baseline"), &result.message, stop))
@@ -1811,6 +1992,9 @@ namespace uam
 
 		const std::string message = managed_repository ? "Created an isolated Git worktree from a local UAM-managed baseline." : result.status.source_dirty ? "Created isolated Git worktree from HEAD. Source workspace has uncommitted changes that were not copied." : "Created isolated Git worktree.";
 		CompleteSuccessfulResult(result, Status(app, chat), message);
+		if (!pull_warning.empty()) result.status.warning = std::move(pull_warning);
+		else if (result.status.source_dirty && !result.status.managed_repository)
+			result.status.warning = "Warning: source changes were preserved and were not copied into the isolated worktree, which uses the verified committed base.";
 		return result;
 	}
 

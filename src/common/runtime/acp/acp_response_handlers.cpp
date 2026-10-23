@@ -1,3 +1,5 @@
+#include "app/agent_run_scheduler.h"
+#include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -142,6 +144,7 @@ bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSessio
 	if (receipt->admission != DurableAdmissionState::Committed) return true;
 	session.pending_local_session_receipt.reset();
 	(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+	ScheduleCompletedAcpPromptRecoverySaveIfReady(app, chat.id);
 	return false;
 }
 
@@ -171,10 +174,14 @@ void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat
 
 bool ReplayPersistedInteractionResponseIfMatched(
     AppState& app, AcpSessionState& session, ChatSession& chat,
-    const nlohmann::json& request)
+    const nlohmann::json& request, const AcpPendingPermissionState* pending)
 {
 	const std::string request_id =
 	    JsonRpcIdToStableString(JsonRpcIdOrNull(request));
+	const bool captured_read = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	// Early request-ID matching is insufficient authority for a captured read turn.
+	// Questions and unknown/malformed requests continue through their normal decoder.
+	if (captured_read && (pending == nullptr || pending->request_id_json.empty() || pending->request_id_json != request_id)) return false;
 	const auto saved = std::ranges::find(
 	    chat.remote_interaction_responses, request_id,
 	    &uam::AcpRemoteInteractionResponseState::request_id_json);
@@ -183,6 +190,15 @@ bool ReplayPersistedInteractionResponseIfMatched(
 	try
 	{
 		const nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		if (captured_read)
+		{
+			if (!CapturedReadCeilingAllowsSavedPermissionResponse(session, *pending, response))
+			{
+				AppendAcpDiagnostic(session, "permission", "saved_response_exceeds_captured_read_ceiling", "",
+				    request_id, false, 0, "Saved response was not replayed under the current captured read-only restriction.");
+				return false;
+			}
+		}
 		std::string error;
 		if (!WriteAcpMessage(session, response, &error))
 		{
@@ -202,6 +218,7 @@ bool ReplayPersistedInteractionResponseIfMatched(
 	{
 		chat.remote_interaction_responses.erase(saved);
 		(void)SaveChatQuietly(app, chat);
+		if (captured_read) return false;
 	}
 	return true;
 }
@@ -303,6 +320,7 @@ bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& conf
 	if (!config_options.is_array()) return false;
 	std::vector<AcpConfigOptionState> parsed;
 	parsed.reserve(std::min<std::size_t>(config_options.size(), 64));
+	bool model_option_seen = false;
 	for (const nlohmann::json& value : config_options)
 	{
 		if (parsed.size() >= 64) break;
@@ -325,9 +343,13 @@ bool UpdateAcpConfigOptions(AcpSessionState& session, const nlohmann::json& conf
 			choice.description = CapDiagnosticString(uam::nlohmann_json::TrimmedStringValue(raw_choice, {"description"}), 1024);
 			option.choices.push_back(std::move(choice));
 		}
+		if (!model_option_seen && (option.category == "model" || option.id == "model"))
+		{
+			model_option_seen = true;
+			if (!option.current_value.empty()) session.current_model_id = option.current_value;
+		}
 		if (!option.current_value.empty())
 		{
-			if (option.category == "model" || option.id == "model") session.current_model_id = option.current_value;
 			if (option.category == "mode" || option.id == "mode") session.current_mode_id = AppApprovalModeId(option.current_value);
 		}
 		parsed.push_back(std::move(option));
@@ -379,8 +401,20 @@ std::string DiscoveryWorkspace(const AppState& app, const ChatSession& chat)
 	return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
 }
 
-void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, const ChatSession& chat)
+void RememberDiscoveredModels(AppState& app, AcpSessionState& session, const ChatSession& chat)
 {
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	if (runtime.ModelOptionsRequireRestart())
+	{
+		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+		const std::string version = host != nullptr ? CheckedProviderConfigurationVersion(app, session.provider_id, *host) : std::string{};
+		for (auto& model : session.available_models)
+		{
+			model.supported_reasoning_efforts = runtime.ModelReasoningEfforts(model.id, version);
+			model.default_reasoning_effort.clear();
+			model.additional_speed_tiers.clear();
+		}
+	}
 	if (app.provider_model_catalog != nullptr && (!session.available_models.empty() || !session.available_config_options.empty()))
 	{
 		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
@@ -436,7 +470,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		method = it->second;
 		session.pending_request_methods.erase(it);
 	}
-	if (session.prompt_request_id != 0 && id == session.prompt_request_id)
+	if (method.empty() && session.prompt_request_id != 0 && id == session.prompt_request_id)
 	{
 		method = std::strcmp(ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpProtocolKind(), "codex-app-server") == 0 ? uam::acp_methods::kTurnStart : uam::acp_methods::kSessionPrompt;
 	}
@@ -604,6 +638,16 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		return;
 	}
 
+	struct InitialNativeResultObservation
+	{
+		AcpSessionState& session;
+		const std::string& method;
+		int id;
+		~InitialNativeResultObservation()
+		{
+			AgentRunScheduler::InitialNativeResponse(session, method, id);
+		}
+	} initial_observation{session, method, id};
 	const nlohmann::json result = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(message, "result"));
 	if (uam::acp_methods::IsLifecycleResultMethod(method))
 	{
@@ -615,6 +659,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		session.initialized = true;
 		session.lifecycle_state = kAcpLifecycleStarting;
 		ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpInitializeResult(session, result);
+		if (!session.model_discovery_only && chat.remote_process_exists && !chat.remote_process_control_token.empty() && session.remote_output_delivery_token == chat.remote_process_control_token && !session.process_execution_host_id.empty() && session.process_execution_host_id != execution_hosts::kLocalHostId && session.process_execution_host_id == chat.execution_host_id && session.provider_id == chat.provider_id)
+		{
+			chat.remote_prompt_image_supported = session.prompt_image_supported;
+			if (!SaveChatQuietly(app, chat))
+				ScheduleChatSave(app, chat, 0.0);
+		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
 			RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
@@ -697,6 +747,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	{
 		const bool defer_completion = CanDeferLocalSessionReceipt(app, session, chat);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
+		if (id == session.prompt_request_id && session.prompt_request_id > 0 && JsonDiagnosticStringValue(result, "stopReason") == "end_turn")
+			RecordCompletedAcpPromptRecoveries(app, session, chat);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
 		else SaveChatQuietly(app, chat);

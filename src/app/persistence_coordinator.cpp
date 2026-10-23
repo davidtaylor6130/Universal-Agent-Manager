@@ -76,16 +76,43 @@ bool PersistenceCoordinator::EnsureDataRootLayout(const fs::path& data_root, std
 
 bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 {
-	NormalizeProviderCliSettings(app.settings);
-	ChatDomainService().RefreshRememberedSelection(app);
-	if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings))
+	return SaveSettings(app, nullptr);
+}
+
+bool PersistenceCoordinator::SaveSettings(uam::AppState& app, SettingsMemoryWriteReceipt* memory_receipt,
+    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate) const
+{
+	if (memory_receipt != nullptr) *memory_receipt = SettingsMemoryWriteReceipt{};
+	const auto save_settings = [&]() -> bool
 	{
-		app.status_line = "Failed to persist settings.";
+		NormalizeProviderCliSettings(app.settings);
+		ChatDomainService().RefreshRememberedSelection(app);
+		if (!SettingsStore::Save(AppPaths::SettingsFilePath(app.data_root), app.settings, memory_receipt, stage_gate))
+		{
+			app.status_line = "Failed to persist settings.";
+			return false;
+		}
+
+		if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
+		return true;
+	};
+	if (memory_receipt == nullptr) return save_settings();
+	try
+	{
+		return save_settings();
+	}
+	catch (...)
+	{
+		// SettingsStore captures commit facts before catalogue work can throw.
+		memory_receipt->exception_observed = true;
+		if (memory_receipt->outcome != SettingsMemoryWriteOutcome::Committed)
+		{
+			memory_receipt->outcome = memory_receipt->before_replace_permitted
+			    ? SettingsMemoryWriteOutcome::UnknownAfterReplacePermission
+			    : SettingsMemoryWriteOutcome::RejectedBeforeReplace;
+		}
 		return false;
 	}
-
-	if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
-	return true;
 }
 
 bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const

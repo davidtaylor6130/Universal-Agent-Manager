@@ -163,6 +163,8 @@ namespace
 			    .approval_status = tool_call.approval_status,
 			    .task_id = tool_call.task_id,
 			    .child_activity = tool_call.child_activity,
+			    .sub_agent_children = tool_call.sub_agent_children,
+			    .sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative,
 			});
 		}
 	}

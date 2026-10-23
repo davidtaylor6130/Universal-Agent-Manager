@@ -5,3 +5,7 @@ An agent is a reusable definition of role, instructions, allowed skills and exec
 [Provider agent selection](../../providers/agent-selection.md) · [Subagent history](../../providers/agent-history.md) · [Side chats](../../providers/side-chats.md).
 
 Built-in definitions are read-only; custom definitions can be created, edited or explicitly deleted with their supported role, workspace access and skill attachments. Favourites and the configured cycling shortcut select Build, Plan and eligible custom agents without weakening imported restrictions. [Central Setup](central-setup.md) owns shared default agents/skills; a saved definition does not retroactively replace setup captured by a running session.
+
+## Built-in delegation
+
+Build and Plan are available as both primary and delegated UAM agents without creating a custom definition. Build inherits the parent’s permission and workspace ceilings; Plan remains read-only. Custom definitions marked primary-only remain unavailable for delegation. Existing sessions retain their captured definitions and restrictions when the shared defaults change.

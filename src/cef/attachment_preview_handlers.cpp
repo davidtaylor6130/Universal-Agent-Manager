@@ -19,7 +19,7 @@ void UamQueryHandler::HandleGetAttachmentImagePreview(CefRefPtr<CefBrowser>, con
 	const std::string chat_id = payload["chatId"].get<std::string>();
 	const std::string attachment_id = payload["attachmentId"].get<std::string>();
 	const std::uint64_t index_value = payload["messageIndex"].get<std::uint64_t>();
-	if (chat_id.empty() || chat_id.size() > 256 || attachment_id.empty() || attachment_id.size() > 256 || index_value > std::numeric_limits<std::size_t>::max())
+	if (chat_id.empty() || chat_id.size() > 256 || attachment_id.empty() || attachment_id.size() > 16384 || index_value > std::numeric_limits<std::size_t>::max())
 	{
 		cb->Failure(400, "Preview identity is invalid.");
 		return;
@@ -31,7 +31,10 @@ void UamQueryHandler::HandleGetAttachmentImagePreview(CefRefPtr<CefBrowser>, con
 		cb->Failure(404, "Preview message is unavailable.");
 		return;
 	}
-	const uam::attachment_preview::ChatSnapshot chat_snapshot = uam::attachment_preview::CaptureChatSnapshot(*chat);
+	const auto data_root = m_app.data_root;
+	const auto incarnation = chat->metadata_incarnation;
+	const auto birth = chat->created_at;
+	const uam::attachment_preview::ChatSnapshot chat_snapshot = uam::attachment_preview::CaptureChatSnapshot(*chat, data_root);
 	std::optional<uam::attachment_preview::AttachmentSnapshot> attachment_snapshot;
 	if (chat_snapshot.messages_loaded)
 	{
@@ -52,24 +55,32 @@ void UamQueryHandler::HandleGetAttachmentImagePreview(CefRefPtr<CefBrowser>, con
 	}
 	std::shared_ptr<std::optional<uam::attachment_preview::AttachmentSnapshot>> resolved_snapshot =
 	    std::make_shared<std::optional<uam::attachment_preview::AttachmentSnapshot>>(std::move(attachment_snapshot));
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [data_root = m_app.data_root, chat_snapshot, index, attachment_id, resolved_snapshot,
+	const auto dispatch = [this, cb](auto worker, auto completion)
+	{
+		if (m_attachmentPreviewDispatcherForTests)
+			return m_attachmentPreviewDispatcherForTests(cb, std::move(worker), std::move(completion));
+		return uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, std::move(worker), std::move(completion));
+	};
+	dispatch(
+	    [data_root, chat_snapshot, index, attachment_id, resolved_snapshot,
 	        local = chat_snapshot.execution_host_id == uam::execution_hosts::kLocalHostId]()
 	    {
 		    if (!*resolved_snapshot)
 			    *resolved_snapshot = uam::attachment_preview::LoadPersistedAttachmentSnapshot(data_root, chat_snapshot, index, attachment_id);
 		    if (!*resolved_snapshot) return uam::query_handler_async::AsyncFailure(404,
 			    "Preview attachment identity is unavailable or ambiguous.");
-		    const uam::attachment_preview::Image image = uam::attachment_preview::Read(data_root, (*resolved_snapshot)->attachment, local);
+		    const uam::attachment_preview::Image image = uam::attachment_preview::Read(data_root, (*resolved_snapshot)->attachment, local, chat_snapshot.chat_id);
 		    if (image.png.empty()) return uam::query_handler_async::AsyncSuccess({{"available", false}});
 		    return uam::query_handler_async::AsyncSuccess({{"available", true}, {"mimeType", "image/png"},
 		        {"width", image.width}, {"height", image.height}, {"dataBase64", uam::base64::Encode(image.png)}});
 	    },
-	    [this, chat_id, index, attachment_id, chat_snapshot, resolved_snapshot](uam::query_handler_async::AsyncCefResult& response)
+	    [this, data_root, incarnation, birth, chat_id, index, attachment_id, chat_snapshot, resolved_snapshot](uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    if (!response.ok) return;
 		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
-		    if (!current || !*resolved_snapshot || !uam::attachment_preview::MatchesCurrentAttachmentSnapshot(
+		    if (m_app.data_root != data_root || !current || current->metadata_incarnation != incarnation || current->created_at != birth ||
+		        !chat_snapshot.storage_revision || ChatRepository::ChatStorageRevision(data_root, chat_id) != chat_snapshot.storage_revision ||
+		        !*resolved_snapshot || !uam::attachment_preview::MatchesCurrentAttachmentSnapshot(
 			        *current, chat_snapshot, index, attachment_id, **resolved_snapshot))
 		    {
 			    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while its preview was loading.");

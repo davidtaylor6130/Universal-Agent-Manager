@@ -141,15 +141,32 @@ UAM_TEST(ComputerUseGlobalOffRejectsAgentConsentRequestsAndPendingApproval)
 	TempDir temp("uam-cu-global-agent-consent");
 	uam::AppState app;
 	app.data_root = temp.root;
+	app.settings.computer_use_globally_enabled = true;
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
 	ChatSession chat = ChatDomainService().CreateNewChat("", "opencode-cli");
 	chat.id = "global-agent-consent";
+	chat.branch_root_chat_id = chat.id;
 	chat.execution_host_id = "local";
 	chat.uam_control_enabled = true;
+	chat.approval_mode = "default";
+	chat.messages.push_back(Message{MessageRole::User, "Open Safari and inspect the original requested page."});
+	chat.messages.back().created_at = uam::time::TimestampNow();
+	chat.messages.push_back(Message{MessageRole::User, "Unrelated queued task mentioning Calculator."});
+	chat.messages.back().created_at = uam::time::TimestampNow();
+	chat.messages.back().acp_prompt_not_sent = true;
 	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const auto persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+	UAM_ASSERT(persisted && persisted->messages.size() == 2);
+	UAM_ASSERT_EQ(persisted->messages.front().content, chat.messages.front().content);
+	UAM_ASSERT(!persisted->messages.front().acp_prompt_not_sent);
+	UAM_ASSERT(persisted->messages.back().acp_prompt_not_sent);
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->provider_id = "opencode-cli";
-	session->running = true;
+	session->running = session->processing = true;
+	session->turn_serial = 1;
+	session->turn_first_user_message_index = session->turn_user_message_index = 0;
 	uam::AcpSessionState* raw = session.get();
 	app.acp_sessions.push_back(std::move(session));
 	std::string error;
@@ -161,17 +178,33 @@ UAM_TEST(ComputerUseGlobalOffRejectsAgentConsentRequestsAndPendingApproval)
 	const nlohmann::json request{{"requestId", "global-consent"}, {"method", "computer_use_request"}, {"arguments", {{"reason", "Open the requested application."}}}};
 	const nlohmann::json pending = uam::UamControlService::HandleRequestForTests(app, capability_id, request, now);
 	UAM_ASSERT(pending.value("pendingApproval", false));
+	UAM_ASSERT(app.uam_control_capabilities.front().pending_approval.has_value());
+	UAM_ASSERT_EQ(app.uam_control_capabilities.front().pending_approval->computer_use_task, chat.messages.front().content);
+	UAM_ASSERT(app.uam_control_capabilities.front().pending_approval->computer_use_task != chat.messages.back().content);
+	UAM_ASSERT(app.uam_control_capabilities.front().pending_approval->computer_use_task != request["arguments"]["reason"].get<std::string>());
 	const auto question = uam::UamControlService::PendingApprovalForChat(app, chat.id);
 	UAM_ASSERT(question.has_value());
 	app.settings.computer_use_globally_enabled = false;
 	UAM_ASSERT(!uam::UamControlService::ResolveApproval(app, chat.id, question->request_id_json, {{"computerUse", {"Allow"}}}, &error));
-	UAM_ASSERT_EQ(error, std::string("Computer Use is disabled globally."));
+	// Global Off invalidates the captured turn before the later enablement branch.
+	UAM_ASSERT_EQ(error, std::string("This computer-use approval no longer belongs to the active user turn."));
 	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	UAM_ASSERT(!app.uam_control_capabilities.front().pending_approval.has_value());
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat.id).has_value());
+	UAM_ASSERT(!fs::exists(app.data_root / "computer-use" / chat.id / "task.json"));
+	const fs::path control = app.data_root / "computer-use" / chat.id / "control.json";
+	if (fs::exists(control))
+	{
+		UAM_ASSERT(nlohmann::json::parse(ReadFile(control)).value("state", "") != "armed");
+	}
 	nlohmann::json blocked_request = request;
 	blocked_request["requestId"] = "blocked-global-consent";
 	const nlohmann::json blocked = uam::UamControlService::HandleRequestForTests(app, capability_id, blocked_request, now + 1);
 	UAM_ASSERT(!blocked.value("ok", false));
 	UAM_ASSERT(!blocked.value("pendingApproval", false));
+	UAM_ASSERT_EQ(blocked.value("error", ""), std::string("Computer Use is disabled globally."));
+	UAM_ASSERT(!app.uam_control_capabilities.front().pending_approval.has_value());
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
 	uam::UamControlService::Shutdown(app);
 }
 

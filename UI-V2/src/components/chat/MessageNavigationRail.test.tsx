@@ -25,6 +25,59 @@ describe('Message navigation rail', () => {
       expect(host.textContent).toContain('Not loaded yet')
       expect(host.textContent).toContain('Scroll up or click to load this part of the chat.')
       expect(host.textContent).not.toContain('Open this message')
+      expect(slider.getAttribute('aria-valuetext')).toBe('User message 3 of 3. Not loaded yet. Scroll up or click to load this part of the chat.')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('shows the preview on focus, exposes its text through the slider value and clears on blur', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'First\n  question', createdAt: new Date() }]
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector('[role="slider"]')!
+      expect(host.querySelector('.conversation-rail-preview')).toBeNull()
+      act(() => slider.dispatchEvent(new FocusEvent('focusin', { bubbles: true })))
+      const preview = host.querySelector('.conversation-rail-preview')!
+      expect(preview.getAttribute('aria-hidden')).toBe('true')
+      expect(preview.textContent).toContain('First')
+      expect(slider.getAttribute('aria-valuetext')).toBe('User message 1 of 1: First question')
+      act(() => slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+      expect(host.querySelector('.conversation-rail-preview')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps the focused preview when the pointer leaves and clears it on blur', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'Focused question', createdAt: new Date() }]
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      act(() => slider.focus())
+      act(() => slider.dispatchEvent(new FocusEvent('focusin', { bubbles: true })))
+      act(() => slider.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+      expect(document.activeElement).toBe(slider)
+      expect(host.querySelector('.conversation-rail-preview')).not.toBeNull()
+      act(() => slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+      expect(host.querySelector('.conversation-rail-preview')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('insets the rail so expanded marks end within the 64px gutter', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 1, 2]} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      const rail = host.firstElementChild as HTMLElement
+      expect(rail.classList.contains('left-1')).toBe(true) // 4px
+      expect(rail.classList.contains('left-0')).toBe(false)
+      act(() => host.querySelector('[role="slider"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+      const mark = host.querySelector<HTMLElement>('[data-rail-neighbor]')!
+      expect(4 + parseFloat(mark.style.left) + parseFloat(mark.style.width)).toBeLessThanOrEqual(58)
     } finally { act(() => root.unmount()); host.remove() }
   })
 

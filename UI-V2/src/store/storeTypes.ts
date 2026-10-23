@@ -61,6 +61,11 @@ export type MutationResult = { ok: boolean; error?: string }
 export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
 export type GoalCreateResult = MutationResult & { goalId?: string }
 
+/** Optional presentation observation only; action result, child controls and delivery authority remain separate. */
+export type AcpPromptPresentationObserver = ((identity: { requestId: string; sessionId: string; createdAtMs: number }) => void) & {
+  onInputRecorded?: (identity: { requestId: string; sessionId: string; createdAtMs: number; message: Message }) => void
+}
+
 export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   providerAvailability: ProviderAvailabilityOverride[]
   startupNativeImports: StartupNativeImportStatus
@@ -84,6 +89,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   consumeChatSearchJump: (chatId: string, generation: number) => boolean
   clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
+  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
@@ -189,14 +195,15 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
   setChatSnoozedUntil: (id: string, untilMs: number) => Promise<{ ok: boolean; error?: string }>
   setChatSettled: (id: string, settled: boolean) => Promise<boolean>
-  setActiveSession: (id: string | null) => void
+  setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
-  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => Promise<string | null>
+  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
+  editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
@@ -319,8 +326,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   // ACP actions
   stageChatContextReference: (sessionId: string, reference: ContextReference) => boolean
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
-  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
+  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean, onStarted?: AcpPromptPresentationObserver) => Promise<boolean>
   removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  retryUnsentAcpPrompt: (sessionId: string, expected: { id: string; revision: number }) => Promise<boolean>
   steerQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
   resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
   editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>

@@ -124,6 +124,12 @@ export interface Session {
   memoryLastProcessedMessageCount?: number
   memoryLastProcessedAt?: string
   messageCount?: number
+  /** Ephemeral managed-run discovery metadata; older summaries default to zero. */
+  /** Display-only native lineage; never provider resume or control authority. */
+  subagentParentChatId?: string
+  subagentParentCreatedAt?: string
+  managedSubagentCount?: number
+  managedSubagentRevision?: number
   messagesDigest?: string
   createdAt: Date
   updatedAt: Date

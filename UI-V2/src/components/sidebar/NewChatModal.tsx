@@ -14,7 +14,7 @@ import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
-import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
+import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { ModelPickerContent } from '../chat/ModelPickerContent'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
@@ -246,14 +246,14 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const liveBinding = discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined
-	const cachedAcp = scopedCatalog
+	const cachedAcp = modelCatalogForDefaults(scopedCatalog
 	  ? { ...(liveBinding ?? scopedCatalog),
 	      availableModels: scopedCatalog.availableModels.length ? scopedCatalog.availableModels : liveBinding?.availableModels ?? [],
 	      configOptions: liveBinding?.configOptions?.length ? liveBinding.configOptions : scopedCatalog.configOptions,
 	      modelsLoading: scopedCatalog.modelsLoading,
 	      modelRefreshError: scopedCatalog.modelRefreshError,
 	    }
-	  : liveBinding
+	  : liveBinding)
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true, providerChatDefaults[providerId]).filter((option) => !option.disabled)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
   useEffect(() => {

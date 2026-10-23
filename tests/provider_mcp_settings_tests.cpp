@@ -221,10 +221,70 @@ UAM_TEST(ProviderMcpStatusDistinguishesIdleEnabledSetupFromAnActiveMissingCapabi
 	session.provider_id = chat.provider_id;
 	session.process_execution_host_id = "local";
 	session.running = true;
+	session.lifecycle_state = "starting";
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("configured-unverified"));
+	UAM_ASSERT_EQ(status()["activeSessionCount"].get<std::size_t>(), std::size_t{1});
+	UAM_ASSERT_EQ(status()["configuredSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ(status()["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ(status()["detail"].get<std::string>(), std::string("UAM MCP setup is in progress. No connection has been confirmed."));
+	// Starting cannot excuse a capability that was already bound and is now missing.
+	session.uam_control_capability_id = "missing-bound-capability";
 	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.uam_control_capability_id.clear();
+	// A ready session is no longer in the pre-binding setup window.
+	session.session_ready = true;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.lifecycle_state = "ready";
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.session_ready = false;
+	session.lifecycle_state = "error";
+	session.last_error = "Session setup failed.";
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.lifecycle_state = "starting";
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.last_error.clear();
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("configured-unverified"));
+	app.chats.front().uam_control_explicitly_disabled = true;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
+	app.chats.front().uam_control_explicitly_disabled = false;
 	session.running = false;
 	app.chats.front().uam_control_enabled = false;
 	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
+}
+
+UAM_TEST(ProviderMcpStartingSessionDoesNotHideAnotherActiveMissingCapability)
+{
+	uam::AppState app;
+	for (const char* id : {"starting-mcp-status", "ready-mcp-status"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = "local";
+		chat.uam_control_enabled = true;
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.process_execution_host_id = "local";
+		session.running = true;
+		session.lifecycle_state = app.acp_sessions.size() == 1 ? "starting" : "ready";
+		session.session_ready = app.acp_sessions.size() != 1;
+	}
+	const auto status = [&](const std::string& chat_id)
+	{
+		return uam::provider_mcp_settings::Status(app, "local", "", chat_id)["providers"];
+	};
+	UAM_ASSERT_EQ(status("starting-mcp-status").front()["status"].get<std::string>(), std::string("configured-unverified"));
+	UAM_ASSERT_EQ(status("ready-mcp-status").front()["status"].get<std::string>(), std::string("missing"));
+	const nlohmann::json providers = status("");
+	const auto codex = std::ranges::find_if(providers, [](const nlohmann::json& provider) { return provider["providerId"] == "codex-cli"; });
+	UAM_ASSERT(codex != providers.end());
+	UAM_ASSERT_EQ((*codex)["status"].get<std::string>(), std::string("missing"));
+	UAM_ASSERT_EQ((*codex)["activeSessionCount"].get<std::size_t>(), std::size_t{2});
+	UAM_ASSERT_EQ((*codex)["configuredSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ((*codex)["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
 }
 
 UAM_TEST(ProviderMcpExplicitOptOutRejectsAnOtherwiseLiveLaunchOverride)

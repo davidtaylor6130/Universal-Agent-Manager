@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+namespace uam { class PreparedBranchOriginals; }
+
 namespace uam
 {
 	/// <summary>Only the workspace and session needed to protect shared native history.</summary>
@@ -117,7 +119,9 @@ namespace uam
 	bool PollTemporarySideChatCleanup(AppState& app);
 	bool MigrateWorkspaceFolderOwnership(AppState& app);
 	bool RecoverPendingDeletionTransaction(AppState& app);
-	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr);
+	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr, uam::PreparedBranchOriginals* prepared_originals = nullptr, const std::optional<std::vector<std::string>>& retained_markdown_store_files = std::nullopt, bool select_chat = true, bool regenerate = true);
+	/// Companion callers retain their explicit selection/regeneration controls.
+	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, bool select_chat, bool regenerate = true);
 	WorkspaceFolderRecoveryPreview PreviewUnsortedWorkspaceFolders(const AppState& app);
 	bool RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecoveryResult* result_out = nullptr);
 }
