@@ -642,6 +642,8 @@ struct ChatSession
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
+	/// Inert V2 origin/refusal hint, bound to that exact native ID; never resume or input authority.
+	std::optional<std::string> opencode_v2_session_id;
 	std::optional<ManagedParentResultRecord> managed_parent_result;
 	std::vector<ManagedParentInputReceipt> managed_parent_input_receipts;
 	/// Codec presence only; an absent legacy key is distinct from a present empty/invalid collection.

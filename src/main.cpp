@@ -3,6 +3,10 @@
 #include <algorithm>
 #include "common/discovery/management_discovery.h"
 #include "common/config/build_features.h"
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#include "common/provider/opencode/v2/opencode_v2_session.h"
+#endif
+#include "common/platform/platform_services.h"
 // UAM — CEF multiprocess entry point.
 //
 // CEF subprocesses and service modes bypass GUI crash supervision. The GUI child
@@ -116,6 +120,10 @@ namespace
 int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/)
 {
 	const std::vector<std::string> arguments = LaunchArguments();
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	if (uam::opencode_v2::IsCommand(arguments))
+		return uam::opencode_v2::RunCommand(arguments, PlatformServicesFactory::Instance().process_service).value_or(1);
+#endif
 	if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
 #if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))
@@ -157,6 +165,10 @@ int main(int argc, char* argv[])
 	}
 #endif
 	const std::vector<std::string> arguments(argv, argv + argc);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	if (uam::opencode_v2::IsCommand(arguments))
+		return uam::opencode_v2::RunCommand(arguments, PlatformServicesFactory::Instance().process_service).value_or(1);
+#endif
 	if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
 #if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))

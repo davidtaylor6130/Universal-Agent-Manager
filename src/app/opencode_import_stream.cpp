@@ -1,4 +1,5 @@
 #include "app/opencode_import_stream.h"
+#include "common/provider/opencode/v2/opencode_v2_session.h"
 #include "app/runtime_orchestration_services.h"
 #include "core/native_import_content.h"
 #include "common/platform/platform_services.h"
@@ -164,7 +165,7 @@ namespace uam::opencode_import
 		{
 			invocation.output_sink = append;
 			invocation.structured_stdout = true;
-			const ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, workspace, 30000, stop);
+			const ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, workspace, opencode_v2::HistoryCommandTimeoutMilliseconds(invocation.argv), stop);
 			if (!result.ok || result.exit_code != 0 || stop.stop_requested())
 			{
 				error = "OpenCode could not export the session: " + strings::NonEmptyOrFallback(result.error, "exit " + std::to_string(result.exit_code));

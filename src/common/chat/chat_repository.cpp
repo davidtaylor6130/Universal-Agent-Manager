@@ -124,6 +124,7 @@ namespace
 	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatOpenCodeV2SessionIdField = "opencode_v2_session_id";
 	constexpr std::string_view kChatRemoteClaudeSessionUnstartedField = "remote_claude_session_unstarted";
 	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatRemoteProcessExistsField = "remote_process_exists";
@@ -1522,6 +1523,7 @@ namespace
 	{
 		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
 		       lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id &&
+		       lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		       lhs.managed_parent_input_receipts == rhs.managed_parent_input_receipts && lhs.managed_parent_result == rhs.managed_parent_result &&
 		       lhs.managed_followup_incarnation == rhs.managed_followup_incarnation &&
 		       lhs.managed_followup_input_unavailable == rhs.managed_followup_input_unavailable;
@@ -1972,6 +1974,11 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		if (root.Find(kChatOpenCodeV2SessionIdField) != nullptr)
+		{
+			const std::string origin = JsonStringOrEmpty(root.Find(kChatOpenCodeV2SessionIdField));
+			chat.opencode_v2_session_id = origin.starts_with("ses_") && origin.size() <= 512 && uam::execution_hosts::IsPortableId(origin) ? origin : "";
+		}
 		if (const JsonValue* quota = root.Find("claude_quota_continuation"); quota != nullptr && quota->type == JsonValue::Type::Object)
 		{
 			ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -3377,6 +3384,7 @@ namespace
 	{
 		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
 		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
+		    lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		    lhs.temporary_storage_owner_token == rhs.temporary_storage_owner_token &&
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
@@ -3949,6 +3957,7 @@ try
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	if (chat.opencode_v2_session_id) uam::json::SetString(root, kChatOpenCodeV2SessionIdField, *chat.opencode_v2_session_id);
 	if (!chat.claude_quota_continuation.id.empty())
 	{
 		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;

@@ -681,6 +681,7 @@ namespace uam
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
 		bool prompt_image_supported = false;
 		std::shared_ptr<OpenCodeNativeCompanion> opencode_native_companion;
+		bool opencode_v2_native = false; // owned local process only; never persisted
 		// Optional guard captured from the actual process adapter, never mutable chat/provider selection.
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
