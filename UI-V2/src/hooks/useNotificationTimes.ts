@@ -17,6 +17,16 @@ export function useNotificationTimes(sources: readonly NotificationTimeSource[])
 /** One local clock for the open, nonempty panel; no provider polling or live announcements. */
 export function useNotificationClock(enabled: boolean): number {
   const [now, setNow] = useState(Date.now)
+  const [wasEnabled, setWasEnabled] = useState(enabled)
+  // Reopening refreshes before commit so a closed-panel clock never paints stale ages or day groups.
+  if (wasEnabled !== enabled) {
+    setWasEnabled(enabled)
+    if (enabled) {
+      const current = Date.now()
+      setNow(current)
+      return current
+    }
+  }
   useEffect(() => {
     if (!enabled) return
     const tick = () => setNow(Date.now())

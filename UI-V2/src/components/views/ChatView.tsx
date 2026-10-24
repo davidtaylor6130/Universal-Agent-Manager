@@ -2860,7 +2860,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // Draft keystrokes re-render ChatView; the transcript only depends on conversation state, so keep its rows.
   // Unsent actions run at click time and read the latest render through this ref.
   const unsentActionsRef = useRef({ removeUnsent, retryUnsent, retryUnsentReceipt })
-  unsentActionsRef.current = { removeUnsent, retryUnsent, retryUnsentReceipt }
+  useLayoutEffect(() => { unsentActionsRef.current = { removeUnsent, retryUnsent, retryUnsentReceipt } })
+  // Today/Yesterday dividers read the clock, so a new local day rebuilds the rows on the next render.
+  const transcriptDay = new Date().toDateString()
   // formatWorkedDuration rounds to whole seconds, so rounding here keeps the label identical.
   const turnWorkedDisplaySeconds = turnWorkedSeconds === undefined ? undefined : Math.round(turnWorkedSeconds)
   const transcriptRows = useMemo(() => {
@@ -3121,7 +3123,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
                 return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
-  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, workSections, workingDisplayMode])
+  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, workSections, workingDisplayMode])
 
   return (
     <FileInspectionProvider chatId={session.id}>

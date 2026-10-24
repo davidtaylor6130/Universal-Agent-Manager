@@ -1,4 +1,4 @@
-import { act, StrictMode } from 'react'
+import { act, StrictMode, useLayoutEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useNotificationClock, useNotificationTimes } from './useNotificationTimes'
@@ -66,4 +66,26 @@ it('refreshes the open clock on ticks, focus and visibility and stops after disa
     act(() => root.unmount())
   }
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('never commits the stale closed-panel clock when the panel reopens', () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  const committed: number[] = []
+  function Clock({ enabled }: { enabled: boolean }) {
+    const now = useNotificationClock(enabled)
+    useLayoutEffect(() => { committed.push(now) })
+    return null
+  }
+  try {
+    act(() => root.render(<Clock enabled={false} />))
+    vi.setSystemTime(86_400_000)
+    committed.length = 0
+    act(() => root.render(<Clock enabled />))
+    expect(committed).toEqual([86_400_000])
+  } finally {
+    act(() => root.unmount())
+  }
 })
