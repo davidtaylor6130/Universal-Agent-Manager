@@ -114,7 +114,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (!data) throw new Error('Invalid history response. Reload to try again.')
       if (data.generation !== generation) throw new Error('History changed. Open the review again.')
       data.errors.forEach((message) => console.warn(`[Startup history] ${message}`))
-      setPage(data); setOffset(nextOffset); setSelected([]); selectionAnchor.current = null
+      setPage(data); setOffset(nextOffset); setSelected([]); setAssignmentId(null); selectionAnchor.current = null
       if (data.phase === 'importing') {
         if (publication.current.expectedCount === 0) publication.current.start = status
         setAwaitingPublication(true)
@@ -179,7 +179,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (!data) throw new Error('Invalid history response. Reload to try again.')
       if (data.generation !== generation) throw new Error('History changed. Open the review again.')
       data.errors.forEach((message) => console.warn(`[Startup history] ${message}`))
-      setPage(data); setOffset(0); setSelected([])
+      setPage(data); setOffset(0); setSelected([]); setAssignmentId(null)
       if (importSelected && data.phase === 'complete') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
@@ -262,8 +262,11 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
             const providerName = providerMetadataForId(candidate.providerId).name
             const host = candidate.executionHostId && candidate.executionHostId !== 'local' ? candidate.executionHostId : ''
             const providerLabel = host ? `${providerName} · ${host}` : providerName
-            return <div key={candidate.candidateId}>
-              <label className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
+            const grouped = !candidate.folderId || candidate.newWorkspace
+            const assigning = assignmentId === candidate.candidateId
+            const formId = `native-assignment-${candidate.candidateId}`
+            return <div key={candidate.candidateId} style={grouped ? { borderBottom: '1px solid var(--border)' } : undefined}>
+              <label className="uam-rv-row" style={grouped ? { borderBottom: 'none' } : undefined} data-selected={selected.includes(candidate.candidateId)}>
                 <input className="uam-rv-check" type="checkbox" data-native-candidate-id={candidate.candidateId} aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
                 <span className="uam-rv-row__title">{candidate.title}</span>
                 <Tooltip label={providerLabel}>
@@ -276,9 +279,9 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
               {!candidate.folderId && <div className="grid gap-2 px-4 pb-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="uam-rv-muted">Workspace required</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} disabled={busy || importing} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
+                  <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} aria-expanded={assigning} aria-controls={assigning ? formId : undefined} disabled={busy || importing || assigning} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
                 </div>
-                {assignmentId === candidate.candidateId && <div className="grid gap-2">
+                {assigning && <form id={formId} className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void assignWorkspace(candidate.candidateId) }}>
                   <p className="uam-rv-muted">Use the native workspace below. It will be saved in UAM only when a selected chat is imported.</p>
                   <code className="break-all">{candidate.workspaceDirectory}</code>
                   <label className="grid gap-1">
@@ -286,10 +289,10 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
                     <input ref={assignmentInput} className="uam-field" aria-label={`Workspace name for ${candidate.title}`} maxLength={256} value={workspaceName} disabled={busy || importing} onChange={(event) => setWorkspaceName(event.target.value)} />
                   </label>
                   <div className="flex justify-end gap-2">
-                    <Button size="sm" variant="ghost" disabled={busy || importing} onClick={() => { assignmentFocus.current = candidate.candidateId; setAssignmentId(null) }}>Cancel assignment</Button>
-                    <Button size="sm" disabled={busy || importing || !workspaceName.trim()} onClick={() => void assignWorkspace(candidate.candidateId)}>Stage workspace</Button>
+                    <Button type="button" size="sm" variant="ghost" disabled={busy || importing} onClick={() => { assignmentFocus.current = candidate.candidateId; setAssignmentId(null) }}>Cancel assignment</Button>
+                    <Button type="submit" size="sm" disabled={busy || importing || !workspaceName.trim()}>Stage workspace</Button>
                   </div>
-                </div>}
+                </form>}
               </div>}
               {candidate.newWorkspace && <p className="uam-rv-muted px-4 pb-2">New workspace: {candidate.workspaceTitle}. Saved with import.</p>}
             </div>

@@ -45,6 +45,24 @@ describe('startup native history chooser', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
   })
 
+  it('drops an open assignment on paging so one Escape closes the review', async () => {
+    const unassigned = { ...page('scan-1', ['one']), totalCount: 101, nextOffset: 100 }; unassigned.candidates[0].folderId = ''
+    mount(); await answer(0, unassigned)
+    await click('Assign workspace for one')
+    expect(button('Assign workspace for one').getAttribute('aria-expanded')).toBe('true')
+    await click('Next'); await answer(1, { ...page('scan-1', ['two']), totalCount: 101, nextOffset: 101 })
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('stages the workspace when Enter is pressed in the name field', async () => {
+    const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
+    mount(); await answer(0, unassigned)
+    await click('Assign workspace for one')
+    await act(async () => document.body.querySelector<HTMLInputElement>('[aria-label="Workspace name for one"]')!.form!.requestSubmit())
+    expect(requests[1].action).toBe('assignSystemNativeImportWorkspace')
+  })
+
   it('requires a workspace assignment before importing and stages only the witnessed source', async () => {
     const unassigned = page('scan-1', ['one'])
     unassigned.candidates[0].folderId = ''
