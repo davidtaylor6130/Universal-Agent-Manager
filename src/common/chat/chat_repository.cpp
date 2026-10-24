@@ -23,6 +23,7 @@
 #include "common/platform/platform_services.h"
 #include <stdexcept>
 #include "common/provider/provider_runtime.h"
+#include "common/provider/native_session_storage_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/codex_thread_id.h"
 #include "common/provider/native_agent_history.h"
@@ -2566,7 +2567,7 @@ namespace
 		}
 
 		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
-		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
 			chat.branch_root_chat_id = chat.id;
@@ -5224,7 +5225,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	}
 
 	ApplyChatTimestampFallbacks(chat);
-	ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+	uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
 	{
@@ -5473,7 +5474,7 @@ namespace
 
 		const std::string previous_id = backup_chat.chat->id;
 		recovered.id = recovered_id;
-		ProviderRuntimeRegistry::ResolveById(recovered.provider_id).NormalizeLoadedNativeSessionId(recovered);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(recovered);
 
 		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 		{
