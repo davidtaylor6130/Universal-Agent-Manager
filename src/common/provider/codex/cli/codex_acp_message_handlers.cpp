@@ -158,10 +158,14 @@ void HandleCodexTokenUsageUpdated(AcpSessionState& session, const nlohmann::json
 	}
 
 	session.provider_usage.token_usage.available = true;
+	session.provider_usage.token_usage.session_id = session.session_id;
 	session.provider_usage.token_usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
 	session.provider_usage.token_usage.total = parsed_total;
 	session.provider_usage.token_usage.last = parsed_last;
 	session.provider_usage.token_usage.model_context_window = JsonNonNegativeInt64Field(*token_usage, "modelContextWindow").value_or(0);
+	const std::string turn_id = JsonDiagnosticStringValue(params, "turnId");
+	if (!thread_id.empty() && thread_id == session.session_id && !turn_id.empty() && turn_id == session.codex_turn_id)
+		RecordGoalReviewCumulativeUsage(session, parsed_total.total_tokens);
 }
 
 void MergeCodexRateLimitWindow(AcpRateLimitWindowState& window, const nlohmann::json* update)

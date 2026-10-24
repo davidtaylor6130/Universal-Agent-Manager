@@ -311,6 +311,9 @@ namespace uam
 		AcpTokenUsageBreakdownState total;
 		AcpTokenUsageBreakdownState last;
 		std::int64_t model_context_window = 0;
+		// Runtime-only goal baseline from correlated cumulative receipts, separate from display totals.
+		std::optional<std::int64_t> goal_cumulative_total;
+		std::string goal_cumulative_session_id;
 	};
 
 	struct AcpContextUsageState
@@ -828,6 +831,16 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// Runtime receipt from validated provider usage, never reconstructed from review text.
+		struct GoalReviewUsage
+		{
+			int turn_serial = -1;
+			std::optional<std::int64_t> tokens;
+			std::optional<std::int64_t> cumulative_baseline;
+			std::string session_id;
+			bool fresh_session = false;
+			bool consumed = false;
+		} goal_review_usage;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
 		bool acp_resume_fallback_attempted = false;

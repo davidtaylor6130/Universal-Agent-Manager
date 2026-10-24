@@ -390,6 +390,12 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 
 	const std::string owner_chat_id = GoalOwnerChatId(chat);
 	const std::string goal_id = iteration_review ? chat.goal_iteration_goal_id : session.goal_review_goal_id;
+	if (session.goal_review_usage.consumed) return true;
+	const std::optional<std::int64_t> review_tokens = session.goal_review_usage.turn_serial == session.turn_serial &&
+	    !session.goal_review_usage.session_id.empty() && session.goal_review_usage.session_id == session.session_id
+	    ? session.goal_review_usage.tokens : std::nullopt;
+	session.goal_review_usage.turn_serial = session.turn_serial;
+	session.goal_review_usage.consumed = true;
 	const std::string review_user_prompt = session.goal_review_user_prompt;
 	const std::string review_assistant_text = session.goal_review_assistant_text;
 	const std::string review_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
@@ -397,6 +403,26 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	                                     ? chat.goal_iteration_repair_attempts
 	                                     : session.goal_review_repair_attempts;
 	ClearGoalReviewState(session);
+	Goal* active_review_goal = GoalService::FindActiveGoal(app, owner_chat_id);
+	if (active_review_goal != nullptr && active_review_goal->id == goal_id)
+	{
+		if (review_tokens)
+		{
+			GoalService::RecordTurnCompletion(app, owner_chat_id, goal_id, *review_tokens);
+			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
+			// Account the completed review before admitting a repair or consuming a decision.
+			if (GoalService::FindActiveGoal(app, owner_chat_id) == nullptr)
+			{
+				StopCompletedGoalIterationRuntime(app, chat, session);
+				if (browser) uam::PushStateUpdateIfChanged(browser, app);
+				return true;
+			}
+		}
+		else
+		{
+			AppendGoalLoopDiagnostic(session, "goal_review_usage_unknown", goal_id);
+		}
+	}
 
 	const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
 	if (!parsed.has_value())

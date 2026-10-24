@@ -178,6 +178,7 @@ namespace
 		usage.last.output_tokens = session.antigravity_output_tokens;
 		usage.last.total_tokens = session.antigravity_input_tokens + session.antigravity_output_tokens;
 		usage.last_available = true;
+		uam::acp_detail::RecordGoalReviewTurnUsage(session, usage.last.total_tokens);
 	}
 
 	/// <summary>Native denial results identify action kinds, not individual tool steps.</summary>

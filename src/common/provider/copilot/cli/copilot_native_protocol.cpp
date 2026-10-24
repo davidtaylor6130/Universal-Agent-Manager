@@ -1234,6 +1234,7 @@ void ApplyTokenUsage(AcpSessionState& session, const nlohmann::json& data)
 	usage.total.cached_input_tokens = add(usage.total.cached_input_tokens, usage.last.cached_input_tokens);
 	usage.total.cache_write_input_tokens = add(usage.total.cache_write_input_tokens, usage.last.cache_write_input_tokens);
 	usage.total.total_tokens = add(usage.total.total_tokens, usage.last.total_tokens);
+	RecordGoalReviewTurnUsage(session, usage.last.total_tokens, true);
 }
 
 }

@@ -707,6 +707,7 @@ static void HandleClaudeResultUsage(AcpSessionState& session, const nlohmann::js
 	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
 	usage.total = next;
 	usage.last = {};
+	RecordGoalReviewCumulativeUsage(session, next.total_tokens);
 }
 
 void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
