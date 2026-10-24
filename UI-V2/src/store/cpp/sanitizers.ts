@@ -299,6 +299,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     managedLaunchRunId: value.contentDeferred === true ? sanitizeManagedOriginRunId(value.managedLaunchRunId) : undefined,
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
@@ -401,6 +402,7 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     ...(isString(value.nativeSourceField) ? { nativeSourceField: value.nativeSourceField } : {}),
     ...(isString(value.nativeAssetKey) ? { nativeAssetKey: value.nativeAssetKey } : {}),
     ...(isString(value.contentDigest) ? { contentDigest: value.contentDigest } : {}),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
     ...(legacy ? { path } : {}),
   }

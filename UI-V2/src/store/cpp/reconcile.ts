@@ -1026,6 +1026,7 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       (tool.content ?? '') === (other.content ?? '') &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
       (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
+      tool.historyDigest === other.historyDigest &&
       tool.managedLaunchRunId === other.managedLaunchRunId &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
@@ -1077,7 +1078,8 @@ export function attachmentsEquivalent(existing: Attachment[], next: Attachment[]
       (attachment.nativeToolCallId ?? '') === (other.nativeToolCallId ?? '') &&
       (attachment.nativeSourceField ?? '') === (other.nativeSourceField ?? '') &&
       (attachment.nativeAssetKey ?? '') === (other.nativeAssetKey ?? '') &&
-      (attachment.contentDigest ?? '') === (other.contentDigest ?? '')
+      (attachment.contentDigest ?? '') === (other.contentDigest ?? '') &&
+      attachment.historyDigest === other.historyDigest
   })
 }
 
