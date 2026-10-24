@@ -3066,6 +3066,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
                     {turnStart && <TurnStartTime
                       timestamp={turnStart.createdAt.getTime()}
+                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
                       identity={turnIdentity}
                       showIdentity={showTurnIdentity}
                     />}

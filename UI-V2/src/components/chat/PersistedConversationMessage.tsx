@@ -14,7 +14,8 @@ import { MessageFrame, ToolCallModal } from './ToolCallViews'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, dayDividerLabel, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from './conversationHistoryModel'
 
 /** Settled turn metadata must not reformat dates on composer or stream updates. */
-export const TurnStartTime = memo(function TurnStartTime({ timestamp, identity, showIdentity }: { timestamp: number; identity: string; showIdentity: boolean }) {
+// timezoneOffset participates in memo equality so local time text refreshes on the next render.
+export const TurnStartTime = memo(function TurnStartTime({ timestamp, identity, showIdentity }: { timestamp: number; timezoneOffset: number; identity: string; showIdentity: boolean }) {
   const createdAt = new Date(timestamp)
   // Provider and model show only when they change; otherwise the time is screen-reader text (the row title shows it on hover).
   return <time className={showIdentity ? 'conversation-turn-start' : 'conversation-turn-start sr-only'} dateTime={createdAt.toISOString()}>
@@ -208,7 +209,7 @@ export function PersistedConversationHistory({ messages, start, end, nativeStart
       return <WorkSectionContext.Provider key={message.id} value={sectionControl}>
         <div className="space-y-1" data-message-index={index + nativeStartIndex} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
           {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
-          {turnStart && <TurnStartTime timestamp={turnStart.createdAt.getTime()} identity={turnIdentity}
+          {turnStart && <TurnStartTime timestamp={turnStart.createdAt.getTime()} timezoneOffset={turnStart.createdAt.getTimezoneOffset()} identity={turnIdentity}
             showIdentity={Boolean(turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))} />}
           {message.role !== 'user' && heading}
           <PersistedConversationMessage passive message={message} hasDeliveredResponse={hasDeliveredResponse} hasStoppedResponse={hasStoppedResponse}
