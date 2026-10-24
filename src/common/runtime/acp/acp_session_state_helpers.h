@@ -11,6 +11,19 @@
 
 namespace uam
 {
+	inline std::optional<AcpStopProjectionOwner> CaptureAcpStopProjectionOwner(const AcpSessionState& session)
+	{
+		if (!session.shutdown_chat_incarnation) return {};
+		return AcpStopProjectionOwner{session.shutdown_data_root, session.shutdown_chat_incarnation, session.permission_review_incarnation, &session};
+	}
+
+	inline bool AcpStopProjectionStillOwned(const AppState& app, const AcpSessionState* session, const ChatSession* chat,
+	    const std::optional<AcpStopProjectionOwner>& owner)
+	{
+		return !owner || (session && chat && owner->runtime == session && owner->data_root == app.data_root &&
+		    owner->chat_incarnation == chat->metadata_incarnation && owner->runtime_incarnation == session->permission_review_incarnation);
+	}
+
 	/// <summary>Native Claude auto realizes UAM automatic mode without restarting each prepared turn.</summary>
 	inline bool AcpSessionMatchesPermissionMode(const AcpSessionState& session, std::string_view desired_mode, std::string_view safety_tier)
 	{
