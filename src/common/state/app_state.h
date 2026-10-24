@@ -764,6 +764,7 @@ namespace uam
 		std::unique_ptr<std::jthread> uam_control_relay;
 		std::filesystem::path provider_configuration_directory;
 		std::string launch_model_options_id;
+		bool launch_model_options_captured = false; // Runtime-only: empty captured Default differs from an unknown reattached launch.
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;

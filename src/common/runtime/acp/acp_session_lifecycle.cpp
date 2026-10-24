@@ -985,6 +985,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.goal_turn_kind.clear();
 	session.goal_turn_model_id.clear();
 	session.launch_model_options_id.clear();
+	session.launch_model_options_captured = false;
 	session.goal_internal_session = false;
 	session.goal_review_turn = false;
 	session.goal_review_scheduled = false;
@@ -2147,7 +2148,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 
 	session.running = true;
 	if (!session.recovering_remote_turn && !session.recovering_remote_process)
+	{
 		session.launch_model_options_id = launch_chat.model_id;
+		session.launch_model_options_captured = true;
+	}
 	session.reconnect_pending = false;
 	session.reconnect_not_before_time_s = 0.0;
 	session.last_process_id = AcpProcessHandleLabel(session);

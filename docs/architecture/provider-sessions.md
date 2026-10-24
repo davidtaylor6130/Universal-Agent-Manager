@@ -2,6 +2,8 @@
 
 Provider adapters translate ACP, Codex app-server, Copilot SDK server and native stream-JSON protocols into one UAM lifecycle and message model. Native terminals use a separate PTY path. Shared UAM services provide product features across providers, while adapters own launch/protocol handling and native session identity. Start, cancel, exit, resume and permission results must stay with the owning chat, including concurrent and remote instances.
 
+Shared admission binds [queued setting preparation](../providers/models.md#queued-setting-preparation) to the owning chat and raw queue; adapters continue to decide whether a setting applies per turn or needs a restart, and public setting guards retain pending-input barriers. Existing native continuation controls retain their separately validated invocation scope and future user FIFO.
+
 [Provider agreements](../providers/providers.md) · [Terminal View](../providers/terminal-view/terminal-view.md).
 
 [Engineering reference](../reference/architecture/provider-sessions.md).

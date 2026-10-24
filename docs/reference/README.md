@@ -6,6 +6,7 @@ These pages preserve useful source-level details from the trial base, outside th
 |---|---|
 | [Previous agent code map](agent-code-map.md) | Retained bridge/actions and source detail, not current instructions |
 | [Source map](source-map.md) | Entry points for checking implementation routes |
+| [Queue setting admission audit](nongeneric-queue-setting-admission.md) | Per-adapter mode, model and reasoning routes with isolated corrections, scoped fixtures and remaining verification |
 | [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
 | [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
 | [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
