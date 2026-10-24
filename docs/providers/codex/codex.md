@@ -9,7 +9,7 @@ Codex CLI uses app-server over stdio. Common behaviour is defined once in the [p
 | `structured-chat` | Both | Partial | Native protocol normalised into UAM messages. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact native status replies bind new terminals and guarded local/SSH rollout refresh exists; live concurrent view-continuation acceptance remains pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
-| `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
+| `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Implemented | Guarded chosen-prefix branches preserve source history, compacted context and branch-owned originals; supported local regeneration exists, while native/model/SSH continuation and acceptance retain their explicit limits. |
 | `editing-messages` | UAM | Implemented | Definitely-unsent edits save locally; delivered edits branch with independently selected files and captured skills; unsupported recorded-source delivery refuses explicitly and visual/platform/user acceptance remains pending. |

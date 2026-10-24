@@ -9,7 +9,7 @@ Gemini CLI uses ACP. Common behaviour is defined once in the [provider agreement
 | `structured-chat` | Both | Partial | Native protocol normalised into UAM messages. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves bound history; current JSONL folding and guarded publication have focused native verification, while controller-local terminal originals have a guarded background import with focused native verification and other media callers, live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
-| `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
+| `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching exists; empty-chat and compacted-context follow-ups retain outstanding work/acceptance. |
 | `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |

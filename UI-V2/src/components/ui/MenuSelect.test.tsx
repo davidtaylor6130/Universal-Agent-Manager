@@ -18,6 +18,42 @@ describe('MenuSelect id', () => {
 })
 
 describe('MenuSelect disabled options', () => {
+  it('retries option focus after a positioned menu becomes visible and cancels deferred focus on close', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const frames = new Map<number, FrameRequestCallback>()
+    let frameId = 0
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id) })
+    const originalFocus = HTMLElement.prototype.focus
+    let menuHidden = true
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+      if (menuHidden && this.getAttribute('role') === 'option') return
+      originalFocus.call(this, options)
+    })
+    try {
+      act(() => root.render(createElement(MenuSelect, { label: 'Starting branch', value: 'default', options: [{ value: 'default', label: 'Default' }, { value: 'head', label: 'HEAD' }], onChange: vi.fn() })))
+      const trigger = host.querySelector<HTMLButtonElement>('[role="combobox"]')!
+      trigger.focus()
+      act(() => trigger.click())
+      const menu = document.querySelector<HTMLElement>('[role="listbox"]')!
+      const options = menu.querySelectorAll<HTMLButtonElement>('[role="option"]')
+      expect(document.activeElement).toBe(trigger)
+      menuHidden = false
+      act(() => { for (const [id, callback] of frames) { frames.delete(id); callback(0) } })
+      expect(document.activeElement).toBe(options[0])
+      act(() => options[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      expect(document.activeElement).toBe(options[1])
+      expect(frames.size).toBeGreaterThan(0)
+      act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      expect(frames.size).toBe(0)
+      expect(document.activeElement).toBe(trigger)
+    } finally {
+      act(() => root.unmount()); host.remove(); focus.mockRestore(); vi.unstubAllGlobals()
+    }
+  })
+
   it('rejects hidden options and skips them during keyboard navigation', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
