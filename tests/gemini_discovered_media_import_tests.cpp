@@ -1,7 +1,9 @@
 #include "test_harness.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/provider/gemini_history_loader.h"
+#include "common/runtime/native_refresh_lifetime.h"
 #include "core/native_import_content.h"
+#include <iomanip>
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(_WIN32))
 
@@ -606,6 +608,240 @@ UAM_TEST(GeminiDiscoveredBatchRepairsMissingOwnedOriginalFromUnchangedNativeSour
 UAM_TEST(GeminiDiscoveredBatchRepairsCorruptOwnedOriginalFromUnchangedNativeSource)
 {
 	AssertDiscoveredGeminiOriginalHealthRepair(true);
+}
+
+namespace
+{
+	struct GeminiPrebatchFixture : GeminiMediaBatchFixture
+	{
+		uam_test::ScopedEnvVar home{"GEMINI_CLI_HOME", (temp.root / "profile").string()};
+		GeminiPrebatchFixture()
+		{
+			(void)Parse(BatchMediaBody::InlineOnly);
+			const auto storage = temp.root / "profile" / ".gemini";
+			const auto project = storage / "tmp" / "prebatch-project";
+			UAM_ASSERT(uam::io::WriteTextFile(storage / "projects.json", Json{{"projects", {{app.folders.front().directory, "prebatch-project"}}}}.dump()));
+			UAM_ASSERT(uam::io::WriteTextFile(project / ".project_root", app.folders.front().directory));
+			source = project / "chats" / (kBatchMediaSession + ".json");
+			UAM_ASSERT(uam::io::WriteTextFile(source, source_bytes));
+		}
+		ChatHistorySyncService::LocalHistoryDiscovery Discover() const
+		{
+			return service.DiscoverProviderChatsForFolder(app.folders.front(), nullptr, {}, 0, false, {}, {}, "gemini-cli");
+		}
+		void AssertSourceOnly() const
+		{
+			UAM_ASSERT_EQ(uam_test::ReadFile(source), source_bytes);
+			UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, identity.id)));
+			UAM_ASSERT(!fs::exists(app.data_root / std::string(uam::native_assets::kStoreDirectory)));
+		}
+	};
+
+	void AwaitDiscoveryRetirement(unsigned remaining = 0)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (uam::native_history::detail::discovery_parser_owners.load() != remaining && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT_EQ(uam::native_history::detail::discovery_parser_owners.load(), remaining);
+	}
+}
+
+UAM_TEST(GeminiDiscoveryPayloadCopiesRetainCleanupAcrossCancellationAndRefusal)
+{
+	AwaitDiscoveryRetirement();
+	GeminiPrebatchFixture fixture;
+	auto discovery = fixture.Discover();
+	auto other = fixture.Discover();
+	UAM_ASSERT(discovery.result.success && discovery.chats.size() == 1);
+	UAM_ASSERT(other.result.success && other.chats.size() == 1);
+	std::weak_ptr<const uam::native_assets::InlinePayload> payload = discovery.chats.front().messages.front().attachments.front().native_inline_payload;
+	std::weak_ptr<const uam::native_assets::InlinePayload> other_payload = other.chats.front().messages.front().attachments.front().native_inline_payload;
+	// Startup selection keeps a second handle outside the raw discovery result.
+	std::optional<ChatSession> selected = discovery.chats.front();
+	discovery.CancelPending();
+	UAM_ASSERT(!payload.expired() && !other_payload.expired());
+	selected.reset();
+	AwaitDiscoveryRetirement(1);
+	UAM_ASSERT(payload.expired() && !other_payload.expired());
+	std::weak_ptr<const uam::native_assets::InlinePayload> abandoned_payload;
+	{
+		auto abandoned = fixture.Discover();
+		UAM_ASSERT(abandoned.result.success && abandoned.chats.size() == 1);
+		abandoned_payload = abandoned.chats.front().messages.front().attachments.front().native_inline_payload;
+	} // No CancelPending or batch admission: raw-result destruction still retires it.
+	AwaitDiscoveryRetirement(1);
+	UAM_ASSERT(abandoned_payload.expired() && !other_payload.expired());
+	// Refuse the independent producer at the actual registered-workspace filter.
+	fixture.app.folders.clear();
+	UAM_ASSERT(fixture.service.FilterStartupImportCandidates(fixture.app, other));
+	UAM_ASSERT(other.chats.empty());
+	AwaitDiscoveryRetirement();
+	UAM_ASSERT(other_payload.expired());
+	fixture.AssertSourceOnly();
+}
+
+UAM_TEST(GeminiDiscoveryBoundsProducersWithoutConsumingBatchCapacity)
+{
+	AwaitDiscoveryRetirement();
+	GeminiPrebatchFixture fixture;
+	using Empty = GeminiHistoryParseContext::RetainedPayloads;
+	auto first = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Empty, uam::native_history::NativeRefreshWorkerPool::DiscoveryParser>();
+	auto second = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Empty, uam::native_history::NativeRefreshWorkerPool::DiscoveryParser>();
+	UAM_ASSERT(first && second);
+	const auto refused = fixture.Discover();
+	UAM_ASSERT(!refused.result.success && !refused.result.errors.empty());
+	UAM_ASSERT(refused.chats.empty() && !refused.Pending());
+	auto batch = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Empty>();
+	UAM_ASSERT(batch); // Pending producers cannot deadlock their own admission.
+	fixture.AssertSourceOnly();
+	first.reset(); second.reset(); batch.reset();
+	AwaitDiscoveryRetirement();
+	auto retry = fixture.Discover();
+	UAM_ASSERT(retry.result.success && retry.chats.size() == 1);
+	retry.CancelPending();
+	AwaitDiscoveryRetirement();
+}
+
+UAM_TEST(GeminiDiscoveryReportsScanWidePayloadAdmissionFailure)
+{
+	AwaitDiscoveryRetirement();
+	GeminiPrebatchFixture fixture;
+	const auto storage = fixture.temp.root / "profile" / ".gemini";
+	const auto other_workspace = fixture.temp.root / "other-workspace";
+	fs::create_directories(other_workspace);
+	const auto other_project = storage / "tmp" / "other-project";
+	UAM_ASSERT(uam::io::WriteTextFile(storage / "projects.json", Json{{"projects", {
+	    {fixture.app.folders.front().directory, "prebatch-project"}, {other_workspace.string(), "other-project"}}}}.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(other_project / ".project_root", other_workspace.string()));
+	// Each project fits the original per-project budget; together they exceed
+	// the new scan-wide bound by one. Every input is private and complete.
+	for (unsigned index = 1; index <= GeminiHistoryParseContext::kMaxAttachments; ++index)
+	{
+		auto document = Json::parse(fixture.source_bytes);
+		std::ostringstream id;
+		id << "eeeeeeee-eeee-4eee-8eee-" << std::setfill('0') << std::setw(12) << index;
+		document["sessionId"] = id.str();
+		const bool other = index > GeminiHistoryParseContext::kMaxAttachments / 2;
+		document["workspace"] = other ? other_workspace.string() : fixture.app.folders.front().directory;
+		const auto directory = other ? other_project / "chats" : fixture.source.parent_path();
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (id.str() + ".json"), document.dump()));
+	}
+	auto discovery = fixture.service.DiscoverProviderChatsForFolder({}, nullptr, {}, 0, false, {}, {}, "gemini-cli");
+	UAM_ASSERT(!discovery.result.success);
+	UAM_ASSERT(!discovery.result.errors.empty());
+	UAM_ASSERT(discovery.result.errors.front().find("256") != std::string::npos);
+	UAM_ASSERT(!discovery.chats.empty() && discovery.chats.size() <= GeminiHistoryParseContext::kMaxAttachments);
+	discovery.CancelPending();
+	AwaitDiscoveryRetirement();
+	fixture.AssertSourceOnly();
+	UAM_ASSERT_EQ(std::distance(fs::directory_iterator(other_project / "chats"), fs::directory_iterator{}), 128);
+}
+
+UAM_TEST(GeminiDiscoveryPublicationReleasesProducerAndPreservesOwnedOriginal)
+{
+	AwaitDiscoveryRetirement();
+	GeminiPrebatchFixture fixture;
+	auto discovery = fixture.Discover();
+	UAM_ASSERT(discovery.result.success && discovery.chats.size() == 1);
+	std::weak_ptr<const uam::native_assets::InlinePayload> payload = discovery.chats.front().messages.front().attachments.front().native_inline_payload;
+	fixture.AssertPublished(discovery, true);
+	AwaitDiscoveryRetirement();
+	UAM_ASSERT(payload.expired());
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.identity.id, true);
+	UAM_ASSERT(saved && saved->messages.size() == 1);
+	const auto original = uam::native_assets::ReadOwned(fixture.app.data_root, saved->id, saved->messages.front().attachments.front().native_asset_key);
+	std::string expected;
+	UAM_ASSERT(uam::base64::Decode(kBatchMediaPng, expected));
+	UAM_ASSERT(original.ok && original.bytes == expected);
+	UAM_ASSERT_EQ(uam_test::ReadFile(fixture.source), fixture.source_bytes);
+}
+
+UAM_TEST(GeminiDiscoveryPartialBatchCancellationPreservesIndependentOriginals)
+{
+	AwaitDiscoveryRetirement();
+	GeminiPrebatchFixture fixture;
+	const auto other_source = fixture.source.parent_path() / "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.json";
+	auto document = Json::parse(fixture.source_bytes);
+	document["sessionId"] = other_source.stem().string();
+	const auto other_bytes = document.dump();
+	UAM_ASSERT(uam::io::WriteTextFile(other_source, other_bytes));
+	std::string error;
+	auto payload = uam::native_assets::MakeInlinePayload(std::string(kBatchMediaPng), "image/png", fixture.context->payload_budget, error);
+	UAM_ASSERT(payload && error.empty());
+	auto independent = uam::native_assets::PreparedBatch::Prepare(fixture.app.data_root, "independent-worker", {payload}, error);
+	UAM_ASSERT(independent && independent->MarkPublicationAttempted(error) && independent->MarkPublished(error));
+	const auto independent_key = independent->Assets().front().key;
+	const auto original = uam::native_assets::ReadOwned(fixture.app.data_root, "independent-worker", independent_key);
+	UAM_ASSERT(original.ok);
+	auto discovery = fixture.Discover();
+	UAM_ASSERT(discovery.result.success && discovery.chats.size() == 2);
+	std::weak_ptr<const uam::native_assets::InlinePayload> producer = discovery.chats.front().messages.front().attachments.front().native_inline_payload;
+	const auto admitted = fixture.service.ImportDiscoveredProviderChatsBatch(fixture.app, {}, discovery, 1, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+	UAM_ASSERT(admitted.success && admitted.imported_count == 0);
+	UAM_ASSERT(discovery.chats.size() == 1 && discovery.preparation.valid());
+	UAM_ASSERT_EQ(discovery.preparation.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+	{
+		const auto prepared = discovery.preparation.get();
+		UAM_ASSERT(prepared && prepared->chats.size() == 1 && prepared->chats.front().native_media);
+	}
+	discovery.CancelPending();
+	AwaitDiscoveryRetirement();
+	UAM_ASSERT(producer.expired());
+	UAM_ASSERT(fixture.app.chats.empty());
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(fixture.app.data_root, fixture.identity.id)));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(fixture.app.data_root, other_source.stem().string())));
+	const auto retained = uam::native_assets::ReadOwned(fixture.app.data_root, "independent-worker", independent_key);
+	UAM_ASSERT(retained.ok && retained.bytes == original.bytes);
+	UAM_ASSERT_EQ(uam_test::ReadFile(fixture.source), fixture.source_bytes);
+	UAM_ASSERT_EQ(uam_test::ReadFile(other_source), other_bytes);
+}
+
+UAM_TEST(GeminiDiscoveryPartialParseRetiresAcquiredPayloadOnWorker)
+{
+	AwaitDiscoveryRetirement();
+	for (const bool partial : {true, false})
+	{
+		GeminiMediaBatchFixture fixture;
+		(void)fixture.Parse(BatchMediaBody::InlineOnly);
+		struct ObservedPayloads : GeminiHistoryParseContext::RetainedPayloads
+		{
+			std::shared_ptr<std::promise<std::thread::id>> disposed;
+			~ObservedPayloads() noexcept { if (disposed) disposed->set_value(std::this_thread::get_id()); }
+		};
+		auto owner = uam::native_history::TryCreateWorkerOwnedNativeRefresh<ObservedPayloads, uam::native_history::NativeRefreshWorkerPool::DiscoveryParser>();
+		UAM_ASSERT(owner);
+		auto disposed = std::make_shared<std::promise<std::thread::id>>();
+		auto receipt = disposed->get_future();
+		owner->disposed = disposed;
+		const auto budget = fixture.context->payload_budget;
+		fixture.context->payload_retirement = owner;
+		auto document = Json::parse(fixture.source_bytes);
+		if (partial)
+			document["messages"].push_back({{"id", "malformed-later-row"}, {"type", "user"},
+			    {"content", Json::array({{{"inlineData", {{"mimeType", "image/png"}, {"data", "invalid-base64"}}}}})}});
+		GeminiJsonHistoryStoreOptions options;
+		options.context = fixture.context;
+		auto parsed = GeminiJsonHistoryStore::ParseDocumentResult(std::move(document), ProviderProfileStore::DefaultGeminiProfile(), options);
+		if (partial) UAM_ASSERT(parsed.status == GeminiHistoryParseStatus::UnsupportedOrInvalid && !parsed.chat);
+		else UAM_ASSERT(parsed.status == GeminiHistoryParseStatus::Content && parsed.chat);
+		UAM_ASSERT_EQ(budget->UsedCount(), std::size_t(1));
+		auto copy = partial ? uam::native_assets::Payload{} : parsed.chat->messages.front().attachments.front().native_inline_payload;
+		options.context.reset(); fixture.context.reset(); owner.reset();
+		if (!partial)
+		{
+			UAM_ASSERT_EQ(receipt.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+			parsed.chat.reset(); // The copied payload alone still owns the full retirement lease.
+			UAM_ASSERT_EQ(receipt.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+			copy.reset();
+		}
+		UAM_ASSERT_EQ(receipt.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+		UAM_ASSERT(receipt.get() != std::this_thread::get_id());
+		AwaitDiscoveryRetirement();
+		UAM_ASSERT_EQ(budget->UsedCount(), std::size_t(0));
+		UAM_ASSERT_EQ(budget->UsedBytes(), std::size_t(0));
+		UAM_ASSERT_EQ(uam_test::ReadFile(fixture.source), fixture.source_bytes);
+		UAM_ASSERT(!fs::exists(fixture.app.data_root / std::string(uam::native_assets::kStoreDirectory)));
+	}
 }
 
 #endif
