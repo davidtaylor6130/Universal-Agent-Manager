@@ -8,6 +8,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Source map](source-map.md) | Entry points for checking implementation routes |
 | [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
 | [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
+| [Asynchronous send durability](asynchronous-send-durability.md) | Current admission predicates, remaining publication work and retained ownership barriers |
 | [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
 | [Persistence](architecture/app-state-persistence.md) | Storage/cache relationships |
 | [React/CEF](architecture/react-cef-transport.md) | Bridge and history transport |

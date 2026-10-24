@@ -6,7 +6,7 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Partial | Native protocol normalised into UAM messages. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
+| `structured-chat` | Both | Partial | Native protocol normalised into UAM messages. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. Shared [cold launch durability](../../reference/asynchronous-send-durability.md) has focused native verification; provider/live acceptance remains pending. |
 | `terminal-view` | Both | Implemented | Bound ordinary local and SSH TUI launches observe their own authenticated native status; custom, ambiguous and unadmitted input states remain Unknown; [Windows workspace spelling](#workspace-identity) retains separate live acceptance. |
 | `terminal-sync` | Both | Partial | Explicit native session binding and export refresh exist; older unbound and remote live cases remain open. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
@@ -23,7 +23,7 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 | `agent-selection` | Both | Partial | Shared selection/adaptation exists; native import restrictions and GUI acceptance remain open. Shared [built-in delegation](../../settings/central-setup/agents.md#built-in-delegation) retains parent ceilings. |
 | `agent-history` | Both | Partial | Addressable child export and authenticated same-process approval relay support ordinary delegation while Plan and bound-policy restrictions remain. Shared inline presentation remains pending integration and acceptance. |
 | `subagents` | Both | Partial | UAM nested catalogue and child-only pane source is unit-verified; Supported native child Chat controls are retained; [same-child follow-up, lineage and acceptance remain partial](../../chat/subagents.md). Shared [active-turn wait](../../chat/subagents.md#active-turn-result-wait) is source-integrated with focused private fixtures; its [reserved UAM server budget](#uam-tool-deadline) is source-implemented for the checked version, while canonical verification, effective native deadlines and live local/SSH invocation remain unverified. |
-| `goals` | UAM | Partial | Shared goal inspection, approval-gated creation and bounded continuation exist; native lifecycle interoperability and full runtime verification remain outstanding. |
+| `goals` | UAM | Partial | Shared goal inspection, approval-gated creation and bounded continuation exist; native lifecycle interoperability and full runtime verification remain outstanding. Generated small-model input follows [shared full admission and goal-owned ready SSH markers](../../chat/goals.md), with broader provider and live verification pending. |
 | `resume` | Both | Implemented | UAM history plus a returned native session ID; invalid or unavailable IDs require an explicit outcome. |
 | `reasoning` | Both | Implemented | Native advertised effort and variant config options retain their exact choices and dispatch through ACP configuration controls. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |

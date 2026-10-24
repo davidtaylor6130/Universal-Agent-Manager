@@ -347,6 +347,14 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
 /// <summary>Keeps model binding and worker launch ownership on the same effective setup scope.</summary>
+// An owned cold transaction binds admitted input before its one process/control attempt.
+bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat,
+    std::function<bool(AppState&, AcpSessionState&, ChatSession&)> start);
+void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, bool quota_settlement = false);
+bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool HasPendingAcpColdLaunch(const AcpSessionState& session);
+bool AcpLaunchConfigurationFinished(const AcpSessionState& session);
+void PinDurableAdmissionRoot(AppState& app, const std::string& chat_id);
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Reject native permission snapshots on launch paths that cannot enforce them.</summary>
 bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
@@ -371,6 +379,16 @@ enum class AcpPromptFailurePurpose
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPromptFailurePurpose* failure_purpose = nullptr);
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+struct GoalPromptReceiptScope
+{
+	std::string owner_id;
+	std::shared_ptr<const std::uint8_t> owner_incarnation;
+	std::string identity;
+	std::optional<NativeGoalBinding> native_binding;
+	bool operator==(const GoalPromptReceiptScope&) const = default;
+};
+std::optional<GoalPromptReceiptScope> CaptureGoalPromptReceiptScope(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+bool CanStageRemoteGoalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
 bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
