@@ -387,12 +387,13 @@ namespace uam::claude_preinput
 	class Observation
 	{
 	  public:
-		Observation(const AppState& app, AcpSessionState& runtime, const ChatSession& chat)
-		    : owner(&runtime), root(app.data_root), incarnation(chat.metadata_incarnation), epoch(runtime.permission_review_incarnation),
+		Observation(const AppState& app, AcpSessionState& runtime, const ChatSession& chat, std::shared_ptr<const InjectedTransportForTests> transport = {})
+		    : injected(std::move(transport)), owner(&runtime), root(app.data_root), incarnation(chat.metadata_incarnation), epoch(runtime.permission_review_incarnation),
 		      writer(runtime.stdin_writer), chat_id(chat.id), birth(chat.created_at), native(chat.native_session_id), model(chat.model_id),
-		      mode(ClaudeStructuredPermissionMode(chat)), workspace(chat.workspace_directory), process(acp_detail::AcpProcessHandleLabel(runtime)), token(runtime.remote_output_delivery_token),
+		      mode(ClaudeStructuredPermissionMode(chat)), workspace(chat.workspace_directory), process(injected ? injected->process() : acp_detail::AcpProcessHandleLabel(runtime)), token(runtime.remote_output_delivery_token),
 		      runner_protocol(runtime.remote_runner_protocol_version), deadline(std::chrono::steady_clock::now() + std::chrono::seconds(25))
 		{
+			if (injected) injected_writer = injected->writer();
 			if (const auto* selected = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id)) host = *selected;
 			else { Refuse(runtime); return; }
 			initial = outstanding = runtime.initialize_request_id; method = "initialize";
@@ -401,15 +402,30 @@ namespace uam::claude_preinput
 			    runtime.next_request_id <= initial || runtime.next_request_id > std::numeric_limits<int>::max() - 2) Refuse(runtime);
 		}
 
+		bool OriginalTransport(const AcpSessionState& runtime) const noexcept
+		{
+			try
+			{
+				return owner == &runtime && !epoch.expired() && epoch.lock() == runtime.permission_review_incarnation &&
+				       (injected ? (!injected_writer.expired() && injected_writer.lock() == injected->writer()) : (!writer.expired() && writer.lock() == runtime.stdin_writer)) &&
+				       process != "0" && !process.empty() && process == (injected ? injected->process() : acp_detail::AcpProcessHandleLabel(runtime)) &&
+				       runtime.process_execution_host_id == host.id && token == runtime.remote_output_delivery_token && runner_protocol == runtime.remote_runner_protocol_version;
+			}
+			catch (...) { return false; }
+		}
+
 		bool CurrentTransport(const AcpSessionState& runtime) const
 		{
-			return owner == &runtime && runtime.provider_id == "claude-cli" && runtime.protocol_kind == "claude-code-stream-json" &&
+			return runtime.provider_id == "claude-cli" && runtime.protocol_kind == "claude-code-stream-json" &&
 			       runtime.running && runtime.transport_ownership_error.empty() && runtime.lifecycle_state != acp_detail::kAcpLifecycleError && !runtime.process_exit_observed && !runtime.remote_source_exit_reported && !runtime.cancel_requested &&
-			       !runtime.local_stop_pending && !runtime.remote_stop_pending && !runtime.remote_stop_unconfirmed &&
-			       !epoch.expired() && epoch.lock() == runtime.permission_review_incarnation && !writer.expired() && writer.lock() == runtime.stdin_writer &&
-			       process != "0" && !process.empty() && process == acp_detail::AcpProcessHandleLabel(runtime) &&
-			       runtime.process_execution_host_id == host.id && token == runtime.remote_output_delivery_token && runner_protocol == runtime.remote_runner_protocol_version;
+			       !runtime.local_stop_pending && !runtime.remote_stop_pending && !runtime.remote_stop_unconfirmed && OriginalTransport(runtime);
 		}
+
+		bool OwnedBy(const AcpSessionState& runtime) const
+		{
+			return owner == &runtime;
+		}
+		bool Injected() const { return static_cast<bool>(injected); }
 
 		bool Current(const AppState& app, const AcpSessionState& runtime, const ChatSession& chat) const
 		{
@@ -420,21 +436,26 @@ namespace uam::claude_preinput
 		{
 			const auto* selected = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 			const bool remote = host.id != execution_hosts::kLocalHostId;
-			return state != State::Refused && std::chrono::steady_clock::now() < deadline && CurrentTransport(runtime) &&
+			const bool startup = state != State::HandedOff;
+			return state != State::Refused && state != State::InputAttempted && std::chrono::steady_clock::now() < deadline && CurrentTransport(runtime) &&
 			       !root.empty() && root == app.data_root && !incarnation.expired() && incarnation.lock() == chat.metadata_incarnation && chat_id == chat.id && birth == chat.created_at &&
 			       Bounded(chat_id, 128) && Bounded(birth, 64) && workspace == chat.workspace_directory && chat.provider_id == "claude-cli" && selected && execution_hosts::SameConnection(host, *selected) && host.id == chat.execution_host_id &&
 			       uuid::IsCanonicalUuid(native) && native == chat.native_session_id && runtime.session_id == native &&
 			       Bounded(model, 160) && model != "default" && model == chat.model_id && mode == ClaudeStructuredPermissionMode(chat) &&
 			       chat.reasoning_effort.empty() && !chat.service_tier_explicit && (chat.service_tier.empty() || chat.service_tier == "default") &&
-			       !runtime.initialized && !runtime.session_ready && runtime.session_setup_request_id == 0 && !runtime.processing && runtime.prompt_request_id == 0 && runtime.queued_prompt.empty() && !runtime.pending_prompt_delivery &&
-			       !runtime.pending_local_launch && !runtime.pending_agent_input && runtime.queued_user_prompts.empty() && chat.acp_queued_prompts.empty() && !runtime.goal_internal_session && !runtime.model_discovery_only &&
+			       runtime.session_setup_request_id == 0 &&
+			       (startup ? (!runtime.initialized && !runtime.session_ready && !runtime.processing && runtime.prompt_request_id == 0 && runtime.queued_prompt.empty() && !runtime.pending_prompt_delivery && runtime.queued_user_prompts.empty() && chat.acp_queued_prompts.empty()) :
+			           (runtime.initialized && runtime.session_ready && runtime.current_model_id == model && runtime.current_mode_id == mode)) &&
+			       !runtime.pending_local_launch && !runtime.pending_agent_input && !runtime.goal_internal_session && !runtime.model_discovery_only &&
 			       (!remote || (chat.remote_process_exists && !token.empty() && token.size() <= 256 && token == chat.remote_process_control_token &&
 			                    runner_protocol >= 3 && runner_protocol == host.runner_protocol_version && chat.remote_structured_protocol == runtime.protocol_kind));
 		}
 
 		void Refuse(AcpSessionState& runtime)
 		{
+			if (!OwnedBy(runtime) || state == State::Refused) return;
 			state = State::Refused; tuple.reset();
+			if (!OriginalTransport(runtime)) return; // Retire only the original generation, once. Never revive cleanup from restored metadata.
 			const auto found = runtime.pending_request_methods.find(outstanding);
 			if (outstanding > 0 && found != runtime.pending_request_methods.end() && found->second == method) runtime.pending_request_methods.erase(found);
 			if (runtime.initialize_request_id == initial) runtime.initialize_request_id = 0;
@@ -536,8 +557,11 @@ namespace uam::claude_preinput
 			if (runtime.next_request_id <= 0 || runtime.next_request_id == std::numeric_limits<int>::max()) { Refuse(runtime); return; }
 			outstanding = runtime.next_request_id++; method = registered_method; state = next;
 			runtime.pending_request_methods.emplace(outstanding, method);
-			if (!acp_detail::WriteAcpMessage(runtime, acp_claude_stream::ControlRequest(outstanding, {{"subtype", subtype}}))) Refuse(runtime);
+			const auto request = acp_claude_stream::ControlRequest(outstanding, {{"subtype", subtype}});
+			if (!(injected ? injected->write_control(request) : acp_detail::WriteAcpMessage(runtime, request))) Refuse(runtime);
 		}
+		const std::shared_ptr<const InjectedTransportForTests> injected;
+		std::weak_ptr<const void> injected_writer;
 		const AcpSessionState* const owner;
 		const std::filesystem::path root;
 		const std::weak_ptr<const std::uint8_t> incarnation;
@@ -560,10 +584,27 @@ namespace uam::claude_preinput
 		session.native_pre_dispatch_runtime = &GetClaudeCliProviderRuntime();
 		return session.claude_preinput_observation->state == State::Initialize;
 	}
+	bool ArmWithInjectedTransportForTests(const AppState& app, AcpSessionState& session, const ChatSession& chat,
+	    std::shared_ptr<const InjectedTransportForTests> transport)
+	{
+		if (!transport || !transport->process || !transport->writer || !transport->write_control ||
+		    session.claude_preinput_observation || session.native_pre_dispatch_runtime || session.next_request_id <= 0 ||
+		    session.next_request_id > std::numeric_limits<int>::max() - 3) return false;
+		const int id = session.next_request_id++;
+		const auto request = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpBuildInitialize(session, id);
+		session.pending_request_methods[id] = "initialize";
+		session.initialize_request_id = id;
+		if (!transport->write_control(request)) return false;
+		session.claude_preinput_observation = std::make_shared<Observation>(app, session, chat, std::move(transport));
+		session.native_pre_dispatch_runtime = &GetClaudeCliProviderRuntime();
+		return session.claude_preinput_observation->state == State::Initialize;
+	}
 	State CurrentState(const AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
 		const auto& observation = session.claude_preinput_observation;
 		if (!observation) return State::Absent;
+		if (!observation->OwnedBy(session)) return State::Refused;
+		if (observation->state == State::InputAttempted) return observation->OwnedBy(session) ? State::InputAttempted : State::Refused;
 		if (!observation->Current(app, session, chat)) observation->Refuse(session);
 		return observation->state;
 	}
@@ -572,9 +613,83 @@ namespace uam::claude_preinput
 		if (CurrentState(app, session, chat) != State::Observed) return std::nullopt;
 		return session.claude_preinput_observation->tuple;
 	}
+	std::shared_ptr<const NativeWitness> CurrentWitness(const AppState& app, AcpSessionState& session, const ChatSession& chat)
+	{
+		if (!session.claude_preinput_observation || !session.claude_preinput_observation->OwnedBy(session))
+		{
+			return {};
+		}
+		if (CurrentState(app, session, chat) != State::Observed)
+		{
+			return {};
+		}
+		const auto& observation = session.claude_preinput_observation;
+		if (!observation->tuple)
+		{
+			return {};
+		}
+		return std::shared_ptr<const NativeWitness>(new NativeWitness(observation, session, *observation->tuple, observation->Injected()));
+	}
+	bool NativeWitness::Current(const AppState& app, AcpSessionState& session, const ChatSession& chat) const
+	{
+		const auto observation = m_observation.lock();
+		// Do not run a different observer or retire another owner's pending control requests.
+		// A retained tuple remains historical DATA even after this exact witness is refused.
+		if (m_refused || &session != m_owner || !observation || session.claude_preinput_observation != observation)
+		{
+			m_refused = true;
+			return false;
+		}
+		const auto state = CurrentState(app, session, chat);
+		if (state != State::Observed && state != State::HandedOff)
+		{
+			m_refused = true;
+			return false;
+		}
+		return true;
+	}
+	bool NativeWitness::Handoff(const AppState& app, AcpSessionState& session, const ChatSession& chat) const
+	{
+		if (!Current(app, session, chat) || session.claude_preinput_observation->state != State::Observed)
+		{
+			m_refused = true;
+			return false;
+		}
+		session.current_model_id = m_tuple.Model();
+		session.current_mode_id = m_tuple.Mode();
+		session.initialized = true;
+		session.session_ready = true;
+		session.claude_preinput_observation->state = State::HandedOff;
+		if (!Current(app, session, chat))
+		{
+			// A deadline/identity failure at the handoff cannot leave a ready projection.
+			// Never rewrite a successor observer's projection while retiring this handle.
+			const auto original = m_observation.lock();
+			if (original && session.claude_preinput_observation == original && original->OwnedBy(session))
+			{
+				session.initialized = false;
+				session.session_ready = false;
+			}
+			return false;
+		}
+		return true;
+	}
+	bool NativeWitness::InputAttempted(const AppState& app, AcpSessionState& session, const ChatSession& chat) const
+	{
+		if (!Current(app, session, chat) || session.claude_preinput_observation->state != State::HandedOff)
+		{
+			m_refused = true;
+			return false;
+		}
+		session.claude_preinput_observation->state = State::InputAttempted;
+		m_refused = true;
+		return true;
+	}
 	bool BeforeSharedDispatch(const AppState& app, AcpSessionState& session, const ChatSession& chat, const nlohmann::json* decoded_frame) noexcept
 	{
 		if (!session.claude_preinput_observation) return false;
+		if (!session.claude_preinput_observation->OwnedBy(session)) return true; // Consume without mutation or ordinary fallback.
+		if (session.claude_preinput_observation->state == State::InputAttempted) return false;
 		if (decoded_frame) session.claude_preinput_observation->Consume(app, session, chat, *decoded_frame);
 		else session.claude_preinput_observation->Refuse(session);
 		return true;
@@ -582,6 +697,8 @@ namespace uam::claude_preinput
 	bool Consume(const AppState& app, AcpSessionState& session, const ChatSession& chat, const nlohmann::json& message)
 	{
 		if (!session.claude_preinput_observation) return false;
+		if (!session.claude_preinput_observation->OwnedBy(session)) return true; // Consume without mutation or ordinary fallback.
+		if (session.claude_preinput_observation->state == State::InputAttempted) return false;
 		session.claude_preinput_observation->Consume(app, session, chat, message);
 		return true;
 	}

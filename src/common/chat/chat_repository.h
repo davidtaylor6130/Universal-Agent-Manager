@@ -101,12 +101,24 @@ public:
 	bool Current() const;
 	/// Exact root spelling association only; caller must separately require Current and runtime ownership.
 	bool MatchesDataRoot(const std::filesystem::path& data_root) const;
+	/// Exact initial typed transport publication, rather than a later same-graph observation or continuation.
+	bool InitialTransportLaunch() const
+	{
+		return m_initial_transport_launch;
+	}
+	/// Repository-minted publication lineage DATA only; never process or input authority.
+	bool SameLaunchPublicationChain(const StoppedChatLaunchStorageReceipt& other) const
+	{
+		return m_launch_origin && m_launch_origin == other.m_launch_origin;
+	}
 private:
 	friend class ChatRepository;
 	StoppedChatLaunchStorageReceipt() = default;
 	ChatSession m_graph;
 	SavedChatPrimaryWitness m_primary;
 	bool m_inline_primary = false;
+	bool m_initial_transport_launch = false;
+	std::shared_ptr<const std::uint8_t> m_launch_origin;
 	std::filesystem::path m_root, m_queue_path, m_index_path;
 	std::shared_ptr<const uam::platform::PublishedFileChangeWitness> m_physical, m_summary, m_index;
 };
