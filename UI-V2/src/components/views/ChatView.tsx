@@ -3686,13 +3686,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
-              style={{
-                border: 'none',
-                borderRadius: 10,
-                background: 'var(--surface)',
-                boxShadow: 'var(--elev-1)',
-                overflow: 'visible',
-              }}
             >
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -3859,13 +3852,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               aria-activedescendant={activeSlashOptionId}
               aria-autocomplete="list"
               className="uam-composer-textarea w-full resize-none text-sm"
-              style={{
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text)',
-                padding: '10px 12px',
-                outline: 'none',
-              }}
             />
             </div>
             {editingMessageIndex !== null && (
