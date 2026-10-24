@@ -150,6 +150,14 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
   computerUseEnabled?: boolean
+  computerUseRevocationPending?: boolean
+  /** Native publication witness for these two fields; never a consent grant. */
+  computerUseSettingsStateRevision?: number
+  /** Session-only global settings request, shared across both settings surfaces. */
+  computerUseSettingsOperation?: 'check' | 'enable' | 'disable'
+  computerUseSettingsError?: string
+  /** Native observation current when the session-only failure was received. */
+  computerUseSettingsErrorStateRevision?: number
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
   branchSwitching?: boolean

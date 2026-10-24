@@ -82,7 +82,9 @@ namespace
 
 	nlohmann::json SerializeSettingsForPatch(const uam::AppState& app)
 	{
-		return uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+		nlohmann::json settings = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+		settings["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
+		return settings;
 	}
 
 	void StripVolatileAcpWaitTelemetry(nlohmann::json& state);
