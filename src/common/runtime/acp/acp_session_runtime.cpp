@@ -53,6 +53,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/structured_attachments.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_attention_kind.h"
 #include "common/runtime/acp/acp_claude_stream.h"
@@ -2950,6 +2951,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (attachments.size() > kAcpQueuedAttachmentMaxCount)
 			{
 				if (error_out != nullptr) *error_out = "Prompt has too many attachments (maximum 64).";
+				return false;
+			}
+			std::string attachment_error;
+			if (!structured_attachments::ValidateDeliverySources(attachments, attachment_error))
+			{
+				if (error_out != nullptr) *error_out = std::move(attachment_error);
 				return false;
 			}
 			if (!SnapshotSelectedUamAgent(app, chat, queued, error_out)) return false;

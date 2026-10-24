@@ -4,6 +4,12 @@ Files and images attached to a message must reach the intended provider session 
 
 [Composer attachments](../chat/composer/attachments.md).
 
+## Input admission
+
+Sending ordinary path-based files, images and directories requires a nonblank execution-host path, whether the legacy source tag is explicit or omitted. A malformed attachment rejects the entire Send or Steer request before input is retained or delivered; remaining text must not proceed by itself. Valid attachment-only input remains supported, and passive preview or native metadata cannot supply a missing path or grant permission to fetch bytes. This shared UAM admission rule applies to all six providers.
+
+## Delivery and recorded history
+
 Native image delivery uses only the current dispatched user-message range, including merged input; it never reattaches earlier images. Image preparation is bounded and cancellable, and remote bytes come from a scoped binary helper reader rather than opening the remote path on the controller. Unsupported provider vision or an older helper reports an explicit outcome.
 
 Native history must retain inline originals and their message/tool association through save and refresh. Provider URIs remain opaque references unless separately authorized bytes are available; a URI is never treated as a local path. Unsupported previews or bounded preparation failures must be explicit without turning attachment-only history into an empty chat or overwriting prior saved content.

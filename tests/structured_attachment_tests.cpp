@@ -76,6 +76,79 @@ UAM_TEST(StructuredImageInputRejectsRecordedAndMixedSourcesBeforeAnyRead)
 	UAM_ASSERT(!prepared.is_null()); UAM_ASSERT(error.empty()); UAM_ASSERT_EQ(reads, 1);
 }
 
+UAM_TEST(StructuredInputRejectsPathlessLegacyBeforeProtocolSkipsOrReads)
+{
+	for (const std::string path : {std::string(), std::string(" \t\r\n "), std::string("bad\0path", 8)})
+	{
+		MessageAttachment attachment{.id = "malformed-legacy", .name = "Unavailable file", .kind = "file", .path = path};
+		for (const std::string protocol : {"claude-code-stream-json", "codex-app-server", "gemini-acp",
+		         "opencode-acp", "copilot-acp", "copilot-sdk", "antigravity-stream-json", "unknown-native"})
+		for (const bool remote : {false, true})
+		{
+			uam::AcpSessionState session;
+			session.protocol_kind = protocol;
+			nlohmann::json request{{"params", {{"prompt", nlohmann::json::array({{{"type", "text"}, {"text", "Inspect"}}})}, {"input", nlohmann::json::array()}}}};
+			const auto before = request;
+			std::string error;
+			UAM_ASSERT(!uam::structured_attachments::AppendNative(request, session, {attachment}, "/workspace", "linux", remote, error));
+			UAM_ASSERT(error.find("invalid path") != std::string::npos);
+			UAM_ASSERT_EQ(request, before);
+		}
+		attachment.kind = "image";
+		attachment.mime_type = "image/png";
+		int reads = 0;
+		std::string error;
+		const auto prepared = uam::claude_input::BuildWithReader("Inspect", {attachment}, error, false, {},
+		    [&reads](const MessageAttachment&, std::string&, std::size_t, std::string&) { ++reads; return true; });
+		UAM_ASSERT(prepared.is_null());
+		UAM_ASSERT(error.find("invalid path") != std::string::npos);
+		UAM_ASSERT_EQ(reads, 0);
+	}
+}
+
+UAM_TEST(AcpNativeAdmissionRejectsPathlessLegacyWithoutQueueOrHistoryMutation)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	uam_test::TempDir temp("uam-pathless-legacy-admission");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	ChatSession chat;
+	chat.id = "pathless-legacy-owner";
+	chat.provider_id = "gemini-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back(Message{MessageRole::User, "Existing history"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = uam_test::ReadFile(primary);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->running = owned->processing = true;
+	owned->prompt_request_id = 71;
+	auto* session = owned.get();
+	app.acp_sessions.push_back(std::move(owned));
+	for (const std::string path : {std::string(), std::string(" \t\r\n "), std::string("bad\0path", 8)})
+	for (const std::string text : {"New authored request", ""})
+	for (const bool steer : {false, true})
+	{
+		MessageAttachment attachment{.id = "malformed-legacy", .name = "Unavailable file", .kind = "file", .path = path};
+		std::string error;
+		const bool accepted = steer ? uam::SteerAcpPrompt(app, chat.id, text, {}, {attachment}, false, &error)
+		    : uam::SendAcpPrompt(app, chat.id, text, {}, {attachment}, false, &error);
+		UAM_ASSERT(!accepted);
+		UAM_ASSERT(error.find("invalid path") != std::string::npos);
+		UAM_ASSERT(session->queued_user_prompts.empty());
+		UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(app.chats.front().messages, chat.messages);
+		UAM_ASSERT_EQ(session->prompt_request_id, 71);
+		UAM_ASSERT_EQ(uam_test::ReadFile(primary), before);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	}
+#endif
+}
+
 UAM_TEST(StructuredAttachmentsUseOnlyCurrentTurnAndPreserveBatchedImages)
 {
 	ChatSession chat;
