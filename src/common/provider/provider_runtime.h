@@ -395,6 +395,41 @@ class IProviderRuntime
 	/// <summary>Validates a resume ID for this provider. Returns valid id or empty.</summary>
 	virtual std::string OnAcpValidateResumeId(const ChatSession& chat) const;
 
+	/// <summary>Rejects unsupported goal resume/restart before shared state, workspace or runtime mutation.</summary>
+	virtual bool OnAcpValidateGoalResume(const ChatSession&, const Goal&, const AppSettings&, bool, std::string&) const
+	{
+		return true;
+	}
+	/// UAM workers may retain the chat's native conversation while reviewers stay isolated.
+	virtual bool AcpGoalWorkersResumeConversation() const
+	{
+		return false;
+	}
+	/// The adapter accounts observed goal usage instead of shared text estimates.
+	virtual bool AcpAccountsGoalUsage() const
+	{
+		return false;
+	}
+	/// Runs under final prompt ownership, before the provider envelope or write is prepared.
+	virtual bool OnAcpPreparePrompt(uam::AppState&, uam::AcpSessionState&, ChatSession&, std::string&) const
+	{
+		return true;
+	}
+	/// Direct service controls save before cancellation; CEF owns its existing asynchronous receipt.
+	virtual bool OnAcpPersistGoalControl(uam::AppState&, uam::AcpSessionState&, ChatSession&, const std::string&, std::string&) const
+	{
+		return true;
+	}
+	/// Runs only after the goal control's durable receipt.
+	virtual bool OnAcpGoalControlCommitted(uam::AppState&, uam::AcpSessionState&, ChatSession&, const std::string&, std::string&) const
+	{
+		return true;
+	}
+	/// Records uncertain goal usage before an owned process is retired; never acknowledges native cancellation.
+	virtual void OnAcpTurnStopping(uam::AppState&, uam::AcpSessionState&, ChatSession&) const
+	{
+	}
+
 	/// <summary>Build the prompt request and return the method name via out_method.</summary>
 	virtual nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const;

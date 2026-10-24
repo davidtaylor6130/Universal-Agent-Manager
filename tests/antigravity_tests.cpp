@@ -2,12 +2,20 @@
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_goal_loop.h"
 #include "app/provider_model_catalog_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/utils/shell_escape.h"
 #include <chrono>
 #include <thread>
 #include <limits>
+#include <cstdio>
+#include <mutex>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace uam_test;
 
@@ -122,6 +130,19 @@ UAM_TEST(AntigravityStructuredLaunchUsesNativeStreamAndSavedConversation)
 	chat.model_id = "user-model";
 	const std::vector<std::string> args = runtime.BuildStructuredLaunchArgv(ProviderProfileStore::DefaultAntigravityProfile(), chat);
 	UAM_ASSERT_EQ(args, (std::vector<std::string>{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--conversation", chat.native_session_id, "--model", chat.model_id}));
+	for (const std::string selectors : {"--conversation foreign --continue", "--conversation=foreign -c", "-conversation foreign -continue=true"})
+	{
+		ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+		profile.interactive_command = "agy " + selectors;
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat), args);
+		ChatSession reviewer = chat;
+		reviewer.native_session_id.clear();
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, reviewer), (std::vector<std::string>{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--model", chat.model_id}));
+		profile.interactive_command += " -- literal --conversation literal-value";
+		auto literal = args;
+		literal.insert(literal.end(), {"--", "literal", "--conversation", "literal-value"});
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat), literal);
+	}
 	uam::AcpSessionState session;
 	UAM_ASSERT(runtime.OnAcpBuildInitialize(session, 1).is_null());
 	UAM_ASSERT(session.initialized);
@@ -129,6 +150,869 @@ UAM_TEST(AntigravityStructuredLaunchUsesNativeStreamAndSavedConversation)
 	UAM_ASSERT(runtime.OnAcpBuildSetupRequest(2, chat, "/tmp", true, method).is_null());
 	UAM_ASSERT(runtime.OnAcpBuildCancel(session, 3, method).is_null());
 	UAM_ASSERT_EQ(runtime.OnAcpBuildPrompt(session, 4, "hello", chat, method), (nlohmann::json{{"event", "user"}, {"message", {{"content", "hello"}}}}));
+}
+
+UAM_TEST(AntigravityStructuredGoalCommandsRefuseBeforeNativeEnvelope)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	ChatSession chat;
+	for (const std::string command : {"/goal", "/goal Keep all history", " \t/goal\r\nKeep all history", "/goal\tKeep all history"})
+	{
+		for (const bool prefixed : {false, true})
+		{
+			uam::AcpSessionState session;
+			session.queued_prompt = prefixed ? command : "";
+			session.antigravity_input_tokens = 17;
+			session.antigravity_output_tokens = 9;
+			session.antigravity_completed_steps = {4};
+			std::string method = "stale-method";
+			const std::string prompt = prefixed ? "Captured workspace context\n" + command : command;
+			UAM_ASSERT(runtime.OnAcpBuildPrompt(session, 4, prompt, chat, method).is_null());
+			UAM_ASSERT(method.empty());
+			UAM_ASSERT(!session.last_error.empty());
+			UAM_ASSERT(session.goal_resume_suppressed);
+			UAM_ASSERT_EQ(session.antigravity_input_tokens, std::int64_t{17});
+			UAM_ASSERT_EQ(session.antigravity_output_tokens, std::int64_t{9});
+			UAM_ASSERT_EQ(session.antigravity_completed_steps.size(), std::size_t{1});
+			UAM_ASSERT(session.antigravity_completed_steps.contains(4));
+		}
+	}
+}
+
+UAM_TEST(AntigravityProviderOwnedGoalCannotFallThroughToOrdinaryPrompt)
+{
+	TempDir temp("uam-antigravity-native-goal-refusal");
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	ChatSession chat;
+	chat.id = "native-goal-refusal";
+	chat.provider_id = "antigravity-cli";
+	chat.active_goal_id = "native-goal";
+	chat.approval_mode = "plan";
+	chat.command_safety_tier = "off";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.objective = "Preserve history";
+	goal.execution_owner = "provider";
+	goal.provider_command = "/goal";
+	goal.token_budget = 100;
+	goal.tokens_used = 20;
+	goal.loop_count = 3;
+	goal.status = GoalStatus::Paused;
+	chat.goals.push_back(goal);
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.chats.push_back(chat);
+	for (const bool restart : {false, true})
+	{
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal.id, &error, restart));
+		UAM_ASSERT_EQ(error, std::string("Antigravity native Goal control is unavailable in structured Chat. Use a UAM-managed goal for bounded continuation."));
+		const ChatSession& retained = app.chats.front();
+		UAM_ASSERT_EQ(retained.active_goal_id, chat.active_goal_id);
+		UAM_ASSERT_EQ(retained.goal_command_revision, chat.goal_command_revision);
+		UAM_ASSERT_EQ(retained.goals.front().status, GoalStatus::Paused);
+		UAM_ASSERT_EQ(retained.goals.front().tokens_used, std::int64_t{20});
+		UAM_ASSERT_EQ(retained.goals.front().loop_count, 3);
+		UAM_ASSERT(retained.messages.empty());
+		UAM_ASSERT(app.acp_sessions.empty());
+		UAM_ASSERT(fs::is_empty(temp.root));
+	}
+	uam::AcpSessionState session;
+	std::string method;
+	UAM_ASSERT(runtime.OnAcpBuildPrompt(session, 4, "Context\n/goal Preserve history", chat, method).is_null());
+	UAM_ASSERT_EQ(chat.goals.front().status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(chat.goals.front().execution_owner, std::string("provider"));
+	UAM_ASSERT_EQ(chat.goals.front().provider_command, std::string("/goal"));
+	UAM_ASSERT_EQ(chat.goals.front().token_budget, std::int64_t{100});
+	UAM_ASSERT_EQ(chat.goals.front().tokens_used, std::int64_t{20});
+	UAM_ASSERT_EQ(chat.goals.front().loop_count, 3);
+	UAM_ASSERT(!chat.goals.front().native_binding.has_value());
+	UAM_ASSERT_EQ(chat.approval_mode, std::string("plan"));
+	UAM_ASSERT_EQ(chat.command_safety_tier, std::string("off"));
+}
+
+UAM_TEST(AntigravityUamGoalContinuationRetainsAuthorityAndLiteralMentions)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	UAM_ASSERT(ProviderProfileStore::DefaultAntigravityProfile().native_goal_command.empty());
+	ChatSession chat;
+	chat.active_goal_id = "uam-goal";
+	chat.approval_mode = "plan";
+	chat.command_safety_tier = "off";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.objective = "Document /goal without starting native Goal mode";
+	goal.token_budget = 100;
+	goal.tokens_used = 20;
+	goal.loop_count = 3;
+	chat.goals.push_back(goal);
+	std::string resume_error;
+	// Legacy inferred counters are retained, but cannot prove a remaining native budget.
+	UAM_ASSERT(!runtime.OnAcpValidateGoalResume(chat, goal, AppSettings{}, false, resume_error));
+	UAM_ASSERT(!resume_error.empty());
+	UAM_ASSERT(runtime.OnAcpValidateGoalResume(chat, goal, AppSettings{}, true, resume_error));
+	const std::string continuation = uam::GoalService::BuildContinuationPrompt(goal, goal.tokens_used, goal.token_budget);
+	UAM_ASSERT(!continuation.empty());
+	Goal earlier_native = goal;
+	earlier_native.id = "earlier-native-goal";
+	earlier_native.execution_owner = "provider";
+	earlier_native.provider_command = "/goal";
+	earlier_native.status = GoalStatus::Paused;
+	chat.goals.push_back(earlier_native);
+	for (const std::string prompt : {continuation, std::string("Explain /goal"), std::string("`/goal` is a command"), std::string("/goals"), std::string("/goalkeeper")})
+	{
+		uam::AcpSessionState session;
+		session.queued_prompt = prompt;
+		std::string method;
+		UAM_ASSERT_EQ(runtime.OnAcpBuildPrompt(session, 4, prompt, chat, method), (nlohmann::json{{"event", "user"}, {"message", {{"content", prompt}}}}));
+		UAM_ASSERT(!session.goal_resume_suppressed);
+		UAM_ASSERT(method.empty());
+		UAM_ASSERT(runtime.OnAcpBuildCancel(session, 5, method).is_null());
+	}
+	UAM_ASSERT_EQ(chat.goals.front().execution_owner, std::string("uam"));
+	UAM_ASSERT_EQ(chat.goals.front().token_budget, std::int64_t{100});
+	UAM_ASSERT_EQ(chat.goals.front().tokens_used, std::int64_t{20});
+	UAM_ASSERT_EQ(chat.goals.front().loop_count, 3);
+	UAM_ASSERT(!chat.goals.front().native_binding.has_value());
+	UAM_ASSERT_EQ(chat.approval_mode, std::string("plan"));
+	UAM_ASSERT_EQ(chat.command_safety_tier, std::string("off"));
+}
+
+UAM_TEST(AntigravityUnknownGoalEventsCannotClaimNativeLifecycleState)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	uam::AppState app;
+	ChatSession chat;
+	chat.active_goal_id = "uam-goal";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.token_budget = 100;
+	goal.tokens_used = 20;
+	goal.status = GoalStatus::Paused;
+	chat.goals.push_back(goal);
+	uam::AcpSessionState session;
+	for (const std::string event : {"goal", "goal_update", "control_response"})
+	{
+		UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, {{"event", event}, {"goal", {{"status", "complete"}, {"tokensUsed", 0}}}}, nullptr));
+		UAM_ASSERT_EQ(chat.goals.front().status, GoalStatus::Paused);
+		UAM_ASSERT_EQ(chat.goals.front().tokens_used, std::int64_t{20});
+		UAM_ASSERT_EQ(chat.goals.front().execution_owner, std::string("uam"));
+		UAM_ASSERT(!chat.goals.front().native_binding.has_value());
+		UAM_ASSERT(session.session_id.empty());
+		UAM_ASSERT(chat.messages.empty());
+	}
+}
+
+namespace
+{
+	/// Actual adapter/services with private files and decoded events, never an executable or native profile.
+	struct AntigravityUamGoalFixture
+	{
+		TempDir temp{"uam-antigravity-goal-data"};
+		uam::AppState app;
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+		AntigravityUamGoalFixture(int64_t budget = 100)
+		{
+			app.data_root = temp.root;
+			app.settings.git_enabled = false;
+			app.settings.git_auto_worktree = false;
+			ChatSession chat;
+			chat.id = "antigravity-uam-goal";
+			chat.provider_id = "antigravity-cli";
+			chat.execution_host_id = "local";
+			chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+			chat.workspace_directory = temp.root.string();
+			chat.active_goal_id = "uam-goal";
+			chat.goal_command_revision = "goal-revision";
+			Goal goal;
+			goal.id = chat.active_goal_id;
+			goal.objective = "Verify the bounded native-conversation goal route";
+			goal.token_budget = budget;
+			chat.goals.push_back(goal);
+			app.chats.push_back(chat);
+			app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+			auto& session = Session();
+			session.chat_id = chat.id;
+			session.provider_id = chat.provider_id;
+			session.protocol_kind = "antigravity-stream-json";
+			session.session_id = chat.native_session_id;
+			session.processing = true;
+			session.session_ready = true;
+			session.turn_serial = 1;
+			session.goal_command_revision = chat.goal_command_revision;
+			session.queued_prompt = "Continue the explicitly requested goal";
+		}
+		ChatSession& Chat()
+		{
+			return app.chats.front();
+		}
+		Goal& CurrentGoal()
+		{
+			return Chat().goals.front();
+		}
+		uam::AcpSessionState& Session()
+		{
+			return *app.acp_sessions.front();
+		}
+		void Prepare()
+		{
+			std::string error;
+			UAM_ASSERT(runtime.OnAcpPreparePrompt(app, Session(), Chat(), error));
+			std::string method;
+			UAM_ASSERT(!runtime.OnAcpBuildPrompt(Session(), 1, Session().queued_prompt, Chat(), method).is_null());
+			UAM_ASSERT(!Session().running);
+		}
+		void Step(int index, nlohmann::json usage, std::string text = "Observed work", std::string kind = "agent_response")
+		{
+			nlohmann::json payload{{"conversation_id", Session().session_id}, {"step_index", index}, {"state", "DONE"}, {"step_type", kind}, {"text_delta", text}};
+			if (!usage.is_null())
+				payload["usage"] = std::move(usage);
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, Session(), Chat(), {{"event", "step_update"}, {"step_update", payload}}, nullptr));
+		}
+		void Result(std::string response = "Observed work", int64_t completed_turns = 9)
+		{
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, Session(), Chat(), {{"event", "result"}, {"result", {{"conversation_id", Session().session_id}, {"status", "SUCCESS"}, {"num_turns", completed_turns}, {"response", response}, {"usage", {{"input_tokens", 90000}, {"output_tokens", 10000}}}}}}, nullptr));
+		}
+	};
+
+	/// A real private file handle satisfies the platform sink boundary; no child process exists.
+	struct ControlledNativeInput
+	{
+		struct Capture { std::mutex mutex; std::string bytes; };
+		uam::AcpSessionState& session;
+		std::shared_ptr<Capture> capture = std::make_shared<Capture>();
+		explicit ControlledNativeInput(uam::AcpSessionState& value) : session(value)
+		{
+			FILE* file = std::tmpfile();
+			UAM_ASSERT(file != nullptr);
+#if defined(_WIN32)
+			HANDLE handle = INVALID_HANDLE_VALUE;
+			UAM_ASSERT(DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file))), GetCurrentProcess(), &handle, 0, FALSE, DUPLICATE_SAME_ACCESS));
+			session.stdin_write = handle;
+#else
+			session.stdin_write_fd = dup(fileno(file));
+			UAM_ASSERT(session.stdin_write_fd >= 0);
+#endif
+			std::fclose(file);
+			session.stdin_writer = std::make_shared<uam::platform::AsyncByteWriter>(
+			    [state = capture](const char* bytes, std::size_t size, std::string&)
+			    {
+				    std::lock_guard lock(state->mutex);
+				    state->bytes.append(bytes, size);
+				    return static_cast<std::ptrdiff_t>(size);
+			    }, [] {});
+		}
+		~ControlledNativeInput()
+		{
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			session.running = false;
+		}
+		std::string Bytes() const { std::lock_guard lock(capture->mutex); return capture->bytes; }
+	};
+
+	class UnconfirmedGoalStopService final : public IPlatformProcessService
+	{
+	  public:
+		std::atomic<bool> exited{false};
+		mutable std::atomic<int> terminations{0}, legacy_stops{0}, closes{0};
+		bool SupportsDetachedProcesses() const override { return false; }
+		bool PopulateLocalTime(std::time_t, std::tm*) const override { return false; }
+		std::string BuildShellCommandWithWorkingDirectory(const fs::path&, const std::string&) const override { return {}; }
+		bool CaptureCommandOutput(const std::string&, std::string*, int*, std::string*) const override { return false; }
+		int NormalizeCapturedCommandExitCode(int status) const override { return status; }
+		ProcessExecutionResult ExecuteCommand(const std::string&, int, std::stop_token) const override { return {}; }
+		bool StartStdioProcess(uam::platform::StdioProcessPlatformFields&, const fs::path&, const std::vector<std::string>&, std::string*, const std::vector<std::pair<std::string,std::string>>&) const override { return false; }
+		bool StartStdioProcessWithInput(uam::platform::StdioProcessPlatformFields&, const fs::path&, const std::vector<std::string>&, std::string_view, std::string*, const std::vector<std::pair<std::string,std::string>>&) const override { return false; }
+		void CloseStdioProcessHandles(uam::platform::StdioProcessPlatformFields&) const override { ++closes; }
+		bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields&, const char*, std::size_t, std::string*) const override { return false; }
+		void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields&) const override {}
+		void TerminateStdioProcess(uam::platform::StdioProcessPlatformFields&, bool) const override { ++terminations; }
+		void StopStdioProcess(uam::platform::StdioProcessPlatformFields&, bool) const override { ++legacy_stops; }
+		std::ptrdiff_t ReadStdioProcessStdout(uam::platform::StdioProcessPlatformFields&, char*, std::size_t, std::string*) const override { return -2; }
+		std::ptrdiff_t ReadStdioProcessStderr(uam::platform::StdioProcessPlatformFields&, char*, std::size_t, std::string*) const override { return -2; }
+		bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields&, int* code) const override { if (code) *code = 0; return exited.load(); }
+		fs::path ResolveCurrentExecutablePath() const override { return {}; }
+		std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const fs::path&, std::string*) const override { return {}; }
+		uintmax_t NativeGeminiSessionMaxFileBytes() const override { return 0; }
+		std::size_t NativeGeminiSessionMaxMessages() const override { return 0; }
+		std::string GenerateUuid() const override { return {}; }
+		bool LaunchShellAt(const fs::path&, std::string*) const override { return false; }
+		void SetKeepSystemAwake(bool) const override {}
+		bool EmbeddedBrowserUsesMockKeychain() const override { return false; }
+	};
+
+	void CheckFallbackSteeringAdmission(bool promote)
+	{
+		AntigravityUamGoalFixture fixture;
+		auto& chat = fixture.Chat(); auto& session = fixture.Session();
+		chat.provider_id = session.provider_id = "gemini-cli";
+		session.protocol_kind = "gemini-acp";
+		chat.active_goal_id.clear(); chat.goals.clear();
+		chat.memory_enabled = false;
+		fixture.app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+		fixture.app.settings.central_provider_configuration.enabled = false;
+		fixture.app.settings.central_provider_configuration.uam_control_enabled = false;
+		fixture.app.settings.computer_use_globally_enabled = false;
+		chat.uam_control_enabled = chat.computer_use_enabled = false;
+		chat.messages = {{MessageRole::User, "Original input", "fixture"}, {MessageRole::Assistant, "Interrupted output", "fixture"}};
+		session.turn_user_message_index = session.turn_first_user_message_index = 0;
+		session.current_assistant_message_index = session.turn_assistant_message_index = 1;
+		session.running = session.initialized = session.session_ready = true;
+		session.queued_prompt.clear();
+		session.prompt_request_id = 10; session.pending_request_methods[10] = "session/prompt";
+		session.next_request_id = 20;
+		ControlledNativeInput input(session);
+		const std::string text = promote ? "Promoted steering reaches actual admission" : "Fresh steering reaches actual admission";
+		if (promote)
+		{
+			uam::AcpQueuedUserPromptState queued; queued.id = "promoted-steer"; queued.text = text;
+			session.queued_user_prompts.push_back(queued); chat.acp_queued_prompts.push_back(queued);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, chat));
+		std::string error;
+		UAM_ASSERT(promote ? uam::SteerQueuedAcpPrompt(fixture.app, chat.id, 0, &error) : uam::SteerAcpPrompt(fixture.app, chat.id, text, {}, {}, false, &error));
+		UAM_ASSERT(session.cancel_requested);
+		UAM_ASSERT(!session.queue_held && !chat.acp_queue_held);
+		// Gemini cancels with a notification; the original prompt's terminal response
+		// supplies retirement evidence. Do not invent an RPC acknowledgement.
+		UAM_ASSERT_EQ(session.cancel_request_id, 0);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, chat, R"({"jsonrpc":"2.0","id":10,"result":{"stopReason":"cancelled"}})"));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (input.Bytes().find(text) == std::string::npos && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(fixture.app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, chat);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(input.Bytes().find(text) != std::string::npos);
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT(!session.queue_held && !chat.acp_queue_held);
+		UAM_ASSERT(session.prompt_request_id != 0 && session.prompt_request_id != 10);
+		UAM_ASSERT(std::ranges::any_of(chat.messages, [&](const Message& message) { return message.role == MessageRole::User && message.content == text; }));
+	}
+} // namespace
+
+UAM_TEST(AntigravityUamGoalAccountsNativeStepsOnceWithoutCumulativeOrTextEstimates)
+{
+	for (const bool fresh : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		if (fresh)
+		{
+			fixture.Chat().native_session_id.clear();
+			fixture.Session().session_id.clear();
+		}
+		fixture.Prepare();
+		if (fresh)
+			UAM_ASSERT(fixture.runtime.OnAcpHandleMessage(fixture.app, fixture.Session(), fixture.Chat(), {{"event", "init"}, {"conversation_id", "11111111-2222-4333-8444-555555555555"}}, nullptr));
+		UAM_ASSERT_EQ(fixture.Session().antigravity_goal_turn.native_conversation_id, fixture.Chat().native_session_id);
+		fixture.Step(0, nullptr, "", "user_input");
+		fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+		fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+		UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+		fixture.Result();
+		UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+		UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_observed"));
+		UAM_ASSERT(fixture.Session().antigravity_goal_turn.settled);
+		UAM_ASSERT(fixture.Session().provider_usage.token_usage.last_available);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->native_session_id, fixture.Chat().native_session_id);
+		UAM_ASSERT_EQ(saved->goals.front().tokens_used, int64_t{15});
+	}
+}
+
+UAM_TEST(AntigravityUamGoalBudgetStopsAtObservedStepAndPreservesNativeResume)
+{
+	AntigravityUamGoalFixture fixture(10);
+	fixture.Prepare();
+	fixture.Step(1, {{"input_tokens", 8}, {"output_tokens", 4}});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{12});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_blocker_kind, std::string("token_budget"));
+	UAM_ASSERT(fixture.Chat().active_goal_id.empty());
+	UAM_ASSERT(!fixture.Session().processing);
+	UAM_ASSERT(fixture.Session().goal_resume_suppressed);
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	fixture.Step(2, {{"input_tokens", 8}, {"output_tokens", 4}});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{12});
+	const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(saved->goals.front().tokens_used, int64_t{12});
+}
+
+UAM_TEST(AntigravityUamGoalUnknownUsageHoldsInsteadOfInventingRemainingBudget)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	fixture.Step(1, nullptr);
+	fixture.Result();
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{0});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+	std::string error;
+	UAM_ASSERT(!fixture.runtime.OnAcpValidateGoalResume(fixture.Chat(), fixture.CurrentGoal(), fixture.app.settings, false, error));
+	// FlushPendingGoalContinuations records its failure text in last_diagnostic.
+	// That replacement must preserve the budget hold, including an observed zero.
+	fixture.CurrentGoal().last_diagnostic = error;
+	UAM_ASSERT(!fixture.runtime.OnAcpValidateGoalResume(fixture.Chat(), fixture.CurrentGoal(), fixture.app.settings, false, error));
+	UAM_ASSERT(fixture.runtime.OnAcpValidateGoalResume(fixture.Chat(), fixture.CurrentGoal(), fixture.app.settings, true, error));
+}
+
+UAM_TEST(AntigravityUamGoalInterruptedUsageSurvivesRestartWithoutReplayAuthority)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+	UAM_ASSERT(saved.has_value());
+	// Reusing a runtime's turn serial for a replacement process must not reuse
+	// the previous process's successful preflight and bypass its saved usage hold.
+	fixture.runtime.OnAcpBuildInitialize(fixture.Session(), 2);
+	std::string replacement_error;
+	UAM_ASSERT(!fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), replacement_error));
+	UAM_ASSERT(!replacement_error.empty());
+	uam::AppState restarted;
+	restarted.data_root = fixture.temp.root;
+	restarted.chats.push_back(*saved);
+	UAM_ASSERT_EQ(uam::GoalService::PauseActiveGoalsAfterRestart(restarted), std::size_t{1});
+	const Goal& goal = restarted.chats.front().goals.front();
+	UAM_ASSERT_EQ(goal.status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(goal.last_diagnostic, std::string("antigravity_goal_usage_pending"));
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(restarted, saved->id, goal.id, &error));
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	UAM_ASSERT_EQ(restarted.chats.front().native_session_id, saved->native_session_id);
+	UAM_ASSERT(restarted.chats.front().messages.empty());
+}
+
+UAM_TEST(AntigravityUamGoalPauseCancelsOwnedTurnAndPreservesHeldInput)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	uam::AcpQueuedUserPromptState held;
+	held.text = "Keep this unrelated authored input held";
+	fixture.Session().queued_user_prompts.push_back(held);
+	fixture.Chat().acp_queued_prompts.push_back(held);
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, GoalStatus::Paused, true));
+	UAM_ASSERT(!fixture.Session().processing);
+	UAM_ASSERT(fixture.Session().goal_resume_suppressed);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+	UAM_ASSERT_EQ(fixture.Session().queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(fixture.Session().queue_held);
+	UAM_ASSERT(fixture.Chat().acp_queue_held);
+	UAM_ASSERT_EQ(fixture.Chat().acp_queued_prompts.front().text, held.text);
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+}
+
+UAM_TEST(AntigravityUamGoalDirectControlsRequireSavedStateBeforeCancelling)
+{
+	for (int action = 0; action < 3; ++action)
+	{
+		AntigravityUamGoalFixture fixture;
+		Goal replacement;
+		replacement.id = "saved-replacement";
+		replacement.objective = "Replace only after the control is saved";
+		replacement.status = GoalStatus::Paused;
+		fixture.Chat().goals.push_back(replacement);
+		fixture.Prepare();
+		const std::string goal_id = fixture.CurrentGoal().id;
+		const std::string original_revision = fixture.Chat().goal_command_revision;
+		const fs::path chats = fixture.temp.root / "chats";
+		const fs::path retained = fixture.temp.root / "retained-private-chats";
+		UAM_ASSERT(fs::is_directory(chats));
+		fs::rename(chats, retained);
+		UAM_ASSERT(uam::io::WriteTextFile(chats, "Private full-save refusal fixture"));
+		const auto control = [&]()
+		{
+			if (action == 0)
+				return uam::GoalService::UpdateGoalStatus(fixture.app, fixture.Chat().id, goal_id, GoalStatus::Paused, true);
+			if (action == 1)
+				return uam::GoalService::ClearActiveGoal(fixture.app, fixture.Chat().id, true);
+			std::string error;
+			return uam::GoalService::SetActiveGoal(fixture.app, fixture.Chat().id, replacement.id, &error);
+		};
+		UAM_ASSERT(!control());
+		UAM_ASSERT(fixture.Session().processing);
+		UAM_ASSERT(!fixture.Session().running);
+		UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+		UAM_ASSERT(!fixture.Session().antigravity_goal_turn.settled);
+		UAM_ASSERT(fixture.Session().goal_resume_suppressed);
+		UAM_ASSERT_EQ(fixture.Chat().active_goal_id, goal_id);
+		UAM_ASSERT_EQ(fixture.Chat().goal_command_revision, original_revision);
+		UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Active);
+		UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_pending"));
+		UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+		UAM_ASSERT(fs::remove(chats));
+		fs::rename(retained, chats);
+		const auto before_retry = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(before_retry.has_value());
+		UAM_ASSERT_EQ(before_retry->active_goal_id, goal_id);
+		UAM_ASSERT_EQ(before_retry->goals.front().status, GoalStatus::Active);
+		UAM_ASSERT(control());
+		UAM_ASSERT(!fixture.Session().processing);
+		UAM_ASSERT(fixture.Session().antigravity_goal_turn.settled);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->goals.front().status, GoalStatus::Paused);
+		UAM_ASSERT_EQ(saved->active_goal_id, action == 2 ? replacement.id : std::string{});
+		UAM_ASSERT_EQ(saved->native_session_id, fixture.Chat().native_session_id);
+	}
+}
+
+UAM_TEST(AntigravityUamGoalNativeStopFallbackDurablyHoldsQueuedInput)
+{
+	for (const bool has_native_session : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		fixture.Prepare();
+		uam::AcpQueuedUserPromptState queued;
+		queued.id = "held-authored-input";
+		queued.text = "Preserve this authored input without dispatch";
+		fixture.Session().queued_user_prompts.push_back(queued);
+		fixture.Chat().acp_queued_prompts.push_back(queued);
+		// Exercise Cancel -> Stop -> finalization with a running-state marker only.
+		// Every OS process field remains invalid: no executable starts and no PID/handle can be signalled.
+		UAM_ASSERT(!fixture.Session().stdin_writer);
+#if defined(_WIN32)
+		UAM_ASSERT(fixture.Session().process_info.hProcess == INVALID_HANDLE_VALUE);
+		UAM_ASSERT(fixture.Session().process_info.hThread == INVALID_HANDLE_VALUE);
+		UAM_ASSERT(fixture.Session().job_object == nullptr);
+		UAM_ASSERT(fixture.Session().stdin_write == INVALID_HANDLE_VALUE);
+		UAM_ASSERT(fixture.Session().stdout_read == INVALID_HANDLE_VALUE);
+		UAM_ASSERT(fixture.Session().stderr_read == INVALID_HANDLE_VALUE);
+#else
+		UAM_ASSERT_EQ(fixture.Session().child_pid, -1);
+		UAM_ASSERT_EQ(fixture.Session().watchdog_pid, -1);
+		UAM_ASSERT_EQ(fixture.Session().stdin_write_fd, -1);
+		UAM_ASSERT_EQ(fixture.Session().stdout_read_fd, -1);
+		UAM_ASSERT_EQ(fixture.Session().stderr_read_fd, -1);
+#endif
+		fixture.Session().running = true;
+		if (!has_native_session)
+			fixture.Session().session_id.clear();
+		UAM_ASSERT(uam::GoalService::UpdateGoalStatus(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, GoalStatus::Paused, true));
+		UAM_ASSERT_EQ(fixture.app.acp_process_stop_tasks.size(), std::size_t{1});
+		fixture.app.acp_process_stop_tasks.front().worker->join();
+		UAM_ASSERT(fixture.app.acp_process_stop_tasks.front().finished->load());
+		UAM_ASSERT(!fixture.Session().running);
+		UAM_ASSERT(!fixture.Session().processing);
+		UAM_ASSERT(fixture.Session().queue_held);
+		UAM_ASSERT(fixture.Chat().acp_queue_held);
+		UAM_ASSERT_EQ(fixture.Session().queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(fixture.Session().queued_user_prompts.front().text, queued.text);
+		UAM_ASSERT(fixture.Chat().messages.empty());
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT(saved->acp_queue_held);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, queued.text);
+		UAM_ASSERT_EQ(saved->native_session_id, fixture.Chat().native_session_id);
+		UAM_ASSERT_EQ(saved->goals.front().status, GoalStatus::Paused);
+		UAM_ASSERT_EQ(saved->goals.front().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+	}
+}
+
+UAM_TEST(AntigravityUamGoalDirectReplacementStopsPriorOwnedTurn)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	Goal replacement;
+	replacement.id = "replacement";
+	replacement.objective = "New explicitly requested goal";
+	fixture.Chat().goals.push_back(replacement);
+	std::string error;
+	UAM_ASSERT(uam::GoalService::SetActiveGoal(fixture.app, fixture.Chat().id, replacement.id, &error));
+	UAM_ASSERT(!fixture.Session().processing);
+	UAM_ASSERT(fixture.Session().goal_resume_suppressed);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+	UAM_ASSERT_EQ(fixture.Chat().active_goal_id, replacement.id);
+	UAM_ASSERT_EQ(fixture.Chat().goals.back().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+}
+
+UAM_TEST(AntigravityGoalCommandRefusalChecksAuthoredBatchBeforeContext)
+{
+	AntigravityUamGoalFixture fixture;
+	Message first;
+	first.role = MessageRole::User;
+	first.content = "Continue the explicitly requested work";
+	Message command = first;
+	command.content = "/goal Start a competing native loop";
+	fixture.Chat().messages = {first, command};
+	fixture.Session().turn_first_user_message_index = 0;
+	fixture.Session().turn_user_message_index = 1;
+	fixture.Session().queued_prompt = "Captured goal/agent context\nMessage 1: Continue work\nMessage 2: /goal Start a competing native loop";
+	std::string error;
+	UAM_ASSERT(!fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fixture.CurrentGoal().last_diagnostic.empty());
+	UAM_ASSERT(fixture.Session().antigravity_goal_turn.goal_id.empty());
+	UAM_ASSERT(fs::is_empty(fixture.temp.root));
+	// An earlier command in history cannot block a later ordinary authored turn.
+	fixture.Chat().messages = {command, first};
+	fixture.Session().turn_first_user_message_index = 1;
+	fixture.Session().queued_prompt = "Captured context\nContinue the explicitly requested work";
+	UAM_ASSERT(fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), error));
+}
+
+UAM_TEST(AcpFreshFallbackSteeringRetainsDispatchAfterCancellation)
+{
+	CheckFallbackSteeringAdmission(false);
+}
+
+UAM_TEST(AcpPromotedFallbackSteeringRetainsDispatchAfterCancellation)
+{
+	CheckFallbackSteeringAdmission(true);
+}
+
+UAM_TEST(AntigravityPrivateReviewerRepairRetainsIdentityAndAccountsUsage)
+{
+	AntigravityUamGoalFixture fixture;
+	auto& session = fixture.Session();
+	session.goal_internal_session = true;
+	session.session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	session.goal_review_turn = true;
+	session.goal_turn_kind = std::string(uam::acp_detail::kGoalTurnKindReview);
+	session.goal_review_goal_id = fixture.CurrentGoal().id;
+	session.current_mode_id = "plan";
+	fixture.app.settings.central_provider_configuration.enabled = false;
+	fixture.app.settings.central_provider_configuration.uam_control_enabled = false;
+	fixture.app.settings.computer_use_globally_enabled = false;
+	fixture.Chat().uam_control_enabled = fixture.Chat().computer_use_enabled = false;
+	fixture.Chat().memory_enabled = false;
+	fixture.Prepare();
+	ControlledNativeInput input(session);
+	session.running = session.initialized = true;
+	session.queued_prompt.clear();
+	fixture.Step(1, {{"input_tokens",10},{"output_tokens",5}}, "not valid review JSON");
+	fixture.Result("not valid review JSON");
+	UAM_ASSERT(session.goal_internal_session);
+	UAM_ASSERT(session.goal_review_turn && session.goal_review_repair_attempts == 1);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (input.Bytes().find("only repair attempt") == std::string::npos && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, fixture.Chat());
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(input.Bytes().find("only repair attempt") != std::string::npos);
+	UAM_ASSERT_EQ(session.session_id, std::string("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"));
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(session.current_mode_id, std::string("plan"));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	const std::string complete = R"({"decision":"complete","reason":"Repaired bounded review","evidence":["Private repair delivered and verified"]})";
+	fixture.Step(1, {{"input_tokens",2},{"output_tokens",3}}, complete);
+	fixture.Result(complete, 10);
+	UAM_ASSERT(session.antigravity_goal_turn.settled);
+	UAM_ASSERT_EQ(session.antigravity_completed_turns, int64_t{10});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{20});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Complete);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(saved->goals.front().tokens_used, int64_t{20});
+}
+
+UAM_TEST(AntigravityLocalGoalRestartRequiresObservedProcessExit)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare(); fixture.Step(1, {{"input_tokens",12},{"output_tokens",3}});
+	fixture.CurrentGoal().loop_count = 2;
+	fixture.CurrentGoal().current_step = "Retain metered progress until actual exit";
+	uam::FlushPendingChatSaves(fixture.app);
+	fixture.Session().running = true;
+	fixture.Session().queued_prompt.clear();
+	auto service = std::make_shared<UnconfirmedGoalStopService>();
+	UAM_ASSERT(!uam::StopAcpSession(fixture.app, fixture.Chat().id, uam::AcpStopPurpose::Interrupt, true, service));
+	UAM_ASSERT_EQ(fixture.app.acp_process_stop_tasks.size(), std::size_t{1});
+	auto& task = fixture.app.acp_process_stop_tasks.front();
+	UAM_ASSERT(task.observe_exit && fixture.Session().local_stop_pending);
+	task.worker->join();
+	UAM_ASSERT(task.finished->load() && !task.result->exit_confirmed);
+	UAM_ASSERT_EQ(service->terminations.load(), 1);
+	UAM_ASSERT_EQ(service->legacy_stops.load(), 0);
+	UAM_ASSERT_EQ(service->closes.load(), 0);
+	UAM_ASSERT(!uam::PollCompletedAcpProcessStops(fixture.app, nullptr));
+	UAM_ASSERT(uam::AcpStopInProgress(fixture.app, fixture.Chat().id));
+	const std::string revision = fixture.Chat().goal_command_revision;
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::ResumeGoal(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, &error, true));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().loop_count, 2);
+	UAM_ASSERT_EQ(fixture.Chat().goal_command_revision, revision);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().current_step, std::string("Retain metered progress until actual exit"));
+	service->exited.store(true);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!fixture.app.acp_process_stop_tasks.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app);
+		(void)uam::PollCompletedAcpProcessStops(fixture.app, nullptr);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT(!uam::AcpStopInProgress(fixture.app, fixture.Chat().id));
+	UAM_ASSERT_EQ(service->closes.load(), 1);
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().loop_count, 2);
+}
+
+UAM_TEST(AntigravityUamGoalReviewerUsageAndCompletionRemainUamOwned)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Session().goal_review_turn = true;
+	fixture.Session().goal_turn_kind = std::string(uam::acp_detail::kGoalTurnKindReview);
+	fixture.Session().goal_review_goal_id = fixture.CurrentGoal().id;
+	fixture.Prepare();
+	const std::string review = R"({"decision":"complete","reason":"Verified the requested scope","evidence":["All bounded fixture assertions passed"]})";
+	fixture.Step(1, {{"input_tokens", 10}, {"output_tokens", 5}}, review);
+	fixture.Result(review);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Complete);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().execution_owner, std::string("uam"));
+	UAM_ASSERT(!fixture.CurrentGoal().native_binding.has_value());
+}
+
+UAM_TEST(AntigravityUamGoalResumeChecksIterationAndNativeIdentityBeforeMutation)
+{
+	for (const bool invalid_identity : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		fixture.Session().processing = false;
+		fixture.CurrentGoal().status = GoalStatus::Paused;
+		fixture.Chat().active_goal_id.clear();
+		if (invalid_identity)
+			fixture.Chat().native_session_id = "unverified-id";
+		else
+			fixture.CurrentGoal().loop_count = fixture.app.settings.goal_max_loop_iterations;
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::ResumeGoal(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Paused);
+		UAM_ASSERT(fixture.Chat().active_goal_id.empty());
+		UAM_ASSERT(fs::is_empty(fixture.temp.root));
+	}
+}
+
+UAM_TEST(AntigravityUamGoalRestartWaitsForMeteredTurnRetirement)
+{
+	for (const bool stop_unconfirmed : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		fixture.Prepare();
+		fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+		fixture.CurrentGoal().loop_count = 2;
+		fixture.CurrentGoal().current_step = "Retain the owned iteration";
+		if (stop_unconfirmed)
+		{
+			fixture.Session().processing = false;
+			fixture.Session().queued_prompt.clear();
+			fixture.Session().remote_stop_unconfirmed = true;
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, fixture.Chat()));
+		const std::string revision = fixture.Chat().goal_command_revision;
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::ResumeGoal(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, &error, true));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+		UAM_ASSERT_EQ(fixture.CurrentGoal().loop_count, 2);
+		UAM_ASSERT_EQ(fixture.CurrentGoal().current_step, std::string("Retain the owned iteration"));
+		UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Active);
+		UAM_ASSERT_EQ(fixture.Chat().goal_command_revision, revision);
+		UAM_ASSERT_EQ(fixture.Session().processing, !stop_unconfirmed);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->goals.front().tokens_used, int64_t{15});
+		UAM_ASSERT_EQ(saved->goals.front().loop_count, 2);
+	}
+}
+
+UAM_TEST(AntigravityUamGoalUsageSaveFailureRefusesBeforeEnvelopePreparation)
+{
+	AntigravityUamGoalFixture fixture;
+	const fs::path blocked = fixture.temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "Private save-failure fixture"));
+	fixture.app.data_root = blocked;
+	std::string error;
+	UAM_ASSERT(!fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fixture.Session().antigravity_goal_turn.goal_id.empty());
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{0});
+	UAM_ASSERT(fixture.CurrentGoal().last_diagnostic.empty());
+	UAM_ASSERT(!fixture.Session().running);
+}
+
+UAM_TEST(AntigravityUamGoalOldOwnerCannotChargeRecreatedGoal)
+{
+	for (const bool changed_identity : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		fixture.Prepare();
+		if (changed_identity)
+			fixture.Chat().native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		else
+			fixture.Chat().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		fixture.CurrentGoal().tokens_used = 7;
+		fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+		UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{7});
+		UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Active);
+		UAM_ASSERT_EQ(fixture.Session().antigravity_goal_turn.accounted_tokens, int64_t{0});
+		UAM_ASSERT(fixture.Session().antigravity_goal_turn.settled);
+		UAM_ASSERT(fixture.Session().goal_resume_suppressed);
+		UAM_ASSERT(!fixture.Session().processing);
+		std::string error;
+		UAM_ASSERT(!fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), error));
+		UAM_ASSERT(!error.empty());
+	}
+	// Chat copies intentionally retain metadata_incarnation. A different owner ID
+	// must still obtain its own durable preflight, even if all copied fields match.
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	ChatSession copied = fixture.Chat();
+	copied.id = "copied-goal-owner";
+	fixture.app.chats.push_back(copied);
+	fixture.Chat().goal_owner_chat_id = copied.id;
+	std::string error;
+	UAM_ASSERT(!fixture.runtime.OnAcpPreparePrompt(fixture.app, fixture.Session(), fixture.Chat(), error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(fixture.Session().antigravity_goal_turn.owner_chat_id, fixture.Chat().id);
+	UAM_ASSERT_EQ(fixture.app.chats.back().goals.front().last_diagnostic, std::string("antigravity_goal_usage_pending"));
+}
+
+UAM_TEST(AntigravityUamGoalRolledBackControlReconcilesObservedTurnUsage)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	const std::string original_revision = fixture.Chat().goal_command_revision;
+	fixture.Chat().goal_command_revision = "pending-pause-revision";
+	fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{0});
+	// The failed control restores its prior revision before this turn's native result.
+	fixture.Chat().goal_command_revision = original_revision;
+	fixture.Result();
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_observed"));
+	UAM_ASSERT(fixture.Session().antigravity_goal_turn.settled);
+}
+
+UAM_TEST(AntigravityUamGoalCommittedPauseRetainsKnownUsageFromCompletedTurn)
+{
+	AntigravityUamGoalFixture fixture;
+	fixture.Prepare();
+	UAM_ASSERT(uam::GoalService::UpdateGoalStatus(fixture.app, fixture.Chat().id, fixture.CurrentGoal().id, GoalStatus::Paused, true, true));
+	fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+	fixture.Result();
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{0});
+	UAM_ASSERT(!fixture.Session().processing);
+	std::string error;
+	UAM_ASSERT(fixture.runtime.OnAcpGoalControlCommitted(fixture.app, fixture.Session(), fixture.Chat(), fixture.CurrentGoal().id, error));
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(fixture.CurrentGoal().last_diagnostic, std::string("antigravity_goal_usage_observed"));
+	UAM_ASSERT(fixture.runtime.OnAcpValidateGoalResume(fixture.Chat(), fixture.CurrentGoal(), fixture.app.settings, false, error));
 }
 
 UAM_TEST(AntigravityNativeLaunchModesPreserveCliPolicyAndIdentity)
@@ -1068,6 +1952,7 @@ namespace
 		chat.provider_id = profile.id;
 		chat.execution_host_id = "local";
 		chat.workspace_directory = temp.root.string();
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
 		chat.approval_mode = "default";
 		chat.command_safety_tier = tier;
 		chat.uam_control_enabled = false;
@@ -1089,6 +1974,8 @@ namespace
 		UAM_ASSERT_EQ(original_argv.front(), missing_executable.string());
 		ChatSession expected_chat = app.chats.front();
 		expected_chat.approval_mode = expected_mode;
+		if (review)
+			expected_chat.native_session_id.clear();
 		const std::string expected_argv = uam::acp_detail::JoinAcpArgvForDiagnostics(
 		    runtime.BuildStructuredLaunchArgv(profile, expected_chat));
 		std::string error;
@@ -1101,6 +1988,7 @@ namespace
 		UAM_ASSERT(!fs::exists(missing_executable.parent_path()));
 		UAM_ASSERT_EQ(app.chats.front().approval_mode, std::string("default"));
 		UAM_ASSERT_EQ(app.chats.front().command_safety_tier, tier);
+		UAM_ASSERT_EQ(app.chats.front().native_session_id, chat.native_session_id);
 		const auto starts = std::ranges::count_if(session.diagnostics, [](const auto& entry)
 		{
 			return entry.event == "process_launch" && entry.reason == "starting";
@@ -1134,5 +2022,61 @@ UAM_TEST(AntigravityOrdinaryLaunchKeepsPermissionBeforeProcessCreation)
 {
 	AssertAntigravityLaunchProjectionBeforeProcessCreation(false, "off", "default");
 	AssertAntigravityLaunchProjectionBeforeProcessCreation(false, "acceptEdits", "default");
+}
+
+UAM_TEST(AntigravityQueuedGoalWorkersResumeSavedConversationAndReviewersIsolate)
+{
+	for (const bool review : {false, true})
+	{
+		AntigravityUamGoalFixture fixture;
+		ScopedEnvVar home("HOME", fixture.temp.root.string());
+		ScopedEnvVar config("XDG_CONFIG_HOME", (fixture.temp.root / "config").string());
+		const fs::path missing = fixture.temp.root / "never-created" / "agy";
+		ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+		profile.interactive_command = uam::shell::EscapeArg(missing.string());
+		fixture.app.provider_profiles = {profile};
+		fixture.app.settings.central_provider_configuration.enabled = false;
+		fixture.app.settings.central_provider_configuration.uam_control_enabled = false;
+		fixture.app.settings.computer_use_globally_enabled = false;
+		fixture.Chat().uam_control_enabled = false;
+		fixture.Chat().computer_use_enabled = false;
+		fixture.Session().processing = false;
+		fixture.Session().queued_prompt.clear();
+		UAM_ASSERT(!uam::acp_detail::QueueGoalInternalPrompt(fixture.app, fixture.Session(), fixture.Chat(), "Private bounded goal turn", review, "", true));
+		UAM_ASSERT_EQ(fixture.Session().goal_internal_session, review);
+		UAM_ASSERT_EQ(fixture.Session().last_error, missing.string() + " not found on PATH in app environment");
+		UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+		UAM_ASSERT(!fixture.Session().running);
+		UAM_ASSERT(!fs::exists(missing.parent_path()));
+	}
+}
+
+UAM_TEST(AntigravityConnectedGoalReviewDoesNotAddSharedTextTokenEstimates)
+{
+	AntigravityUamGoalFixture fixture;
+	ScopedEnvVar home("HOME", fixture.temp.root.string());
+	ScopedEnvVar config("XDG_CONFIG_HOME", (fixture.temp.root / "config").string());
+	const fs::path missing = fixture.temp.root / "never-created" / "agy";
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	profile.interactive_command = uam::shell::EscapeArg(missing.string());
+	fixture.app.provider_profiles = {profile};
+	fixture.app.settings.central_provider_configuration.enabled = false;
+	fixture.app.settings.central_provider_configuration.uam_control_enabled = false;
+	fixture.app.settings.computer_use_globally_enabled = false;
+	fixture.Chat().uam_control_enabled = false;
+	fixture.Chat().computer_use_enabled = false;
+	fixture.Chat().messages.push_back({MessageRole::User, "Please verify the bounded objective", "private-fixture"});
+	fixture.Session().turn_first_user_message_index = 0;
+	fixture.Session().turn_user_message_index = 0;
+	fixture.Prepare();
+	fixture.Step(1, {{"input_tokens", 12}, {"output_tokens", 3}});
+	fixture.Result();
+	// This went through shared review scheduling; its missing executable refuses before process creation.
+	UAM_ASSERT_EQ(fixture.CurrentGoal().tokens_used, int64_t{15});
+	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(fixture.Session().last_error, missing.string() + " not found on PATH in app environment");
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("11111111-2222-4333-8444-555555555555"));
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(!fs::exists(missing.parent_path()));
 }
 #endif

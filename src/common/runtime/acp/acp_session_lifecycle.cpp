@@ -1754,6 +1754,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	ChatSession launch_chat = remote ? chat : LocalLaunchMetadata(chat);
+	if (session.goal_internal_session)
+		launch_chat.native_session_id.clear();
 	launch_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
 	if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
@@ -3351,6 +3353,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		session.last_error = "Wait for pending remote requests to be confirmed before sending another prompt.";
 		return true;
 	}
+	std::string prompt_error;
+	if (!runtime.OnAcpPreparePrompt(app, session, chat, prompt_error))
+	{
+		session.goal_resume_suppressed = true;
+		FailAcpTurnOrSession(session, &chat, prompt_error);
+		return true;
+	}
 	std::string method;
 	nlohmann::json msg;
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
@@ -3901,7 +3910,9 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.queued_prompt = prompt;
 	session.goal_turn_kind = review_turn ? std::string(kGoalTurnKindReview) : std::string(kGoalTurnKindWorkerContinuation);
 	session.goal_turn_model_id = uam::strings::Trim(model_id);
-	session.goal_internal_session = fresh_session;
+	// Continuing the same private reviewer (including its one JSON repair) retains its identity.
+	if (fresh_session)
+		session.goal_internal_session = review_turn || !ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpGoalWorkersResumeConversation();
 	session.goal_review_turn = review_turn;
 	if (chat.goal_owner_chat_id.empty() && !chat.active_goal_id.empty())
 	{

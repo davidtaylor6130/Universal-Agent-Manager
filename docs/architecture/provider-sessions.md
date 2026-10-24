@@ -6,6 +6,10 @@ Provider adapters translate ACP, Codex app-server, Copilot SDK server and native
 
 [Engineering reference](../reference/architecture/provider-sessions.md).
 
+Shared [goal](../chat/goals.md) resume and restart consult the provider adapter before changing goal state, preparing a workspace or allocating a runtime; an unsupported native control must fail there instead of becoming an ordinary prompt or an inferred lifecycle acknowledgement.
+
+Antigravity's UAM goal workers preserve the chat's native conversation while private reviewers clear it from launch arguments and retain Plan. Adapter-bound observed usage and durable pending-usage markers fence budgeted continuation across interruption; goal controls reach owned process cancellation only after their saved receipt. A direct service control restores prior goal intent and leaves the owned turn uncancelled on save failure; the CEF path keeps its existing asynchronous full-save receipt. Active local metered retirement retains its owned process and Restart fence until exit is observed; bounded reviewer repairs retain their private native identity. These are UAM lifecycle decisions, not native Goal RPC receipts or managed execution-policy attestation.
+
 OpenCode supplements ACP with an authenticated permission relay to the HTTP server in that same process; native Terminal View uses a separate server owned by its TUI launch. Endpoint credentials and exact native ancestry fence each request, and Plan restrictions are retained where native children cannot inherit them. The [OpenCode workspace agreement](../providers/opencode/opencode.md#workspace-identity) permits only ordinary DOS separator spelling differences on SSH Windows hosts without changing native identities or widening permission authority.
 
 SSH history uses bounded immutable native snapshots from the execution host, then the existing guarded history publication path. Parent-owned child journals are read-only UAM records, distinct from provider resume IDs; saved protocol identity also prevents an old Copilot ACP process from being reused as an SDK server.
