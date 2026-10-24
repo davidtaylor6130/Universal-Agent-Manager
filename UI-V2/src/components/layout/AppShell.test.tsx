@@ -373,6 +373,7 @@ describe('AppShell', () => {
     expect(panel?.classList.contains('uam-shell-panel--right')).toBe(true)
     expect(panel?.textContent).toContain('Workspace folder missing: Deleted project')
     expect(panel?.textContent).toContain('/tmp/deleted project')
+    expect(panel?.querySelectorAll('time')).toHaveLength(1)
     onRender.mockClear()
     for (let index = 0; index < 20; index++) {
       act(() => useAppStore.setState({ cliTranscriptBySessionId: { other: { terminalId: 'other', content: String(index) } } }))
@@ -415,6 +416,7 @@ describe('AppShell', () => {
     act(() => alerts.click())
     const panel = host.querySelector('[aria-label="Notifications"]')
     expect(panel?.textContent).toContain('Started shell action: Review Selection')
+    expect(panel?.querySelectorAll('time')).toHaveLength(1)
     expect(panel?.querySelector('.uam-btn')).toBeNull()
 
     act(() => root.unmount())
@@ -435,6 +437,173 @@ describe('AppShell', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('records ordinary notice age while closed and preserves it through reopening and dismissal', () => {
+    vi.useFakeTimers()
+    const firstObserved = new Date(2026, 9, 23, 9)
+    vi.setSystemTime(firstObserved)
+    useAppStore.setState({ updateChecksEnabled: false, statusLine: 'Settings saved.' })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      vi.setSystemTime(new Date(2026, 9, 23, 9, 2))
+      act(() => (host.querySelector('[aria-label="1 alert"]') as HTMLButtonElement).click())
+      const panel = () => host.querySelector('[data-testid="notifications-panel"]')!
+      const time = () => panel().querySelector('time')!
+      expect(time().dateTime).toBe(firstObserved.toISOString())
+      expect(time().textContent).toBe('2 minutes ago')
+      expect(time().getAttribute('aria-label')).toBe('2 minutes ago')
+
+      act(() => useAppStore.setState({ sidebarCollapsed: true }))
+      expect(time().dateTime).toBe(firstObserved.toISOString())
+      act(() => (panel().querySelector('[aria-label="Close notifications"]') as HTMLButtonElement).click())
+      act(() => vi.advanceTimersByTime(200))
+      expect(host.querySelector('[data-testid="notifications-panel"]')).toBeNull()
+      vi.setSystemTime(new Date(2026, 9, 23, 10))
+      act(() => (host.querySelector('[aria-label="1 alert"]') as HTMLButtonElement).click())
+      expect(time().dateTime).toBe(firstObserved.toISOString())
+      expect(time().textContent).toBe('1 hour ago')
+
+      act(() => (panel().querySelector('[aria-label="Mark all notifications as read"]') as HTMLButtonElement).click())
+      act(() => vi.advanceTimersByTime(60_000))
+      act(() => useAppStore.setState({ sidebarCollapsed: false }))
+      expect(host.querySelector('[aria-label="No new alerts"]')).toBeTruthy()
+      expect(panel().querySelector('time')).toBeNull()
+      expect(useAppStore.getState().statusLine).toBe('Settings saved.')
+
+      // The same source resolving and returning is new activity under existing dismissal rules.
+      act(() => useAppStore.setState({ statusLine: '' }))
+      const returnedAt = new Date()
+      act(() => useAppStore.setState({ statusLine: 'Settings saved.' }))
+      expect(host.querySelector('[aria-label="1 alert"]')).toBeTruthy()
+      expect(time().dateTime).toBe(returnedAt.toISOString())
+      expect(time().textContent).toBe('Just now')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.useRealTimers()
+    }
+  })
+
+  it('groups dated notices newest first and refreshes across midnight without reannouncing', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    vi.setSystemTime(new Date(2026, 9, 23, 23, 58))
+    useAppStore.setState({ updateChecksEnabled: false, statusLine: 'Settings saved.' })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      vi.setSystemTime(new Date(2026, 9, 23, 23, 59, 30))
+      for (const [id, time] of [['recent', new Date(2026, 9, 23, 23, 59)], ['older', new Date(2026, 9, 22, 23, 59)]] as const) {
+        act(() => window.dispatchEvent(new CustomEvent(APP_FAILURE_EVENT, { detail: { id, time: time.toISOString(), message: `${id} failure`, detail: `${id} detail` } })))
+      }
+      act(() => (host.querySelector('[aria-label="3 alerts"]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      const groups = () => Array.from(panel.querySelectorAll('.uam-np-group'), (group) => group.textContent)
+      expect(groups()).toEqual(['Today', 'Earlier'])
+      expect(Array.from(panel.querySelectorAll('.uam-np-row__title span:first-child'), (title) => title.textContent)).toEqual(['Change not saved', 'Application status', 'Change not saved'])
+      const times = Array.from(panel.querySelectorAll('time'))
+      expect(times.map((time) => time.dateTime)).toEqual([
+        new Date(2026, 9, 23, 23, 59).toISOString(), new Date(2026, 9, 23, 23, 58).toISOString(), new Date(2026, 9, 22, 23, 59).toISOString(),
+      ])
+      expect(times[0].textContent).toBe('Just now')
+      const announcer = host.querySelector('[data-testid="transient-alert-announcer"]')!
+      const announcement = announcer.innerHTML
+      const transcriptRenders = mainPanelRenderCount.value
+      const focusedDismiss = panel.querySelector<HTMLButtonElement>('[aria-label="Dismiss Change not saved"]')!
+      act(() => focusedDismiss.focus())
+      act(() => vi.advanceTimersByTime(60_000))
+      expect(groups()).toEqual(['Earlier'])
+      expect(panel.querySelector('time')?.textContent).toBe('1 minute ago')
+      expect(announcer.innerHTML).toBe(announcement)
+      expect(mainPanelRenderCount.value).toBe(transcriptRenders)
+      expect(document.activeElement).toBe(focusedDismiss)
+      expect(host.querySelector('[aria-label="3 alerts"]')).toBeTruthy()
+      expect(panel.querySelectorAll('time')).toHaveLength(3)
+      expect(Array.from(panel.querySelectorAll('.uam-np-row__icon'), (icon) => icon.getAttribute('data-tone'))).toEqual(['error', 'info', 'error'])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+
+  it('describes the exact timestamp once for keyboard users while relative ages refresh', async () => {
+    vi.useFakeTimers()
+    const observedAt = new Date(2026, 9, 23, 12, 34)
+    vi.setSystemTime(observedAt)
+    useAppStore.setState({ updateChecksEnabled: false, statusLine: 'Settings saved.' })
+    const { host, bell, cleanup } = await mountShell()
+    try {
+      act(() => bell().click())
+      const time = host.querySelector<HTMLTimeElement>('[data-testid="notifications-panel"] time')!
+      expect(time.dateTime).toBe(observedAt.toISOString())
+      expect(time.tabIndex).toBe(0)
+      await act(async () => { time.focus(); await Promise.resolve() })
+      expect(document.activeElement).toBe(time)
+      const tooltip = document.body.querySelector('[role="tooltip"]')!
+      expect(tooltip.textContent).toBe(observedAt.toLocaleString())
+      expect(time.getAttribute('aria-describedby')).toBe(tooltip.id)
+      expect(time.getAttribute('aria-label')).toBe('Just now')
+      const spokenTime = () => `${time.getAttribute('aria-label')} ${tooltip.textContent}`
+      expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
+      await act(async () => { vi.advanceTimersByTime(60_000); await Promise.resolve() })
+      expect(time.textContent).toBe('1 minute ago')
+      expect(time.dateTime).toBe(observedAt.toISOString())
+      expect(time.getAttribute('aria-label')).toBe('1 minute ago')
+      expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
+      expect(tooltip.textContent).toBe(observedAt.toLocaleString())
+      expect(document.activeElement).toBe(time)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('timestamps cached update availability and completed provider updates at first observation', () => {
+    vi.useFakeTimers()
+    const observedAt = new Date(2026, 9, 23, 12)
+    vi.setSystemTime(observedAt)
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: observedAt.toISOString(), uam: { version: 'V4.2.0', url: 'https://example.test/uam' }, providers: {},
+    }))
+    useAppStore.setState({
+      updateChecksEnabled: false,
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      cliVersionManager: { providers: [{
+        providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '0.124.0',
+        availableVersions: [], preferredVersion: '0.124.0', status: 'verified', message: '',
+        running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded',
+      }] },
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      vi.setSystemTime(new Date(2026, 9, 23, 12, 2))
+      act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(panel.textContent).toContain('1 update available')
+      expect(panel.textContent).toContain('Codex update completed')
+      expect(Array.from(panel.querySelectorAll('time'), (time) => [time.dateTime, time.textContent])).toEqual([
+        [observedAt.toISOString(), '2 minutes ago'], [observedAt.toISOString(), '2 minutes ago'],
+      ])
+      act(() => useAppStore.setState((state) => ({ cliVersionManager: {
+        providers: state.cliVersionManager.providers.map((provider) => ({ ...provider, lastOutput: 'Unrelated diagnostic detail' })),
+      } })))
+      expect(Array.from(panel.querySelectorAll('time'), (time) => time.dateTime)).toEqual([observedAt.toISOString(), observedAt.toISOString()])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.useRealTimers()
+    }
   })
 
   it('notifies when a remote chat disconnects and when it reconnects', async () => {
@@ -460,6 +629,7 @@ describe('AppShell', () => {
     act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
     expect(host.textContent).toContain('Homelab connection issue')
     expect(host.textContent).toContain('Codex app-server process exited during an active turn.')
+    expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
 
     await act(async () => useAppStore.setState((state) => ({
       cliBindingBySessionId: {
@@ -469,6 +639,7 @@ describe('AppShell', () => {
     })))
     expect(host.textContent).toContain('Homelab reconnected')
     expect(host.textContent).toContain('The remote connection is available again.')
+    expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
 
     act(() => root.unmount())
     host.remove()
@@ -1064,12 +1235,12 @@ describe('AppShell', () => {
       expect(panel.querySelectorAll('time')).toHaveLength(2)
       expect(panel.textContent).toContain('Transport closed')
       act(() => useAppStore.setState({ statusLine: 'Another status' }))
-      expect(panel.querySelectorAll('time')).toHaveLength(2)
+      expect(panel.querySelectorAll('time')).toHaveLength(3)
       act(() => (panel.querySelector('[aria-label="Dismiss Change not saved"]') as HTMLButtonElement).click())
-      expect(panel.querySelectorAll('time')).toHaveLength(1)
+      expect(panel.querySelectorAll('time')).toHaveLength(2)
       act(() => (panel.querySelector('[aria-label="Close notifications"]') as HTMLButtonElement).click())
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
-      expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
+      expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(2)
     } finally {
       act(() => root.unmount())
       host.remove()

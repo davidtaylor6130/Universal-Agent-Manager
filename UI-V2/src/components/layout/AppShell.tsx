@@ -5,7 +5,7 @@ import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
@@ -40,13 +40,15 @@ import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, Notice, Presence, StatusDot, usePresence } from '../ui'
+import { Button, IconButton, Notice, Presence, StatusDot, Tooltip, usePresence } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
+import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
+import { notificationTimeGroup, relativeNotificationTime } from '../../utils/notificationTime'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
@@ -337,6 +339,7 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
 function NotificationsPanel({
   closing = false,
   dismissedNotificationIds,
+  notificationTimes,
   remoteNotifications,
   failures,
   updates,
@@ -347,6 +350,7 @@ function NotificationsPanel({
 }: {
   closing?: boolean
   dismissedNotificationIds: ReadonlySet<string>
+  notificationTimes: ReadonlyMap<string, number>
   remoteNotifications: RemoteConnectionNotification[]
   failures: AppFailure[]
   updates: UpdateMonitor['updates']
@@ -421,6 +425,11 @@ function NotificationsPanel({
       ],
     })),
   ].filter((notification) => !dismissedNotificationIds.has(notification.id))
+  const now = useNotificationClock(!closing && notifications.length > 0)
+  const timestampedNotifications = notifications.map((notification) => ({
+    ...notification,
+    time: notificationTimes.get(notification.id) ?? now,
+  })).sort((a, b) => b.time - a.time)
   const confirmingFolder = missingFolders.find((folder) => folder.id === confirmingFolderId)
   const confirmingChatCount = confirmingFolder ? sessions.filter((session) => session.folderId === confirmingFolder.id).length : 0
   const confirmingChats = confirmingChatCount === 1 ? '1 chat' : `${confirmingChatCount} chats`
@@ -435,10 +444,10 @@ function NotificationsPanel({
     }
   }
 
-  const groups = [
-    { label: 'Needs attention', items: notifications.filter((notification) => notification.failure || notification.warning) },
-    { label: 'Activity', items: notifications.filter((notification) => !notification.failure && !notification.warning) },
-  ].filter((group) => group.items.length > 0)
+  const groups = (['Today', 'Earlier'] as const).map((label) => ({
+    label,
+    items: timestampedNotifications.filter((notification) => notificationTimeGroup(notification.time, now) === label),
+  })).filter((group) => group.items.length > 0)
 
   return (
     <aside
@@ -511,12 +520,14 @@ function NotificationsPanel({
                 Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
               </Notice>
             )}
-            {groups.map((group) => (
-              <Fragment key={group.label}>
-                <div className="uam-np-group">{group.label}</div>
-                {group.items.map((notification) => {
+            {groups.flatMap((group) => [
+                <div key={`group-${group.label}`} className="uam-np-group">{group.label}</div>,
+                ...group.items.map((notification) => {
                   const tone = notification.failure ? 'error' : notification.warning ? 'warning' : 'info'
                   const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : Info
+                  const time = new Date(notification.time)
+                  const exactTime = time.toLocaleString()
+                  const relativeTime = relativeNotificationTime(notification.time, now)
                   return (
                     <div key={notification.id} className="uam-np-row">
                       <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
@@ -525,11 +536,11 @@ function NotificationsPanel({
                           <span>{notification.title}</span>
                           <span className="uam-np-dot" aria-hidden />
                         </div>
-                        {notification.failure && (
-                          <div className="uam-np-row__meta">
-                            <time dateTime={notification.failure.time}>{new Date(notification.failure.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-                          </div>
-                        )}
+                        <div className="uam-np-row__meta">
+                          <Tooltip label={exactTime}>
+                            <time tabIndex={0} className="rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
+                          </Tooltip>
+                        </div>
                         {notification.failure && <div className="uam-np-row__detail" style={{ color: 'var(--text-2)' }}>{notification.failure.message}</div>}
                         <div className="uam-np-row__detail" style={{ overflowWrap: 'anywhere' }}>{notification.detail}</div>
                         {notification.actions && (
@@ -564,9 +575,8 @@ function NotificationsPanel({
                       />
                     </div>
                   )
-                })}
-              </Fragment>
-            ))}
+                }),
+            ])}
           </div>
         )}
       </div>
@@ -711,6 +721,8 @@ export function AppShell() {
     ...connectionRecoveries.map((notification) => notification.id),
     ...updateMonitor.providerUpdateResults.filter((result) => result.status === 'succeeded').map(providerUpdateNotificationId),
   ]
+  const recordedFailureTimes = new Map(appFailures.map((failure) => [failure.id, failure.time]))
+  const notificationTimes = useNotificationTimes(activeNotificationIds.map((id) => ({ id, time: recordedFailureTimes.get(id) })))
   const alertCount = activeNotificationIds.filter((id) => !dismissedNotificationIds.has(id)).length
 
   useEffect(() => {
@@ -998,6 +1010,7 @@ export function AppShell() {
         <NotificationsPanel
           closing={alertsPresence.closing}
           dismissedNotificationIds={dismissedNotificationIds}
+          notificationTimes={notificationTimes}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
           failures={appFailures}
           updates={updateMonitor.updates}
