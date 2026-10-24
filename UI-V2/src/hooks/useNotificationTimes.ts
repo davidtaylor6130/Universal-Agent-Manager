@@ -21,11 +21,7 @@ export function useNotificationClock(enabled: boolean): number {
   // Reopening refreshes before commit so a closed-panel clock never paints stale ages or day groups.
   if (wasEnabled !== enabled) {
     setWasEnabled(enabled)
-    if (enabled) {
-      const current = Date.now()
-      setNow(current)
-      return current
-    }
+    if (enabled) setNow(Date.now())
   }
   useEffect(() => {
     if (!enabled) return

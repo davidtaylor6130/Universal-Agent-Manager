@@ -2949,7 +2949,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 return (
                   <WorkSectionContext.Provider key={outgoingAlias?.key ?? message.id} value={sectionControl}>
                   <div className="space-y-1" data-message-index={index + historyStartIndex} data-unsent-message-index={unsentByLoadedIndex.has(index) ? index + historyStartIndex : undefined} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
-                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
+                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt, new Date(transcriptDay))}</span></div>}
                     {turnStart && <TurnStartTime
                       timestamp={turnStart.createdAt.getTime()}
                       identity={turnIdentity}
