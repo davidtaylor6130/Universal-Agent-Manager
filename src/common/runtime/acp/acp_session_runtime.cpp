@@ -15,6 +15,7 @@
 
 #include "app/chat_domain_service.h"
 #include "common/chat/conversation_handoff.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/computer_use_service.h"
@@ -272,6 +273,8 @@ namespace uam
 	namespace
 	{
 		bool CanDeferLocalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+		bool ValidateAcpReplayContext(const AppState& app, const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out);
+		bool ValidateQueuedReplayBeforeLaunch(AppState& app, AcpSessionState& session, ChatSession& chat);
 
 		using namespace acp_detail;
 
@@ -767,6 +770,8 @@ namespace uam
 			{
 				return false;
 			}
+			if (!session.recovering_remote_turn && !session.recovering_remote_process &&
+			    !ValidateQueuedReplayBeforeLaunch(app, session, chat)) return true;
 			if (chat.routing_mode == "automatic" && !ExecutionRoutingOwnsWork(app, chat) && !session.queued_user_prompts.empty())
 			{
 				const bool dispatched = DrainNextQueuedAcpUserPrompt(app, session, chat);
@@ -1759,6 +1764,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (skill_spans != nullptr) skill_spans->clear();
 			const std::size_t current_index = queued.existing_user_message_index >= 0
 			    ? static_cast<std::size_t>(queued.existing_user_message_index) : chat.messages.size() - 1;
+			if (!chat.messages_loaded || current_index >= chat.messages.size())
+			{
+				if (error_out) *error_out = "Retry history no longer contains its selected input. Input is retained.";
+				return false;
+			}
 			const std::string authored_text = queued.text;
 			const std::vector<int> known_unsent = KnownUnsentAcpMessageIndices(app, chat);
 			if (current_index == 0) return true;
@@ -1779,18 +1789,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				const Message& prior = chat.messages[index];
 				if (prior.acp_prompt_discarded || std::binary_search(known_unsent.begin(), known_unsent.end(), static_cast<int>(index))) continue;
-				if (completed_boundary && (index == completed_boundary->first || uam::chat::HandoffUsesBlockOrder(prior)))
+				const bool ordered = uam::chat::HandoffUsesBlockOrder(prior);
+				if (!ordered && uam::chat::HandoffHasQuarantinedSummary(prior))
+				{
+					if (error_out) *error_out = uam::chat::kAmbiguousCompactionHistory;
+					return false;
+				}
+				if (ordered)
 				{
 					// The latest completed summary replaces its earlier history; interrupted summaries never do.
-					for (std::size_t block = index == completed_boundary->first ? completed_boundary->second : 0; block < prior.blocks.size(); ++block)
+					const std::size_t before = queued.text.size();
+					for (std::size_t block = completed_boundary && index == completed_boundary->first ? completed_boundary->second : 0; block < prior.blocks.size(); ++block)
 					{
 						const MessageBlock& entry = prior.blocks[block];
 						if (uam::strings::IsBlank(entry.text)) continue;
 						if (entry.type == "context_compaction") queued.text += "Conversation summary: " + entry.text + "\n\n";
 						else if (entry.type == "context_compaction_interrupted") queued.text += "Interrupted conversation summary: " + entry.text + "\n\n";
 						else if (entry.type == "assistant_text") queued.text += "Assistant: " + entry.text + "\n\n";
+						// context_compaction_summary is lossless saved evidence, not prompt content.
 					}
-					has_prior_context = true;
+					has_prior_context = has_prior_context || queued.text.size() != before;
 				}
 				else if (prior.role == MessageRole::User)
 				{
@@ -1830,8 +1848,45 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
+		bool ValidateAcpReplayContext(const AppState& app, const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
+		{
+			std::size_t history_count = chat.messages.size();
+			for (const AcpQueuedUserPromptState& prompt : batch)
+			{
+				if (!prompt.append_user_message && !chat.messages.empty())
+					history_count = std::min(history_count, prompt.existing_user_message_index >= 0
+					    ? static_cast<std::size_t>(prompt.existing_user_message_index) : chat.messages.size() - 1);
+				if (prompt.include_prior_context)
+				{
+					if (chat.messages.empty() || !chat.messages_loaded)
+					{
+						if (error_out) *error_out = "Load the complete saved history before Retry. Input is retained.";
+						return false;
+					}
+					AcpQueuedUserPromptState validation = prompt;
+					if (!ExpandAcpRetryContext(app, chat, validation, error_out)) return false;
+				}
+			}
+			return chat.provider_handoff_context.empty() ||
+			    (!chat.provider_handoff_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id) ||
+			    ValidateProviderHandoffContext(chat, history_count, error_out);
+		}
+
+		bool ValidateQueuedReplayBeforeLaunch(AppState& app, AcpSessionState& session, ChatSession& chat)
+		{
+			if (session.queued_user_prompts.empty()) return true;
+			std::string error;
+			if (ValidateAcpReplayContext(app, chat, {session.queued_user_prompts.front()}, &error)) return true;
+			session.last_error = error;
+			session.queue_held = chat.acp_queue_held = true;
+			session.reconnect_pending = false;
+			ScheduleChatSave(app, chat, 0.0);
+			return false;
+		}
+
 		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out, std::optional<std::size_t>* recall_position = nullptr, std::vector<attached_skills::Span>* skill_spans = nullptr)
 		{
+			if (!ValidateAcpReplayContext(app, chat, batch, error_out)) return false;
 			if (skill_spans != nullptr) skill_spans->clear();
 			if (recall_position != nullptr) recall_position->reset();
 			const AcpQueuedUserPromptState& first = batch.front();
@@ -2082,6 +2137,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			if (failure_purpose_out)
 				*failure_purpose_out = AcpPromptFailurePurpose::Admission;
+			// Recheck retained history before workspace, stop, queue or policy mutations.
+			if (batch.empty() || !ValidateAcpReplayContext(app, chat, batch, error_out)) return false;
 			if (!session.transport_ownership_error.empty())
 			{
 				if (error_out)
@@ -4207,6 +4264,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			return true;
 		}
+		if (!ValidateAcpReplayContext(app, *chat, queue, error_out)) return false;
 		const bool previous_chat_held = chat->acp_queue_held;
 		session->queue_held = false;
 		chat->acp_queue_held = false;
@@ -4419,6 +4477,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return false;
 		}
+		if (!ValidateQueuedReplayBeforeLaunch(app, session, chat)) return false;
 		if (chat.routing_mode == "automatic")
 		{
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
@@ -5176,6 +5235,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("Retry requires a user message with no assistant output.");
 		if (!message.provider.empty() && message.provider != chat->provider_id)
 			return reject("Reconnect the original native session before retrying.");
+		AcpQueuedUserPromptState replay_validation;
+		replay_validation.text = message.content;
+		replay_validation.append_user_message = false;
+		replay_validation.existing_user_message_index = message_index;
+		// Native failed-message Retry keeps its existing history semantics; validate
+		// any saved handoff before retaining input or changing reconnect ownership.
+		if (!ValidateAcpReplayContext(app, *chat, {replay_validation}, error_out)) return false;
 		const bool owned_images = std::ranges::any_of(message.attachments, [](const MessageAttachment& attachment) { return attachment.source == AttachmentSource::OwnedNativeAsset; });
 		if (AcpSessionState* retained = FindAcpSessionForChat(app, chat_id); HasRetainedAcpRetry(*chat, retained, message_index))
 		{
@@ -5381,6 +5447,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		const int message_index = static_cast<int>(chat->messages.size()) - 1;
+		AcpQueuedUserPromptState replay_validation;
+		replay_validation.text = chat->messages.back().content;
+		replay_validation.append_user_message = false;
+		replay_validation.existing_user_message_index = message_index;
+		replay_validation.include_prior_context = true;
+		if (!ValidateAcpReplayContext(app, *chat, {replay_validation}, error_out)) return false;
 		std::optional<AcpUnsentPromptRecovery> captured_retry;
 		if (!ResolveCapturedRetryPolicy(app, *chat, message_index, captured_retry, error_out))
 			return false;
@@ -5419,12 +5491,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 		queued.text = message.content;
 		queued.native_input_id = message.native_input_id;
 		queued.origin_request_id = message.origin_request_id;
-		if (!needs_workspace)
-		{
-			// Validate before goal/snapshot side effects; assemble tagged context at batch admission.
-			AcpQueuedUserPromptState validation = queued;
-			if (!ExpandAcpRetryContext(app, *chat, validation, error_out)) return false;
-		}
 		queued.include_prior_context = true;
 		queued.markdown_store_files = message.markdown_store_files;
 		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
@@ -5979,6 +6045,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool FinalizeStoppedAcpSession(AppState& app, AcpSessionState& session,
 	                               ChatSession* chat, bool preserve_held_queue = false)
 	{
+		const bool model_discovery_only = session.model_discovery_only;
 		bool retained_policy_queue = false;
 		auto save_purpose = preserve_held_queue ? acp_detail::AcpChatSavePurpose::PreserveQueuedIntent : acp_detail::AcpChatSavePurpose::SettleFailedDirect;
 		const bool graceful_update_stop = session.stop_purpose == AcpStopPurpose::ProviderUpdate &&
@@ -6087,6 +6154,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.stderr_buffer.clear();
 		session.stdout_poll_pending = false;
 		session.stderr_poll_pending = false;
+		if (!model_discovery_only && chat != nullptr && app.opencode_compaction_before_turn_reset)
+			app.opencode_compaction_before_turn_reset(session, *chat);
 		session.current_assistant_message_index = -1;
 		session.turn_first_user_message_index = -1;
 		session.turn_user_message_index = -1;
@@ -6870,6 +6939,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				ChatSession* workspace_chat = FindAcpRuntimeChatById(app, session.chat_id);
 				if (!workspace_chat) continue;
+				if (session.queue_held) continue;
+				if (!ValidateQueuedReplayBeforeLaunch(app, session, *workspace_chat))
+				{
+					changed = true;
+					continue;
+				}
 				const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, *workspace_chat);
 				if (workspace == WorktreeLaunchPreparationState::Pending) continue;
 				changed = true;
@@ -6972,6 +7047,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (launch_chat) { launch_chat->acp_queue_held = true; ScheduleChatSave(app, *launch_chat, 0.0); }
 				}
 				else if (launch_chat == nullptr)
+				{
+					session.pending_local_launch.reset();
+					session.pending_referenced_queue_launch_fingerprint.clear();
+				}
+				else if (!ValidateQueuedReplayBeforeLaunch(app, session, *launch_chat))
 				{
 					session.pending_local_launch.reset();
 					session.pending_referenced_queue_launch_fingerprint.clear();
