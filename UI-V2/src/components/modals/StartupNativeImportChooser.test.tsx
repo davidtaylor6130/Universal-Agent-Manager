@@ -15,6 +15,89 @@ const answer = async (index: number, data: StartupNativeImportPage) => { await a
 const click = async (label: string) => { await act(async () => button(label).click()) }
 function mount() { act(() => root.render(<StartupNativeImportChooser />)) }
 describe('startup native history chooser', () => {
+  it('keeps the reviewed page and selected histories after assignment', async () => {
+    mount(); await answer(0, { ...page('scan-1', ['one']), totalCount: 101, nextOffset: 100 })
+    await click('Next')
+    const unassigned = { ...page('scan-1', ['last']), totalCount: 101, nextOffset: 101 }
+    unassigned.candidates[0].folderId = ''
+    await answer(1, unassigned)
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select last"]')!.click())
+    await click('Assign workspace for last')
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Workspace name for last"]'))
+    await click('Stage workspace')
+    expect(requests[2].payload).toMatchObject({ offset: 100, limit: 100, folderId: null })
+    await answer(2, { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'staged', newWorkspace: true }] })
+    expect(document.body.textContent).toContain('Page 2 of 2')
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select last"]')!.checked).toBe(true)
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Select last"]'))
+  })
+
+  it('Escape cancels an assignment before closing the review', async () => {
+    const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
+    mount(); await answer(0, unassigned)
+    await click('Assign workspace for one')
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Workspace name for one"]'))
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[aria-label="Workspace name for one"]')).toBeNull()
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Select one"]'))
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('requires a workspace assignment before importing and stages only the witnessed source', async () => {
+    const unassigned = page('scan-1', ['one'])
+    unassigned.candidates[0].folderId = ''
+    unassigned.candidates[0].workspaceDirectory = '/unregistered/project'
+    mount(); await answer(0, unassigned)
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
+    expect(button('Import selected').disabled).toBe(true)
+    expect(button('Ignore selected').disabled).toBe(false)
+    await click('Assign workspace for one')
+    expect(document.body.textContent).toContain('/unregistered/project')
+    expect(document.body.textContent).toContain('only when a selected chat is imported')
+    button('Cancel assignment').focus()
+    await click('Cancel assignment')
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Select one"]'))
+    expect(requests).toHaveLength(1)
+    await click('Assign workspace for one')
+    button('Stage workspace').focus()
+    await click('Stage workspace')
+    expect(requests[1]).toMatchObject({ action: 'assignSystemNativeImportWorkspace', payload: { generation: 'scan-1', candidateId: 'one', title: 'project' } })
+    const assigned = { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'proposed', workspaceTitle: 'project', newWorkspace: true }] }
+    await answer(1, assigned)
+    expect(document.body.textContent).toContain('New workspace: project. Saved with import.')
+    expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Select one"]'))
+    expect(requests.every((request) => request.action !== 'resolveStartupNativeImports')).toBe(true)
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
+    expect(button('Import selected').disabled).toBe(false)
+    await click('Import selected')
+    expect(requests[2]).toMatchObject({ action: 'resolveStartupNativeImports', payload: { generation: 'scan-1', selectedIds: ['one'] } })
+  })
+
+  it('retains the assignment draft after refusal without enabling import', async () => {
+    const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
+    mount(); await answer(0, unassigned)
+    await click('Assign workspace for one'); await click('Stage workspace')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await act(async () => requests[1].failure(409, 'The workspace changed. Review again.'))
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Workspace name for one"]')?.value).toBe('workspace')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('The workspace changed.')
+    expect(button('Import selected').disabled).toBe(true)
+    expect(requests).toHaveLength(2)
+  })
+
+  it('drops a stale workspace assignment reply after the scan generation changes', async () => {
+    const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
+    mount(); await answer(0, unassigned)
+    await click('Assign workspace for one'); await click('Stage workspace')
+    act(() => useAppStore.setState({ startupNativeImports: page('scan-2', ['new']) }))
+    await answer(2, page('scan-2', ['new']))
+    await answer(1, { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'stale', newWorkspace: true, workspaceTitle: 'stale assignment' }] })
+    expect(document.body.textContent).not.toContain('stale assignment')
+    expect(document.body.querySelector('[aria-label="Select new"]')).not.toBeNull()
+  })
+
   it('shift-selects and deselects a range on the current page', async () => {
     mount(); await answer(0, page('scan-1', ['one', 'two', 'three', 'four']))
     const checkbox = (id: string) => document.body.querySelector<HTMLInputElement>(`[aria-label="Select ${id}"]`)!
@@ -219,6 +302,18 @@ describe('startup native history chooser', () => {
     act(() => root.unmount())
     expect(document.activeElement).toBe(newer)
     newer.remove(); trigger.remove(); root = createRoot(host)
+  })
+  it('returns automatic discovery review to its trigger after the busy button lost focus', async () => {
+    const trigger = document.createElement('button')
+    trigger.dataset.nativeHistoryDiscovery = ''
+    trigger.disabled = true
+    document.body.appendChild(trigger)
+    try {
+      mount(); await answer(0, page())
+      trigger.disabled = false
+      await click('Close import chats')
+      expect(document.activeElement).toBe(trigger)
+    } finally { trigger.remove() }
   })
   it.each(['get', 'resolve'])('rejects malformed %s pages without losing current selection and can retry', async (operation) => {
     mount()

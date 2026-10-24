@@ -1,6 +1,7 @@
 import { VoiceSettings } from './VoiceSettings'
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
+import { NativeHistorySettings } from './NativeHistorySettings'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
@@ -481,7 +482,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
   editors: 'editors extensions associations groups default vscode clion file types file explorer finder open',
   'shell-actions': 'finder explorer context menus shell actions groups save',
-  'chat-data': 'chat data history storage import export backup',
+  'chat-data': 'chat data native provider history discovery storage import export backup',
   about: 'version build release updates app information',
 }
 
@@ -3157,6 +3158,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'chat-data') {
       return (
         <div className="grid gap-0">
+          <NativeHistorySettings />
           <SettingsSection title="Chat bundle">
             <SettingRow
               title="Export all chats"

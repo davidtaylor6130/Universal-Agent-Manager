@@ -25767,6 +25767,9 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 
 int main(int argc, char** argv)
 {
+	// Every ordinary test starts outside the developer's native Antigravity store.
+	// Individual fixtures may override these only with their own synthetic roots.
+	uam_test::ScopedNativeHistoryHome native_history_home;
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;

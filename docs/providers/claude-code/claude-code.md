@@ -10,6 +10,7 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves the bound session and existing history; live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
+| `native-import` | Both | Needs verification | Bounded native project JSONL readers feed explicit local Chat Data discovery, staged source-workspace assignment and guarded selected import; shared staging/publication has focused synthetic verification; live provider and platform acceptance remain pending. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Implemented | Guarded chosen-prefix branches preserve source history, compacted context and branch-owned originals; supported local regeneration exists, while native/model/SSH continuation and acceptance retain their explicit limits. |
 | `editing-messages` | UAM | Implemented | Definitely-unsent edits save locally; delivered edits branch with independently selected files and captured skills; unsupported recorded-source delivery refuses explicitly and visual/platform/user acceptance remains pending. |
