@@ -3,6 +3,7 @@ import { Copy } from 'lucide-react'
 import { Tooltip } from '../ui'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { reportAppFailure } from '../../utils/appFailure'
+import { useAppStore } from '../../store/useAppStore'
 
 export type BulkTarget = { id: string; label: string }
 
@@ -25,20 +26,56 @@ export async function runForEach(targets: BulkTarget[], action: (target: BulkTar
   return succeeded
 }
 
-export const singleOnlyReason = (noun: 'chat' | 'workspace') => `Not available for multiple selection — select a single ${noun}`
+export type SelectionNoun = 'chat' | 'workspace' | 'collection'
+
+export const singleOnlyReason = (noun: SelectionNoun) => `Not available for multiple selection — select a single ${noun}`
 
 /** A single-target action kept visible but unavailable while several rows are selected. */
-export function SingleOnlyMenuItem({ icon, label, noun }: { icon: ReactNode; label: string; noun: 'chat' | 'workspace' }) {
+export function SingleOnlyMenuItem({ icon, label, noun, className = 'uam-sb-menu-item' }: { icon: ReactNode; label: string; noun: SelectionNoun; className?: string }) {
   const reasonId = useId()
   const reason = singleOnlyReason(noun)
   return <>
     <Tooltip label={reason} side="right">
-      <button type="button" role="menuitem" aria-disabled="true" aria-describedby={reasonId} className="uam-sb-menu-item" onClick={(event) => event.preventDefault()}>
+      <button type="button" role="menuitem" aria-disabled="true" aria-describedby={reasonId} className={className} onClick={(event) => event.preventDefault()}>
         {icon}{label}
       </button>
     </Tooltip>
     <span id={reasonId} hidden>{reason}</span>
   </>
+}
+
+const chatTargets = (ids: string[]) => {
+  const sessions = useAppStore.getState().sessions
+  return ids.flatMap((id) => {
+    const chat = sessions.find((candidate) => candidate.id === id)
+    return chat ? [chat] : []
+  })
+}
+
+/** Pins or unpins every listed chat that is not already in that state. */
+export function setChatsPinned(ids: string[], pin: boolean) {
+  return runForEach(chatTargets(ids).filter((chat) => (chat.isPinned ?? false) !== pin).map((chat) => ({ id: chat.id, label: chat.name })),
+    async ({ id }) => await useAppStore.getState().setSessionPinned(id, pin) ? null : 'The pin could not be saved.', pin ? 'Could not pin chats' : 'Could not unpin chats')
+}
+
+/** Wakes every listed chat that is snoozed. */
+export function wakeChats(ids: string[]) {
+  const now = Date.now()
+  return runForEach(chatTargets(ids).filter((chat) => (chat.snoozedUntilMs ?? 0) > now).map((chat) => ({ id: chat.id, label: chat.name })),
+    async ({ id }) => {
+      const result = await useAppStore.getState().setChatSnoozedUntil(id, 0)
+      return result.ok ? null : result.error || 'Wake request failed.'
+    }, 'Could not wake chats')
+}
+
+/** Marks every listed chat done, acknowledging its current attention first. */
+export function markChatsDone(ids: string[]) {
+  return runForEach(chatTargets(ids).map((chat) => ({ id: chat.id, label: chat.name })), async ({ id }) => {
+    const state = useAppStore.getState()
+    const revision = state.sessions.find((chat) => chat.id === id)?.attentionRevision
+    if (revision) await state.acknowledgeChatAttention(id, revision)
+    return await state.setChatSettled(id, true) ? null : 'The chat could not be marked done.'
+  }, 'Could not mark chats done')
 }
 
 export function MenuDivider() {

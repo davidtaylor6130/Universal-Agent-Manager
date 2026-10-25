@@ -26,7 +26,7 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
-import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, runForEach, type BulkTarget, type CopyDetail } from './bulkActions'
+import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, markChatsDone, runForEach, setChatsPinned, wakeChats, type BulkTarget, type CopyDetail } from './bulkActions'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
@@ -393,11 +393,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const ids = selected && chatSelection ? chatSelection.selectedIds() : []
     return ids.length > 1 ? ids : []
   }
+  const selectionTargets = (ids: string[]) => {
+    const sessions = useAppStore.getState().sessions
+    return ids.flatMap((id) => { const chat = sessions.find((candidate) => candidate.id === id); return chat ? [{ id, label: chat.name }] : [] })
+  }
+  // Hover actions on a row of a multi-selection apply to the whole selection, like its menu.
+  const setPinnedFromRow = (pinned: boolean) => {
+    const ids = selectionIds()
+    if (ids.length > 0) void setChatsPinned(ids, pinned)
+    else void setSessionPinned(sessionId, pinned)
+  }
   const openMenu = (point: { x: number; y: number }) => {
     setMenuSelectionIds(selectionIds())
     setMenuPos(point)
   }
   const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
+  const [snoozeTargets, setSnoozeTargets] = useState<BulkTarget[]>([])
   const snoozeRef = useRef<HTMLDivElement>(null)
   const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
   const snoozedUntilMs = sessionSummary.snoozedUntilMs
@@ -646,11 +657,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
                       <button
                         type="button"
-                        aria-label={`Mark ${sessionName} done`}
+                        aria-label={selected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                         style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
                         onClick={(e) => {
                           e.stopPropagation()
+                          const ids = selectionIds()
+                          if (ids.length > 0) { void markChatsDone(ids); return }
                           if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
                           void setChatSettled(sessionId, true)
                         }}
@@ -661,8 +674,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                       </button>
                       <IconButton
                         size="sm"
-                        label={`Snooze ${sessionName}`}
-                        tooltip="Snooze"
+                        label={selected ? 'Snooze selected chats' : `Snooze ${sessionName}`}
+                        tooltip={selected ? 'Snooze selected chats' : 'Snooze'}
                         icon={<Clock size={12} aria-hidden />}
                         aria-haspopup="menu"
                         aria-expanded={snoozePos !== null}
@@ -670,6 +683,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                           e.stopPropagation()
                           if (snoozePos) { setSnoozePos(null); return }
                           const r = e.currentTarget.getBoundingClientRect()
+                          setSnoozeTargets(selectionTargets(selectionIds()))
                           setSnoozePos({ x: r.right, y: r.bottom + 4 })
                         }}
                         onDoubleClick={(e) => e.stopPropagation()}
@@ -727,8 +741,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         {!editing && isPinned && (
           <button
             type="button"
-            aria-label={`Unpin ${sessionName}`}
-            title={`Unpin ${sessionName}`}
+            aria-label={selected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
+            title={selected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
             draggable={false}
             className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
             style={{ color: 'var(--accent)' }}
@@ -736,7 +750,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             onMouseDown={(event) => event.stopPropagation()}
             onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
             onDoubleClick={(event) => event.stopPropagation()}
-            onClick={(event) => { event.stopPropagation(); void setSessionPinned(sessionId, false) }}
+            onClick={(event) => { event.stopPropagation(); setPinnedFromRow(false) }}
           >
             <Pin size={12} fill="currentColor" aria-hidden />
           </button>
@@ -826,11 +840,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               {isSnoozed && (
                 <IconButton
                   size="sm"
-                  label={`Unsnooze ${sessionName}`}
-                  tooltip={`Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
+                  label={selected ? 'Wake selected chats' : `Unsnooze ${sessionName}`}
+                  tooltip={selected ? 'Wake selected chats now' : `Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
                   icon={<AlarmClockOff size={13} aria-hidden />}
                   onClick={(e) => {
                     e.stopPropagation()
+                    const ids = selectionIds()
+                    if (ids.length > 0) { void wakeChats(ids); return }
                     void setChatSnoozedUntil(sessionId, 0).then((result) => {
                       if (!result.ok) reportAppFailure(`Could not wake "${sessionName}".`, result.error || 'Wake request failed.')
                     })
@@ -838,10 +854,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   onDoubleClick={(e) => e.stopPropagation()}
                 />
               )}
-              <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
+              <Tooltip label={`${isPinned ? 'Unpin' : 'Pin'} ${selected ? 'selected chats' : 'chat'}`} side="top">
                 <button
                   type="button"
-                  aria-label={isPinned ? 'Unpin chat' : 'Pin chat'}
+                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${selected ? 'selected chats' : 'chat'}`}
                   className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
                   style={{
                     width: 20,
@@ -855,7 +871,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    void setSessionPinned(sessionId, !isPinned)
+                    setPinnedFromRow(!isPinned)
                   }}
                   onDoubleClick={(e) => e.stopPropagation()}
                 >
@@ -900,11 +916,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           ref={snoozeRef}
           point={snoozePos}
           role="menu"
-          aria-label={`Snooze ${sessionName}`}
+          aria-label={snoozeTargets.length > 1 ? `Snooze ${snoozeTargets.length} chats` : `Snooze ${sessionName}`}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{ minWidth: 170, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
         >
-          <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={snoozedUntilMs} />
+          <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={snoozedUntilMs} targets={snoozeTargets} />
         </ViewportMenu>
       )}
 
@@ -1021,7 +1037,6 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
     return chat ? [chat] : []
   })))
   const nativeIds = useAppStore(useShallow((state) => rows.map((chat) => state.acpBindingBySessionId[chat.id]?.sessionId ?? '')))
-  const setSessionPinned = useAppStore((state) => state.setSessionPinned)
   const targets: BulkTarget[] = rows.map((chat) => ({ id: chat.id, label: chat.name }))
   const pin = !rows.every((chat) => chat.isPinned)
   const lines = (values: string[]) => values.filter(Boolean).join('\n')
@@ -1045,8 +1060,7 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
   }
   const togglePins = () => {
     onClose()
-    void runForEach(targets.filter((_, index) => (rows[index].isPinned ?? false) !== pin),
-      async ({ id }) => await setSessionPinned(id, pin) ? null : 'The pin could not be saved.', pin ? 'Could not pin chats' : 'Could not unpin chats')
+    void setChatsPinned(ids, pin)
   }
   return <>
     <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree" />

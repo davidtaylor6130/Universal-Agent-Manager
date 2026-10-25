@@ -24,7 +24,7 @@ import {
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
-import { ChatSelectionContext, SingleOnlyMenuItem, type BulkTarget, type ChatSelection } from './bulkActions'
+import { ChatSelectionContext, SingleOnlyMenuItem, runForEach, type BulkTarget, type ChatSelection } from './bulkActions'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
@@ -218,6 +218,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const workspaceDeleteInFlightRef = useRef(false)
   const [pendingDeleteFolderIds, setPendingDeleteFolderIds] = useState<string[] | null>(null)
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<Set<string>>(() => new Set())
+  const collectionSelectionAnchorRef = useRef<HTMLElement | null>(null)
+  const [pendingDeleteCollections, setPendingDeleteCollections] = useState<BulkTarget[] | null>(null)
   const selectionAnchorRowRef = useRef<HTMLElement | null>(null)
   const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[] | null>(null)
   const [bulkDeleteFailed, setBulkDeleteFailed] = useState(false)
@@ -394,6 +397,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
     setSelectedFolderIds((current) => current.size ? new Set<string>() : current)
+    setSelectedCollectionIds((current) => current.size ? new Set<string>() : current)
     folderSelectionAnchorRef.current = null
     if (isCompanionContext() || !event.shiftKey) {
       selectionAnchorRowRef.current = event.currentTarget
@@ -452,6 +456,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const handleFolderClick = (folderId: string, event: ReactMouseEvent<HTMLDivElement>) => {
     clearBulkSelection()
+    setSelectedCollectionIds((current) => current.size ? new Set<string>() : current)
     if (isCompanionContext() || !event.shiftKey) {
       folderSelectionAnchorRef.current = event.currentTarget
       setSelectedFolderIds(new Set())
@@ -468,6 +473,42 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       return
     }
     setSelectedFolderIds(new Set(rows.slice(Math.min(anchor, target), Math.max(anchor, target) + 1).map((row) => row.dataset.workspaceId!)))
+  }
+
+  // Shift-click selects a range of collection headers, mirroring workspaces; a plain click expands or collapses.
+  const handleCollectionClick = (collectionId: string, event: ReactMouseEvent<HTMLElement>) => {
+    const header = event.currentTarget.closest<HTMLElement>('[data-collection-id]')
+    if (isCompanionContext() || !event.shiftKey || !header) {
+      collectionSelectionAnchorRef.current = header
+      setSelectedCollectionIds((current) => current.size ? new Set<string>() : current)
+      void useAppStore.getState().toggleResourceCollection(collectionId)
+      return
+    }
+    event.preventDefault()
+    clearBulkSelection()
+    clearWorkspaceSelection()
+    const rows = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-collection-id]') ?? [])
+    const anchor = collectionSelectionAnchorRef.current ? rows.indexOf(collectionSelectionAnchorRef.current) : -1
+    const target = rows.indexOf(header)
+    if (anchor < 0 || target < 0) {
+      collectionSelectionAnchorRef.current = header
+      setSelectedCollectionIds(new Set([collectionId]))
+      return
+    }
+    setSelectedCollectionIds(new Set(rows.slice(Math.min(anchor, target), Math.max(anchor, target) + 1).map((row) => row.dataset.collectionId!)))
+  }
+  const selectedCollectionTargets = useMemo<BulkTarget[] | null>(() => selectedCollectionIds.size > 1
+    ? resourceCollections.filter((collection) => selectedCollectionIds.has(collection.id)).map((collection) => ({ id: collection.id, label: collection.name }))
+    : null, [resourceCollections, selectedCollectionIds])
+  useEffect(() => {
+    if (selectedCollectionIds.size === 0 || pendingDeleteCollections) return
+    const clear = (event: KeyboardEvent) => { if (event.key === 'Escape') setSelectedCollectionIds(new Set()) }
+    document.addEventListener('keydown', clear)
+    return () => document.removeEventListener('keydown', clear)
+  }, [selectedCollectionIds.size, pendingDeleteCollections])
+  const requestCollectionDelete = () => {
+    const targets = resourceCollections.filter((collection) => selectedCollectionIds.has(collection.id)).map((collection) => ({ id: collection.id, label: collection.name }))
+    if (targets.length > 0) setPendingDeleteCollections(targets)
   }
 
   useEffect(() => {
@@ -838,6 +879,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           }}>Delete</Button>
         </div>
       )}
+      {!companionContext && selectedCollectionIds.size > 0 && (
+        <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
+          <span className="min-w-0 flex-1 text-xs font-medium">{selectedCollectionIds.size} collections selected</span>
+          <Button size="sm" variant="ghost" onClick={() => setSelectedCollectionIds(new Set())}>Clear</Button>
+          <Button size="sm" variant="danger" aria-label={`Delete ${selectedCollectionIds.size} selected collections`} onClick={requestCollectionDelete}>Delete</Button>
+        </div>
+      )}
       {!companionContext && selectedSessionIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
@@ -977,6 +1025,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           collection={collection}
           folderCount={folderRows.length}
           hiddenPaneColors={paneColorsForFolders(new Set(folderRows.map(({ folder }) => folder.id)))}
+          selected={!companionContext && selectedCollectionIds.has(collection.id)}
+          selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
+          onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
+          onDeleteSelected={requestCollectionDelete}
           onFolderDrop={(folderId) => {
             const folder = folders.find((item) => item.id === folderId)
             if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
@@ -1127,6 +1179,22 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         }}
       >
         {pendingBulkDeleteIds?.length ?? 0} chats{(pendingBulkDeleteFamilyIds?.length ?? 0) > (pendingBulkDeleteIds?.length ?? 0) ? ` and ${(pendingBulkDeleteFamilyIds?.length ?? 0) - (pendingBulkDeleteIds?.length ?? 0)} related branches` : ''} will be permanently deleted. This cannot be undone.
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteCollections)}
+        title="Delete selected collections?"
+        label={`Delete ${pendingDeleteCollections?.length ?? 0} selected collections`}
+        confirmLabel="Delete collections"
+        onCancel={() => setPendingDeleteCollections(null)}
+        onConfirm={() => {
+          const targets = pendingDeleteCollections ?? []
+          setPendingDeleteCollections(null)
+          void runForEach(targets, async ({ id }) => await useAppStore.getState().deleteResourceCollection(id) ? null : 'The collection could not be deleted.', 'Could not delete collections')
+            .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
+        }}
+      >
+        {pendingDeleteCollections?.length ?? 0} collections will be permanently deleted. Workspaces remain, but these collections cannot be restored.
       </ConfirmDialog>
 
       {recoveryDialogOpen && (
@@ -1317,7 +1385,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   )
 }
 
-function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderDrop, children }: { collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; onFolderDrop: (folderId: string) => void; children: ReactNode }) {
+function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
+  collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
+  /** Selected collections the menu acts on when this header is part of a multi-selection. */
+  selectionTargets: BulkTarget[] | null
+  onHeaderClick: (event: ReactMouseEvent<HTMLElement>) => void; onDeleteSelected: () => void
+  onFolderDrop: (folderId: string) => void; children: ReactNode
+}) {
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
@@ -1336,7 +1410,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
 
   useEffect(() => {
     if (!menuOpen) return
-    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus()
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node
       if (!menuRef.current?.contains(target) && !menuTriggerRef.current?.contains(target)) { setMenuOpen(false); setMenuPoint(null) }
@@ -1383,8 +1457,10 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
     >
       <div
         data-testid={`collection-header-${collection.id}`}
+        data-collection-id={collection.id}
+        title={isCompanionContext() ? undefined : 'Shift-click to select collections'}
         className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
-        style={{ color: 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? 'var(--accent-dim)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -1403,7 +1479,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
             <ChevronRight size={14} className="transition-transform duration-200 ease-out motion-reduce:transition-none" style={{ transform: collection.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
           </button>
         </Tooltip>
-        <CustomIcon icon={collection.customIcon} fallback={<PaneColorIcon Icon={Library} colors={collection.collapsed ? hiddenPaneColors : []} testId={`collection-icon-${collection.id}`} />} />
+        {selected ? <Check size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden /> : <CustomIcon icon={collection.customIcon} fallback={<PaneColorIcon Icon={Library} colors={collection.collapsed ? hiddenPaneColors : []} testId={`collection-icon-${collection.id}`} />} />}
         {editing ? (
           <input
             autoFocus
@@ -1420,7 +1496,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
           />
         ) : (
           <Tooltip label={collection.name}>
-            <button type="button" className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={() => { void toggle(collection.id) }} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+            <button type="button" aria-pressed={selected} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
               {collection.name}
             </button>
           </Tooltip>
@@ -1434,9 +1510,15 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
       </div>
       {menuOpen && (
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
+          {selectionTargets ? <>
+            <SingleOnlyMenuItem noun="collection" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" icon={<Pencil size={12} />} label="Rename" />
+            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }}>Change icon for {selectionTargets.length} collections</button>
+            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); onDeleteSelected() }}><Trash2 size={12} />Delete {selectionTargets.length} collections</button>
+          </> : <>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }}>Change icon</button>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
+          </>}
         </ViewportMenu>
       )}
       <div

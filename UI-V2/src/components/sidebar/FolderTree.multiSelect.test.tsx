@@ -70,7 +70,7 @@ beforeEach(() => {
     ],
     activeSessionId: 'keep',
     cliBindingBySessionId: {}, acpBindingBySessionId: {}, cliTranscriptBySessionId: {},
-    resourceCollections: [{ id: 'col', name: 'Favourites', isExpanded: true, references: [] }],
+    resourceCollections: [{ id: 'col', name: 'Favourites', isExpanded: true, references: [] }, { id: 'col2', name: 'Archive', isExpanded: true, references: [] }],
     executionHosts: [{ id: 'local', label: 'Fixture computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' }],
     isNewChatModalOpen: false, newChatFolderId: null,
   } as never, true)
@@ -205,6 +205,17 @@ describe('chat multi-selection actions', () => {
     expect(useAppStore.getState().isNewChatModalOpen).toBe(false)
   })
 
+  it('applies the row pin and wake buttons to the whole selection', async () => {
+    selectChats('b', 'c')
+    await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="session-actions-b"] button[aria-label="Pin selected chats"]')!.click(); await flush() })
+    expect(sent('setChatPinned')).toEqual([{ chatId: 'b', pinned: true }, { chatId: 'c', pinned: true }])
+    const later = Date.now() + 3_600_000
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ['b', 'c'].includes(session.id) ? { ...session, snoozedUntilMs: later } : session) })))
+    const wake = host.querySelector<HTMLButtonElement>('[data-testid="session-actions-c"] button[aria-label="Wake selected chats"]')!
+    await act(async () => { wake.click(); await flush() })
+    expect(sent('setChatSnoozedUntil')).toEqual([{ chatId: 'b', untilMs: 0 }, { chatId: 'c', untilMs: 0 }])
+  })
+
   it('keeps the ordinary single-chat menu when only one row is selected', () => {
     openChatMenu('b')
     expect(menu('Actions for Chat b')).not.toBeNull()
@@ -244,5 +255,30 @@ describe('workspace multi-selection actions', () => {
     expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['project', 'w2'])
     expect(failures.map((failure) => [failure.message, failure.detail])).toEqual([['Could not delete 1 of 2 selected workspaces.', '“Workspace two”: Wait for the chat worktree operation to finish.']])
     expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete selected workspaces"]')).toBeNull()
+  })
+})
+
+describe('collection multi-selection actions', () => {
+  it('disables rename with an explanation and deletes every selected collection after one confirmation', async () => {
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-pressed]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-pressed]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(host.textContent).toContain('2 collections selected')
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+    const rename = item('Rename')
+    expect(rename.getAttribute('aria-disabled')).toBe('true')
+    expect(document.getElementById(rename.getAttribute('aria-describedby')!)?.textContent).toBe('Not available for multiple selection — select a single collection')
+    act(() => rename.click())
+    expect(host.querySelector('input[aria-label^="Rename"]')).toBeNull()
+    act(() => item('Delete 2 collections').click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete 2 selected collections"]')!
+    await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete collections')!.click(); await flush() })
+    expect(sent('deleteResourceCollection')).toEqual([{ collectionId: 'col' }, { collectionId: 'col2' }])
+    expect(useAppStore.getState().resourceCollections).toEqual([])
+  })
+
+  it('keeps a plain click as expand or collapse without selecting', async () => {
+    await act(async () => { host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-pressed]')!.click(); await flush() })
+    expect(sent('toggleResourceCollection')).toEqual([{ collectionId: 'col' }])
+    expect(host.textContent).not.toContain('collections selected')
   })
 })
