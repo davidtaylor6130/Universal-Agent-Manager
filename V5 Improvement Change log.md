@@ -874,6 +874,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Native verification | Code Only | Warm Composer Budget Measurement | The empty new-chat composer budget mounts another chat untimed first so its unchanged 100 ms measurement excludes one-time worker start-up. | Implemented; Frontend CI Pending; Un-Reviewed; Not User Tested |
 | Build and evidence | Misc | Test V5 Base Pushes | CI now also runs on pushes to uam/v5-improvements so the integration branch itself is tested. | Implemented; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Base Fixture Contract Updates | Native fixtures assert the `<UAM History>` retry format and receipt-based memory rollback, settle the new pre-launch repository baseline, and flush deferred admission saves before reading chats (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Claude Discovery Starting Workspace | Claude native discovery assigns a session to the workspace where it started instead of a directory reached by a later cd (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
