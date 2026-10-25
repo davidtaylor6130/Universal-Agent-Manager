@@ -4,7 +4,7 @@ import type { ContextReference } from '../../types/contextReference'
 import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { filePreviewResponse } from '../../types/filePreview'
-import { reportAppFailure } from '../../utils/appFailure'
+import { reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
@@ -2585,10 +2585,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const chatIds = [...new Set(ids.map((id) => id.trim()).filter((id) => id && existingIds.has(id)))]
       if (chatIds.length === 0) return false
 	  const selectionRevisionAtStart = intentionalSelectionRevision
+      const requestedCount = new Set(chatIds.map((id) => { const chat = get().sessions.find((session) => session.id === id); return chat?.branchRootChatId || chat?.parentChatId || id })).size
+      let refused = false
 
       let selectedChatId: string | null | undefined
       if (isCefContext()) {
-        const response = await sendWhenRemoteStopSettles<{ selectedChatId?: string | null; deletedChatIds?: string[] }>({
+        const response = await sendWhenRemoteStopSettles<{ selectedChatId?: string | null; deletedChatIds?: string[]; rejected?: DeletionRejection[] }>({
           action: 'deleteSessions',
           payload: { chatIds },
         })
@@ -2603,6 +2605,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		if (Array.isArray(authoritativeIds)) {
 		  chatIds.splice(0, chatIds.length, ...authoritativeIds.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()))
 		}
+		refused = reportDeletionRejections(response.data?.rejected, (id) => get().sessions.find((session) => session.id === id)?.name, 'chats', requestedCount)
       }
 
       const deletedIds = new Set(chatIds)
@@ -2613,7 +2616,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       set((state) => deleteSessionsFromState(state, deletedIds, selectedChatId))
       removeChatsFromGrid(deletedIds)
       removeComposerDrafts(deletedIds)
-      return true
+      return !refused
     },
 
     setCliBinding: (sessionId: string, binding: Partial<CliBinding>) =>

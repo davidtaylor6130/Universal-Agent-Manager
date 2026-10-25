@@ -24,6 +24,7 @@ import {
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
+import { ChatSelectionContext, SingleOnlyMenuItem, type BulkTarget, type ChatSelection } from './bulkActions'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
@@ -368,6 +369,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     return families
   }, [sessions, nativeChildIds])
   useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
+  // Each selected row stands for its branch family, matching single-row deletion.
+  const pendingBulkDeleteFamilyIds = useMemo(() => pendingBulkDeleteIds
+    ? [...new Set(pendingBulkDeleteIds.flatMap((id) => familySessionIdsByRootId.get(id) ?? [id]))]
+    : null, [pendingBulkDeleteIds, familySessionIdsByRootId])
+  const selectedFolderTargets = useMemo<BulkTarget[] | null>(() => selectedFolderIds.size > 1
+    ? folders.filter((folder) => selectedFolderIds.has(folder.id)).map((folder) => ({ id: folder.id, label: folder.name }))
+    : null, [folders, selectedFolderIds])
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
     [folders, pendingDeleteFolderId]
@@ -410,6 +418,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     setSelectedSessionIds(new Set(rows.slice(start, end + 1).map((row) => row.dataset.sessionId ?? '').filter(Boolean)))
     return true
   }, [visibleSessionRows])
+
+  const selectedSessionIdsRef = useRef(selectedSessionIds)
+  useLayoutEffect(() => { selectedSessionIdsRef.current = selectedSessionIds }, [selectedSessionIds])
+  const visibleSelectedSessionIds = useCallback(() => {
+    const visible = new Set(visibleSessionIds())
+    return [...selectedSessionIdsRef.current].filter((id) => visible.has(id))
+  }, [visibleSessionIds])
+  const requestBulkDelete = useCallback(() => {
+    const ids = visibleSelectedSessionIds()
+    if (ids.length > 0) {
+      setBulkDeleteFailed(false)
+      setPendingBulkDeleteIds(ids)
+    }
+  }, [visibleSelectedSessionIds])
+  const chatSelection = useMemo<ChatSelection>(() => ({ selectedIds: visibleSelectedSessionIds, deleteSelected: requestBulkDelete }), [visibleSelectedSessionIds, requestBulkDelete])
 
   const clearBulkSelection = useCallback(() => {
     setSelectedSessionIds(new Set())
@@ -481,7 +504,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     setDeletingFolder(true)
     setDeleteFolderError('')
     try {
-      if (await deleteFolders(pendingDeleteFolderIds)) clearWorkspaceSelection()
+      const ids = pendingDeleteFolderIds
+      if (await deleteFolders(ids)) clearWorkspaceSelection()
+      // Partial deletion: refused workspaces were reported by name and stay selected for another try.
+      else if (ids.some((id) => !useAppStore.getState().folders.some((folder) => folder.id === id))) setPendingDeleteFolderIds(null)
       else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspaces could not be deleted. Try again.')
     } catch (error) {
       setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspaces could not be deleted. Try again.')
@@ -747,6 +773,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       editFolderName={editFolderName}
       editFolderDirectory={editFolderDirectory}
       selected={!companionContext && selectedFolderIds.has(folder.id)}
+      selectionTargets={!companionContext && selectedFolderIds.has(folder.id) ? selectedFolderTargets : null}
       onToggle={(event) => handleFolderClick(folder.id, event)}
       onStartRename={() => startRenameFolder(folder)}
       onDelete={() => {
@@ -791,6 +818,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   return (
     <SubagentSearchMatches.Provider value={searchModel.matchedSubagentChildIds}>
+    <ChatSelectionContext.Provider value={chatSelection}>
     <div ref={treeRef} className="select-none"
       onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
@@ -818,14 +846,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             size="sm"
             variant="danger"
             aria-label={`Delete ${selectedSessionIds.size} selected chats`}
-            onClick={() => {
-              const visible = new Set(visibleSessionIds())
-              const ids = [...selectedSessionIds].filter((id) => visible.has(id))
-              if (ids.length > 0) {
-                setBulkDeleteFailed(false)
-                setPendingBulkDeleteIds(ids)
-              }
-            }}
+            onClick={requestBulkDelete}
           >
             Delete
           </Button>
@@ -1084,14 +1105,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         busy={bulkDeleting}
         onCancel={() => { if (!bulkDeleteInFlightRef.current) setPendingBulkDeleteIds(null) }}
         onConfirm={() => {
-          if (!pendingBulkDeleteIds || bulkDeleteInFlightRef.current) return
-          const ids = [...pendingBulkDeleteIds]
+          if (!pendingBulkDeleteFamilyIds || bulkDeleteInFlightRef.current) return
+          const ids = pendingBulkDeleteFamilyIds
           bulkDeleteInFlightRef.current = true
           setBulkDeleting(true)
           setBulkDeleteFailed(false)
           void (async () => {
             try {
               if (await deleteSessions(ids)) clearBulkSelection()
+              // Partial deletion: refused chats were reported by name and stay selected for another try.
+              else if (ids.some((id) => !useAppStore.getState().sessions.some((session) => session.id === id))) setPendingBulkDeleteIds(null)
               else setBulkDeleteFailed(true)
             } catch (cause) {
               setBulkDeleteFailed(true)
@@ -1103,7 +1126,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           })()
         }}
       >
-        {pendingBulkDeleteIds?.length ?? 0} chats will be permanently deleted. This cannot be undone.
+        {pendingBulkDeleteIds?.length ?? 0} chats{(pendingBulkDeleteFamilyIds?.length ?? 0) > (pendingBulkDeleteIds?.length ?? 0) ? ` and ${(pendingBulkDeleteFamilyIds?.length ?? 0) - (pendingBulkDeleteIds?.length ?? 0)} related branches` : ''} will be permanently deleted. This cannot be undone.
       </ConfirmDialog>
 
       {recoveryDialogOpen && (
@@ -1289,6 +1312,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         />
       )}
     </div>
+    </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
   )
 }
@@ -1829,6 +1853,8 @@ interface FolderRowProps {
   editFolderName: string
   editFolderDirectory: string
   selected: boolean
+  /** Selected workspaces the menu acts on when this row is part of a multi-selection. */
+  selectionTargets: BulkTarget[] | null
   onToggle: (event: ReactMouseEvent<HTMLDivElement>) => void
   onStartRename: () => void
   onDelete: () => void
@@ -1865,6 +1891,7 @@ const FolderRow = memo(function FolderRow({
   editFolderName,
   editFolderDirectory,
   selected,
+  selectionTargets,
   onToggle,
   onStartRename,
   onDelete,
@@ -2068,6 +2095,16 @@ const FolderRow = memo(function FolderRow({
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          {selectionTargets ? <>
+            <SingleOnlyMenuItem noun="workspace" icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" />
+            <SingleOnlyMenuItem noun="workspace" icon={<Brain size={14} aria-hidden />} label="Project memory" />
+            <CollectionMenuItems target={folder.id} label={folder.name} targets={selectionTargets} onAdded={() => setMenuPos(null)} />
+            <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" />
+            <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} workspaces`} onClick={() => { setMenuPos(null); iconPicker.open('workspace', selectionTargets, `${selectionTargets.length} workspaces`) }} />
+            <SingleOnlyMenuItem noun="workspace" icon={<Monitor size={14} aria-hidden />} label="Change host icon" />
+            <SingleOnlyMenuItem noun="workspace" icon={<Pencil size={14} aria-hidden />} label="Rename folder" />
+            <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete selected workspaces" danger onClick={() => { setMenuPos(null); onDelete() }} />
+          </> : <>
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
@@ -2075,6 +2112,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
           {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspaces' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
+          </>}
         </ViewportMenu>
       )}
 

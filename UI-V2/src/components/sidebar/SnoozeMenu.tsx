@@ -4,6 +4,7 @@ import { AlarmClockOff } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
+import { runForEach, type BulkTarget } from './bulkActions'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -35,19 +36,27 @@ export function customSnoozeUntil(amount: number, unit: SnoozeUnit, now = Date.n
   return Number.isSafeInteger(until) ? until : null
 }
 
-/** Snooze items for a chat. Rendered inside the Snooze submenu and the Active-row snooze popup. */
-export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed }: { chatId: string; familyIds: string[]; untilMs?: number; onSnoozed?: () => void }) {
+const awaitsUser = (binding: ReturnType<typeof useAppStore.getState>['acpBindingBySessionId'][string] | undefined) =>
+  !!((binding?.attentionKind && binding.attentionKind !== 'error') || binding?.pendingPermission || binding?.pendingUserInput || binding?.queuedPrompts?.length)
+const BLOCKED_TEXT = 'Respond to pending requests or queued messages first.'
+
+/** Snooze items for a chat, or for every selected chat row when `targets` lists more than one. Rendered inside the Snooze submenu and the Active-row snooze popup. */
+export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets }: { chatId: string; familyIds: string[]; untilMs?: number; onSnoozed?: () => void; targets?: BulkTarget[] }) {
   const save = useAppStore((state) => state.setChatSnoozedUntil)
-  const blocked = useAppStore(useShallow((state) => familyIds.some((id) => {
-    const binding = state.acpBindingBySessionId[id]
-    return !!((binding?.attentionKind && binding.attentionKind !== 'error') || binding?.pendingPermission || binding?.pendingUserInput || binding?.queuedPrompts?.length)
-  })))
+  const bulk = targets && targets.length > 1 ? targets : null
+  // A row is blocked while any chat in its branch family is waiting for the user.
+  const blockedIds = useAppStore(useShallow((state) => bulk
+    ? bulk.filter(({ id }) => state.sessions.some((chat) => (chat.id === id || (chat.branchRootChatId || chat.parentChatId || chat.id) === id) && awaitsUser(state.acpBindingBySessionId[chat.id]))).map(({ id }) => id)
+    : familyIds.some((id) => awaitsUser(state.acpBindingBySessionId[id])) ? [chatId] : []))
+  const untilByRow = useAppStore(useShallow((state) => bulk ? bulk.map(({ id }) => state.sessions.find((chat) => chat.id === id)?.snoozedUntilMs ?? 0) : [untilMs]))
+  const blocked = blockedIds.length === (bulk?.length ?? 1)
   const [customOpen, setCustomOpen] = useState(false)
   const [amount, setAmount] = useState('1')
   const [unit, setUnit] = useState<SnoozeUnit>('hours')
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null)
-  const snoozed = untilMs > Date.now()
+  const snoozedCount = untilByRow.filter((until) => until > Date.now()).length
+  const snoozed = snoozedCount > 0
   const update = async (until: number) => {
     if (saving) return
     if (until !== 0 && (!Number.isSafeInteger(until) || until <= Date.now())) {
@@ -55,6 +64,20 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed }: { chat
     }
     setSaving(true); setFeedback(null)
     try {
+      if (bulk) {
+        const chosen = until === 0 ? bulk.filter((_, index) => untilByRow[index] > Date.now()) : bulk
+        const done = await runForEach(chosen, async ({ id }) => {
+          if (until !== 0 && blockedIds.includes(id)) return BLOCKED_TEXT
+          const result = await save(id, until)
+          return result.ok ? null : result.error || 'Could not save. Try again.'
+        }, until === 0 ? 'Could not wake chats' : 'Could not snooze chats')
+        const failed = chosen.length - done.length
+        setFeedback(failed > 0
+          ? { error: true, text: `${failed} of ${chosen.length} chats could not be ${until === 0 ? 'woken' : 'snoozed'}.` }
+          : { error: false, text: until === 0 ? `${done.length} chats awake.` : `${done.length} chats snoozed until ${new Date(until).toLocaleString()}.` })
+        if (failed === 0 && until !== 0) onSnoozed?.()
+        return
+      }
       const result = await save(chatId, until)
       setFeedback(result.ok ? { error: false, text: until === 0 ? 'Chat awake.' : `Snoozed until ${new Date(until).toLocaleString()}.` } : { error: true, text: result.error || 'Could not save. Try again.' })
       if (result.ok && until !== 0) onSnoozed?.()
@@ -73,8 +96,9 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed }: { chat
     {snoozed && <button type="button" role="menuitem" className={itemClass} disabled={saving} onClick={() => { void update(0) }}>
       <AlarmClockOff size={13} aria-hidden />Wake now
     </button>}
-    {snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>Snoozed until {new Date(untilMs).toLocaleString()}</p>}
-    {blocked && !snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>Respond to pending requests or queued messages first.</p>}
+    {snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{bulk ? `${snoozedCount} of ${bulk.length} chats snoozed` : `Snoozed until ${new Date(untilMs).toLocaleString()}`}</p>}
+    {blocked && !snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{BLOCKED_TEXT}</p>}
+    {bulk && !blocked && blockedIds.length > 0 && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{blockedIds.length} of {bulk.length} chats need a response first and stay awake.</p>}
     {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={itemClass} disabled={presetsBlocked}
       onClick={() => { void update(preset.until) }}>{preset.label}<span className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>{new Date(preset.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></button>)}
     <button type="button" role="menuitem" className={itemClass} aria-expanded={customOpen} disabled={saving} onClick={() => setCustomOpen((open) => !open)}>Custom…</button>

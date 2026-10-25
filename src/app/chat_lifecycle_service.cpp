@@ -2136,6 +2136,98 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 	return true;
 }
 
+namespace
+{
+	using PrepareDeletionGroup = bool (*)(uam::AppState&, const std::vector<std::string>&, uam::WorkspaceDeletionTask&);
+	using DeletionGroup = std::pair<std::string, std::vector<std::string>>;
+
+	// Admits each group atomically, so one blocked chat family or workspace cannot block the rest of a selection.
+	// ponytail: probes run the ordinary preflight, so idle runtimes of admitted groups are already stopped if the union is then refused.
+	bool PrepareDeletionGroups(uam::AppState& app, const std::vector<DeletionGroup>& groups, PrepareDeletionGroup prepare,
+	                           const std::function<std::string(const std::string&)>& label, uam::WorkspaceDeletionTask& task)
+	{
+		if (app.startup_native_import_service != nullptr && app.startup_native_import_service->ImportPending())
+		{
+			app.status_line = "Wait for native history loading to finish.";
+			return false;
+		}
+		const std::string previous_status = app.status_line;
+		std::vector<std::string> admitted;
+		std::vector<uam::DeletionRejection> rejected;
+		for (const auto& [key, ids] : groups)
+		{
+			uam::WorkspaceDeletionTask probe;
+			if (prepare(app, ids, probe)) admitted.insert(admitted.end(), ids.begin(), ids.end());
+			else rejected.push_back({key, app.status_line});
+		}
+		if (admitted.empty())
+		{
+			// A single group keeps its own safeguard message unchanged.
+			if (rejected.size() > 1)
+			{
+				std::string message = "None of the selected items could be deleted.";
+				for (const uam::DeletionRejection& item : rejected) message += " " + label(item.id) + ": " + item.error;
+				app.status_line = message;
+			}
+			return false;
+		}
+		if (!prepare(app, admitted, task)) return false;
+		// Refusals are reported per item in the reply, not as the shared status line.
+		app.status_line = previous_status;
+		task.rejected = std::move(rejected);
+		return true;
+	}
+} // namespace
+
+bool uam::PrepareChatDeletionBatch(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task)
+{
+	std::vector<DeletionGroup> families;
+	std::unordered_map<std::string, std::size_t> family_by_root;
+	for (const std::string& requested_id : chat_ids)
+	{
+		const std::string id = uam::strings::Trim(requested_id);
+		if (id.empty()) continue;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, id);
+		// Rows represent branch families; a family is deleted together or not at all, and reported by its root.
+		const std::string root = chat == nullptr ? id : uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->branch_root_chat_id),
+		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->parent_chat_id), id));
+		const auto [entry, inserted] = family_by_root.emplace(root, families.size());
+		if (inserted) families.push_back({root, {}});
+		families[entry->second].second.push_back(id);
+	}
+	if (families.empty())
+	{
+		app.status_line = "Chat id is required.";
+		return false;
+	}
+	return PrepareDeletionGroups(app, families, &uam::PrepareChatDeletion, [&app](const std::string& id)
+	    {
+		    const ChatSession* chat = ChatDomainService().FindChatById(app, id);
+		    return "\"" + (chat == nullptr || chat->title.empty() ? id : chat->title) + "\"";
+	    }, task);
+}
+
+bool uam::PrepareWorkspaceDeletionBatch(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task)
+{
+	std::vector<DeletionGroup> groups;
+	std::unordered_set<std::string> seen;
+	for (const std::string& requested_id : folder_ids)
+	{
+		const std::string id = uam::strings::Trim(requested_id);
+		if (!id.empty() && seen.insert(id).second) groups.push_back({id, {id}});
+	}
+	if (groups.empty())
+	{
+		app.status_line = "Folder id is required.";
+		return false;
+	}
+	return PrepareDeletionGroups(app, groups, &uam::PrepareWorkspaceDeletion, [&app](const std::string& id)
+	    {
+		    const ChatFolder* folder = ChatDomainService().FindFolderById(app, id);
+		    return "\"" + (folder == nullptr || folder->title.empty() ? id : folder->title) + "\"";
+	    }, task);
+}
+
 bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
 	ProtectSharedNativeDeletionKeys(task.snapshot, task.snapshot.chats, task.retained_native_owners, task.retained_native_keys, task.native_stores_by_directory);

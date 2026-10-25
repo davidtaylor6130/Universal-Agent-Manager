@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
 import { reportAppFailure } from '../../utils/appFailure'
 import { RowSubmenu } from './RowSubmenu'
+import { runForEach, type BulkTarget } from './bulkActions'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
@@ -24,38 +25,53 @@ export function CollectionMenuItems({
   onAdded,
   type = 'workspace-folder',
   showDivider = true,
+  targets,
 }: {
   target: string
   label: string
   onAdded: () => void
   type?: ResourceReferenceType
   showDivider?: boolean
+  /** Multi-selection: every listed resource moves together. */
+  targets?: BulkTarget[]
 }) {
   const collections = useAppStore((state) => state.resourceCollections)
   if (collections.length === 0) return null
 
-  const memberships = collections.flatMap((collection) => collection.references
-    .filter((reference) => reference.type === type && reference.target === target)
-    .map((reference) => ({ collectionId: collection.id, referenceId: reference.id })))
-  const currentCollectionIds = new Set(memberships.map(({ collectionId }) => collectionId))
+  const rows = targets && targets.length > 1 ? targets : [{ id: target, label }]
+  const collectionsOf = (id: string) => new Set(collections.filter((collection) => collection.references
+    .some((reference) => reference.type === type && reference.target === id)).map((collection) => collection.id))
+  const memberships = rows.map(({ id }) => collectionsOf(id))
+  const inAnyCollection = memberships.some((ids) => ids.size > 0)
+  const move = (collectionId: string | null) => {
+    if (rows.length === 1) {
+      void moveResourceToCollection(collectionId, type, target, label).then((moved) => { if (moved) onAdded() })
+      return
+    }
+    // Rows already in the destination are left alone; every other row is moved and failures are reported by name.
+    const moving = rows.filter((_, index) => collectionId === null ? memberships[index].size > 0 : !memberships[index].has(collectionId))
+    void runForEach(moving, async (row) => await useAppStore.getState().moveResourceToCollection(collectionId, type, row.id, row.label)
+      ? null : 'Collection membership changed or could not be saved. Refresh and try again.', 'Could not move to collection')
+      .then((moved) => { if (moved.length === moving.length) onAdded() })
+  }
 
   return (
     <>
       {showDivider && <div className="uam-sb-menu-divider" role="separator" />}
       <RowSubmenu label="Move to collection" ariaLabel="Move to collection" icon={<Library size={13} aria-hidden />}>
-        {memberships.length > 0 && (
+        {inAnyCollection && (
           <button
             type="button"
             role="menuitem"
             className="uam-sb-menu-item"
-            onClick={() => { void moveResourceToCollection(null, type, target, label).then((moved) => { if (moved) onAdded() }) }}
+            onClick={() => move(null)}
           >
             <Library size={13} aria-hidden />
             <span>Remove from collection</span>
           </button>
         )}
         {collections.map((collection) => {
-          const current = currentCollectionIds.has(collection.id)
+          const current = memberships.every((ids) => ids.has(collection.id))
           return (
             <button
               key={collection.id}
@@ -65,7 +81,7 @@ export function CollectionMenuItems({
               className="uam-sb-menu-item"
               onClick={() => {
                 if (current) return
-                void moveResourceToCollection(collection.id, type, target, label).then((moved) => { if (moved) onAdded() })
+                move(collection.id)
               }}
             >
               <Library size={13} aria-hidden />

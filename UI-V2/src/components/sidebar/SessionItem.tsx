@@ -2,7 +2,7 @@ import { returnToSubagentParent, subagentRouteFor, subscribeSubagentNavigation, 
 import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
@@ -26,7 +26,7 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
-import { copyTextToClipboard } from '../../utils/copySelection'
+import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, runForEach, type BulkTarget, type CopyDetail } from './bulkActions'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
@@ -207,35 +207,6 @@ function formatWakeTime(untilMs: number): string {
 
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
-type CopyDetail = { label: string; value: string }
-
-function MenuDivider() {
-  return <div className="uam-sb-menu-divider" role="separator" />
-}
-
-/** Copy rows live inside the Copy submenu, so their status resets when the submenu closes. */
-function CopyDetailItems({ items }: { items: CopyDetail[] }) {
-  const [copying, setCopying] = useState(false)
-  const [result, setResult] = useState<{ label: string; ok: boolean } | null>(null)
-  const copy = async ({ label, value }: CopyDetail) => {
-    if (copying) return
-    setCopying(true)
-    setResult(null)
-    try { setResult({ label, ok: await copyTextToClipboard(value, document) }) }
-    catch { setResult({ label, ok: false }) }
-    finally { setCopying(false) }
-  }
-  return <>
-    {items.map((item) => <button key={item.label} type="button" role="menuitem" disabled={copying} className="uam-sb-menu-item"
-      style={{ cursor: copying ? 'wait' : 'pointer' }} onClick={() => { void copy(item) }}>
-      <Copy size={13} aria-hidden />{item.label}
-    </button>)}
-    {result && <p role={result.ok ? 'status' : 'alert'} className="px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
-      {result.ok ? `${result.label} copied.` : 'Could not copy. Try again.'}
-    </p>}
-  </>
-}
-
 export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false }: SessionItemProps) {
   useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   // Verified native lineage, not only the catalogue's prop, decides the robot icon on every sidebar path.
@@ -415,6 +386,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   // Resting row text (wake time, age, status) gives way whenever the hover actions show, so they never overlap.
   const restingFade = menuPos ? 'transition-opacity duration-100 opacity-0' : HOVER_FADE
+  // Rows of the multi-selection the open menu acts on; empty while the menu targets only this row.
+  const [menuSelectionIds, setMenuSelectionIds] = useState<string[]>([])
+  const chatSelection = useContext(ChatSelectionContext)
+  const selectionIds = () => {
+    const ids = selected && chatSelection ? chatSelection.selectedIds() : []
+    return ids.length > 1 ? ids : []
+  }
+  const openMenu = (point: { x: number; y: number }) => {
+    setMenuSelectionIds(selectionIds())
+    setMenuPos(point)
+  }
   const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
   const snoozeRef = useRef<HTMLDivElement>(null)
   const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
@@ -510,7 +492,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   // Close context menu on outside click
   useEffect(() => {
     if (!showMenu) return
-    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus()
     const handler = (e: MouseEvent) => {
       if (e.target instanceof Element && e.target.closest('[data-viewport-menu]')) return
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
@@ -614,24 +596,27 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             selectChat()
           } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
             event.preventDefault()
+            if (selectionIds().length > 0) { chatSelection?.deleteSelected(); return }
             setDeleteError('')
             setConfirmDelete(true)
           } else if (!isCompanionContext() && event.key === 'F2') {
             event.preventDefault()
+            // Rename is single-chat only; it never silently renames one row of a multi-selection.
+            if (selectionIds().length > 0) return
             setEditing(true)
             setEditValue(sessionName)
           } else if (!isCompanionContext() && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
             event.preventDefault()
             const rect = event.currentTarget.getBoundingClientRect()
             menuReturnFocusRef.current = event.currentTarget
-            setMenuPos({ x: rect.left + 16, y: rect.bottom })
+            openMenu({ x: rect.left + 16, y: rect.bottom })
           }
         }}
         onContextMenu={(e) => {
           e.preventDefault()
           if (isCompanionContext()) return
           menuReturnFocusRef.current = e.currentTarget
-          setMenuPos({ x: e.clientX, y: e.clientY })
+          openMenu({ x: e.clientX, y: e.clientY })
         }}
       >
         {activityLayout && !editing ? (
@@ -898,7 +883,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                     if (menuPos) { setMenuPos(null); return }
                     const r = e.currentTarget.getBoundingClientRect()
                     menuReturnFocusRef.current = e.currentTarget
-                    setMenuPos({ x: r.right, y: r.bottom + 4 })
+                    openMenu({ x: r.right, y: r.bottom + 4 })
                   }}
                 >
                   <MoreHorizontal size={14} aria-hidden />
@@ -929,7 +914,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           ref={menuRef}
           point={menuPos}
           role="menu"
-          aria-label={`Actions for ${sessionName}`}
+          aria-label={menuSelectionIds.length > 0 ? `Actions for ${menuSelectionIds.length} selected chats` : `Actions for ${sessionName}`}
           className="fixed z-50 rounded-md py-1 animate-fade-in"
           style={{
             minWidth: 170,
@@ -938,6 +923,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             boxShadow: 'var(--elev-2)',
           }}
         >
+          {menuSelectionIds.length > 0 ? (
+            <ChatSelectionMenuItems
+              ids={menuSelectionIds}
+              onClose={() => setMenuPos(null)}
+              onIcon={(targets) => iconPicker.open('chat', targets, `${targets.length} chats`)}
+              onDelete={() => chatSelection?.deleteSelected()}
+            />
+          ) : <>
           <button type="button" role="menuitem" className="uam-sb-menu-item"
             disabled={!canReuseWorktree}
             onClick={() => {
@@ -996,6 +989,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             Delete…
             <kbd className="uam-menu-kbd">Del</kbd>
           </button>
+          </>}
         </ViewportMenu>
       )}
       {iconPicker.dialog}
@@ -1016,3 +1010,69 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     </div>
   )
 })
+
+// One bulk title run at a time; each title is a provider request.
+let bulkTitleRunning = false
+
+/** Menu for a multi-selection: each action applies to every selected chat row; single-chat actions stay visible but unavailable. */
+function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: string[]; onClose: () => void; onIcon: (targets: BulkTarget[]) => void; onDelete: () => void }) {
+  const rows = useAppStore(useShallow((state) => ids.flatMap((id) => {
+    const chat = state.sessions.find((candidate) => candidate.id === id)
+    return chat ? [chat] : []
+  })))
+  const nativeIds = useAppStore(useShallow((state) => rows.map((chat) => state.acpBindingBySessionId[chat.id]?.sessionId ?? '')))
+  const setSessionPinned = useAppStore((state) => state.setSessionPinned)
+  const targets: BulkTarget[] = rows.map((chat) => ({ id: chat.id, label: chat.name }))
+  const pin = !rows.every((chat) => chat.isPinned)
+  const lines = (values: string[]) => values.filter(Boolean).join('\n')
+  const copyItems: CopyDetail[] = [
+    { label: 'Chat names', value: lines(rows.map((chat) => chat.name)) },
+    { label: 'Chat IDs', value: lines(rows.map((chat) => chat.id)) },
+    { label: 'Workspace paths', value: lines(rows.map((chat) => chat.workspaceWorktreeDirectory || chat.workspaceDirectory || '')) },
+    { label: 'Branches', value: lines(rows.map((chat) => chat.workspaceBranchName?.trim() ?? '')) },
+    { label: 'Native session IDs', value: lines(nativeIds) },
+  ].filter((item) => item.value)
+  const regenerateTitles = () => {
+    if (bulkTitleRunning) return
+    bulkTitleRunning = true
+    onClose()
+    // The native state push owns each rename, including concurrent-change checks.
+    void runForEach(targets, async ({ id }) => {
+      if (!isCefContext()) return 'Title generation is available in the desktop app.'
+      const response = await sendToCEF({ action: 'regenerateChatTitle', payload: { chatId: id } }, false)
+      return response.ok ? null : response.error || 'Could not generate a title. Try again.'
+    }, 'Could not regenerate titles').finally(() => { bulkTitleRunning = false })
+  }
+  const togglePins = () => {
+    onClose()
+    void runForEach(targets.filter((_, index) => (rows[index].isPinned ?? false) !== pin),
+      async ({ id }) => await setSessionPinned(id, pin) ? null : 'The pin could not be saved.', pin ? 'Could not pin chats' : 'Could not unpin chats')
+  }
+  return <>
+    <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree" />
+    <MenuDivider />
+    <SingleOnlyMenuItem noun="chat" icon={<Pencil size={13} aria-hidden />} label="Rename" />
+    <button type="button" role="menuitem" className="uam-sb-menu-item" disabled={bulkTitleRunning} onClick={regenerateTitles}>
+      <RefreshCw size={13} aria-hidden />{bulkTitleRunning ? 'Generating titles…' : `Regenerate ${targets.length} titles`}
+    </button>
+    <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={togglePins}>
+      <Pin size={13} fill={pin ? 'none' : 'currentColor'} aria-hidden />{pin ? 'Pin' : 'Unpin'} {targets.length} chats
+    </button>
+    <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={() => { onClose(); onIcon(targets) }}>
+      <SmilePlus size={13} aria-hidden />Icon…
+    </button>
+    <MenuDivider />
+    <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
+      <CopyDetailItems items={copyItems} />
+    </RowSubmenu>
+    <RowSubmenu label="Snooze" ariaLabel={`Snooze ${targets.length} chats`} icon={<Clock size={13} aria-hidden />}>
+      <SnoozeMenu chatId={ids[0]} familyIds={[]} targets={targets} onSnoozed={onClose} />
+    </RowSubmenu>
+    <CollectionMenuItems showDivider={false} type="chat" target={ids[0]} label={targets[0]?.label ?? ''} targets={targets} onAdded={onClose} />
+    <MenuDivider />
+    <button type="button" role="menuitem" className="uam-sb-menu-item uam-sb-menu-item--danger" onClick={() => { onClose(); onDelete() }}>
+      <Trash2 size={13} aria-hidden />Delete {targets.length} chats…
+      <kbd className="uam-menu-kbd">Del</kbd>
+    </button>
+  </>
+}
