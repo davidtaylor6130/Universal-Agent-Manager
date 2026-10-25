@@ -28,6 +28,10 @@ class MacosHelperSigningTests(unittest.TestCase):
                          result.stdout.decode(errors='replace') + result.stderr.decode(errors='replace'))
         return result
 
+    def cdhash(self, path):
+        output = self.run_tool('/usr/bin/codesign', '-dvvv', path).stderr.decode(errors='replace')
+        return next(line for line in output.splitlines() if line.startswith('CDHash='))
+
     def write_plist(self, path, executable, identifier, package='APPL'):
         path.parent.mkdir(parents=True, exist_ok=True)
         values = dict(CFBundleExecutable=executable, CFBundleIdentifier=identifier,
@@ -45,8 +49,8 @@ class MacosHelperSigningTests(unittest.TestCase):
         end = source.index('    # POST_BUILD: run the generated script', begin)
         # Evaluate the real production generator, not a second copy of its ordering.
         generator = source[begin:end]
-        for enabled in [True, False]:
-            with self.subTest(computer_use=enabled), tempfile.TemporaryDirectory(prefix='uam signing ') as temporary:
+        for enabled, vendor_signed in [(True, False), (False, False), (True, True)]:
+            with self.subTest(computer_use=enabled, vendor_signed=vendor_signed), tempfile.TemporaryDirectory(prefix='uam signing ') as temporary:
                 work = Path(temporary)
                 self.work = work
                 app = work / 'Fixture.app'
@@ -70,7 +74,14 @@ class MacosHelperSigningTests(unittest.TestCase):
                 (framework / 'Versions/Current').symlink_to('A')
                 (framework / 'Resources').symlink_to('Versions/Current/Resources')
                 (framework / 'Chromium Embedded Framework').symlink_to('Versions/Current/Chromium Embedded Framework')
-                self.run_tool('/usr/bin/codesign', '--force', '--sign', '-', framework)
+                # Intel CEF ships unsigned; strip the linker's arm64 signature to match.
+                self.run_tool('/usr/bin/codesign', '--remove-signature', version / 'Chromium Embedded Framework')
+                vendor_cdhash = None
+                if vendor_signed:
+                    # A valid vendor signature must be verified, never replaced. Its runtime
+                    # flag makes any ad-hoc re-sign by the script change the CDHash.
+                    self.run_tool('/usr/bin/codesign', '--force', '--sign', '-', '--options', 'runtime', framework)
+                    vendor_cdhash = self.cdhash(framework)
                 generated = work / 'generated'
                 generated.mkdir()
                 script = work / 'generate.cmake'
@@ -100,6 +111,9 @@ class MacosHelperSigningTests(unittest.TestCase):
                             for key in JIT_KEYS:
                                 self.assertIs(entitlements.get(key), True)
                     self.assertEqual((contents / 'Frameworks/UAM Computer Use.app').exists(), enabled)
+                    self.run_tool('/usr/bin/codesign', '--verify', '--strict', framework)
+                    if vendor_cdhash:
+                        self.assertEqual(self.cdhash(framework), vendor_cdhash)
                     # Match the final app gate: sign explicitly, then deep/strict verify.
                     self.run_tool('/usr/bin/codesign', '--force', '--sign', '-', '--entitlements',
                                   generated / 'cef_helper_plists/jit.entitlements', app)

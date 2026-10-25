@@ -46,6 +46,9 @@ bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string
 bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
 /// Explicit retry of one exact retained direct receipt; it never infers delivery from history.
 bool RetryQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::pair<std::string, int>& expected, std::string* error_out = nullptr);
+/// Shared Retry eligibility for the single row-less direct receipt held by a failed repository baseline.
+/// A missing session is the restored state that RetryQueuedAcpPrompt rebuilds from the saved held outbox.
+bool AcpBaselineHoldRetryAllowed(const AppState& app, const ChatSession& chat, const AcpSessionState* session);
 bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
 /// <summary>Updates an undispatched prompt while preserving captured context and optional retained attachment IDs.</summary>
 bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id, int expected_revision,
