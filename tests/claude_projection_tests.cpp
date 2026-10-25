@@ -1956,11 +1956,7 @@ UAM_TEST(ClaudeQuotaManualSendCancellationReturnsWithinInputBudget)
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
 	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, app.chats.front().id);
 	const std::string before = ReadFile(primary);
-#if defined(_WIN32)
-	const std::vector<std::string> sink = {"cmd.exe", "/d", "/c", "more"};
-#else
-	const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink = uam_test::StdioCatArgv();
 	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 	std::string error;
 	UAM_ASSERT(process.StartStdioProcess(session, fixture.temp.root, sink, &error));
@@ -2043,11 +2039,7 @@ namespace
 			fixture.session->current_mode_id = "default";
 			return;
 		}
-#if defined(_WIN32)
-		const std::vector<std::string> sink = {"cmd.exe", "/d", "/c", "more"};
-#else
-		const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+		const std::vector<std::string> sink = uam_test::StdioCatArgv();
 		std::string error;
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*fixture.session, fixture.temp.root, sink, &error));
 		fixture.session->running = fixture.session->initialized = fixture.session->session_ready = true;
