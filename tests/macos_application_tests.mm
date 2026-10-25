@@ -127,8 +127,16 @@ int main(int argc, char* argv[])
 			__block BOOL saw_picker = NO;
 			__block BOOL timed_out = NO;
 			__block BOOL closed_inside_modal = NO;
+			__block NSTimer* watchdog = nil;
 			NSTimer* request = [NSTimer timerWithTimeInterval:0.1 repeats:NO block:^(NSTimer*)
 			{
+				// Time the 2 s close budget from the request; a loaded host can first service the panel loop after 2 s.
+				watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
+				{
+					timed_out = YES;
+					[(NSOpenPanel*)application.modalWindow cancel:nil];
+				}];
+				[[NSRunLoop currentRunLoop] addTimer:watchdog forMode:NSModalPanelRunLoopMode];
 				saw_picker = [application.modalWindow isKindOfClass:[NSOpenPanel class]];
 				if (delayed_cancel && saw_picker)
 				{
@@ -155,13 +163,7 @@ int main(int argc, char* argv[])
 				}
 				closed_inside_modal = window.closeRequested;
 			}];
-			NSTimer* watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
-			{
-				timed_out = YES;
-				[(NSOpenPanel*)application.modalWindow cancel:nil];
-			}];
 			[[NSRunLoop currentRunLoop] addTimer:request forMode:NSModalPanelRunLoopMode];
-			[[NSRunLoop currentRunLoop] addTimer:watchdog forMode:NSModalPanelRunLoopMode];
 			std::string selected = "must-clear";
 			std::string error;
 			const bool accepted = uam::platform::BrowsePath(directory, std::filesystem::temp_directory_path(), &selected, &error);
