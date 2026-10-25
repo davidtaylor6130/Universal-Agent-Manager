@@ -5756,7 +5756,8 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 		return false;
 	}
 
-	ChatSession hydrated = *loaded.chat;
+	// Move rather than copy: a second full transcript doubles peak hydration memory.
+	ChatSession hydrated = std::move(*loaded.chat);
 	if ((chat.imported_read_only || hydrated.imported_read_only) &&
 	    (chat.imported_read_only != hydrated.imported_read_only ||
 	     (chat.passive_queued_prompt_archive && !SamePassiveArchive(chat.passive_queued_prompt_archive, hydrated.passive_queued_prompt_archive))))
