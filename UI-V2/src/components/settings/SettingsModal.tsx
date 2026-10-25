@@ -31,6 +31,7 @@ import {
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
+  type WindowsPowerShellPreference,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
 import { sendToCEF } from '../../ipc/cefBridge'
@@ -485,6 +486,17 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   about: 'version build release updates app information',
 }
 
+const WINDOWS_POWERSHELL_OPTIONS: { value: WindowsPowerShellPreference; label: string }[] = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'windows-powershell', label: 'Windows PowerShell 5.1' },
+  { value: 'pwsh', label: 'PowerShell 7' },
+]
+const WINDOWS_POWERSHELL_DESCRIPTIONS: Record<WindowsPowerShellPreference, string> = {
+  auto: 'Terminal windows use built-in Windows PowerShell, or PowerShell 7 when it is the only one installed.',
+  'windows-powershell': 'Terminal windows use built-in Windows PowerShell 5.1.',
+  pwsh: 'Terminal windows use PowerShell 7 (pwsh). Opening one shows an error if it is not installed.',
+}
+
 const EDITOR_PRESETS = [
   { id: 'vscode', label: 'VS Code' },
   { id: 'xcode', label: 'Xcode' },
@@ -743,6 +755,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const defaultNewChatProviderId = useAppStore((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.defaultNewChatProviderId) || s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.providerChatDefaults) || s.providerChatDefaults))
   const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
+  const windowsPowerShell = useAppStore((s) => s.windowsPowerShell)
+  const isWindows = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent)
   const [explorerDraft, setExplorerDraft] = useState('')
   const [customExplorer, setCustomExplorer] = useState(false)
   useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
@@ -1216,6 +1230,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try {
       if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setEditorError('File explorer could not be saved.')
     } catch { setEditorError('File explorer could not be saved.') }
+    finally { editorSavePending.current = false; setEditorSaving(false) }
+  }
+  const saveWindowsPowerShell = async (value: WindowsPowerShellPreference) => {
+    if (editorSavePending.current) return
+    editorSavePending.current = true
+    setEditorSaving(true); setEditorError('')
+    try {
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setEditorError('PowerShell choice could not be saved.')
+    } catch { setEditorError('PowerShell choice could not be saved.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
@@ -3141,6 +3164,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
               </div>}
             </SettingRow>
+            {isWindows && <SettingRow
+              title="PowerShell"
+              description={WINDOWS_POWERSHELL_DESCRIPTIONS[windowsPowerShell]}
+              control={<MenuSelect label="PowerShell" disabled={editorSaving} value={windowsPowerShell} options={WINDOWS_POWERSHELL_OPTIONS} onChange={(value) => void saveWindowsPowerShell(value as WindowsPowerShellPreference)} />}
+            />}
           </SettingsSection>
         </div>
       )

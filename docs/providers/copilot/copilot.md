@@ -2,6 +2,8 @@
 
 GitHub Copilot structured Chat uses the native SDK server JSON-RPC protocol over framed stdio; CLI View retains the interactive Copilot CLI. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
+On Windows the Copilot CLI itself requires PowerShell 7 (`pwsh`) and starts it for shell tools; stock Windows PowerShell 5.1 is not accepted upstream, so UAM's version check reports a missing `pwsh` as a Copilot prerequisite regardless of the [Editors](../../settings/editors.md) PowerShell choice.
+
 **Assessment:** source routes and retained verification evidence, 2026-10-17. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
 
 ## Managed continuation

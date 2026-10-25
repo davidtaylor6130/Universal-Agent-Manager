@@ -139,7 +139,8 @@ class IPlatformProcessService
 	virtual std::string GenerateUuid() const = 0;
 	virtual bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const = 0;
 	/// <summary>Open a real terminal with typed argv; never interpolate credentials or remote paths into a controller shell.</summary>
-	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr) const
+	/// <remarks>Windows hosts the terminal in the PowerShell chosen by <paramref name="powershell_preference"/> (see powershell_selection.h).</remarks>
+	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr, std::string_view /*powershell_preference*/ = "auto") const
 	{
 		if (error_out != nullptr) *error_out = "Opening a command terminal is unavailable on this platform.";
 		return false;

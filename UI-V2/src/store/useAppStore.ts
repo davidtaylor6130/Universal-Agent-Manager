@@ -43,7 +43,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -127,6 +127,7 @@ function deserializeState(
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
     fileExplorerApplication: string
+    windowsPowerShell: WindowsPowerShellPreference
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
@@ -336,6 +337,7 @@ function deserializeState(
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
+    windowsPowerShell: cpp.settings.windowsPowerShell ?? 'auto',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     voiceInputMode: cpp.settings.voiceInputMode ?? existing.voiceInputMode,
@@ -568,6 +570,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
+    windowsPowerShell: patch.settings?.windowsPowerShell ?? current.windowsPowerShell,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
@@ -800,6 +803,7 @@ export const useAppStore = create<AppState>((set, get) => {
             backupLogRetentionDays: current.backupLogRetentionDays,
             httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
             fileExplorerApplication: current.fileExplorerApplication,
+            windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             centralProviderConfiguration: current.centralProviderConfiguration,
@@ -1137,6 +1141,7 @@ export const useAppStore = create<AppState>((set, get) => {
         backupLogRetentionDays: current.backupLogRetentionDays,
         httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
         fileExplorerApplication: current.fileExplorerApplication,
+        windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         centralProviderConfiguration: current.centralProviderConfiguration,

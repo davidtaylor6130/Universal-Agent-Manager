@@ -2536,6 +2536,27 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('chooses the Windows PowerShell only on Windows and reports rejected saves', async () => {
+    const platform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    useAppStore.setState({ windowsPowerShell: 'auto', setEditorSettings: vi.fn().mockResolvedValue(false) })
+    const mac = renderModal()
+    openEditorsSection(mac.host)
+    expect(mac.host.querySelector('button[title="PowerShell"]')).toBeNull()
+    act(() => mac.root.unmount()); mac.host.remove()
+
+    platform.mockReturnValue('Win32')
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+    expect(host.textContent).toContain('Terminal windows use built-in Windows PowerShell')
+    act(() => host.querySelector<HTMLButtonElement>('button[title="PowerShell"]')!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).map(button => button.textContent)).toEqual(['Automatic', 'Windows PowerShell 5.1', 'PowerShell 7'])
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent === 'PowerShell 7')!.click())
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ windowsPowerShell: 'pwsh' }))
+    expect(host.textContent).toContain('PowerShell choice could not be saved.')
+    act(() => root.unmount()); host.remove()
+    platform.mockRestore()
+  })
+
   it('disables unsupported dictation modes and refuses invalid server URLs without saving', async () => {
     const save = vi.fn(async () => true)
     useAppStore.setState({ setVoiceInputSettings: save })

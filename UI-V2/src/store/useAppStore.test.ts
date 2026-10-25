@@ -6264,6 +6264,20 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
   })
 
+  it('saves and rolls back the Windows PowerShell choice', async () => {
+    useAppStore.setState({ windowsPowerShell: 'auto' })
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'PowerShell must be auto, windows-powershell or pwsh.')
+    }
+    await expect(useAppStore.getState().setEditorSettings({
+      defaultEditorPresetId: 'vscode', editorFileAssociations: [], windowsPowerShell: 'pwsh',
+    })).resolves.toBe(false)
+    expect(requests[0].payload.windowsPowerShell).toBe('pwsh')
+    expect(useAppStore.getState().windowsPowerShell).toBe('auto')
+  })
+
   it('hydrates central resources and restores them after a rejected save', async () => {
     const configuration = {
       enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],

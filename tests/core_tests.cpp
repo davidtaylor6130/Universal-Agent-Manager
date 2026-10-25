@@ -4,6 +4,8 @@
 #include "common/platform/platform_speech_output.h"
 #include "test_harness.h"
 #include "common/platform/file_explorer_application.h"
+#include "common/platform/powershell_selection.h"
+#include "remote/remote_workspace_terminal.h"
 #include "common/config/custom_icon.h"
 #include "common/config/companion_network.h"
 #include "app/chat_lifecycle_service.h"
@@ -6554,6 +6556,45 @@ UAM_TEST(FileExplorerApplicationsRejectCommandsAndWrongNativeTypes)
 	UAM_ASSERT(!uam::platform::IsFileExplorerApplication((root / "missing.exe").string(), true));
 }
 
+UAM_TEST(WindowsPowerShellSelectionNeverAssumesPwsh)
+{
+	std::string error;
+	UAM_ASSERT_EQ(AppSettings{}.windows_powershell, std::string("auto"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, false, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", false, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("windows-powershell", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("pwsh", true, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(uam::powershell::Select("pwsh", true, false, &error).empty());
+	UAM_ASSERT(error.find("PowerShell 7 (pwsh.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("windows-powershell", false, true, &error).empty());
+	UAM_ASSERT(error.find("Windows PowerShell (powershell.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("auto", false, false, &error).empty());
+	UAM_ASSERT(error.find("No PowerShell was found") != std::string::npos);
+
+	TempDir temp("uam-powershell-setting");
+	const fs::path settings_file = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, "windows_powershell=bash\n"));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("auto"));
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsTerminalScriptRunsOnWindowsPowerShell51)
+{
+	// The SSH terminal window script must run on built-in Windows PowerShell 5.1, not only PowerShell 7.
+	const std::string command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " +
+	    uam::remote::WindowsTerminalEncodedCommand({"cmd.exe", "/d", "/c", "echo", "uam-ps51-terminal-ok"}) +
+	    " & powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$PSVersionTable.PSVersion.Major\"";
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 30000);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT(result.output.find("uam-ps51-terminal-ok") != std::string::npos);
+	UAM_ASSERT(result.output.find("\n5") != std::string::npos);
+}
+#endif
+
 UAM_TEST(SettingsStorePersistsEditorSettings)
 {
 	TempDir temp("uam-editor-settings");
@@ -6562,6 +6603,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 	AppSettings settings;
 	settings.default_editor_preset_id = "clion";
 	settings.file_explorer_application = "/Applications/Explorer = Custom.app";
+	settings.windows_powershell = "pwsh";
 	settings.editor_default_groups_version = 1;
 	settings.editor_file_associations = {
 	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
@@ -6575,6 +6617,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 
 	UAM_ASSERT_EQ(loaded.default_editor_preset_id, std::string("clion"));
 	UAM_ASSERT_EQ(loaded.file_explorer_application, settings.file_explorer_application);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("pwsh"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].name, std::string("C++"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions.size(), static_cast<std::size_t>(2));
