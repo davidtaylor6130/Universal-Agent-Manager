@@ -105,6 +105,8 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       return false
     }
     const end = previous.first + previous.rows.length
+    // Reaching a known history edge needs no anchor or retry, even while row geometry is unavailable.
+    if (direction === 'older' && previous.first <= 0 || direction === 'newer' && end >= owner.total) return false
     const target = direction === 'latest' ? owner.total - 1 : index
     if ((direction === 'target' || direction === 'latest' || direction === 'restore') && (!Number.isSafeInteger(target) || target! < 0 || target! >= owner.total)) {
       if (direction === 'restore') {
@@ -123,7 +125,6 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       setState(value => ({ ...value, error: 'The visible reading position is unavailable. Loaded messages are retained; choose a rail mark or retry history.' }))
       return false
     }
-    if (direction === 'older' && previous.first <= 0 || direction === 'newer' && end >= owner.total) return false
     const before = direction === 'older' ? previous.first : Math.min(owner.total, end + 100)
     const limit = direction === 'older' ? Math.min(100, previous.first) : Math.min(100, owner.total - end)
     const payload = direction === 'target' || direction === 'latest' || direction === 'restore'
