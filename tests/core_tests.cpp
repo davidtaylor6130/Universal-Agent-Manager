@@ -12397,8 +12397,25 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	// The app tick holds the input and stops reconnecting instead of silently retrying the failed baseline.
+	(void)uam::PollAllAcpSessions(app);
+	uam::FlushPendingChatSaves(app, true);
+	const uam::AcpSessionState& held = *app.acp_sessions.front();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.running);
+	UAM_ASSERT(!held.last_error.empty());
 	UAM_ASSERT(fs::remove(app.data_root / "repository-review"));
-	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, chat.id, 0, &error));
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(held.queue_held && !held.reconnect_pending);
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	const uam::AcpQueuedUserPromptState receipt = app.chats.front().acp_queued_prompts.front();
+	const nlohmann::json projected = uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession");
+	UAM_ASSERT(projected.at("pendingDirectPrompts").empty() && projected.at("unsentDirectPrompts").size() == 1);
+	UAM_ASSERT(projected.at("unsentDirectPrompts").at(0).value("retryAllowed", false));
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !held.queue_held && held.reconnect_pending);
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));

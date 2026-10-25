@@ -4078,6 +4078,28 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    app.pending_chat_save_tasks.contains(chat_id))
 			return reject("This message is still being checked or has changed. Your input is kept; refresh before retrying.");
 		const AcpQueuedUserPromptState& receipt = chat->acp_queued_prompts.front();
+		if (AcpSessionState* held = FindAcpSessionForChat(app, chat_id); held && held->queue_held && !held->running &&
+		    held->baseline_failed_receipt == expected && held->queued_user_prompts.size() == 1 &&
+		    held->queued_user_prompts.front() == receipt && receipt.direct_admission && !receipt.prepared_for_delivery &&
+		    receipt.existing_user_message_index < 0 && receipt.claude_quota_continuation_id.empty() && !held->processing && held->queued_prompt.empty() &&
+		    held->prompt_request_id == 0 && !AcpSessionIsWaitingForInput(*held))
+		{
+			// Baseline-failed first input has no transcript row: retry the baseline once, then the normal launch path.
+			if (PrepareChatRepositoryBaseline(app, *chat, error_out, nullptr, true) == ChatBaselineReadiness::Failed) return false;
+			held->queue_held = chat->acp_queue_held = false;
+			if (!PersistQueuedPromptOutbox(app, *held, *chat, error_out, true))
+			{
+				held->queue_held = chat->acp_queue_held = true;
+				return false;
+			}
+			held->baseline_failed_receipt = {};
+			held->reconnect_pending = true;
+			held->reconnect_attempts = 0;
+			held->reconnect_not_before_time_s = 0.0;
+			held->lifecycle_state = kAcpLifecycleStarting;
+			held->last_error.clear();
+			return true;
+		}
 		if (receipt.id != expected.first || receipt.revision != expected.second || !receipt.direct_admission ||
 		    receipt.prepared_for_delivery || !receipt.claude_quota_continuation_id.empty() || receipt.existing_user_message_index < 0)
 			return reject("The retained message changed or its delivery is unresolved. Your input is kept.");
@@ -7003,9 +7025,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (baseline == ChatBaselineReadiness::Pending) continue;
 					if (baseline == ChatBaselineReadiness::Failed)
 					{
-						if (session.last_error != baseline_error) changed = true;
+						// Same pre-launch failure hold as workspace preparation: keep input, stop reconnecting.
+						const AcpQueuedUserPromptState& head = session.queued_user_prompts.front();
+						session.baseline_failed_receipt = session.queued_user_prompts.size() == 1 && head.direct_admission &&
+						    head.existing_user_message_index < 0 ? std::pair<std::string, int>{head.id, head.revision} : std::pair<std::string, int>{};
+						session.reconnect_pending = false;
+						session.queue_held = reconnect_chat->acp_queue_held = true;
 						session.last_error = baseline_error;
 						session.lifecycle_state = kAcpLifecycleError;
+						ScheduleChatSave(app, *reconnect_chat, 0.0);
+						changed = true;
 						continue;
 					}
 					const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *reconnect_chat);
