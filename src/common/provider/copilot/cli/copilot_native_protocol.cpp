@@ -1242,6 +1242,9 @@ std::string CopilotCliProviderRuntime::AcpTurnIdentity(const uam::AcpSessionStat
 {
 	// A confirmed completed turn must not regain replay authority on a later save.
 	// Failed/unresolved turns retain their identity; restore runs before processing starts.
+	// Serial 0 means no input was ever started: a save between native setup and the first
+	// queued prompt must not publish a phantom turn that blocks that prompt's admission.
+	if (session.turn_serial == 0) return {};
 	const bool completed = session.turn_serial > 0 &&
 	    session.last_settled_turn_serial == session.turn_serial && session.last_turn_outcome == "completed" &&
 	    !session.processing && session.prompt_request_id == 0;

@@ -130,7 +130,10 @@ UAM_TEST(CompactedBranchPublicRetryUsesLatestCompletedSummaryOnly)
 	UAM_ASSERT(prompt.find("OBSOLETE_USER") == std::string::npos);
 	UAM_ASSERT(prompt.find("OBSOLETE_ASSISTANT") == std::string::npos);
 	UAM_ASSERT(prompt.find("AFTER_LATEST_SUMMARY") != std::string::npos);
-	UAM_ASSERT(prompt.find("Current user message:\ncontinue") != std::string::npos);
+	const std::size_t authored = prompt.find("</UAM History>\n\ncontinue");
+	UAM_ASSERT(authored != std::string::npos);
+	UAM_ASSERT_EQ(prompt.find("continue"), authored + std::string("</UAM History>\n\n").size());
+	UAM_ASSERT_EQ(prompt.find("continue"), prompt.rfind("continue"));
 	UAM_ASSERT(prompt.size() < 14000);
 	UAM_ASSERT(fixture.app.chats.front().messages[1] == original);
 }

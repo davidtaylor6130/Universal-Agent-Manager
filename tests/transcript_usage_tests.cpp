@@ -319,6 +319,15 @@ namespace
 		{
 #if defined(_WIN32)
 			_tzset();
+			// UCRT's TZ parser keeps the previous system zone's DST bias (0 on a UTC host),
+			// while POSIX TZ rules such as EST5EDT imply a one-hour daylight offset.
+			int daylight = 0;
+			const char* tz = std::getenv("TZ");
+			if (tz != nullptr && *tz != '\0' && _get_daylight(&daylight) == 0 && daylight != 0)
+			{
+#pragma warning(suppress : 4996)
+				_dstbias = -3600;
+			}
 #else
 			tzset();
 #endif

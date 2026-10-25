@@ -687,7 +687,11 @@ namespace uam
 						result["unsentDirectPrompts"].push_back(std::move(receipt));
 						continue;
 					}
-					result["unsentDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					auto receipt = SerializeQueuedAcpUserPrompt(*prompt);
+					// Only the exact receipt held by a failed repository baseline gains row-less Retry.
+					if (prompt->repository_baseline_hold && AcpBaselineHoldRetryAllowed(app, chat, session))
+						receipt["retryAllowed"] = true;
+					result["unsentDirectPrompts"].push_back(std::move(receipt));
 					continue;
 				}
 				if (IsVisibleAcpQueuedPrompt(*prompt))
