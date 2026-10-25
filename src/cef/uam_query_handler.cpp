@@ -58,6 +58,12 @@ namespace
 			callback->Failure(503, "The native window is unavailable.");
 			return;
 		}
+		if (action == "quitApplication")
+		{
+			callback->Success("{}");
+			CefPostTask(TID_UI, new CloseWindowTask(window));
+			return;
+		}
 		if (action == "restartApplication")
 		{
 			if (!uam::platform::RequestApplicationRestart())
@@ -341,6 +347,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
 		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
+		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
+		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
@@ -480,7 +488,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
+	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication" || action == "quitApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
 		return true;

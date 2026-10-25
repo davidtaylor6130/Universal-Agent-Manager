@@ -58,7 +58,16 @@ namespace uam
 		// Copies chats and folders from a previous version's data root into data_root,
 		// keeping their ids and leaving the source untouched. Existing ids are skipped,
 		// and a fully imported source is recorded so later runs never import it again.
+		// Callers ask the user first (see LegacyDataRootPending).
 		static LocalChatBundleImportResult ImportLegacyDataRoot(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
+		// True when legacy_root holds earlier-release chats the user has neither copied nor declined.
+		static bool LegacyDataRootPending(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
+		// Records the "Brand new" choice so legacy_root is never offered again.
+		static bool DeclineLegacyDataRoot(
 		    const std::filesystem::path& data_root,
 		    const std::filesystem::path& legacy_root);
 	};

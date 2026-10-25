@@ -1,5 +1,6 @@
 import { SettingsLoading } from '../settings/SettingsPrimitives'
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
+import { LegacyChatImportPrompt } from '../modals/LegacyChatImportPrompt'
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
@@ -1055,6 +1056,7 @@ export function AppShell() {
       />
 
       <StartupNativeImportChooser />
+      <LegacyChatImportPrompt />
       <TransientAlertSurface alert={alertSuppressed ? null : transientAlert} notice={transientAlert} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onHeldChange={setAlertHeld} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={() => setTransientAlert(null)} />
 
       {/* Modals */}

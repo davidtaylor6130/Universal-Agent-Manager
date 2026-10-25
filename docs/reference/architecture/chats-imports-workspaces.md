@@ -50,7 +50,7 @@ Verified linked-worktree imports group under the canonical main workspace even w
 - Chat lifecycle/search/title: `src/app/chat_domain_service.*`, `src/app/chat_lifecycle_service.*`, `src/app/chat_search_service.*`, `src/app/chat_title_service.*`.
 - Chat storage and identity: `src/common/chat/`, `src/app/native_session_link_service.*`.
 - Import and workspace/worktree: `src/app/startup_native_import_service.*`, `src/app/git_worktree_service.*`, `src/app/worktree_launch_preparation_service.*`, `src/common/paths/workspace_lease.h`.
-- Earlier-release data roots: `LocalChatBundleService::ImportLegacyDataRoot` in `src/app/local_chat_bundle_service.*`, called from `Application::InitializeState`; checked by `LegacyDataRootImport*` cases in `tests/local_chat_bundle_tests.cpp`.
+- Earlier-release data roots: `Application::InitializeState` collects `LocalChatBundleService::LegacyDataRootPending` roots; `getLegacyChatImports`/`resolveLegacyChatImport` in `src/cef/local_chat_bundle_handlers.cpp` drive `UI-V2/src/components/modals/LegacyChatImportPrompt.tsx`, and Stop uses the privileged `quitApplication` window action. Checked by `LegacyDataRoot*` cases in `tests/local_chat_bundle_tests.cpp` and `LegacyChatImportPrompt.test.tsx`.
 - Focused checks: `tests/empty_native_import_tests.cpp`, `tests/startup_native_import_tests.cpp`, `tests/native_import_failure_tests.cpp`, `tests/workspace_lease_tests.cpp`, `tests/deletion_workspace_ownership_tests.cpp`, `tests/git_worktree_chat_base_override_tests.cpp`.
 
 No import or worktree performance budget is recorded. Keep operations asynchronous where the UI expects it and preserve cleanup behavior on every failure path.

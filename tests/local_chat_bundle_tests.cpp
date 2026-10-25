@@ -1244,9 +1244,12 @@ UAM_TEST(LegacyDataRootImportCopiesV49ChatsOnceWithoutTouchingSource)
 	existing.messages.push_back(Message{MessageRole::User, "Keep me"});
 	UAM_ASSERT(ChatRepository::SaveChat(target, existing));
 	const std::map<std::string, std::string> source_before = TreeBytes(legacy);
+	UAM_ASSERT(uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, target));
 
 	const uam::LocalChatBundleImportResult first = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
 	UAM_ASSERT(first.ok);
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
 	UAM_ASSERT_EQ(first.total_count, std::size_t{2});
 	UAM_ASSERT_EQ(first.imported_count, std::size_t{1});
 	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
@@ -1321,4 +1324,19 @@ UAM_TEST(LegacyDataRootImportKeepsDeletedNativeSessionsDeleted)
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT_EQ(result.imported_count, std::size_t{2});
 	UAM_ASSERT(!ChatRepository::LoadLocalChat(target, "legacy-chat-native").has_value());
+}
+
+UAM_TEST(LegacyDataRootBrandNewStopsAskingWithoutCopying)
+{
+	TempDir temp("uam-legacy-data-root-brand-new");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "legacy");
+	const fs::path target = temp.root / "target";
+	fs::create_directories(target);
+	const std::map<std::string, std::string> source_before = TreeBytes(legacy);
+	UAM_ASSERT(uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(uam::LocalChatBundleService::DeclineLegacyDataRoot(target, legacy));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(ChatRepository::LoadLocalChatSummaries(target).empty());
+	UAM_ASSERT(ChatFolderStore::Load(target).empty());
+	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
 }

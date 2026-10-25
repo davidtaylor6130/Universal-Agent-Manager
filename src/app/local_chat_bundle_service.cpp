@@ -42,6 +42,28 @@ namespace uam
 		constexpr std::string_view kLegacyImportLedgerFilename = "legacy-data-imports.json";
 		constexpr std::size_t kMaxLegacyChatBytes = 256ULL * 1024ULL * 1024ULL; // Matches the repository chat limit.
 
+		// legacy-data-imports.json: copied and declined ("Brand new") sources plus every chat/folder ID
+		// ever imported, so a moved, renamed or partly imported source never brings back a deletion.
+		bool LoadLegacyImportLedger(const fs::path& data_root, nlohmann::json& ledger)
+		{
+			ledger = nlohmann::json::object();
+			const fs::path path = data_root / kLegacyImportLedgerFilename;
+			if (uam::paths::PathExistsNoThrow(path)) ledger = nlohmann::json::parse(uam::io::ReadTextFile(path), nullptr, false);
+			if (!ledger.is_object()) return false;
+			for (const char* key : {"completed_sources", "declined_sources", "imported_chat_ids", "imported_folder_ids"})
+			{
+				nlohmann::json& value = ledger[key];
+				if (value.is_null()) value = nlohmann::json::array();
+				if (!value.is_array()) return false;
+			}
+			return true;
+		}
+
+		bool LedgerContains(const nlohmann::json& values, const std::string& value)
+		{
+			return std::find(values.begin(), values.end(), value) != values.end();
+		}
+
 		struct BundleOriginal
 		{
 			native_assets::AssetReference reference;
@@ -1112,31 +1134,18 @@ namespace uam
 				result.ok = true;
 				return result;
 			}
-			// Ledger: completed sources plus every chat/folder ID ever imported, so a moved,
-			// renamed or partly imported source never brings back something the user deleted.
-			const fs::path ledger_path = data_root / kLegacyImportLedgerFilename;
-			nlohmann::json ledger = nlohmann::json::object();
-			if (uam::paths::PathExistsNoThrow(ledger_path))
-				ledger = nlohmann::json::parse(uam::io::ReadTextFile(ledger_path), nullptr, false);
-			const auto list = [&](const char* key) -> nlohmann::json*
-			{
-				if (!ledger.is_object()) return nullptr;
-				nlohmann::json& value = ledger[key];
-				if (value.is_null()) value = nlohmann::json::array();
-				return value.is_array() ? &value : nullptr;
-			};
-			nlohmann::json* completed = list("completed_sources");
-			nlohmann::json* imported_chats = list("imported_chat_ids");
-			nlohmann::json* imported_folders = list("imported_folder_ids");
+			nlohmann::json ledger;
+			const bool ledger_ok = LoadLegacyImportLedger(data_root, ledger);
 			const std::optional<std::unordered_set<std::string>> tombstones = ChatHistorySyncService().NativeImportTombstoneKeys(data_root);
-			if (completed == nullptr || imported_chats == nullptr || imported_folders == nullptr || !tombstones)
+			if (!ledger_ok || !tombstones)
 			{
 				AppendError(result.errors, "Previous-version import or deletion records could not be read in " + uam::paths::Utf8PathString(data_root));
 				return result;
 			}
-			const auto contains = [](const nlohmann::json& values, const std::string& value)
-			{ return std::find(values.begin(), values.end(), value) != values.end(); };
-			if (contains(*completed, source_key))
+			nlohmann::json* completed = &ledger["completed_sources"];
+			nlohmann::json* imported_chats = &ledger["imported_chat_ids"];
+			nlohmann::json* imported_folders = &ledger["imported_folder_ids"];
+			if (LedgerContains(*completed, source_key))
 			{
 				result.ok = true;
 				return result;
@@ -1149,7 +1158,7 @@ namespace uam
 				if (!uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".json") || !uam::chat_ids::IsSafeStorageChatId(id)) continue;
 				++result.total_count;
 				const fs::path stored = AppPaths::UamChatFilePath(data_root, id);
-				if (contains(*imported_chats, id) || uam::paths::PathExistsNoThrow(stored) || uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(stored))) continue;
+				if (LedgerContains(*imported_chats, id) || uam::paths::PathExistsNoThrow(stored) || uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(stored))) continue;
 				LocalChatBundleImportItem item;
 				item.source_id = id;
 				item.imported_id = id;
@@ -1180,7 +1189,7 @@ namespace uam
 			const std::size_t existing_folder_count = folders.size();
 			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
 			{
-				if (!contains(*imported_folders, folder.id) &&
+				if (!LedgerContains(*imported_folders, folder.id) &&
 				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))
 					folders.push_back(std::move(folder));
 			}
@@ -1195,10 +1204,10 @@ namespace uam
 			result.ok = result.errors.empty();
 			if (result.ok) completed->push_back(source_key);
 			if ((result.ok || result.imported_count > 0 || folders.size() != existing_folder_count) &&
-			    !uam::io::WriteTextFile(ledger_path, ledger.dump(2)))
+			    !uam::io::WriteTextFile(data_root / kLegacyImportLedgerFilename, ledger.dump(2)))
 			{
 				result.ok = false;
-				AppendError(result.errors, "Could not record the previous-version import in " + uam::paths::Utf8PathString(ledger_path));
+				AppendError(result.errors, "Could not record the previous-version import.");
 			}
 			result.degraded = result.imported_count > 0 && !result.ok;
 			return result;
@@ -1210,5 +1219,30 @@ namespace uam
 			AppendError(result.errors, "Previous-version chat import failed; the original data was left in place.");
 			return result;
 		}
+	}
+
+	bool LocalChatBundleService::LegacyDataRootPending(
+	    const std::filesystem::path& data_root,
+	    const std::filesystem::path& legacy_root)
+	{
+		const std::string source_key = uam::paths::NormalizedNativePathString(legacy_root);
+		if (source_key == uam::paths::NormalizedNativePathString(data_root) ||
+		    !uam::paths::IsDirectoryNoThrow(AppPaths::UamChatsRootPath(legacy_root))) return false;
+		nlohmann::json ledger;
+		// An unreadable ledger still asks; the import itself then reports the problem.
+		return !LoadLegacyImportLedger(data_root, ledger) ||
+		       (!LedgerContains(ledger["completed_sources"], source_key) && !LedgerContains(ledger["declined_sources"], source_key));
+	}
+
+	bool LocalChatBundleService::DeclineLegacyDataRoot(
+	    const std::filesystem::path& data_root,
+	    const std::filesystem::path& legacy_root)
+	{
+		nlohmann::json ledger;
+		if (!LoadLegacyImportLedger(data_root, ledger)) return false;
+		const std::string source_key = uam::paths::NormalizedNativePathString(legacy_root);
+		if (LedgerContains(ledger["declined_sources"], source_key)) return true;
+		ledger["declined_sources"].push_back(source_key);
+		return uam::io::WriteTextFile(data_root / kLegacyImportLedgerFilename, ledger.dump(2));
 	}
 } // namespace uam
