@@ -889,6 +889,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Performance | Windows Immutable Resource Install | Windows installs immutable digest-addressed provider resources without per-file write-through, matching the POSIX link path; replaced configuration files keep it (#442). | Implemented; 2-core Install Rename 0.7-4.0s To 0.22s; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Remote Lease Kill And Exit Stop | The runner sweep waits for an in-progress lease-expiry kill instead of leaving it retiring, exit-time Stop accepts the proxy outcome line once pipes drain, and stop loops keep reading while a child writes (#444). | Implemented; Lease Case 11/20 To 20/20 Under Load; Exit Stop Pressure Subcase Still Slow On Slow Hosts; Un-Reviewed; Not User Tested |
 | Build and evidence | Performance | Single Symlink Check Per Component | Provider resource installation checks each path component with one symlink status read instead of two, keeping the same refusals (#442). | Implemented; 2-core Setup 2.9s To 1.8s; Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Windows CI Defender Exclusion | The Windows CI test job excludes its workspace and temporary folders from Defender real-time scanning before the native suite (#442). | Implemented; Windows CI Pending; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 

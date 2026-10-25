@@ -178,6 +178,12 @@ jobs:
         if: runner.os == 'Windows'
         run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/tests --config Release --parallel 4
+      - name: Exclude test files from Defender scanning (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Real-time scanning of the thousands of fixture files the native suite creates dominates
+        # its fixed test deadlines on hosted runners; product code and budgets are unchanged.
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure
       - name: Package macOS review build
         if: runner.os == 'macOS'
