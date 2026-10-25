@@ -88,6 +88,10 @@ namespace uam::central_configuration
 				ProviderMcpOverride item{entry["providerId"].get<std::string>(), entry["executionHostId"].get<std::string>(), entry["serverId"].get<std::string>(), entry["enabled"].get<bool>()};
 				if (entry.contains("kind") && (!entry["kind"].is_string() || entry["kind"] != "preference"))
 				{ error = "Unknown provider MCP setting kind."; return false; }
+#if !(UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_CLAUDE_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
+				// A build that excludes providers skips their saved switches instead of rejecting (and so resetting) the whole configuration.
+				if (!uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, item.provider_id)) continue;
+#endif
 				item.is_preference = entry.contains("kind");
 				if (item.is_preference && (item.provider_id != provider_ids::kOpenCodeCli || item.server_id != kOpenCodeProgressiveMcpSetting))
 				{ error = "Unknown provider preference."; return false; }

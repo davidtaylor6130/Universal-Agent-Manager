@@ -72,16 +72,18 @@ namespace uam::usage
 			if (!data.metadata.contains("complete") || !data.metadata["complete"].is_boolean() || !data.metadata.contains("listingLimited") || !data.metadata["listingLimited"].is_boolean()) return std::nullopt;
 			for (const char* key : {"filesChecked", "filesTotal", "bytesRead"})
 				if (!data.metadata.contains(key) || !data.metadata[key].is_number_integer() || data.metadata[key] < 0 || data.metadata[key] > kMaxExactTokenCount) return std::nullopt;
-			if (data.metadata["filesChecked"] > data.metadata["filesTotal"] || !data.metadata.contains("providers") || !data.metadata["providers"].is_array() || data.metadata["providers"].size() != provider_ids::kAllCliProviderIds.size()) return std::nullopt;
+			if (data.metadata["filesChecked"] > data.metadata["filesTotal"] || !data.metadata.contains("providers") || !data.metadata["providers"].is_array() || IncludedProviderRows(data.metadata["providers"]) != provider_ids::kAllCliProviderIds.size()) return std::nullopt;
 			std::unordered_set<std::string> providers, identities;
 			for (const nlohmann::json& row : data.metadata["providers"])
 			{
+				if (row.is_object() && row.contains("providerId") && SkipsExcludedProvider(row["providerId"])) continue;
 				if (!row.is_object() || !row.contains("providerId") || !row["providerId"].is_string() || !provider_ids::IsKnownCliProviderId(row["providerId"].get_ref<const std::string&>()) || !providers.insert(row["providerId"].get<std::string>()).second || !row.contains("available") || !row["available"].is_boolean()) return std::nullopt;
 				for (const char* key : {"files", "errors", "invalidLines", "oversizedLines", "suppressedForkRecords", "pendingLines"})
 					if (!row.contains(key) || !row[key].is_number_integer() || row[key] < 0 || row[key] > kMaxExactTokenCount) return std::nullopt;
 			}
 			for (const nlohmann::json& row : document["facts"])
 			{
+				if (SkipsExcludedProviderRecord(row)) continue;
 				std::optional<AccountingRecord> fact = DecodeAccountingRecord(row);
 				if (!fact || ((fact->record.timestamp_ms < start || fact->record.timestamp_ms >= data.as_of) && !DecodeAntigravityAccountingRecord(fact->record)) || !identities.insert(fact->identity).second) return std::nullopt;
 				data.records.push_back(std::move(*fact));

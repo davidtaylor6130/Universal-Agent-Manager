@@ -1367,6 +1367,22 @@ if(UAM_BUILD_TESTS)
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ui_build_incremental_test.py")
   add_test(NAME uam_build_flag_leak_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/build_flag_leak_gate_test.py")
+  # A reduced profile's id tables and saved-data handling; the all-provider core tests cannot observe them.
+  add_executable(uam_build_flag_profile_tests tests/build_flag_profile_tests.cpp)
+  target_include_directories(uam_build_flag_profile_tests PRIVATE src)
+  target_link_libraries(uam_build_flag_profile_tests PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_build_flag_profile_tests PRIVATE NOMINMAX
+    UAM_ENABLE_COMPUTER_USE=0 UAM_ENABLE_SSH=0 UAM_ENABLE_MOBILE_COMPANION=0
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=0 UAM_ENABLE_RUNTIME_CODEX_CLI=0 UAM_ENABLE_RUNTIME_CLAUDE_CLI=1
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=0 UAM_ENABLE_RUNTIME_COPILOT_CLI=0 UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=0)
+  set_target_properties(uam_build_flag_profile_tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  add_test(NAME uam_build_flag_profile COMMAND uam_build_flag_profile_tests)
+  # build_features.h must stop compilation when the flag definitions are missing.
+  add_library(uam_build_features_undefined OBJECT EXCLUDE_FROM_ALL tests/build_features_undefined.cpp)
+  target_include_directories(uam_build_features_undefined PRIVATE src)
+  add_test(NAME uam_build_features_require_definitions
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target uam_build_features_undefined --config $<CONFIG>)
+  set_tests_properties(uam_build_features_require_definitions PROPERTIES PASS_REGULAR_EXPRESSION "must be defined by CMake")
   if(APPLE)
     add_test(NAME uam_macos_helper_signing
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/macos_helper_signing_test.py"

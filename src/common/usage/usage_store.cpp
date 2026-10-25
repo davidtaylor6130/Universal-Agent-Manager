@@ -358,7 +358,9 @@ namespace uam::usage
 		{
 			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return false; }
 			if (!input.getline(buffer.data(), static_cast<std::streamsize>(buffer.size())) || input.eof()) { error = "Accounting receipt is oversized or incomplete."; return false; }
-			const std::optional<AccountingRecord> entry = DecodeAccountingRecord(nlohmann::json::parse(std::string_view(buffer.data(), static_cast<std::size_t>(input.gcount() - 1)), nullptr, false));
+			const nlohmann::json wire = nlohmann::json::parse(std::string_view(buffer.data(), static_cast<std::size_t>(input.gcount() - 1)), nullptr, false);
+			if (SkipsExcludedProviderRecord(wire)) continue;
+			const std::optional<AccountingRecord> entry = DecodeAccountingRecord(wire);
 			const std::int64_t start = lifetime ? 0 : std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
 			if (!entry || ((entry->record.timestamp_ms < start || entry->record.timestamp_ms >= as_of) && !DecodeAntigravityAccountingRecord(entry->record)))
 			{ error = "Accounting receipt scope or identity is invalid."; return false; }
@@ -383,7 +385,7 @@ namespace uam::usage
 		std::shared_ptr<ReceiptSnapshot> snapshot = std::make_shared<ReceiptSnapshot>();
 		snapshot->path = path; snapshot->metadata = header["metadata"]; snapshot->as_of = header["asOfMs"].get<std::int64_t>(); snapshot->lifetime = header["range"] == "all-recorded";
 		const nlohmann::json& metadata = snapshot->metadata;
-		if (!metadata.contains("complete") || !metadata["complete"].is_boolean() || !metadata.contains("listingLimited") || !metadata["listingLimited"].is_boolean() || !metadata.contains("providers") || !metadata["providers"].is_array() || metadata["providers"].size() != provider_ids::kAllCliProviderIds.size())
+		if (!metadata.contains("complete") || !metadata["complete"].is_boolean() || !metadata.contains("listingLimited") || !metadata["listingLimited"].is_boolean() || !metadata.contains("providers") || !metadata["providers"].is_array() || IncludedProviderRows(metadata["providers"]) != provider_ids::kAllCliProviderIds.size())
 		{ error = "Accounting coverage metadata is invalid."; return {}; }
 		for (const char* key : {"filesChecked", "filesTotal", "bytesRead"})
 			if (!metadata.contains(key) || !metadata[key].is_number_integer() || metadata[key] < 0 || metadata[key] > kMaxExactTokenCount) { error = "Accounting coverage counters are invalid."; return {}; }
@@ -391,6 +393,7 @@ namespace uam::usage
 		std::set<std::string> providers;
 		for (const nlohmann::json& row : metadata["providers"])
 		{
+			if (row.is_object() && row.contains("providerId") && SkipsExcludedProvider(row["providerId"])) continue;
 			if (!row.is_object() || !row.contains("providerId") || !row["providerId"].is_string() || !provider_ids::IsKnownCliProviderId(row["providerId"].get_ref<const std::string&>()) || !providers.insert(row["providerId"].get<std::string>()).second || !row.contains("available") || !row["available"].is_boolean())
 			{ error = "Accounting provider coverage is invalid."; return {}; }
 			for (const char* key : {"files", "errors", "invalidLines", "oversizedLines", "suppressedForkRecords", "pendingLines"})
@@ -470,7 +473,9 @@ namespace uam::usage
 			const char* text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 2));
 			const int identity_size = sqlite3_column_bytes(statement.get(), 0), size = sqlite3_column_bytes(statement.get(), 2);
 			if (!identity || !text || identity_size <= 0 || identity_size > 64 * 1024 || size <= 0 || size > 64 * 1024) { error = "Usage accounting record is corrupt."; return false; }
-			const std::optional<AccountingRecord> record = DecodeAccountingRecord(nlohmann::json::array({std::string(identity, identity_size), sqlite3_column_int64(statement.get(), 1), nlohmann::json::parse(text, text + size, nullptr, false)}));
+			const nlohmann::json wire = nlohmann::json::array({std::string(identity, identity_size), sqlite3_column_int64(statement.get(), 1), nlohmann::json::parse(text, text + size, nullptr, false)});
+			if (SkipsExcludedProviderRecord(wire)) continue;
+			const std::optional<AccountingRecord> record = DecodeAccountingRecord(wire);
 			if (!record) { error = "Usage accounting record is corrupt or invalid."; return false; }
 			if (!visitor(*record)) { if (error.empty()) error = "Usage accounting streaming was interrupted."; return false; }
 		}
@@ -597,6 +602,7 @@ namespace uam::usage
 			const char* identity_text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0));
 			const int identity_size = sqlite3_column_bytes(statement.get(), 0);
 			if (!identity_text || identity_size <= 0 || identity_size > 64 * 1024) { error = "Usage accounting identity is corrupt."; return std::nullopt; }
+			if (SkipsExcludedProvider(row[0])) continue;
 			accounting_bytes += static_cast<std::size_t>(identity_size + length);
 			if (accounting_bytes > 64 * 1024 * 1024) { error = "Usage accounting exceeds its byte limit."; return std::nullopt; }
 			std::optional<AccountingRecord> record = DecodeAccountingRecord(nlohmann::json::array({std::string(identity_text, identity_size), sqlite3_column_int64(statement.get(), 1), row}));

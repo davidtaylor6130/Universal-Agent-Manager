@@ -1072,7 +1072,8 @@ namespace uam::remote
 			const std::string workspace = native_history::String(request, "workspace");
 			std::string token = native_history::String(request, "snapshotId");
 			const bool existing_snapshot = !token.empty();
-			if ((provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kGeminiCli) ||
+			// The excluded-provider placeholder equals every excluded provider's id, so it is never a valid request.
+			if (provider == uam::provider_ids::kExcludedCliProviderId || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kGeminiCli) ||
 			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
 			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace) ||
 			    (!token.empty() && !native_history::SafeId(token)))

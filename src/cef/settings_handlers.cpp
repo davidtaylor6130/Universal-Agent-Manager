@@ -109,7 +109,8 @@ namespace
 
 	std::string FallbackCliVersionProviderId(const std::string& active_provider_id)
 	{
-		return uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		const std::string provider_id = uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		return provider_id == uam::provider_ids::kExcludedCliProviderId ? std::string{} : provider_id; // Antigravity-only builds manage no CLI versions.
 	}
 
 	std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
