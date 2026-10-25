@@ -179,6 +179,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
+		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
+		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");

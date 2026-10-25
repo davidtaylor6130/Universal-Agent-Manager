@@ -4,7 +4,6 @@
 #include "app/chat_domain_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "cef/cef_push.h"
-#include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -254,11 +253,10 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 	pending.erase(found);
 	auto import_result = std::make_shared<uam::LocalChatBundleImportResult>();
 	auto imported_summaries = std::make_shared<std::vector<ChatSession>>();
-	auto folders = std::make_shared<std::vector<ChatFolder>>();
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(m_asyncLifetime,
+	const bool posted = RunAsyncCefQuery(m_asyncLifetime,
 	    cb,
-	    [data_root, legacy_root, import_result, imported_summaries, folders]() {
+	    [data_root, legacy_root, import_result, imported_summaries]() {
 		    *import_result = uam::LocalChatBundleService::ImportLegacyDataRoot(data_root, legacy_root);
 		    for (const uam::LocalChatBundleImportItem& item : import_result->items)
 		    {
@@ -266,7 +264,6 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 			    if (std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(data_root, item.imported_id, false))
 				    imported_summaries->push_back(std::move(*summary));
 		    }
-		    *folders = ChatFolderStore::Load(data_root);
 		    return AsyncSuccess(nlohmann::json{
 		        {"status", BundleStatus(import_result->ok, import_result->degraded)},
 		        {"importedCount", import_result->imported_count},
@@ -274,11 +271,13 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 		        {"errors", import_result->errors},
 		    });
 	    },
-	    [live_app, browser, legacy_root, import_result, imported_summaries, folders](AsyncCefResult& result) {
+	    [live_app, browser, legacy_root, import_result, imported_summaries](AsyncCefResult& result) {
 		    if (!result.ok || !import_result->ok) live_app->pending_legacy_data_roots.push_back(legacy_root);
 		    for (ChatSession& summary : *imported_summaries)
 			    if (ChatDomainService().FindChatById(*live_app, summary.id) == nullptr) live_app->chats.push_back(std::move(summary));
-		    for (ChatFolder& folder : *folders)
+		    // Only folders this copy added; others on disk belong to their own save paths.
+		    // ponytail: the worker saves folders.txt itself; a concurrent UI folder save can win on disk, and the next save restores it from memory.
+		    for (ChatFolder& folder : import_result->imported_folders)
 			    if (std::ranges::none_of(live_app->folders, [&](const ChatFolder& existing) { return existing.id == folder.id; }))
 				    live_app->folders.push_back(std::move(folder));
 		    if (import_result->imported_count > 0)
@@ -287,4 +286,5 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 			        uam::paths::Utf8PathString(legacy_root) + ". The original files were left in place.";
 		    uam::PushStateUpdateIfChanged(browser, *live_app);
 	    });
+	if (!posted) pending.push_back(legacy_root);
 }

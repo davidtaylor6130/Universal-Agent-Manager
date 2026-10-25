@@ -1252,6 +1252,7 @@ UAM_TEST(LegacyDataRootImportCopiesV49ChatsOnceWithoutTouchingSource)
 	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
 	UAM_ASSERT_EQ(first.total_count, std::size_t{2});
 	UAM_ASSERT_EQ(first.imported_count, std::size_t{1});
+	UAM_ASSERT_EQ(first.imported_folders.size(), std::size_t{1});
 	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
 
 	const std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(target);
@@ -1339,4 +1340,10 @@ UAM_TEST(LegacyDataRootBrandNewStopsAskingWithoutCopying)
 	UAM_ASSERT(ChatRepository::LoadLocalChatSummaries(target).empty());
 	UAM_ASSERT(ChatFolderStore::Load(target).empty());
 	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
+
+	// A damaged ledger cannot record any answer, so the prompt is not shown at all.
+	const fs::path damaged = temp.root / "damaged";
+	fs::create_directories(damaged);
+	UAM_ASSERT(uam::io::WriteTextFile(damaged / "legacy-data-imports.json", "{not json"));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(damaged, legacy));
 }

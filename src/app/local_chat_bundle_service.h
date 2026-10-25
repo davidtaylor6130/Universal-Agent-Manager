@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/models/app_models.h"
+
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -39,6 +41,8 @@ namespace uam
 		std::size_t failed_count = 0;
 		std::size_t renamed_count = 0;
 		std::vector<LocalChatBundleImportItem> items;
+		// Folders added by ImportLegacyDataRoot, for merging into the live app.
+		std::vector<ChatFolder> imported_folders;
 		std::vector<std::string> warnings;
 		std::vector<std::string> errors;
 	};

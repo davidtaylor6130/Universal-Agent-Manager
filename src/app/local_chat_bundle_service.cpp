@@ -1196,7 +1196,11 @@ namespace uam
 			if (folders.size() != existing_folder_count)
 			{
 				if (ChatFolderStore::Save(data_root, folders))
-					for (std::size_t index = existing_folder_count; index < folders.size(); ++index) imported_folders->push_back(folders[index].id);
+					for (std::size_t index = existing_folder_count; index < folders.size(); ++index)
+					{
+						imported_folders->push_back(folders[index].id);
+						result.imported_folders.push_back(folders[index]);
+					}
 				else
 					AppendError(result.errors, "Could not import previous-version chat folders.");
 			}
@@ -1229,9 +1233,9 @@ namespace uam
 		if (source_key == uam::paths::NormalizedNativePathString(data_root) ||
 		    !uam::paths::IsDirectoryNoThrow(AppPaths::UamChatsRootPath(legacy_root))) return false;
 		nlohmann::json ledger;
-		// An unreadable ledger still asks; the import itself then reports the problem.
-		return !LoadLegacyImportLedger(data_root, ledger) ||
-		       (!LedgerContains(ledger["completed_sources"], source_key) && !LedgerContains(ledger["declined_sources"], source_key));
+		// An unreadable ledger cannot record any answer, so asking would only trap the user in the prompt.
+		return LoadLegacyImportLedger(data_root, ledger) &&
+		       !LedgerContains(ledger["completed_sources"], source_key) && !LedgerContains(ledger["declined_sources"], source_key);
 	}
 
 	bool LocalChatBundleService::DeclineLegacyDataRoot(
