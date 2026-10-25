@@ -557,7 +557,7 @@ namespace
 		// No production URI/key is interpreted as a path or given new authority.
 		std::vector<fs::path> originals;
 		for (const auto& entry : fs::recursive_directory_iterator(fixture.app.data_root / std::string(uam::native_assets::kStoreDirectory)))
-			if (entry.is_regular_file() && entry.path().extension() == ".bin") originals.push_back(entry.path());
+			if (entry.is_regular_file() && entry.path().extension() == ".bin") originals.push_back(uam_test::NativePath(entry.path()));
 		UAM_ASSERT_EQ(originals.size(), std::size_t(1));
 		UAM_ASSERT_EQ(uam_test::ReadFile(originals.front()), expected);
 		const auto primary = AppPaths::UamChatFilePath(fixture.app.data_root, fixture.identity.id);
