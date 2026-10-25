@@ -546,7 +546,7 @@ inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::str
 	if (IsWindowsCommandScriptExtension(extension))
 	{
 		launch.uses_cmd_wrapper = true;
-		launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
+		launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /V:OFF /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
 		return launch;
 	}
 
@@ -569,7 +569,7 @@ inline std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& lau
 	}
 	if (launch.uses_cmd_wrapper)
 	{
-		out << " Wrapper: cmd.exe /D /S /C.";
+		out << " Wrapper: cmd.exe /D /V:OFF /S /C.";
 	}
 	return out.str();
 }
