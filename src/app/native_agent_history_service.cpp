@@ -73,7 +73,7 @@ public:
 			// A readable partial journal does not authorize discarding saved history.
 			// Compare the actual full graphs, independently of metadata/cache timestamps.
 			if (loaded->messages.size() < old->messages.size())
-				return fail("Native child history is shorter than the saved conversation. Saved history was kept; retry the refresh.");
+				return fail("Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it.");
 			// Explicit passive refresh has an actual scoped native conversation.
 			// The saved record owns UAM metadata, not a newer conversation merely
 			// because Rename/Pin/attention changed its display timestamp.
