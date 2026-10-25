@@ -107,12 +107,18 @@ namespace uam
 					    : "SVN preparation failed (" + detail + "). Check the working copy and authentication, then retry.";
 					return false;
 				}
-				output = strings::Trim(result.output);
+				// Status columns are positional, so leading spaces must survive; info values are trimmed below.
+				output = result.output;
 				return true;
 			};
 			std::string checkout_root, url, uuid;
-			if (!command({"info", "--show-item", "wc-root"}, checkout_root) || !command({"info", "--show-item", "url"}, url) ||
-			    !command({"info", "--show-item", "repos-uuid"}, uuid) || url.empty() || uuid.empty() ||
+			const auto info = [&](const char* item, std::string& value)
+			{
+				const bool ok = command({"info", "--show-item", item}, value);
+				value = strings::Trim(value);
+				return ok;
+			};
+			if (!info("wc-root", checkout_root) || !info("url", url) || !info("repos-uuid", uuid) || url.empty() || uuid.empty() ||
 			    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(checkout_root)) != checkout)
 			{ if (error.empty()) error = "SVN checkout ownership could not be verified."; return false; }
 			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(directory) || paths::IsLinkOrReparsePointNoThrow(receipt))

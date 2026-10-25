@@ -31,7 +31,7 @@ namespace
 				"info) printf '1\\n';;\n"
 				"status) for arg do target=\"$arg\"; done; case \"$*\" in *--depth*) target=${target%@}; if test -f " + ShellQuoteForTest((temporary.root / "retained").string()) + "; then case \"$target\" in *nested|*name@.txt) printf 'A       %s\\n' \"$target\"; exit 0;; esac; fi; case \"$target\" in *missing.txt) printf '!       %s\\n' \"$target\";; *new.txt|*name@.txt|*nested) printf '?       %s\\n' \"$target\";; *) printf 'M       %s\\n' \"$target\";; esac;;\n"
 				// Like real svn, the panel query echoes paths in the form of its target (absolute targets print absolute paths).
-				"*) case \"$target\" in .) cat " + ShellQuoteForTest((temporary.root / "noise").string()) + "; printf '?       new.txt\\n!       missing.txt\\n';; /*) printf '?       %s/new.txt\\n!       %s/missing.txt\\n' \"$target\" \"$target\";; *) target=${target%@}; printf 'A       %s\\n' \"$target\"; if test -d \"$target\"; then for child in \"$target\"/*; do printf 'A       %s\\n' \"$child\"; done; fi;; esac;; esac;;\n"
+				"*) case \"$target\" in .) cat " + ShellQuoteForTest((temporary.root / "noise").string()) + "; printf '?       new.txt\\n!       missing.txt\\n';; /*) cat " + ShellQuoteForTest((temporary.root / "noise").string()) + "; printf '?       %s/new.txt\\n!       %s/missing.txt\\n' \"$target\" \"$target\";; *) target=${target%@}; printf 'A       %s\\n' \"$target\"; if test -d \"$target\"; then for child in \"$target\"/*; do printf 'A       %s\\n' \"$child\"; done; fi;; esac;; esac;;\n"
 				"add|delete) test ! -f " + ShellQuoteForTest((temporary.root / "fail").string()) + ";;\n"
 				"commit) test ! -f " + ShellQuoteForTest((temporary.root / "fail-commit").string()) + " || exit 1; test ! -f " + ShellQuoteForTest((temporary.root / "retained").string()) + " || exit 0; grep -q '^add ' " + ShellQuoteForTest(commands.string()) + " && grep -q '^delete ' " + ShellQuoteForTest(commands.string()) + ";;\n"
 				"diff) :;;\n"
@@ -65,7 +65,8 @@ UAM_TEST(SvnExplicitCommitSchedulesSelectedAddedAndMissingPaths)
 	const uam::VcsCommitResult result = uam::VcsCommitService().Commit(fixture.app, fixture.chat, uam::VcsType::Svn, "private fixture", {"new.txt", "missing.txt"});
 	UAM_ASSERT(result.ok);
 	const std::string commands = uam::io::ReadTextFile(fixture.commands);
-	UAM_ASSERT(commands.find("add --non-interactive --depth empty -- ") != std::string::npos);
+	// A selected new item is added with its contents (for a file this equals empty depth).
+	UAM_ASSERT(commands.find("add --non-interactive --depth infinity -- new.txt@") != std::string::npos);
 	UAM_ASSERT(commands.find("delete --non-interactive --keep-local -- ") != std::string::npos);
 	UAM_ASSERT(commands.find("commit --non-interactive --depth empty ") != std::string::npos);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.workspace / "new.txt"), "selected\n");
@@ -401,6 +402,7 @@ UAM_TEST(SvnRealStatusSkipsExternalHeadersAndRefusesExternals)
 	RealSvnCheckout svn;
 	if (!svn.ready) return;
 	UAM_ASSERT(svn.Svn(svn.temporary.root, {"mkdir", "-m", "external", "--", svn.url + "/ext"}));
+	UAM_ASSERT(svn.Svn({"update"}));
 	UAM_ASSERT(svn.Svn({"propset", "svn:externals", "^/ext vendor", "."}));
 	UAM_ASSERT(svn.Svn({"commit", "-m", "externals"}));
 	UAM_ASSERT(svn.Svn({"update"}));
