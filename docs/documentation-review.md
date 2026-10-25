@@ -64,7 +64,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): older release exclusions conflict with the accessible Git/SVN commit panel. Its documentation preserves the existing surface without authorizing removal or expansion; David's scope disposition is pending.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): older release exclusions conflict with the accessible Git/SVN commit panel. **Resolved by David, 2026-10-25 (T3 chat):** keep the Git/SVN commit panel in V5; SVN fixes continue on branch `v5/svn-support-hardening`.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and V5 log retain broader capability and acceptance gaps.
 
 ## Provider parity decisions
@@ -73,13 +73,13 @@ The provider implementation work preserves all six providers and excludes accoun
 
 | Remaining boundary | Decision required |
 |---|---|
-| Antigravity stream input accepts text but lacks image and interactive permission callbacks | Keep explicit CLI limits or investigate the separate SDK while proving native authentication, session and Terminal View continuity. |
+| Antigravity stream input accepts text but lacks image and interactive permission callbacks | **Decided by David, 2026-10-25:** no separate SDK adapter for V5; keep the explicit CLI limits as a known limitation. V5.1 candidate: UAM copies image attachments into its own `.uam` folder and the CLI prompt references the file path so the CLI reads it; this does not solve interactive approval callbacks. |
 | Antigravity legacy Accept Edits approval with an Off tier differs from common effective-mode checks | Retain the explicit legacy launch behavior while checking native reported-mode and resume matching; decide a canonical migration without widening captured Plan/read-only restrictions. |
-| Gemini and Antigravity structured manual compaction lack a safe exposed control | Retain native automatic/TUI controls or design an agreed UAM equivalent without sending command text as an ordinary model prompt. |
+| Gemini and Antigravity structured manual compaction lack a safe exposed control | **Deferred to V5.1 by David, 2026-10-25:** retain native automatic/TUI controls and wait for upstream provider control APIs; never send command text as an ordinary model prompt. |
 | Native media delivery and portable acceptance remain incomplete | Guarded local Gemini import/refresh, owned previews and portable originals have local routes, and selected-row Retry supports local Claude/Codex originals, conditional Copilot vision blobs and conditional ordinary OpenCode ACP images; remaining callers/providers, pre-batch cleanup and live/platform acceptance stay open without granting path or fetch authority from metadata. |
 | Gemini current JSONL journals have source-integrated readers with connected ownership and acceptance work remaining | Retain exact attested workspace identity through every import caller and complete native/platform verification without weakening the complete-history agreement. |
-| Gemini ACP drops native child IDs | Keep exact known-reference readers or add an explicit parent-owned child browser; avoid matching tasks by title or time. |
-| Antigravity lacks full machine-readable parent and child transcript export | Retain projected metadata and pursue an upstream export or a continuity-preserving SDK reader for native history and Terminal-to-Chat refresh. |
+| Gemini ACP drops native child IDs | **Accepted as a V5 limitation (Partial) by David, 2026-10-25:** keep exact known-reference readers and avoid matching tasks by title or time; a parent-owned child browser joins the V5.1 native maintenance project. |
+| Antigravity lacks full machine-readable parent and child transcript export | **Accepted as a V5 limitation (Partial) by David, 2026-10-25:** retain projected metadata; an upstream export is pursued in the V5.1 native maintenance project. |
 | Gemini effort and priority depend on model and authentication configuration | Named thinking is source-integrated for inspected concrete model/version pairs through immutable host settings and idle restart; integrated, live authentication and platform verification remain pending, and no universal priority tier is inferred. |
 | Windows native-home lookup equivalence for restricted accounts and long profiles is unverified | Keep required native trust/settings resolution fail-closed without unsupported environment fallbacks and verify the OS-profile lookup against the CLI’s Node profile-token path. |
 | Claude Terminal View uses an expert settings filepath | A bounded executing-host immutable settings snapshot supports explicit Fast on/off while retaining original keys; the full native gate and live/platform acceptance remain pending. |
@@ -123,9 +123,9 @@ Passive-child regression preparation exposed different timestamp representations
 
 ## Native history query cancellation
 
-Decide the effect of cancelling a CEF query separately for saved-owner history refresh, passive-child opening or refresh, and managed cached reads: should it invalidate response delivery only, or also stop reading and prevent an otherwise admitted prepublication cache update? The existing [native history agreement](providers/agent-history.md) and [data authority rules](architecture/source-of-truth.md) protect identity and newer work but do not establish one universal no-save-on-query-cancel policy. The V5 incomplete item records a proposed stopping policy, not an independently agreed requirement. Staged OpenCode import cancellation has its own explicit contract and must not be generalized silently.
+**Decided by David, 2026-10-25 (T3 chat):** cancelling a CEF query for saved-owner history refresh, passive-child opening or refresh, and managed cached reads stops response delivery only. It must not stop reads or an otherwise admitted cache write, because re-reading would consume provider allowances. The implementation follow-up remains open in the V5 log. The existing [native history agreement](providers/agent-history.md) and [data authority rules](architecture/source-of-truth.md) protect identity and newer work but do not establish one universal no-save-on-query-cancel policy. Staged OpenCode import cancellation has its own explicit contract and must not be generalized silently.
 
-Query cancellation is separate from cancelling the underlying provider turn. Any policy must preserve acknowledged originals and finish required postcommit acknowledgement or retirement; a cancelled view cannot authorize rollback or stale cached-content delivery. Source-only design identifies missing per-query request linkage, but the real renderer cancellation journey and any route-specific product defect remain unverified. No feature agreement or runtime behavior is changed by recording this question.
+Query cancellation is separate from cancelling the underlying provider turn. Any policy must preserve acknowledged originals and finish required postcommit acknowledgement or retirement; a cancelled view cannot authorize rollback or stale cached-content delivery. Source-only design identifies missing per-query request linkage, but the real renderer cancellation journey and any route-specific product defect remain unverified. Recording this decision changes no runtime behavior.
 
 ## Native overlay hydration failure
 

@@ -18,4 +18,4 @@ When either decision is implemented, update this page and its matching V5 log ro
 
 ## Existing VCS panel
 
-**Unresolved scope discrepancy, 2026-10-16:** release instructions exclude dedicated VCS panels, but the branch exposes a working Git/SVN commit panel with workspace and recorded-edit views. The [Changes guide](../changes/changes.md) documents that existing surface so it is not omitted from coverage. Preserve existing code and record the disagreement; this documentation task neither removes the panel nor approves expanding release scope. David's scope decision remains outstanding.
+**Resolved by David, 2026-10-25 (T3 chat):** keep the Git/SVN commit panel in V5; SVN fixes continue on branch `v5/svn-support-hardening`. **Original discrepancy, 2026-10-16:** release instructions exclude dedicated VCS panels, but the branch exposes a working Git/SVN commit panel with workspace and recorded-edit views. The [Changes guide](../changes/changes.md) documents that existing surface so it is not omitted from coverage. Preserve existing code and record the disagreement; this documentation task neither removes the panel nor approves expanding release scope.
