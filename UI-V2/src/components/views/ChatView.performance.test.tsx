@@ -45,6 +45,11 @@ afterEach(() => {
 
 describe('chat interaction code-path performance', () => {
   it('makes an empty new-chat composer editable within 100ms', () => {
+    // The first ChatView mount in a worker pays one-time module and JIT start-up;
+    // a new chat in the running app does not, so mount another chat untimed first.
+    act(() => root.render(<ChatView session={{ ...session, id: 'performance-warm-up' }} />))
+    act(() => root.unmount())
+    root = createRoot(host)
     expectWithinBudget('empty chat to usable composer', INPUT_BUDGET_MS, () => {
       act(() => root.render(<ChatView session={session} />))
       const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')
