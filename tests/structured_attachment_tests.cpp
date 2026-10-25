@@ -246,14 +246,20 @@ UAM_TEST(StructuredAttachmentsUseNativeCodexImagesOnLocalAndSshHosts)
 	uam::AcpSessionState session;
 	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
 	const std::vector<MessageAttachment> attachments{{.id = "image", .name = "Screenshot.png", .kind = "image", .mime_type = "image/png", .path = ".UAM/screen.png"}, {.id = "file", .name = "notes.txt", .kind = "file", .path = "notes.txt"}};
+#if defined(_WIN32)
+	// Local hosts resolve native local paths; only the SSH host uses the remote platform's POSIX spelling.
+	const std::string local_workspace = "C:\\workspace", local_image = "C:\\workspace\\.UAM\\screen.png";
+#else
+	const std::string local_workspace = "/workspace", local_image = "/workspace/.UAM/screen.png";
+#endif
 	for (const bool remote : {false, true})
 	{
 		nlohmann::json request = {{"params", {{"input", nlohmann::json::array({{{"type", "text"}, {"text", "Inspect this"}}})}}}};
 		std::string error;
-		UAM_ASSERT(uam::structured_attachments::AppendNative(request, session, attachments, "/workspace", "linux", remote, error));
+		UAM_ASSERT(uam::structured_attachments::AppendNative(request, session, attachments, remote ? "/workspace" : local_workspace, "linux", remote, error));
 		UAM_ASSERT_EQ(request["params"]["input"].size(), std::size_t(2));
 		UAM_ASSERT_EQ(request["params"]["input"][1]["type"], nlohmann::json("localImage"));
-		UAM_ASSERT_EQ(request["params"]["input"][1]["path"], nlohmann::json("/workspace/.UAM/screen.png"));
+		UAM_ASSERT_EQ(request["params"]["input"][1]["path"], nlohmann::json(remote ? "/workspace/.UAM/screen.png" : local_image));
 	}
 }
 

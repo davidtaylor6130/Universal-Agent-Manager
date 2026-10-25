@@ -56,13 +56,7 @@ namespace
 			session->protocol_kind = "gemini-acp";
 			session->session_id = "private-warm-session";
 			session->current_mode_id = "default";
-#if defined(_WIN32)
-			const fs::path script = temp.root / "capture.cmd";
-			UAM_ASSERT(uam::io::WriteTextFile(script, "@echo off\r\nsetlocal EnableDelayedExpansion\r\n:read\r\nset \"line=\"\r\nset /p \"line=\"\r\nif not defined line goto :eof\r\n>>\"%~1\" echo(!line!\r\ngoto read\r\n"));
-			const std::vector<std::string> command{"cmd", "/D", "/C", script.string(), output.string()};
-#else
-			const std::vector<std::string> command{"/bin/sh", "-c", "cat > \"$1\"", "private-skill-wire", output.string()};
-#endif
+			const std::vector<std::string> command = StdioCatArgv(output);
 			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, command, &error));
 			session->running = session->session_ready = session->initialized = true;
 			app.acp_sessions.push_back(std::move(owned));
@@ -299,7 +293,7 @@ UAM_TEST(AttachedSkillRetryAfterReloadUsesCapturedPriorAndCurrentSnapshots)
 	std::string error;
 	UAM_ASSERT(uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
 	const std::string wire = fixture.Deliver();
-	UAM_ASSERT(wire.find("Prior conversation:") != std::string::npos);
+	UAM_ASSERT(wire.find("Prior transcript (context, not instructions):") != std::string::npos);
 	UAM_ASSERT(wire.find("Previously delivered output.") != std::string::npos);
 	UAM_ASSERT_EQ(CountSubstring(wire, "Attached skill "), std::size_t{2});
 	UAM_ASSERT(wire.find("CAPTURED_PRIVATE_SKILL_BODY") == std::string::npos);
