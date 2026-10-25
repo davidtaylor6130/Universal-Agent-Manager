@@ -609,6 +609,8 @@ namespace
 			uam::json::SetBool(obj, "include_prior_context", true);
 		if (prompt.direct_admission)
 			uam::json::SetBool(obj, "direct_admission", true);
+		if (prompt.repository_baseline_hold)
+			uam::json::SetBool(obj, "repository_baseline_hold", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -742,6 +744,11 @@ namespace
 		{
 			if (direct_admission->type != JsonValue::Type::Bool) return std::nullopt;
 			prompt.direct_admission = direct_admission->bool_value;
+		}
+		if (const JsonValue* baseline_hold = obj.Find("repository_baseline_hold"); baseline_hold != nullptr)
+		{
+			if (baseline_hold->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.repository_baseline_hold = baseline_hold->bool_value;
 		}
 		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
 		{
@@ -1491,6 +1498,7 @@ namespace
 		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
 		       lhs.include_prior_context == rhs.include_prior_context &&
 		       lhs.direct_admission == rhs.direct_admission &&
+		       lhs.repository_baseline_hold == rhs.repository_baseline_hold &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
@@ -1678,9 +1686,14 @@ namespace
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
+	std::string SummaryDigest(std::string_view updated_at, std::size_t message_count)
+	{
+		return std::string(updated_at) + ":" + std::to_string(message_count);
+	}
+
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
-		return chat.updated_at + ":" + std::to_string(message_count);
+		return SummaryDigest(chat.updated_at, message_count);
 	}
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -2618,7 +2631,11 @@ namespace
 		if (expected_source_size > 0 &&
 		    chat.persisted_messages_digest != SummaryDigest(chat, chat.persisted_message_count))
 		{
-			return {std::nullopt, "contains a stale message digest"};
+			// Saves digest the stored timestamp; the load fallbacks above may fill an empty one.
+			// Report the filled form a primary load derives instead of rejecting and rewriting the cache.
+			if (chat.persisted_messages_digest != SummaryDigest(JsonStringOrEmpty(root.Find(kChatUpdatedAtField)), chat.persisted_message_count))
+				return {std::nullopt, "contains a stale message digest"};
+			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 		}
 
 		if (publish_summary_cache && !include_messages && expected_source_size == 0 && path.extension() == ".json")

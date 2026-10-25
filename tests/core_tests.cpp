@@ -5529,16 +5529,18 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 	const std::string settings = ReadFile(source_root / "src/cef/settings_handlers.cpp");
 	const std::string markdown = ReadFile(source_root / "src/cef/markdown_handlers.cpp");
 	const auto assert_rollback = [](const std::string& source, std::string_view start_text, std::string_view end_text,
-	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text)
+	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text,
+	                                std::string_view save_text = "if (!PersistenceCoordinator().SaveSettings(m_app))")
 	{
 		const std::size_t start = source.find(start_text);
 		const std::size_t end = source.find(end_text, start);
 		UAM_ASSERT(start != std::string::npos);
 		UAM_ASSERT(end != std::string::npos);
-		const std::string handler = source.substr(start, end - start);
+		std::string handler = source.substr(start, end - start);
+		std::erase(handler, '\r'); // Windows checkouts use CRLF; restore_text spans a line break.
 		const std::size_t snapshot = handler.find(snapshot_text);
 		const std::size_t mutation = handler.find(mutation_text);
-		const std::size_t save = handler.find("if (!PersistenceCoordinator().SaveSettings(m_app))");
+		const std::size_t save = handler.find(save_text);
 		const std::size_t restore = handler.find(restore_text, save);
 		const std::size_t failure = handler.find("cb->Failure(500", restore);
 		UAM_ASSERT(snapshot != std::string::npos);
@@ -5552,8 +5554,11 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 		UAM_ASSERT(restore < failure);
 	};
 
+	// Memory settings restore only on a receipt-proven pre-replace rejection; an unknown outcome stays latched.
 	assert_rollback(settings, "void UamQueryHandler::HandleSetMemorySettings", "void UamQueryHandler::HandleSetMcpServers",
-	                "const AppSettings previous = m_app.settings;", "m_app.settings.memory_enabled_default =", "m_app.settings = previous;");
+	                "SettingsMemoryCanonicalValues previous = CaptureMemorySettings(m_app.settings);", "ApplyMemorySettings(m_app.settings, CaptureMemorySettings(candidate));",
+	                "else if (receipt.outcome == SettingsMemoryWriteOutcome::RejectedBeforeReplace)\n\t\tApplyMemorySettings(m_app.settings, std::move(previous));",
+	                "PersistenceCoordinator().SaveSettings(m_app, &receipt");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetProviderChatDefaults", "void UamQueryHandler::HandleSetSidebarSettings",
 	                "const AppSettings previous = m_app.settings;", "m_app.settings.default_new_chat_provider_id =", "m_app.settings = previous;");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetEditorSettings", "void UamQueryHandler::HandleRefreshCliProviderVersion",
@@ -5881,7 +5886,10 @@ UAM_TEST(ShellEscapedArgumentJoiningPreservesEmptyArguments)
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[0]), uam::shell::EscapeArg(args[0]).size());
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[2]), uam::shell::EscapeArg(args[2]).size());
 #if defined(_WIN32)
-	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b%%c  d\""));
+	// cmd.exe command-line mode keeps %% literally, so % is caret-escaped outside the quotes.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b\"^%\"c  d\""));
+	// A trailing separator must not escape the closing quote for the CRT argv parser.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("C:\\dir\\"), std::string("\"C:\\dir\\\\\""));
 #else
 	UAM_ASSERT_EQ(uam::shell::EscapeArg("quote's"), std::string("'quote'\\''s'"));
 #endif
@@ -11463,7 +11471,16 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(RunGitForTest(repo, "commit --allow-empty -m initial"));
-	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo)));
+	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
+		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
+		return uam::strings::Trim(result.output);
+	};
+	// The service keys worktrees by Git's verified top level, which Git for Windows reports in
+	// long-name form even when the runner's TEMP uses an 8.3 alias such as RUNNER~1.
+	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(git_output("rev-parse --show-toplevel")))));
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(app.data_root / "worktrees" / repo_key / "review")).size();
@@ -11473,13 +11490,6 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	const std::string logical_name = "review/" + std::string(80, 'a');
 	const fs::path original = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(logical_name);
 	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original) / ".git").size(), static_cast<std::size_t>(268));
-	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
-	{
-		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
-		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
-		return uam::strings::Trim(result.output);
-	};
 	std::vector<ChatSession> chats(4);
 	for (std::size_t index = 0; index < chats.size(); ++index)
 	{
@@ -11508,7 +11518,8 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	for (const ChatSession& chat : chats)
 	{
 		std::string error;
-		UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		if (!service.RemoveUnusedBranchWorktree(app, chat, &error))
+			uam_test::Fail(("RemoveUnusedBranchWorktree(" + chat.id + ") refused: " + error + " worktree=" + chat.workspace_worktree_directory + " source=" + chat.workspace_source_directory).c_str(), __FILE__, __LINE__);
 		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
 	}
 	UAM_ASSERT(git_output("worktree list --porcelain").find("refs/heads/" + logical_name) == std::string::npos);
@@ -12334,6 +12345,7 @@ UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First original prompt", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(!app.acp_sessions.empty());
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12376,17 +12388,68 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "repository-review", "storage unavailable"));
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatSession chat;
-	chat.id = "failed-baseline-retry";
+	chat.id = "chat-failed-baseline-retry"; // A new-chat id, so restore does not adopt it as a native session id.
 	chat.provider_id = uam::provider_ids::kGeminiCli;
 	chat.workspace_directory = repo.string();
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Keep this prompt once", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	// The app tick holds the input and stops reconnecting instead of silently retrying the failed baseline.
+	const auto settle_hold = [&]()
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app, true);
+	};
+	const auto retry_allowed = [](const uam::AppState& state)
+	{
+		const nlohmann::json projected = uam::StateSerializer::Serialize(state).at("chats").at(0).at("acpSession");
+		UAM_ASSERT(projected.at("pendingDirectPrompts").empty() && projected.at("unsentDirectPrompts").size() == 1);
+		return projected.at("unsentDirectPrompts").at(0).value("retryAllowed", false);
+	};
+	settle_hold();
+	const uam::AcpSessionState& held = *app.acp_sessions.front();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.running);
+	UAM_ASSERT(!held.last_error.empty());
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
+	// The hold reason is saved, so a restart keeps the exact receipt retryable.
+	const fs::path restart_root = temp.root / "restart-data";
+	fs::copy(app.data_root, restart_root, fs::copy_options::recursive);
+	UAM_ASSERT(fs::remove(restart_root / "repository-review"));
+	const auto restored = ChatRepository::LoadLocalChat(restart_root, chat.id, true, &error);
+	UAM_ASSERT(restored && restored->acp_queue_held && restored->acp_queued_prompts.size() == 1 &&
+	           restored->acp_queued_prompts.front().repository_baseline_hold);
+	const uam::AcpQueuedUserPromptState receipt = app.chats.front().acp_queued_prompts.front();
+	// A stale identity is refused without touching the hold.
+	const std::string held_error = held.last_error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
+	UAM_ASSERT_EQ(error, std::string("The retained message changed or its delivery is unresolved. Your input is kept."));
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && held.last_error == held_error);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front() == receipt);
+	// Retrying while storage still fails re-holds the same input with a fresh marker once the baseline fails again.
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error)); // Fresh capture is pending.
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending && !app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
+	settle_hold();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.last_error.empty());
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
 	UAM_ASSERT(fs::remove(app.data_root / "repository-review"));
-	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, chat.id, 0, &error));
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(held.queue_held && !held.reconnect_pending);
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !held.queue_held && held.reconnect_pending);
+	UAM_ASSERT(!app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending);
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12394,6 +12457,57 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Keep this prompt once"));
+	// Restored state: no session yet; the saved hold alone authorizes the same exact Retry.
+	uam::AppState restarted;
+	restarted.data_root = restart_root;
+	restarted.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	restarted.chats.push_back(*restored);
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	UAM_ASSERT(retry_allowed(restarted));
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(restarted, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !restarted.acp_sessions.front()->queue_held && restarted.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(restarted.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
+	UAM_ASSERT(!restarted.acp_sessions.front()->running);
+}
+
+UAM_TEST(AcpRepositoryBaselineHoldRetryIsOfferedOnlyForTheLoneMarkedReceipt)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "baseline-hold-projection";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.acp_queue_held = true;
+	uam::AcpQueuedUserPromptState marked;
+	marked.id = "marked";
+	marked.revision = 1;
+	marked.text = "Held by a failed baseline";
+	marked.direct_admission = true;
+	marked.repository_baseline_hold = true;
+	uam::AcpQueuedUserPromptState unrelated = marked;
+	unrelated.id = "unrelated";
+	unrelated.repository_baseline_hold = false;
+	const auto retry_flags = [&](std::vector<uam::AcpQueuedUserPromptState> outbox)
+	{
+		app.chats = {chat};
+		app.chats.front().acp_queued_prompts = std::move(outbox);
+		std::vector<bool> flags;
+		const nlohmann::json state = uam::StateSerializer::Serialize(app);
+		for (const auto& receipt : state.at("chats").at(0).at("acpSession").at("unsentDirectPrompts"))
+			flags.push_back(receipt.value("retryAllowed", false));
+		return flags;
+	};
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{true});
+	UAM_ASSERT(uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	UAM_ASSERT(retry_flags({unrelated}) == std::vector<bool>{false});
+	UAM_ASSERT(retry_flags({marked, unrelated}) == (std::vector<bool>{false, false}));
+	UAM_ASSERT(!uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	std::string error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {marked.id, marked.revision}, &error));
+	UAM_ASSERT(app.acp_sessions.empty() || app.acp_sessions.front()->queue_held);
+	chat.acp_queue_held = false;
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{false});
 }
 
 UAM_TEST(VcsChatComparisonExcludesUnchangedPreexistingIndexAndWorkingChanges)
@@ -25772,6 +25886,21 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+	if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--uam-test-stdio-cat")
+	{
+		// Paired with uam_test::StdioCatArgv: copy stdin unchanged until EOF.
+		const HANDLE output = argc == 3
+		    ? CreateFileW(std::filesystem::path(argv[2]).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+		    : GetStdHandle(STD_OUTPUT_HANDLE);
+		if (output == INVALID_HANDLE_VALUE) return 1;
+		char buffer[8192];
+		DWORD count = 0, written = 0;
+		while (::ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, sizeof(buffer), &count, nullptr) && count > 0)
+			if (!::WriteFile(output, buffer, count, &written, nullptr) || written != count) return 1;
+		return 0;
+	}
+#endif
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;
@@ -25861,6 +25990,10 @@ int main(int argc, char** argv)
 		return *fixture_result;
 	}
 #endif
+	// Fixture repositories must check out the bytes they commit. Git for Windows ships a system
+	// core.autocrlf=true, which turns committed "x\n" into "x\r\n" and adds LF/CRLF warnings to
+	// captured output; product-owned repositories already pin this per command.
+	const ScopedEnvVar git_line_endings("GIT_CONFIG_PARAMETERS", "'core.autocrlf=false'");
 	int failures = 0;
 	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
 	{

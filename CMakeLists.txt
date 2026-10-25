@@ -3,6 +3,10 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 project(universal_agent_manager VERSION 4.11.0 LANGUAGES C CXX)
+if(MSVC)
+  # Sources and narrow literals are UTF-8; without this MSVC encodes "\u00e9" in the ANSI code page.
+  add_compile_options(/utf-8)
+endif()
 set(UAM_PRODUCT_VERSION "4.11.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
@@ -313,7 +317,7 @@ set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_incremental_sha256.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
-  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
+  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_pty_windows.cpp
@@ -426,6 +430,7 @@ elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
     src/remote/runner_service_windows.cpp
+    src/uam_long_paths.manifest
   )
   target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32 ws2_32)
 elseif(UNIX)
@@ -837,6 +842,17 @@ endfunction()
 # Remove legacy UI-V2/dist from Contents/MacOS/ — it was moved to Contents/Resources/.
 # If left in MacOS/, codesign finds the .woff fonts and produces a broken signature.
 file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
+# Sign inside-out: the Intel CEF framework ships unsigned, and codesign rejects
+# the main executable while the bundle holds unsigned nested code.
+set(_cef_framework \"\${UAM_BUNDLE_CONTENTS}/Frameworks/Chromium Embedded Framework.framework\")
+execute_process(COMMAND /usr/bin/codesign --verify --strict \"\${_cef_framework}\" RESULT_VARIABLE status OUTPUT_QUIET ERROR_QUIET)
+if(NOT status EQUAL 0)
+  execute_process(COMMAND /usr/bin/codesign --force --sign \"${UAM_MACOS_SIGNING_IDENTITY}\" \"\${_cef_framework}\"
+    RESULT_VARIABLE status ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR \"Failed to sign \${_cef_framework} with configured identity '${UAM_MACOS_SIGNING_IDENTITY}': \${error}\")
+  endif()
+endif()
 ")
 
     foreach(_hname IN ITEMS
@@ -1179,8 +1195,6 @@ if(APPLE AND UAM_MACOS_BUNDLE AND UAM_ENABLE_MOBILE_COMPANION)
 endif()
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND /bin/sh -c
-      "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign '${UAM_MACOS_SIGNING_IDENTITY}' '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
     COMMAND codesign --force --sign "${UAM_MACOS_SIGNING_IDENTITY}" --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2
@@ -1653,7 +1667,7 @@ if(UAM_BUILD_TESTS)
       "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
-    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp)
+    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp src/uam_long_paths.manifest)
     target_link_libraries(uam_core_tests PRIVATE
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
