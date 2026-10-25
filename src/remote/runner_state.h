@@ -70,6 +70,8 @@ namespace uam::remote
 			std::mutex mutex;
 			std::jthread drainer;
 			std::atomic<bool> retirement_cleanup_active{false};
+			/// Set by the drainer before it terminates an expired lease under the process mutex.
+			std::atomic<bool> lease_terminating{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
 			std::atomic<int> exit_code{-1};

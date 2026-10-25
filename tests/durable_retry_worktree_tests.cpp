@@ -222,7 +222,7 @@ UAM_TEST(AcpWorkspaceRetryDispatchUsesCapturedSkillsAndBranchHistory)
 	UAM_ASSERT(fixture.session->queued_prompt.find("Older unsent attempt") == std::string::npos);
 	UAM_ASSERT(fixture.session->queued_prompt.find("CAPTURED_PRIVATE_SKILL") != std::string::npos);
 	UAM_ASSERT(fixture.session->queued_prompt.find("private/diagram.png") != std::string::npos);
-	UAM_ASSERT(fixture.session->queued_prompt.find("Current user message:\nRetry this exact input") != std::string::npos);
+	UAM_ASSERT(fixture.session->queued_prompt.find("</UAM History>\n\nRetry this exact input") != std::string::npos);
 	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{4});
 	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Retry this exact input"));
 }
