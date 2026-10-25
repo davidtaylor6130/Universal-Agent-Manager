@@ -458,7 +458,7 @@ namespace uam::usage
 		    "SELECT identity,created,data FROM facts WHERE " + predicate + " UNION ALL SELECT identity,created,data FROM archived_facts WHERE " + predicate + " ORDER BY created,identity";
 		if (sqlite3_prepare_v2(database.get(), query.c_str(), -1, &raw, nullptr) != SQLITE_OK) { error = "Could not read usage accounting."; return false; }
 		Statement statement(raw, sqlite3_finalize);
-		const std::string lower = "[\"native\",\"antigravity-cli\",";
+		const std::string lower = std::string("[\"native\",\"") + provider_ids::kAntigravityCli + "\",";
 		std::string upper = lower; ++upper.back();
 		sqlite3_bind_int64(statement.get(), 1, generated_ms);
 		sqlite3_bind_text(statement.get(), 2, lower.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(statement.get(), 3, upper.c_str(), -1, SQLITE_TRANSIENT);
@@ -569,7 +569,7 @@ namespace uam::usage
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		const std::int64_t retention_start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);
 		const std::int64_t start = lifetime ? 0 : retention_start;
-		const std::string alias_lower = "[\"native\",\"antigravity-cli\",";
+		const std::string alias_lower = std::string("[\"native\",\"") + provider_ids::kAntigravityCli + "\",";
 		std::string alias_upper = alias_lower; ++alias_upper.back();
 		// Resolve aliases before pruning: an old reliable timestamp can suppress a recently stamped copy.
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return std::nullopt; }

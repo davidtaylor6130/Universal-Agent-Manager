@@ -818,6 +818,7 @@ void UamQueryHandler::ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser,
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	if (!payload.is_object() || !payload.empty())
@@ -898,6 +899,7 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 	catch (...) {}
 	cb->Success(response.dump());
 }
+#endif
 
 void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -981,6 +983,7 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 #if defined(__APPLE__)
@@ -1013,6 +1016,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
 #endif
 }
+#endif
 
 void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1114,6 +1118,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
+#if UAM_ENABLE_SSH
 void UamQueryHandler::HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	nlohmann::json confirmed_payload = payload;
@@ -1204,6 +1209,7 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+#endif
 
 void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1244,6 +1250,7 @@ void UamQueryHandler::HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, 
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	(void)browser;
@@ -1285,6 +1292,7 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
 	}
 }
+#endif
 
 namespace
 {

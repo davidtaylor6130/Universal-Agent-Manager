@@ -115,28 +115,45 @@ namespace uam::usage
 
 	std::vector<HistorySource> LocalHistorySources()
 	{
+		// Only providers in this build contribute roots, so an excluded provider's folders are never read.
+		std::vector<HistorySource> sources;
+		const std::optional<std::filesystem::path> home = env::GetUserHomePath();
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		const std::optional<std::filesystem::path> configured_gemini = env::GetTrimmedPath("GEMINI_CLI_HOME");
+		const std::filesystem::path gemini_home = configured_gemini ? *configured_gemini : home.value_or(std::filesystem::path{});
+		sources.push_back({provider_ids::kGeminiCli, gemini_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{gemini_home / ".gemini" / "tmp"}});
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+		const std::filesystem::path codex_home = codex::CodexHomePath();
+		sources.push_back({provider_ids::kCodexCli, {codex_home / "sessions", codex_home / "archived_sessions"}});
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		const std::optional<std::filesystem::path> configured_data = env::GetTrimmedPath("XDG_DATA_HOME");
-		const std::optional<std::filesystem::path> user_home = env::GetUserHomePath();
-		const std::filesystem::path opencode_root = (configured_data && configured_data->is_absolute() ? *configured_data : user_home ? *user_home / ".local" / "share" : std::filesystem::path{}) / "opencode";
+		const std::filesystem::path opencode_root = (configured_data && configured_data->is_absolute() ? *configured_data : home ? *home / ".local" / "share" : std::filesystem::path{}) / "opencode";
 		std::vector<std::filesystem::path> opencode_databases;
 		const std::optional<std::filesystem::path> configured_database = env::GetTrimmedPath("OPENCODE_DB");
 		if (configured_database)
 		{
 			if (*configured_database != ":memory:") opencode_databases.push_back(configured_database->is_absolute() ? *configured_database : opencode_root / *configured_database);
 		}
-		else if (user_home || (configured_data && configured_data->is_absolute()))
+		else if (home || (configured_data && configured_data->is_absolute()))
 		{
 			opencode_databases.push_back(opencode_root / "opencode.db");
 			std::error_code error;
 			for (std::filesystem::directory_iterator file(opencode_root, error), end; !error && file != end; file.increment(error))
 				if (file->path().filename().string().starts_with("opencode-") && file->path().extension() == ".db") opencode_databases.push_back(file->path());
 		}
-		const std::filesystem::path codex_home = codex::CodexHomePath();
+		sources.push_back({provider_ids::kOpenCodeCli, {}, std::move(opencode_databases)});
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		sources.push_back({provider_ids::kCopilotCli, {CopilotSessionStatePath()}});
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		const std::optional<std::filesystem::path> configured_claude = env::GetTrimmedPath("CLAUDE_CONFIG_DIR");
-		const std::optional<std::filesystem::path> home = env::GetUserHomePath();
 		const std::filesystem::path claude_home = configured_claude ? *configured_claude : home ? *home / ".claude" : std::filesystem::path{};
-		const std::optional<std::filesystem::path> configured_gemini = env::GetTrimmedPath("GEMINI_CLI_HOME");
-		const std::filesystem::path gemini_home = configured_gemini ? *configured_gemini : home.value_or(std::filesystem::path{});
+		sources.push_back({provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}});
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 		std::vector<std::filesystem::path> antigravity_roots;
 		const std::optional<std::string> configured_antigravity = env::GetTrimmedString("ANTIGRAVITY_DATA_DIR");
 		if (configured_antigravity)
@@ -164,8 +181,9 @@ namespace uam::usage
 			const std::filesystem::path nested = root / "conversations";
 			if (std::filesystem::is_directory(std::filesystem::symlink_status(nested, error))) root = nested;
 		}
-		return {{provider_ids::kGeminiCli, gemini_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{gemini_home / ".gemini" / "tmp"}}, {provider_ids::kCodexCli, {codex_home / "sessions", codex_home / "archived_sessions"}},
-		    {provider_ids::kOpenCodeCli, {}, std::move(opencode_databases)}, {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}, {provider_ids::kAntigravityCli, std::move(antigravity_roots)}};
+		sources.push_back({provider_ids::kAntigravityCli, std::move(antigravity_roots)});
+#endif
+		return sources;
 	}
 
 	bool HistoryService::Enumerate(const std::function<bool()>& cancelled)
