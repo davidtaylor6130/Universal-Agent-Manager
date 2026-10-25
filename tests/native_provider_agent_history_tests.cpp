@@ -68,7 +68,13 @@ UAM_TEST(NativeAgentReopenKeepsSamePassiveTargetAcrossPreparation)
 		app.data_root = fixture.temp.root / "reopen" / profile.id / host_id;
 		app.provider_profiles = {profile};
 		ExecutionHost host;
-		host.id = "fixture-ssh"; host.transport = "ssh"; host.platform = "linux"; host.ssh_alias = "isolated-native-agent-fixture";
+		host.id = "fixture-ssh"; host.transport = "ssh"; host.ssh_alias = "isolated-native-agent-fixture";
+		// The fixture reuses this controller's real workspace path, so the host platform must match its syntax.
+#if defined(_WIN32)
+		host.platform = "windows";
+#else
+		host.platform = "linux";
+#endif
 		app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), host};
 		ChatSession source;
 		source.id = "source-parent"; source.provider_id = profile.id; source.native_session_id = fixture.parent;

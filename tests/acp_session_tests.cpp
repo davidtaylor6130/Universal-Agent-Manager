@@ -866,11 +866,7 @@ UAM_TEST(CodexWriterOwnershipHandsOffIdleProcessWithoutChangingThread)
 	owner->provider_id = chat.provider_id;
 	owner->session_id = chat.native_session_id;
 	std::string error;
-#if defined(_WIN32)
-	const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink = StdioCatArgv();
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owner, temp.root, sink, &error));
 	owner->running = true;
 	app.acp_sessions.push_back(std::move(owner));
@@ -927,11 +923,7 @@ UAM_TEST(CodexWriterOwnershipKeepsRemovedChatWriterFenced)
 	owner->session_id = alias.native_session_id;
 	owner->process_execution_host_id = "local";
 	std::string error;
-#if defined(_WIN32)
-	const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink = StdioCatArgv();
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owner, temp.root, sink, &error));
 	owner->running = true;
 	app.acp_sessions.push_back(std::move(owner));
@@ -2510,11 +2502,7 @@ UAM_TEST(AcpRetryBranchContextOmitsEarlierUnsentAttempts)
 		uam::AcpSessionState* session = owned.get();
 		app.acp_sessions.push_back(std::move(owned));
 		auto& service = PlatformServicesFactory::Instance().process_service;
-#if defined(_WIN32)
-		const std::vector<std::string> argv = {"cmd.exe", "/C", "more"};
-#else
-		const std::vector<std::string> argv = {"/bin/cat"};
-#endif
+		const std::vector<std::string> argv = StdioCatArgv();
 		std::string error;
 		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
 		struct SinkGuard
@@ -2609,11 +2597,7 @@ UAM_TEST(AcpRetryEmptyCompletedTurnKeepsChatAndGoalContext)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 	auto& process = PlatformServicesFactory::Instance().process_service;
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	std::string error;
 	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
 	UAM_ASSERT(uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
@@ -3405,6 +3389,10 @@ UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 		app.chats.push_back(std::move(chat));
 
 		std::string error;
+		// Settle the new chat's pre-launch repository baseline so this Send exercises the cold version wait.
+		if (uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Pending)
+			UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at("remote-e2e"), {}, &error) != uam::ChatBaselineReadiness::Failed);
+		error.clear();
 		UAM_ASSERT(uam::SendAcpPrompt(app, "remote-e2e", "Answer through the runner.", {}, {},
 		                              false, &error));
 		UAM_ASSERT(app.acp_sessions.front()->pending_local_launch != nullptr && !app.acp_sessions.front()->running);
@@ -3954,11 +3942,7 @@ UAM_TEST(AcpMcpSetupFailsForMissingServersWithoutBlockingIncompatibleProviders)
 	codex_session.chat_id = codex_chat.id;
 	codex_session.provider_id = codex_chat.provider_id;
 	std::string process_error;
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	auto& process_service = PlatformServicesFactory::Instance().process_service;
 	UAM_ASSERT(process_service.StartStdioProcess(codex_session, temp.root, sink_argv, &process_error));
 	codex_session.running = true;
@@ -3996,11 +3980,7 @@ UAM_TEST(OpenCodeSessionNewLoadAndResumeReceiveSourceWorkspaceMcpServersInWorktr
 	chat.workspace_worktree_directory = worktree.string();
 	app.chats.push_back(chat);
 	ChatSession& stored_chat = app.chats.back();
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	const auto capture_setup_request = [&](bool load_session, bool resume_session = false)
 	{
 		uam::AcpSessionState session;
@@ -4178,11 +4158,7 @@ UAM_TEST(CopilotInvalidResumeKeepsIdentityAndExplicitNewSessionMcpServers)
 	session.provider_id = chat.provider_id;
 	session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
 	session.session_id = chat.native_session_id;
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	std::string error;
 	UAM_ASSERT(process_service.StartStdioProcess(session, temp.root, sink_argv, &error));
 	session.running = true;
@@ -4253,11 +4229,7 @@ UAM_TEST(OpenCodeInvalidResumeFallsBackToNewSessionOnce)
 	session.next_request_id = 3;
 	session.pending_request_methods[2] = uam::acp_methods::kSessionResume;
 	std::string error;
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	UAM_ASSERT(process_service.StartStdioProcess(session, temp.root, sink_argv, &error));
 	uam::acp_detail::AcpResponseFailureDetails details;
 	details.failure.method = uam::acp_methods::kSessionResume;
@@ -5346,11 +5318,7 @@ UAM_TEST(CodexRemoteSteerResponsesRestoreFromSavedChat)
 	session.recovering_remote_turn = true;
 	session.codex_turn_id = "turn-running";
 	session.turn_serial = 3;
-#if defined(_WIN32)
-	const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", "more"};
-#else
-	const std::vector<std::string> argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> argv = StdioCatArgv();
 	std::string process_error;
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, argv, &process_error));
 	app.acp_sessions.push_back(std::move(owned));
@@ -7226,11 +7194,7 @@ UAM_TEST(CodexModelPaginationPublishesOnlyCompleteCatalogs)
 		session.next_request_id = 100;
 		session.pending_request_methods[7] = "model/list";
 		std::string error;
-#if defined(_WIN32)
-		const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-		const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+		const std::vector<std::string> sink_argv = StdioCatArgv();
 		auto& process_service = PlatformServicesFactory::Instance().process_service;
 		UAM_ASSERT(process_service.StartStdioProcess(session, temp.root, sink_argv, &error));
 		session.running = true;
@@ -7436,11 +7400,7 @@ UAM_TEST(CodexAppServerStateTransitionsMapModelsTurnsToolsAndApprovals)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 	std::string error;
 	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
@@ -7657,11 +7617,7 @@ UAM_TEST(CodexDeferredCancelWriteFailureStopsTransportAndPreservesSteering)
 			session.next_request_id = 42;
 			if (queued) session.queued_user_prompts.push_back(uam::AcpQueuedUserPromptState{"Keep this steering message"});
 			app.acp_sessions.push_back(std::move(owned));
-#if defined(_WIN32)
-			const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-			const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+			const std::vector<std::string> sink_argv = StdioCatArgv();
 			IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 			std::string error;
 			UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink_argv, &error));
@@ -7746,11 +7702,7 @@ UAM_TEST(OpenCodeLateCancelPermissionsReplyAndNextTurnCanApprove)
 	raw_session->pending_request_methods[7] = "session/prompt";
 	raw_session->next_request_id = 8;
 	auto& process = PlatformServicesFactory::Instance().process_service;
-#if defined(_WIN32)
-	const std::vector<std::string> echo_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> echo_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> echo_argv = StdioCatArgv();
 	std::string error;
 	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, echo_argv, &error));
 	app.acp_sessions.push_back(std::move(session));
@@ -12028,11 +11980,7 @@ UAM_TEST(CodexInitializeWriteFailureClearsStartupAndPreservesQueuedWork)
 		session->next_request_id = 2;
 		uam::AcpSessionState* raw_session = session.get();
 		app.acp_sessions.push_back(std::move(session));
-#if defined(_WIN32)
-		const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-		const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+		const std::vector<std::string> sink_argv = StdioCatArgv();
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		std::string error;
 		UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
@@ -12480,11 +12428,7 @@ UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)
 	model.additional_speed_tiers = {"fast"};
 	session->available_models.push_back(std::move(model));
 	uam::AcpSessionState* raw_session = session.get();
-#if defined(_WIN32)
-	const std::vector<std::string> sink_argv = {"cmd.exe", "/C", "more"};
-#else
-	const std::vector<std::string> sink_argv = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink_argv = StdioCatArgv();
 	std::string process_error;
 	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &process_error));
@@ -12798,11 +12742,7 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		session.codex_turn_id = "turn-one";
 		session.turn_serial = 7;
 		session.turn_started_time_s = 123;
-	#if defined(_WIN32)
-		const std::vector<std::string> sink = {"cmd", "/C", "more"};
-	#else
-		const std::vector<std::string> sink = {"/bin/cat"};
-	#endif
+		const std::vector<std::string> sink = StdioCatArgv();
 		std::string error;
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
@@ -13252,11 +13192,7 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	UAM_ASSERT(session.queued_prompt.find("never replay this action") == std::string::npos);
 	UAM_ASSERT(session.queued_prompt.find("Conversation summary: Favourite fruit is kumquat.") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(6));
-#if defined(_WIN32)
-	const std::vector<std::string> sink = {"cmd", "/C", "more"};
-#else
-	const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+	const std::vector<std::string> sink = StdioCatArgv();
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, sink, &error));
 	session.session_ready = true;
 	session.session_setup_request_id = 0;
@@ -14172,11 +14108,7 @@ UAM_TEST(ClaudeAiReviewMapsOneTimeDecisionsWithoutChangingToolInput)
 		session.provider_id = chat.provider_id;
 		session.protocol_kind = "claude-code-stream-json";
 		session.processing = true;
-#if defined(_WIN32)
-		const std::vector<std::string> sink = {"cmd", "/C", "more"};
-#else
-		const std::vector<std::string> sink = {"/bin/sh", "-c", "cat"};
-#endif
+		const std::vector<std::string> sink = StdioCatArgv();
 		std::string error;
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
@@ -14931,11 +14863,7 @@ UAM_TEST(AcpPromptDispatchPreservesSettingsOverridesAndLoadedHistoryAcrossProvid
 		session.available_models.push_back(std::move(model));
 		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		std::string error;
-#if defined(_WIN32)
-		const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
-#else
-		const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+		const std::vector<std::string> sink = uam_test::StdioCatArgv();
 		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
 		struct ProcessGuard
 		{
