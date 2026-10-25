@@ -3,7 +3,8 @@ import { ArrowLeft, Info, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
-import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton, MenuSelect, Tooltip, cx } from '../ui'
 import { UsageLimits } from './UsageLimits'
@@ -32,12 +33,12 @@ const modelKey = (model: Pick<UsageModel, 'providerId' | 'modelId' | 'speed'>) =
 const providerLabel = (id: string) => providerShortName(undefined, id)
 /** One colour per provider. Values live in usage.css (--usage-*); no two providers share one. */
 const providerColor: Record<UsageProviderId, string> = {
-  [CODEX_CLI_PROVIDER_ID]: 'var(--usage-codex)',
-  [CLAUDE_CLI_PROVIDER_ID]: 'var(--usage-claude)',
-  [DEFAULT_PROVIDER_ID]: 'var(--usage-gemini)',
-  [OPENCODE_CLI_PROVIDER_ID]: 'var(--usage-opencode)',
-  [COPILOT_CLI_PROVIDER_ID]: 'var(--usage-copilot)',
-  [ANTIGRAVITY_CLI_PROVIDER_ID]: 'var(--usage-antigravity)',
+  ...(CODEX_ENABLED ? { [CODEX_CLI_PROVIDER_ID]: 'var(--usage-codex)' } : {}),
+  ...(CLAUDE_ENABLED ? { [CLAUDE_CLI_PROVIDER_ID]: 'var(--usage-claude)' } : {}),
+  ...(GEMINI_ENABLED ? { [GEMINI_CLI_PROVIDER_ID]: 'var(--usage-gemini)' } : {}),
+  ...(OPENCODE_ENABLED ? { [OPENCODE_CLI_PROVIDER_ID]: 'var(--usage-opencode)' } : {}),
+  ...(COPILOT_ENABLED ? { [COPILOT_CLI_PROVIDER_ID]: 'var(--usage-copilot)' } : {}),
+  ...(ANTIGRAVITY_ENABLED ? { [ANTIGRAVITY_CLI_PROVIDER_ID]: 'var(--usage-antigravity)' } : {}),
 }
 
 const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2 }).format(value)
@@ -208,7 +209,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
     noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
     metric === 'cost' && partialCost && `${totals.unpricedTokens.toLocaleString()} tokens have no known price and are excluded from costs.`,
-    !hiddenProviders.has('copilot-cli') && data.providers.some(provider => provider.providerId === 'copilot-cli' && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
+    COPILOT_ENABLED && !hiddenProviders.has(COPILOT_CLI_PROVIDER_ID) && data.providers.some(provider => provider.providerId === COPILOT_CLI_PROVIDER_ID && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
     ...warnings.map(provider => `${providerLabel(provider.providerId)}: ${provider.errors} read errors, ${provider.invalidLines} invalid records, ${provider.oversizedLines} oversized records, ${provider.pendingLines} unfinished lines.`),
   ].filter((line): line is string => Boolean(line)) : []
   const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || metric === 'cost' && partialCost || data.coverage?.some(machine => machine.status !== 'ready')))

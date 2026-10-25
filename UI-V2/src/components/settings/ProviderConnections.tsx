@@ -8,6 +8,8 @@ import { Check, Minus, RefreshCw } from 'lucide-react'
 import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
 import './provider-settings.css'
+import { isSshHost } from '../../utils/remoteWorkspace'
+import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 
 interface McpStatus {
   executionHostId: string
@@ -54,7 +56,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const ids = providerId ? [providerId] : SUPPORTED_CLI_PROVIDER_IDS
   const activeHostId = hosts.some(host => host.id === hostId) || hostId === 'local' ? hostId : 'local'
   const servers = useAppStore(useShallow(state => {
-    const scoped = state.hostScopedSettings && hosts.some(host => host.id === activeHostId && host.transport === 'ssh')
+    const scoped = state.hostScopedSettings && hosts.some(host => host.id === activeHostId && isSshHost(host))
     const effective = scoped ? state.hostScopedSettingsValues?.[activeHostId]?.mcpServers ?? state.mcpServers : state.mcpServers
     return effective.filter(server => !server.executionHostId || server.executionHostId === activeHostId)
   }))
@@ -187,7 +189,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}
     <div className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
-        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', 'Computer Use', 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
+        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer Use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
           ? <th className="uam-prov-label uam-prov-th px-2 py-2 font-medium">MCP servers</th>
           : servers.map(server => <th key={server.id} className="uam-prov-label uam-prov-th px-2 py-2 font-medium">{server.name}</th>)}</tr></thead>
         <tbody>{ids.map(id => {
@@ -214,7 +216,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>
+            {COMPUTER_USE_ENABLED && <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>}
             <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>

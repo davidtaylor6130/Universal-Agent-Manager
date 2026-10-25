@@ -32,6 +32,7 @@ import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 export function formatWorkingDuration(elapsedMs: number): string {
   const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
@@ -699,7 +700,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 {activityWorktree && <><GitBranch size={11} className="shrink-0" aria-hidden /><span className="truncate">{worktreeName}</span></>}
                 {!activityWorktree && activityBranch && <><GitBranch size={11} className="shrink-0" aria-hidden /><span className="truncate" title={activityBranch}>{activityBranch}</span></>}
               </span>
-              <span role="img" aria-label={activityHostLabel || (activityHostRemote ? 'Remote host' : 'This computer')} title={activityHostLabel} className="inline-flex shrink-0">
+              <span role="img" aria-label={activityHostLabel || (SSH_ENABLED && activityHostRemote ? 'Remote host' : 'This computer')} title={activityHostLabel} className="inline-flex shrink-0">
                 {activityHostRemote ? <Server size={12} aria-hidden /> : <Monitor size={12} aria-hidden />}
               </span>
               {sessionSummary.providerId && (
