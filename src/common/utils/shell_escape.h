@@ -36,7 +36,7 @@ namespace uam::shell
 	inline void AppendEscapedArg(std::string& escaped, std::string_view value)
 	{
 #if defined(_WIN32)
-		// Commands run through `cmd.exe /D /S /C`, then the program's CRT argv parser.
+		// Commands run through `cmd.exe /D /V:OFF /S /C` (no delayed `!` expansion), then the program's CRT argv parser.
 		// cmd command-line mode never collapses %%, so a percent is emitted outside the
 		// quotes as ^% where the caret blocks variable expansion and cmd then removes it.
 		// The CRT treats backslashes before a quote as escapes, so those runs are doubled.

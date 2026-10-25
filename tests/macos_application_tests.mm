@@ -182,9 +182,10 @@ int main(int argc, char* argv[])
 			const auto browse_started = std::chrono::steady_clock::now();
 			const bool accepted = uam::platform::BrowsePath(directory, std::filesystem::temp_directory_path(), &selected, &error);
 			[request invalidate];
-			if (!request_fired && !accepted)
+			if (!request_fired && !accepted && std::chrono::steady_clock::now() - browse_started >= std::chrono::seconds(30))
 			{
-				// runModal returned without ever running its modal loop: the panel service never presented it.
+				// runModal blocked for the panel service timeout without ever running its modal loop; a fast
+				// return without presenting is still a failure below.
 				const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - browse_started).count();
 				std::fprintf(stderr, "macOS open panel never became modal after %lld ms\n", static_cast<long long>(waited));
 				return kPanelUnavailable;

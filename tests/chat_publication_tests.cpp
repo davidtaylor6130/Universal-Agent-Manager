@@ -720,8 +720,9 @@ UAM_TEST(ChatPublicationUnfinishedPrivateSpoolRejectsReplacementAndPreservesByte
 #if defined(_WIN32)
 		// The spool stream is an MSVC fstream without FILE_SHARE_DELETE, so Windows refuses the
 		// foreign replacement itself (ReplaceFileW needs DELETE on the replaced file).
+		const std::string spooled = PublicationBytes(records);
 		UAM_ASSERT(!uam::io::AtomicWriteFileDetailed(records, foreign).success);
-		UAM_ASSERT(PublicationBytes(records) != foreign);
+		UAM_ASSERT_EQ(PublicationBytes(records), spooled);
 	}
 #else
 		UAM_ASSERT(uam::io::AtomicWriteFileDetailed(records, foreign).success);

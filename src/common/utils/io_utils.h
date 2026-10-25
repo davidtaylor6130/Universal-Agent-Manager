@@ -432,7 +432,7 @@ namespace uam::io
 		const DWORD legacy_error = GetLastError();
 		if (legacy_error != ERROR_ACCESS_DENIED) return false;
 		const HANDLE source = CreateFileW(native_source.c_str(), DELETE | SYNCHRONIZE,
-		    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+		    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr);
 		if (source == INVALID_HANDLE_VALUE) { SetLastError(legacy_error); return false; }
 		const std::wstring& target = native_target.native();
 		std::vector<unsigned char> buffer(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));

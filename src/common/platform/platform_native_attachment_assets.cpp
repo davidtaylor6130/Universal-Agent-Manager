@@ -357,9 +357,10 @@ namespace uam::native_assets
 		  private:
 			bool Pin(const std::filesystem::path& path, std::string& error)
 			{
-				// An attribute-only open bypasses share-access checks, so it would pin nothing. List access
-				// enforces the missing FILE_SHARE_DELETE; write sharing keeps renames into these directories working.
-				HANDLE handle = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+				// An attribute-only open bypasses share-access checks, so it would pin nothing. Traverse access
+				// (granted on traverse-only ancestors too) enforces the missing FILE_SHARE_DELETE; write sharing
+				// keeps renames into these directories working.
+				HANDLE handle = CreateFileW(path.c_str(), FILE_TRAVERSE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
 				    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 				if (handle == INVALID_HANDLE_VALUE) return Fail(error, "Cannot pin private native asset directory.");
 				BY_HANDLE_FILE_INFORMATION info{};

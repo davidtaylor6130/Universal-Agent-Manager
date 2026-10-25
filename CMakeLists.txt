@@ -427,6 +427,7 @@ elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
     src/remote/runner_service_windows.cpp
+    src/uam_long_paths.manifest
   )
   target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32 ws2_32)
 elseif(UNIX)
