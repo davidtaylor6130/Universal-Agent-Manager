@@ -1238,8 +1238,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     editorSavePending.current = true
     setEditorSaving(true); setOpenWithError('')
     try {
-      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setOpenWithError('PowerShell choice could not be saved.')
-    } catch { setOpenWithError('PowerShell choice could not be saved.') }
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setOpenWithError('Terminal shell could not be saved.')
+    } catch { setOpenWithError('Terminal shell could not be saved.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
