@@ -69,6 +69,14 @@ namespace uam::remote
 	{
 		inline constexpr std::size_t kMaxSessionIdBytes = 128;
 		inline constexpr std::size_t kMaxWorkingDirectoryBytes = 4096;
+
+		// Bounded paths may exceed Windows MAX_PATH; std::filesystem needs the extended spelling for those.
+		std::filesystem::path FileSystemPath(const std::filesystem::path& path)
+		{
+			std::filesystem::path native;
+			std::string ignored;
+			return uam::io::NativeFilePath(path, native, ignored) ? native : path;
+		}
 		inline constexpr std::size_t kMaxArgumentCount = 256;
 		inline constexpr std::size_t kMaxArgumentBytes = 32 * 1024;
 		inline constexpr std::size_t kMaxEnvironmentEntries = 128;
@@ -952,16 +960,17 @@ namespace uam::remote
 			for (const std::string& category : uam::memory::SupportedCategories())
 			{
 				const std::filesystem::path directory = workspace / ".UAM" / category;
+				const std::filesystem::path native_directory = FileSystemPath(directory);
 				std::error_code error;
-				if (!std::filesystem::exists(directory, error) && !error) continue;
-				if (error || !std::filesystem::is_directory(directory, error))
+				if (!std::filesystem::exists(native_directory, error) && !error) continue;
+				if (error || !std::filesystem::is_directory(native_directory, error))
 					return ProcessError(request, "read_failed", "Remote project memory cannot be opened.");
-				std::filesystem::directory_iterator iterator(directory, error);
+				std::filesystem::directory_iterator iterator(native_directory, error);
 				for (; !error && iterator != std::filesystem::directory_iterator{}; iterator.increment(error))
 				{
 					if (iterator->path().extension() != ".md") continue;
 					if (files.size() == 200) return ProcessError(request, "too_large", "Remote project memory contains more than 200 files.");
-					files.push_back(iterator->path());
+					files.push_back(directory / iterator->path().filename()); // Keep the caller's spelling for references.
 				}
 				if (error) return ProcessError(request, "read_failed", "Remote project memory cannot be listed.");
 			}
@@ -1126,16 +1135,17 @@ namespace uam::remote
 			for (const std::filesystem::path& part : path.relative_path())
 			{
 				ancestor /= part;
-				if (std::filesystem::is_symlink(std::filesystem::symlink_status(ancestor, error)))
+				if (std::filesystem::is_symlink(std::filesystem::symlink_status(FileSystemPath(ancestor), error)))
 					return ProcessError(request, "unsafe_path", "Context files cannot use symbolic links.");
 				if (error) return ProcessError(request, "read_failed", "The remote context file cannot be inspected.");
 			}
-			if (!std::filesystem::is_regular_file(path, error) || error)
+			const std::filesystem::path native_path = FileSystemPath(path);
+			if (!std::filesystem::is_regular_file(native_path, error) || error)
 				return ProcessError(request, "not_found", "The remote context file does not exist or is not a regular file.");
-			const std::uintmax_t size = std::filesystem::file_size(path, error);
+			const std::uintmax_t size = std::filesystem::file_size(native_path, error);
 			if (error || size > 256 * 1024)
 				return ProcessError(request, "too_large", "Context files must be at most 256 KiB.");
-			std::ifstream input(path, std::ios::binary);
+			std::ifstream input(native_path, std::ios::binary);
 			std::string text(static_cast<std::size_t>(size), '\0');
 			if (!input || (size != 0 && !input.read(text.data(), static_cast<std::streamsize>(size))) || input.peek() != std::char_traits<char>::eof())
 				return ProcessError(request, "read_failed", "The remote context file could not be read consistently.");

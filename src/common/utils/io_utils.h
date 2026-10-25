@@ -533,7 +533,9 @@ namespace uam::io
 #if defined(_WIN32)
 		std::filesystem::path native_path;
 		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
-		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		// Producers append small chunks; write-through would make each one a synchronous disk write.
+		// FlushFileBuffers below is the durability point, matching the POSIX fsync contract.
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
 		const auto close_file = [&]()
 		{
@@ -614,7 +616,7 @@ namespace uam::io
 #if defined(_WIN32)
 		std::filesystem::path native_path;
 		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
-		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr); // Synced by FlushFileBuffers, as above.
 		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
 		const auto close_file = [&]()
 		{

@@ -3,6 +3,10 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 project(universal_agent_manager VERSION 4.11.0 LANGUAGES C CXX)
+if(MSVC)
+  # Sources and narrow literals are UTF-8; without this MSVC encodes "\u00e9" in the ANSI code page.
+  add_compile_options(/utf-8)
+endif()
 set(UAM_PRODUCT_VERSION "4.11.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
@@ -310,7 +314,7 @@ set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_incremental_sha256.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
-  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
+  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_pty_windows.cpp
@@ -1658,7 +1662,7 @@ if(UAM_BUILD_TESTS)
       "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
-    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp)
+    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp src/uam_long_paths.manifest)
     target_link_libraries(uam_core_tests PRIVATE
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper

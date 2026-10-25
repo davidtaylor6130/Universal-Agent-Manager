@@ -219,7 +219,7 @@ namespace uam::native_assets
 		// Platform implementation behind common/chat/native_attachment_assets.h.
 		// Public payload/store contracts contain no OS
 		// handles. POSIX uses pinned openat directories; Windows pins the resolved
-		// ancestor chain without write/delete sharing and uses the existing synced writer.
+		// ancestor chain without delete sharing and uses the existing synced writer.
 #if defined(_WIN32)
 		class AssetFiles
 		{
@@ -287,7 +287,7 @@ namespace uam::native_assets
 					if (!GetFileInformationByHandle(handle, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
 					    (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
 				}
-				return true; // Pins deny write/delete sharing throughout the resolved path.
+				return true; // Pins deny delete sharing (rename/removal) throughout the resolved path.
 			}
 			bool Write(const std::string& name, const Producer& producer, std::string& error, std::stop_token cancel = {})
 			{
@@ -324,7 +324,7 @@ namespace uam::native_assets
 				    before.nFileSizeLow == after.nFileSizeLow && CompareFileTime(&before.ftLastWriteTime, &after.ftLastWriteTime) == 0 &&
 				    !Cancelled(cancel, error) ? true : Fail(error, "Native original changed during its read.");
 			}
-			bool Sync(std::string& error) const { return Current() ? true : Fail(error, "Native asset directory ownership changed."); } // Files use FlushFileBuffers + WRITE_THROUGH; no portable Win32 directory fsync.
+			bool Sync(std::string& error) const { return Current() ? true : Fail(error, "Native asset directory ownership changed."); } // Files use FlushFileBuffers before close; no portable Win32 directory fsync.
 			void Cleanup(const std::vector<std::string>& names) noexcept
 			{
 				try
@@ -357,7 +357,9 @@ namespace uam::native_assets
 		  private:
 			bool Pin(const std::filesystem::path& path, std::string& error)
 			{
-				HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+				// An attribute-only open bypasses share-access checks, so it would pin nothing. List access
+				// enforces the missing FILE_SHARE_DELETE; write sharing keeps renames into these directories working.
+				HANDLE handle = CreateFileW(path.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
 				    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 				if (handle == INVALID_HANDLE_VALUE) return Fail(error, "Cannot pin private native asset directory.");
 				BY_HANDLE_FILE_INFORMATION info{};
