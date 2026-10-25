@@ -876,6 +876,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Native verification | Code Only | Base Fixture Contract Updates | Native fixtures assert the `<UAM History>` retry format and receipt-based memory rollback, settle the new pre-launch repository baseline, and flush deferred admission saves before reading chats (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 | Providers and MCP | Bugfix | Claude Discovery Starting Workspace | Claude native discovery assigns a session to the workspace where it started instead of a directory reached by a later cd (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Quit During Cold Picker | Quitting while the first folder picker of a session is still opening retries cancellation inside the picker loop until it closes, instead of leaving Quit ignored (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
+| Native verification | Code Only | Cold Owned-image Retry Refusal | The stopped remote Claude owned-image case asserts the current exact refusal and stops there until cold saved-image Retry is qualified (#449); the text-resume variant keeps its full delivery checks. | Implemented; David Approved Interim Refusal Assertion 2026-10-25; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 

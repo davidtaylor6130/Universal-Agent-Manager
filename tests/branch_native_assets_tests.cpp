@@ -6889,6 +6889,9 @@ store('peer-resume-exit.json' if resumed else 'peer-exit.json', dict(pid=os.getp
 		UAM_ASSERT(!fs::exists(temp.root / "peer-resume-launch.json") && !fs::exists(temp.root / "peer-resume-input.json"));
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-input.json"), first_input);
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-stdin.jsonl"), first_stdin);
+		// Cold saved-image Retry stays disabled until its launch, native-binding and
+		// final-write witnesses are qualified (#449); the delivery checks below apply then.
+		return;
 	}
 	UAM_ASSERT(resumed && resume_error.empty());
 	const auto resume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
