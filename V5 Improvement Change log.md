@@ -885,12 +885,14 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Bugfix | Remote Stop During Poll Connect | The runner proxy reads Stop before connecting its poll channel and interrupts that connect, leases start when the process is running, and the drainer wakes at the lease deadline (#444). | Implemented; Remote Timing Cases 20/20 Under Load; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Windows UI Build Graph Test | The UI incremental-build test keeps its fixture outside TEMP, which MSBuild tracking ignores, and checks no-op repackaging only on Make/Ninja because Visual Studio runs POST_BUILD every build (#442). | Implemented; Windows Box And macOS Passed; David Approved VS Relaxation 2026-10-25; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Windows Backup Install Over Open Witness | Windows recovery-backup installation retries with POSIX rename semantics when a retained publication witness still holds the previous backup open, so own-chat publication keeps returning its receipt (#442). | Implemented; Windows Publication Families62/62 Passed; Un-Reviewed; Not User Tested |
+| Native verification | Code Only | Picker Probe Unavailable Panel | The macOS picker probe reports SKIP instead of failing when NSOpenPanel never becomes modal on a host, as on the Intel CI VM, and runs every assertion where the panel appears (#444). | Implemented; ARM 14/14 Probes Passed; Intel Panel Service Unconfirmed; David Approved 2026-10-25; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Build and evidence | Misc | Intel Open Panel Availability | The macos-26-intel CI runner never presents NSOpenPanel, so picker Quit probes are reported unavailable there; confirm on a real Intel Mac. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Performance | Windows No-op Repackaging | Visual Studio builds run POST_BUILD every time, so a no-op Windows build deletes and recopies the UI bundle and repackages the app. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Chat and subagents | Bugfix | Workspace Hold Receipt Retry | Workspace-preparation and version-check pre-launch holds keep a row-less first input with Remove but still offer no Retry, unlike the repository-baseline hold. | Unassigned; Not Started; Claude Review; Not User Tested | Unassigned |
 | Shared UI | Bugfix | Disabled Switch Input Visibility | A shared disabled-checkbox opacity rule reveals native checkbox glyphs inside disabled custom switches. | Not Started; Pre-existing Shared CSS Selector Collision And Pending-state Artifact Verified; Discovered During task-1082 GUI Review, Confirmed By Scoped R2; Separate Follow-up, No Shared CSS Change In task-1082; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
