@@ -43,7 +43,14 @@ namespace uam::provider_setup
 			std::error_code error;
 			const std::filesystem::file_status status = std::filesystem::symlink_status(current, error);
 			if (error && error != std::errc::no_such_file_or_directory) return false;
-			if (std::filesystem::is_symlink(status) || uam::paths::IsLinkOrReparsePointNoThrow(current))
+			// One lstat per component; Windows also refuses junctions and other reparse points.
+#if defined(_WIN32)
+			const DWORD attributes = GetFileAttributesW(current.c_str());
+			const bool reparse_point = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+			const bool reparse_point = false;
+#endif
+			if (std::filesystem::is_symlink(status) || reparse_point)
 			{
 #if defined(__APPLE__)
 				// macOS exposes these system directories through fixed root aliases.
