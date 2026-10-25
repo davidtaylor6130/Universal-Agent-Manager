@@ -820,7 +820,8 @@ namespace uam::remote
 				const std::optional<std::filesystem::path> home = env::GetUserHomePath();
 				if (!home || !home->is_absolute()) return ProcessError(request, "usage_unavailable", "The runner user data directory is unavailable.");
 				// Resolve history on its worker; remote clients cannot supply provider or cache paths.
-				m_usageHistory = std::make_shared<uam::usage::Collector>(*home / ".uam" / "runner-usage", true);
+				// Collection parks after ten minutes without a usage request, so an unattended helper idles near zero CPU.
+				m_usageHistory = std::make_shared<uam::usage::Collector>(*home / ".uam" / "runner-usage", true, std::chrono::minutes(10));
 			}
 			const std::shared_ptr<uam::usage::Collector> history = m_usageHistory;
 			state_lock.unlock();
