@@ -51,6 +51,29 @@ class NativeRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.exercise(requested=names)
 
+    def test_retry_failed_once_reruns_only_failed_cases(self):
+        attempts = {}
+        def execute(command, **kwargs):
+            if command[1] == '--list-tests':
+                return subprocess.CompletedProcess(command, 0, 'Flaky\nSteady\nBroken')
+            output = ''
+            for name in command[1:]:
+                attempts[name] = attempts.get(name, 0) + 1
+                if name == 'Steady' or (name == 'Flaky' and attempts[name] > 1):
+                    output += f'[PASS] {name}\n'
+            return subprocess.CompletedProcess(command, 1 if 'Broken' in command or attempts.get('Flaky') == 1 else 0, output)
+        for requested, expected in [(['Flaky', 'Steady'], 0), (['Flaky', 'Broken'], 1)]:
+            attempts.clear()
+            with self.subTest(requested=requested), patch.object(runner.subprocess, 'run', side_effect=execute), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runner.run_tests(Path('/fixture'), 1, requested, retry_failed_once=True), expected)
+                self.assertEqual(attempts.get('Steady', 0), 1 if 'Steady' in requested else 0)
+                self.assertEqual(attempts['Flaky'], 2)
+        with patch.object(runner.subprocess, 'run', side_effect=execute), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            attempts.clear()
+            self.assertEqual(runner.run_tests(Path('/fixture'), 1, ['Flaky']), 1)
+
     def test_empty_and_duplicate_inventory_are_rejected(self):
         for inventory in ['', 'Case1\nCase1', '[PASS] Case1']:
             result = subprocess.CompletedProcess([], 0, inventory)

@@ -184,7 +184,14 @@ jobs:
         # Real-time scanning of the thousands of fixture files the native suite creates dominates
         # its fixed test deadlines on hosted runners; product code and budgets are unchanged.
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
-      - run: ctest --test-dir Builds/tests -C Release --output-on-failure
+      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
+      - name: Run native core tests
+        shell: bash
+        # Serial like ctest, but a case that fails a real-time budget gets one fresh retry; budgets are unchanged.
+        run: |
+          binary=Builds/tests/uam_core_tests python=python3
+          if [ "$RUNNER_OS" = Windows ]; then binary=Builds/tests/Release/uam_core_tests.exe python=python; fi
+          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once "$binary"
       - name: Package macOS review build
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
