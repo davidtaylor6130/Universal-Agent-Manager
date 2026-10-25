@@ -27,6 +27,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -539,6 +540,8 @@ namespace uam::remote
 			process.drainer = std::jthread([&process](std::stop_token stop_token)
 			{
 				auto idle_delay = kInitialIdleDrainDelay;
+				std::mutex idle_mutex;
+				std::condition_variable_any idle_wake;
 				bool exit_observed = false;
 				int exit_code = -1;
 				std::ofstream stdout_stream(process.stdout_spool,
@@ -605,7 +608,13 @@ namespace uam::remote
 					}
 					if (stdout_bytes.empty() && stderr_bytes.empty())
 					{
-						std::this_thread::sleep_for(idle_delay);
+						// Wake for stop requests and at the lease deadline, so stop and lease cleanup never wait out an idle backoff.
+						auto delay = idle_delay;
+						if (process.transient_lease)
+							delay = std::clamp(std::chrono::milliseconds(process.lease_deadline_ms.load(std::memory_order_acquire) - LeaseClockMilliseconds()),
+							                   std::chrono::milliseconds(0), idle_delay);
+						std::unique_lock wait_lock(idle_mutex);
+						(void)idle_wake.wait_for(wait_lock, stop_token, delay, [] { return false; });
 						idle_delay = std::min(idle_delay * 2, kMaximumIdleDrainDelay);
 					}
 					else
@@ -1704,6 +1713,8 @@ namespace uam::remote
 				return ProcessError(request, "start_failed",
 				                    error.empty() ? "The remote process could not start." : error);
 			}
+			// Restart the lease once running; a slow spawn must not consume it before the first renewal.
+			RenewLease(*process);
 			StartDrainer(*process);
 			process->ready.store(true, std::memory_order_release);
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", true},
