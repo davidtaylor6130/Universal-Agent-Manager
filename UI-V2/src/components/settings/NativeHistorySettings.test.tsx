@@ -37,12 +37,21 @@ describe('Chat Data native discovery', () => {
   afterEach(() => {
     act(() => root.unmount()); host.remove(); window.cefQuery = undefined; vi.restoreAllMocks()
   })
+  const scope = () => host.querySelector('.uam-native-scope')?.getAttribute('aria-label')
+  it('groups per-conversation issues by provider and reason', async () => {
+    useAppStore.setState({ startupNativeImports: page('ready') })
+    mount()
+    await answer(0, { ...page('ready'), errors: ['Antigravity conversation a1: nested context.', 'Antigravity conversation b2: nested context.', 'Antigravity conversation b2: nested context.', 'OpenCode history discovery failed: invalid session list.', 'One provider store could not be read.'] })
+    const rows = Array.from(host.querySelectorAll('.uam-native-issues > li')).map((row) => row.firstElementChild?.textContent + '|' + row.children[1]?.textContent)
+    expect(rows).toEqual(['Antigravity|2 conversations skipped. Nested context.', 'OpenCode|History discovery failed: invalid session list.', 'Discovery|One provider store could not be read.'])
+    expect(host.textContent).toContain('5 discovery issues')
+  })
   const mount = () => act(() => root.render(<NativeHistorySettings />))
 
   it('starts discovery only on click and prevents duplicate requests without importing', async () => {
     mount()
     expect(requests).toHaveLength(0)
-    expect(host.textContent).toContain('Antigravity native history stores')
+    expect(scope()).toContain('Antigravity native history stores')
     expect(host.textContent).toContain('Changing, nested or unrecognised native records remain unimported')
     expect(host.textContent).toContain('unregistered local workspaces')
     act(() => { button('Discover histories').click(); button('Discover histories').click() })
@@ -106,11 +115,11 @@ describe('Chat Data native discovery', () => {
   it('reports the native provider catalogue without claiming excluded readers', () => {
     useAppStore.setState({ providers: [fallbackProviderForId('codex-cli')] })
     mount()
-    expect(host.textContent).toContain('Reads Codex native history stores for this user.')
+    expect(scope()).toBe('Reads Codex native history stores for this user.')
     expect(host.textContent).not.toContain('Antigravity')
     expect(host.textContent).not.toContain('OpenCode')
     act(() => useAppStore.setState({ providers: SUPPORTED_CLI_PROVIDER_IDS.map(fallbackProviderForId) }))
-    expect(host.textContent).toContain('Antigravity native history stores for this user.')
+    expect(scope()).toContain('Antigravity native history stores for this user.')
     expect(host.textContent).toContain('OpenCode requires its configured CLI.')
     expect(requests).toHaveLength(0)
   })
