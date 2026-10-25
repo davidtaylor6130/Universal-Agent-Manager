@@ -256,7 +256,8 @@ UAM_TEST(SvnReadOnlyCommandsAvoidPromptsWithoutAllowingWritesOrDiffHelpers)
 		UAM_ASSERT_EQ(ClassifyCommand(command), RiskLevel::Allowed);
 	}
 	for (const std::string_view command : {"svn", "svn diff", "svn diff --diff-cmd writer --internal-diff", "svn log --diff", "svn commit -m change",
-	         "svn update", "svn revert -R .", "svn propset svn:ignore x .", "svn cleanup", "svn status --config-option config:helpers:diff-cmd=writer"})
+	         "svn update", "svn revert -R .", "svn propset svn:ignore x .", "svn cleanup", "svn status --config-option config:helpers:diff-cmd=writer",
+	         "svn diff -- notes--internal-diff.txt", "svn diff x--internal-diff", "svn diff -- --internal-diff"})
 	{
 		UAM_ASSERT(!uam::command_safety::IsReadOnlyCommand(command));
 		UAM_ASSERT_EQ(ClassifyCommand(command), RiskLevel::WarnHigh);
@@ -325,7 +326,11 @@ namespace
 
 		RealSvnCheckout()
 		{
-			if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet")) return;
+			if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet"))
+			{
+				std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
+				return;
+			}
 			UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
 			url = "file://" + uam::paths::Utf8PathString(repository);
 			UAM_ASSERT(Svn(temporary.root, {"checkout", url, "checkout"}));
@@ -462,7 +467,7 @@ UAM_TEST(SvnSnapshotSkipsSvnIgnoredItemsAndKeepsThemUntracked)
 #endif
 
 #ifndef _WIN32
-UAM_TEST(SvnRealNewFolderRetryAfterFailedCommitPublishesItsContents)
+UAM_TEST(SvnRealNewFolderRetryRequiresScheduledContentsSelection)
 {
 	RealSvnCheckout svn;
 	if (!svn.ready) return;
@@ -478,7 +483,14 @@ UAM_TEST(SvnRealNewFolderRetryAfterFailedCommitPublishesItsContents)
 	UAM_ASSERT(!uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "first", {"newdir"}).ok);
 	UAM_ASSERT(svn.ChangedPaths().contains("newdir/sub/b.txt"));
 	fs::remove(refuse);
-	const uam::VcsCommitResult retry = uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "retry", {"newdir"});
+	// The scheduled contents are now their own rows: selecting only the folder is refused rather than publishing an
+	// empty folder or rows the user left unticked.
+	const uam::VcsCommitResult partial = uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "retry", {"newdir"});
+	UAM_ASSERT(!partial.ok);
+	UAM_ASSERT_EQ(partial.error, "Select the scheduled items inside this new SVN folder too; committing the folder alone would leave them unpublished.");
+	const std::set<std::string> rows = svn.ChangedPaths();
+	UAM_ASSERT_EQ(rows, (std::set<std::string>{"newdir", "newdir/a.txt", "newdir/sub", "newdir/sub/b.txt"}));
+	const uam::VcsCommitResult retry = uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "retry", std::vector<std::string>(rows.begin(), rows.end()));
 	if (!retry.ok) std::fprintf(stderr, "retry: %s\n", retry.error.c_str());
 	UAM_ASSERT(retry.ok);
 	UAM_ASSERT(svn.ChangedPaths().empty());

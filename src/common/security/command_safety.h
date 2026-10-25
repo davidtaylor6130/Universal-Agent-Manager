@@ -138,9 +138,19 @@ inline RiskLevel ClassifyCommand(std::string_view command)
 		});
 		// A configured or explicit diff-cmd/config override can run another program; only the internal diff is read-only.
 		const bool runs_diff = action == "diff" || action == "di" || rest.find("--diff") != std::string_view::npos;
+		// Only a parsed switch before "--" counts; an operand such as "notes--internal-diff.txt" must not.
+		bool internal_diff = false;
+		for (std::size_t begin = 0; begin < rest.size();)
+		{
+			const std::size_t end = std::min(rest.find_first_of(" \t", begin), rest.size());
+			const std::string_view word = rest.substr(begin, end - begin);
+			if (word == "--") break;
+			internal_diff = internal_diff || word == "--internal-diff";
+			begin = end + 1;
+		}
 		if (std::ranges::find(read_svn, action) != read_svn.end() &&
 		    !ContainsAny(normalized, std::to_array<std::string_view>({"--diff-cmd", "--config-option", "--config-dir"})) &&
-		    (!runs_diff || normalized.find("--internal-diff") != std::string::npos))
+		    (!runs_diff || internal_diff))
 			return RiskLevel::Allowed;
 		return RiskLevel::WarnHigh;
 	}

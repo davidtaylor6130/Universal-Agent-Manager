@@ -599,8 +599,7 @@ namespace uam
 			/// Workspace-relative peg targets; true schedules the selected new item with its non-ignored contents.
 			std::vector<std::pair<std::string, bool>> additions;
 			std::vector<std::string> deletions;
-			/// Selected new items (unversioned or already scheduled `A`) whose scheduled descendants are published too,
-			/// so a retry after a failed commit keeps the same selection.
+			/// Selected unversioned items whose newly scheduled descendants are published with them.
 			std::vector<std::string> contents;
 			std::set<std::string> seen;
 			void AddTarget(const std::string& target) { if (seen.insert(target).second) targets.push_back(target); }
@@ -641,6 +640,8 @@ namespace uam
 				const std::filesystem::path contained = resolved.lexically_relative(root);
 				if (path_error || contained.empty() || *contained.begin() == "..") { error = "SVN selection is outside the workspace."; return false; }
 			}
+			std::set<std::filesystem::path> selected_paths;
+			for (const std::string& file : selected) selected_paths.insert(uam::paths::PathFromUtf8(file).lexically_normal());
 			const auto exists_locally = [&](const std::filesystem::path& relative, bool& exists)
 			{
 				exists = std::filesystem::exists(root / relative, path_error);
@@ -677,7 +678,19 @@ namespace uam
 						if (plan.seen.insert(target).second) { plan.additions.emplace_back(target, leaf); plan.targets.push_back(target); }
 						if (leaf) plan.contents.push_back(target);
 					}
-					else if (item == 'A' && leaf) plan.contents.push_back(target);
+					else if (item == 'A' && leaf)
+					{
+						// After a failed commit the folder's scheduled contents are listed as their own rows. Publishing them
+						// unticked, or publishing the folder without them, would both diverge from the selection.
+						std::string listing;
+						if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &listing, error)) return false;
+						for (const VcsChangedFile& added : ParseSvnStatusOutput(listing))
+						{
+							const std::filesystem::path child = uam::paths::PathFromUtf8(added.path).lexically_normal();
+							if (!added.status.empty() && added.status.front() == 'A' && child != current && !selected_paths.contains(child))
+							{ error = "Select the scheduled items inside this new SVN folder too; committing the folder alone would leave them unpublished."; return false; }
+						}
+					}
 					if (item == 'A' && !leaf) plan.AddTarget(target);
 					if (!leaf) continue;
 					if (!unversioned_parent && code.empty()) { error = "A selected SVN path is no longer changed: " + file; return false; }
@@ -1005,6 +1018,13 @@ namespace uam
 			return {"diff", "--internal-diff", "--non-interactive", "--", target};
 		}
 
+		/// Windows svn prints `/` in diff headers but `\` in status rows; compare both with forward slashes.
+		std::string SlashKey(std::string path)
+		{
+			std::ranges::replace(path, '\\', '/');
+			return path;
+		}
+
 		/// One workspace diff split on "Index: " headers instead of one process per changed file.
 		void ApplySvnLineStats(const SvnRunner& svn, std::vector<VcsChangedFile>& files)
 		{
@@ -1018,12 +1038,12 @@ namespace uam
 			while (std::getline(lines, line))
 			{
 				if (!line.empty() && line.back() == '\r') line.pop_back();
-				if (line.starts_with("Index: ")) { section = &sections[line.substr(7)]; continue; }
+				if (line.starts_with("Index: ")) { section = &sections[SlashKey(line.substr(7))]; continue; }
 				if (section != nullptr) { *section += line; *section += '\n'; }
 			}
 			for (VcsChangedFile& file : files)
 			{
-				const auto found = sections.find(file.path);
+				const auto found = sections.find(SlashKey(file.path));
 				if (found == sections.end()) continue;
 				const LineStats stats = ParseUnifiedDiffLineStats(found->second);
 				file.additions = stats.additions;
@@ -1761,7 +1781,15 @@ namespace uam
 			ProcessExecutionResult committed;
 			if (type == VcsType::Svn)
 			{
-				if (!CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(result.status), committed, result.error)) return result;
+				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
+				// svn accepts `/`, so containment and external checks see real components.
+				VcsCommitStatus remote_status = result.status;
+				if (context.Platform() == "windows" || context.Platform() == "Windows")
+				{
+					for (std::string& file : selected_files) file = SlashKey(std::move(file));
+					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
+				}
+				if (!CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, result.error)) return result;
 			}
 			else
 			{
