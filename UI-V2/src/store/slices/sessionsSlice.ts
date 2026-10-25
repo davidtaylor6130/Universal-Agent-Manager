@@ -2942,8 +2942,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const session = state.sessions.find(entry => entry.id === sessionId)
       const binding = state.acpBindingBySessionId[sessionId]
       const matches = binding?.unsentDirectPrompts?.filter(prompt => prompt.id === expected.id && prompt.revision === expected.revision) ?? []
-      if (!session || session.importedReadOnly || matches.length !== 1 || matches[0].prepared ||
-          !Number.isSafeInteger(matches[0].existingUserMessageIndex) || matches[0].existingUserMessageIndex! < 0) return false
+      // Native retryAllowed alone authorizes a row-less receipt (a held, failed pre-launch baseline).
+      if (!session || session.importedReadOnly || matches.length !== 1 || matches[0].prepared || (matches[0].retryAllowed !== true &&
+          (!Number.isSafeInteger(matches[0].existingUserMessageIndex) || matches[0].existingUserMessageIndex! < 0))) return false
       // This asks native recovery to check the exact receipt. It neither duplicates history nor confirms delivery.
       const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: {
         chatId: sessionId, operation: 'retry', index: 0, expected: { id: expected.id, revision: expected.revision },
