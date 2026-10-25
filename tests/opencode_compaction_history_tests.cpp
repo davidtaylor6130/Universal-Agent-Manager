@@ -576,6 +576,9 @@ namespace
 			query.sql = "SELECT fixture";
 			query.argv = {"fixture-opencode", "db", query.sql, "--format", "json", "--pure"};
 			query.workspace = "/fixture";
+			// Pin the 2048-byte macOS page size; local Windows deliberately uses 256-byte pipe pages.
+			query.host = ExecutionHost{};
+			query.host->platform = "macos";
 		}
 		std::string Rows() const { return chunks[0] + chunks[1]; }
 		ProcessExecutionResult Execute(const uam::OpenCodeCompactionHistoryService::Query& page, std::stop_token)

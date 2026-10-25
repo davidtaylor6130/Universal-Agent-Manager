@@ -38,4 +38,14 @@ describe('restored queue admission', () => {
     await expect(actions.resumeQueuedAcpPrompts('chat', expected)).resolves.toBe(false)
     expect(sendToCEF).not.toHaveBeenCalled()
   })
+  it.each([undefined, false, true] as const)('retries a row-less direct receipt only when native sets retryAllowed (%s)', async retryAllowed => {
+    const receipt = { id: 'baseline-held', revision: 1, text: 'Held input', ...(retryAllowed === undefined ? {} : { retryAllowed }) }
+    const state = { sessions: [{ id: 'chat' }], acpBindingBySessionId: { chat: { unsentDirectPrompts: [receipt] } } } as unknown as AppState
+    const actions = createSessionsSlice(vi.fn(), () => state, true)
+    vi.mocked(sendToCEF).mockResolvedValue({ ok: true })
+    await expect(actions.retryUnsentAcpPrompt('chat', { id: 'baseline-held', revision: 1 })).resolves.toBe(retryAllowed === true)
+    if (retryAllowed === true) expect(sendToCEF).toHaveBeenCalledWith({ action: 'manageQueuedAcpPrompt', payload: {
+      chatId: 'chat', operation: 'retry', index: 0, expected: { id: 'baseline-held', revision: 1 } } })
+    else expect(sendToCEF).not.toHaveBeenCalled()
+  })
 })

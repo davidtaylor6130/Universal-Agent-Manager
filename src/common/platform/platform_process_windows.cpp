@@ -287,7 +287,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		}
 
 		SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-		const std::wstring command_w = WideFromUtf8("cmd.exe /D /S /C \"" + command + "\"");
+		const std::wstring command_w = WideFromUtf8("cmd.exe /D /V:OFF /S /C \"" + command + "\"");
 
 		if (command_w.empty())
 		{
