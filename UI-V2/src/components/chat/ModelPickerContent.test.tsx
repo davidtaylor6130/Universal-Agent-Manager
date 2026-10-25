@@ -12,7 +12,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const providers: Provider[] = ['codex-cli', 'claude-cli'].map((id) => ({ id, name: id, shortName: id === 'codex-cli' ? 'Codex' : 'Claude', color: '', description: '' }))
 const models = Array.from({ length: 120 }, (_, index) => ({ id: `model-${index}`, label: `Model ${index}`, shortLabel: `Model ${index}`, detail: `Description ${index}`, disabled: index === 1 }))
 const catalog = (host: string, workspace: string, id: string): ProviderModelCatalog => ({ providerId: 'claude-cli', executionHostId: host, workspaceDirectory: workspace, availableModels: [{ id, name: id, description: '', supportedReasoningEfforts: [] }], currentModelId: '', modelsLoading: false, modelRefreshError: '' })
-const capacityValues = (row: Element) => Array.from(row.querySelectorAll('.uam-np-model__capacity-value'), value => value.textContent)
+const capacityValues = (row: Element) => Array.from(row.querySelectorAll('.uam-np-model__capacity'), badge => `${badge.querySelector('.uam-np-model__capacity-full')?.textContent} ${badge.querySelector('.uam-np-model__capacity-value')?.textContent}`)
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
@@ -60,7 +60,7 @@ describe('T3-style model picker', () => {
     expect(document.activeElement?.textContent).toContain('Model 2')
     act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 119')
-    expect(capacityValues(document.activeElement!)).toEqual(['120K', '8.2K'])
+    expect(capacityValues(document.activeElement!)).toEqual(['Context 120K', 'Output 8.2K'])
     expect((document.activeElement?.parentElement as HTMLElement).style.height).toBe('52px')
     act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(onSelect).toHaveBeenCalledWith('codex-cli', 'model-119')
@@ -93,7 +93,7 @@ describe('model capacity badges', () => {
     expect(row.title).toBe(row.getAttribute('aria-label'))
     expect(row.hasAttribute('data-state')).toBe(false)
     expect(row.hasAttribute('aria-describedby')).toBe(false)
-    expect(capacityValues(row)).toEqual(['128K', '4.1K'])
+    expect(capacityValues(row)).toEqual(['Context 128K', 'Output 4.1K'])
     expect(row.parentElement?.style.height).toBe('52px')
     act(() => row.click())
     expect(onSelect).not.toHaveBeenCalled()
@@ -127,7 +127,7 @@ describe('model capacity badges', () => {
     act(() => root.unmount()); host.remove()
   })
 
-  it('labels known limits and explicit unknowns without guessing parameter size from a model name', () => {
+  it('shows only reported limits and nothing for unknown ones, without guessing parameter size from a model name', () => {
     const source = { availableModels: [
       { id: 'reported', name: 'Reported', description: 'Reported limits', contextWindowTokens: 200000, maxOutputTokens: 0 },
       { id: 'model-70b-200k', name: 'Model 70B 200K', description: '', contextWindowTokens: null },
@@ -138,15 +138,47 @@ describe('model capacity badges', () => {
     act(() => root.render(<ModelPickerContent providers={providers} providerId="codex-cli" currentModelId="reported" activeOptions={buildModelOptions(source, '', undefined, 'codex-cli', true)} modelDisabled={false} canChangeProvider workspaceDirectory="/project" executionHostId="local" onSelect={() => {}} onClose={() => {}} />))
     const rows = host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')
     expect(Array.from(rows, capacityValues)).toEqual([
-      ['unknown', 'unknown'],
-      ['200K', '0'],
-      ['unknown', 'unknown'],
-      ['unknown', 'unknown'],
+      [],
+      ['Context 200K', 'Output 0'],
+      [],
+      [],
     ])
-    expect(rows[1].querySelector('.sr-only')?.textContent).toBe('Context window: 200,000 tokens. Maximum output: 0 tokens. Physical model size: not reported.')
-    expect(rows[2].querySelector('.sr-only')?.textContent).toBe('Context window: unknown (not reported). Maximum output: unknown (not reported). Physical model size: not reported.')
+    expect(rows[1].querySelector('.sr-only')?.textContent).toBe('Context window: 200,000 tokens. Maximum output: 0 tokens.')
+    for (const row of [rows[0], rows[2], rows[3]]) {
+      expect(row.querySelector('.uam-np-model__capacities')).toBeNull()
+      expect(row.textContent).not.toMatch(/unknown|not reported|Physical/i)
+    }
     expect(rows[1].querySelector('.uam-np-model__capacities')?.getAttribute('aria-hidden')).toBe('true')
     act(() => root.unmount()); host.remove()
+  })
+
+  it('shows a single reported limit with its unit and no fragment for the missing one', () => {
+    const source = { availableModels: [{ id: 'context-only', name: 'Context only', description: '', contextWindowTokens: 200000, maxOutputTokens: -1 }] }
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    act(() => root.render(<ModelPickerContent providers={providers} providerId="codex-cli" currentModelId="context-only" activeOptions={buildModelOptions(source, '', undefined, 'codex-cli', true)} modelDisabled={false} canChangeProvider workspaceDirectory="/project" executionHostId="local" onSelect={() => {}} onClose={() => {}} />))
+    const row = Array.from(host.querySelectorAll('[role="menuitemradio"]')).find(item => item.textContent?.includes('Context only'))!
+    expect(capacityValues(row)).toEqual(['Context 200K'])
+    expect(row.querySelector('.uam-np-model__capacity-unit')).not.toBeNull()
+    expect(row.querySelector('.sr-only')?.textContent).toBe('Context window: 200,000 tokens.')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('hides every limit when the General display setting is off', () => {
+    vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'uam-appearance' ? JSON.stringify({ modelTokenLimits: false }) : null, setItem: () => {}, removeItem: () => {} })
+    const source = { availableModels: [{ id: 'reported', name: 'Reported', description: 'Reported limits', contextWindowTokens: 200000, maxOutputTokens: 8192 }] }
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    act(() => root.render(<ModelPickerContent providers={providers} providerId="codex-cli" currentModelId="reported" activeOptions={buildModelOptions(source, '', undefined, 'codex-cli', true)} modelDisabled={false} canChangeProvider workspaceDirectory="/project" executionHostId="local" onSelect={() => {}} onClose={() => {}} />))
+    expect(host.querySelector('.uam-np-model__capacities')).toBeNull()
+    expect(host.textContent).not.toContain('Context window')
+    act(() => root.render(<ModelPickerContent providers={providers} providerId="codex-cli" currentModelId="reported" activeOptions={buildModelOptions(source, '', undefined, 'codex-cli', true)} modelDisabled canChangeProvider workspaceDirectory="/project" executionHostId="local" onSelect={() => {}} onClose={() => {}} />))
+    const disabledRows = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).filter(row => row.disabled)
+    expect(disabledRows.length).toBeGreaterThan(0)
+    for (const row of disabledRows) expect(`${row.getAttribute('aria-label')} ${row.title}`).not.toContain('Context window')
+    act(() => root.unmount()); host.remove()
+    vi.unstubAllGlobals()
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   })
 
   it('keeps provider and host/workspace limits separate through favourites and capacity-only refreshes', () => {
@@ -167,17 +199,17 @@ describe('model capacity badges', () => {
       modelDisabled={false} canChangeProvider workspaceDirectory={workspace} executionHostId="ssh-lab" onSelect={() => {}} onClose={() => {}} />))
     const badges = () => Array.from(host.querySelectorAll('[role="menuitemradio"]'), capacityValues)
     render(200000)
-    expect(badges()).toEqual([['200K', '4.1K']])
+    expect(badges()).toEqual([['Context 200K', 'Output 4.1K']])
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Claude"]')!.click())
-    expect(badges()).toEqual([['unknown', 'unknown'], ['1M', '64K']])
+    expect(badges()).toEqual([[], ['Context 1M', 'Output 64K']])
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Favorites"]')!.click())
-    expect(badges()).toEqual([['200K', '4.1K'], ['1M', '64K'], ['unknown', 'unknown']])
+    expect(badges()).toEqual([['Context 200K', 'Output 4.1K'], ['Context 1M', 'Output 64K'], []])
     expect(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2].disabled).toBe(true)
     act(() => useAppStore.setState({ providerModelCatalogs: [scoped('ssh-lab', '/project', 128000)] }))
     render(null)
-    expect(badges()).toEqual([['unknown', '4.1K'], ['128K', '64K'], ['unknown', 'unknown']])
+    expect(badges()).toEqual([['Output 4.1K'], ['Context 128K', 'Output 64K'], []])
     render(null, '/unavailable-project')
-    expect(badges()).toEqual([['unknown', '4.1K'], ['unknown', 'unknown'], ['unknown', 'unknown']])
+    expect(badges()).toEqual([['Output 4.1K'], [], []])
     expect(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[1].disabled).toBe(true)
     expect(useAppStore.getState().discoverProviderModels).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
