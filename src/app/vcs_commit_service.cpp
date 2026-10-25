@@ -599,6 +599,9 @@ namespace uam
 			/// Workspace-relative peg targets; true schedules the selected new item with its non-ignored contents.
 			std::vector<std::pair<std::string, bool>> additions;
 			std::vector<std::string> deletions;
+			/// Selected new items (unversioned or already scheduled `A`) whose scheduled descendants are published too,
+			/// so a retry after a failed commit keeps the same selection.
+			std::vector<std::string> contents;
 			std::set<std::string> seen;
 			void AddTarget(const std::string& target) { if (seen.insert(target).second) targets.push_back(target); }
 		};
@@ -672,7 +675,9 @@ namespace uam
 						if (local_root != nullptr && (!exists_locally(current, exists) || !exists)) { error = "A selected SVN addition no longer exists."; return false; }
 						// Parents are added alone; a selected new folder brings its contents (svn add honours svn:ignore).
 						if (plan.seen.insert(target).second) { plan.additions.emplace_back(target, leaf); plan.targets.push_back(target); }
+						if (leaf) plan.contents.push_back(target);
 					}
+					else if (item == 'A' && leaf) plan.contents.push_back(target);
 					if (item == 'A' && !leaf) plan.AddTarget(target);
 					if (!leaf) continue;
 					if (!unversioned_parent && code.empty()) { error = "A selected SVN path is no longer changed: " + file; return false; }
@@ -703,7 +708,9 @@ namespace uam
 			{
 				if (!SvnOutput(svn, {"add", "--non-interactive", "--depth", with_contents ? "infinity" : "empty", "--", target}, nullptr, error))
 				{ error += retained; return false; }
-				if (!with_contents) continue;
+			}
+			for (const std::string& target : plan.contents)
+			{
 				std::string output;
 				if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &output, error)) { error += retained; return false; }
 				// ponytail: every added descendant becomes an argv target; very large new trees can reach OS argv limits.
@@ -1847,9 +1854,11 @@ namespace uam
 		std::string line;
 		while (std::getline(lines, line))
 		{
-			const std::size_t code = line.find("svn: E");
-			if (code == std::string::npos) continue;
-			std::string summary = uam::strings::Trim(line.substr(code + 5));
+			std::size_t code = line.find("svn: E");
+			if (code != std::string::npos) code += 5;
+			else if ((code = line.find("svn: warning: W")) != std::string::npos) code += 14;
+			else continue;
+			std::string summary = uam::strings::Trim(line.substr(code));
 			constexpr std::size_t kMaxSummaryBytes = 240;
 			if (summary.size() > kMaxSummaryBytes)
 			{

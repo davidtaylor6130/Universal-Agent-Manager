@@ -72,7 +72,7 @@ namespace uam
 
 	/// <summary>Runs `svn args...` as argv (no shell) in `cwd` with a UTF-8 locale; a missing client gets a clear error.</summary>
 	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
-	/// <summary>Bounded failure detail: the missing-client notice or svn's first "E<code>: ..." line; empty when neither exists.</summary>
+	/// <summary>Bounded failure detail: the missing-client notice or svn's first "E<code>: ..." or "W<code>: ..." line; empty when neither exists.</summary>
 	std::string SvnFailureSummary(const ProcessExecutionResult& result);
 	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
 	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under

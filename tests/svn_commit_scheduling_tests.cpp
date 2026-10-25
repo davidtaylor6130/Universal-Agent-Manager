@@ -428,9 +428,11 @@ UAM_TEST(SvnSnapshotSkipsSvnIgnoredItemsAndKeepsThemUntracked)
 	if (!svn.ready || !GitAvailableForTests()) return;
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "app.txt", "tracked\n"));
 	UAM_ASSERT(svn.Svn({"add", "--", "app.txt"}));
-	UAM_ASSERT(svn.Svn({"propset", "svn:ignore", "Library", "."}));
+	UAM_ASSERT(svn.Svn({"propset", "svn:ignore", "Library\ntrail*", "."}));
 	UAM_ASSERT(svn.Svn({"commit", "-m", "ignore"}));
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "Library" / "cache.bin", "large generated cache\n"));
+	// Git drops unescaped trailing spaces from exclude patterns, so this name needs escaping.
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "trail " / "cache.bin", "ignored\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "draft.txt", "unversioned\n"));
 	svn.app.settings.git_enabled = true;
 	svn.app.data_root = svn.temporary.root / "data";
@@ -449,10 +451,72 @@ UAM_TEST(SvnSnapshotSkipsSvnIgnoredItemsAndKeepsThemUntracked)
 	UAM_ASSERT_EQ(ReadFile(worktree / "app.txt"), std::string("tracked\n"));
 	UAM_ASSERT_EQ(ReadFile(worktree / "draft.txt"), std::string("unversioned\n"));
 	UAM_ASSERT(!fs::exists(worktree / "Library"));
+	UAM_ASSERT(!fs::exists(worktree / "trail "));
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / "Library" / "rebuilt.bin", "agent output\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "trail " / "rebuilt.bin", "agent output\n"));
 	const ProcessExecutionResult status = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(worktree.string()) + " status --porcelain", 120000);
 	UAM_ASSERT(status.ok && status.exit_code == 0);
 	UAM_ASSERT(uam::strings::IsBlank(status.output));
 	UAM_ASSERT_EQ(ReadFile(svn.workspace / "Library" / "cache.bin"), std::string("large generated cache\n"));
+}
+#endif
+
+#ifndef _WIN32
+UAM_TEST(SvnRealNewFolderRetryAfterFailedCommitPublishesItsContents)
+{
+	RealSvnCheckout svn;
+	if (!svn.ready) return;
+	// A pre-commit hook rejects the first publication, leaving the folder scheduled for addition.
+	const fs::path refuse = svn.temporary.root / "refuse";
+	UAM_ASSERT(uam::io::WriteTextFile(refuse, "refuse\n"));
+	const fs::path hook = svn.repository / "hooks" / "pre-commit";
+	UAM_ASSERT(uam::io::WriteTextFile(hook, "#!/bin/sh\ntest ! -f " + ShellQuoteForTest(refuse.string()) + "\n"));
+	fs::permissions(hook, fs::perms::owner_all);
+	fs::create_directories(svn.workspace / "newdir" / "sub");
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "newdir" / "a.txt", "new\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "newdir" / "sub" / "b.txt", "new\n"));
+	UAM_ASSERT(!uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "first", {"newdir"}).ok);
+	UAM_ASSERT(svn.ChangedPaths().contains("newdir/sub/b.txt"));
+	fs::remove(refuse);
+	const uam::VcsCommitResult retry = uam::VcsCommitService().Commit(svn.app, svn.chat, uam::VcsType::Svn, "retry", {"newdir"});
+	if (!retry.ok) std::fprintf(stderr, "retry: %s\n", retry.error.c_str());
+	UAM_ASSERT(retry.ok);
+	UAM_ASSERT(svn.ChangedPaths().empty());
+	const ProcessExecutionResult listed = uam::RunSvn(svn.workspace, {"list", "--non-interactive", "-R", "--", svn.url});
+	UAM_ASSERT(listed.output.find("newdir/sub/b.txt") != std::string::npos);
+	UAM_ASSERT(listed.output.find("newdir/a.txt") != std::string::npos);
+}
+
+UAM_TEST(SvnSnapshotStopsWhenIgnoreRulesCannotBeRead)
+{
+	if (!GitAvailableForTests()) return;
+	// Real svn reports a non-checkout as a warning with exit 0; an error exit must fail the same way.
+	for (const std::string& mode : {"error", "warning"})
+	{
+	TempDir temp("uam-svn-ignore-failure");
+	const fs::path source = temp.root / "source";
+	fs::create_directories(source / ".svn");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "tracked\n"));
+	const fs::path shim = temp.root / "bin" / "svn";
+	UAM_ASSERT(uam::io::WriteTextFile(shim, mode == "error" ? "#!/bin/sh\nprintf '%s\\n' \"svn: E155007: '$PWD' is not a working copy\" >&2\nexit 1\n" : "#!/bin/sh\nprintf '%s\\n' \"svn: warning: W155007: '$PWD' is not a working copy\" >&2\nexit 0\n"));
+	fs::permissions(shim, fs::perms::owner_all);
+	ScopedEnvVar path("PATH", shim.parent_path().string() + ":" + uam::env::GetNonEmptyString("PATH").value_or(""));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatFolder folder;
+	folder.id = "folder";
+	folder.directory = source.string();
+	app.folders.push_back(folder);
+	ChatSession chat = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
+	chat.workspace_directory = source.string();
+	app.chats.push_back(chat);
+	const uam::GitWorktreeOperationResult created = uam::GitWorktreeService().CreateForChat(app, app.chats.front());
+	UAM_ASSERT(!created.ok);
+	UAM_ASSERT(created.message.find("Could not read the SVN ignore rules") != std::string::npos);
+	UAM_ASSERT(created.message.find(mode == "error" ? "E155007" : "W155007") != std::string::npos);
+	UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
+	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("tracked\n"));
+	}
 }
 #endif

@@ -433,15 +433,21 @@ namespace uam
 			return value.empty() || relative.is_absolute() || value == ".." || value.starts_with("../") || value.find('\n') != std::string::npos || value.find('\r') != std::string::npos || value.find('\0') != std::string::npos;
 		}
 
-		/// svn:ignore and global-ignores items ('I' rows). Empty when svn cannot list them, which keeps the full copy.
-		std::set<std::filesystem::path> SvnIgnoredSnapshotPaths(const std::filesystem::path& source_root)
+		/// svn:ignore and global-ignores items ('I' rows). Fails closed: unknown ignore rules must not copy ignored content.
+		bool SvnIgnoredSnapshotPaths(const std::filesystem::path& source_root, std::set<std::filesystem::path>& ignored, std::string& error, std::stop_token stop)
 		{
-			std::set<std::filesystem::path> ignored;
-			const ProcessExecutionResult listed = RunSvn(source_root, {"status", "--no-ignore", "--non-interactive", "--", "."});
-			if (!CommandSucceeded(listed) || listed.output_truncated) return ignored;
+			ignored.clear();
+			const ProcessExecutionResult listed = RunSvn(source_root, {"status", "--no-ignore", "--non-interactive", "--", "."}, kDefaultGitCommandTimeoutMs, stop);
+			// svn exits 0 with only a warning (e.g. W155007 "not a working copy"); that status is incomplete too.
+			if (!CommandSucceeded(listed) || listed.output_truncated || listed.output.find("svn: warning: W") != std::string::npos)
+			{
+				const std::string detail = SvnFailureSummary(listed);
+				error = "Could not read the SVN ignore rules, so no managed snapshot was created" + (detail.empty() ? std::string(".") : " (" + detail + ").");
+				return false;
+			}
 			for (const VcsChangedFile& file : ParseSvnStatusOutput(listed.output, paths::Utf8PathString(source_root)))
 				if (file.status.front() == 'I') ignored.insert(paths::PathFromUtf8(file.path).lexically_normal());
-			return ignored;
+			return true;
 		}
 
 		/// Keeps ignored SVN items untracked in the managed repository, so later checkpoints and ports skip them too.
@@ -451,11 +457,14 @@ namespace uam
 			std::string patterns;
 			for (const std::filesystem::path& path : ignored)
 			{
-				// ponytail: escapes glob characters only; a trailing space in a name stays unescaped.
+				const std::string name = paths::PortablePathString(path);
+				const std::size_t kept = name.find_last_not_of(' ') + 1;
 				patterns += '/';
-				for (const char ch : paths::PortablePathString(path))
+				for (std::size_t index = 0; index < name.size(); ++index)
 				{
-					if (ch == '\\' || ch == '*' || ch == '?' || ch == '[') patterns += '\\';
+					const char ch = name[index];
+					// Git drops unescaped trailing spaces and treats these characters as globs.
+					if (ch == '\\' || ch == '*' || ch == '?' || ch == '[' || index >= kept) patterns += '\\';
 					patterns += ch;
 				}
 				patterns += '\n';
@@ -1869,7 +1878,8 @@ namespace uam
 		if (managed_repository)
 		{
 			std::vector<SnapshotFile> files;
-			const std::set<std::filesystem::path> svn_ignored = source_kind == LocalSnapshotSource::Svn ? SvnIgnoredSnapshotPaths(source_root) : std::set<std::filesystem::path>{};
+			std::set<std::filesystem::path> svn_ignored;
+			if (source_kind == LocalSnapshotSource::Svn && !SvnIgnoredSnapshotPaths(source_root, svn_ignored, result.message, stop)) return result;
 			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message, svn_ignored))
 			{
 				return result;
