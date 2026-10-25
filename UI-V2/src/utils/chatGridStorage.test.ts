@@ -26,6 +26,20 @@ describe('chat grid storage', () => {
     expect(chatGridLeaves(layout.root)).toHaveLength(3)
   })
 
+  it('parses the stored layout once per stored value and reparses after any write', () => {
+    writeChatGridLayout(splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal'))
+    const parse = vi.spyOn(JSON, 'parse')
+    const first = readChatGridLayout()
+    expect(readChatGridLayout()).toBe(first)
+    expect(readChatGridLayout()).toBe(first)
+    expect(parse).toHaveBeenCalledTimes(1)
+    localStorage.setItem('uam-chat-grid-layout-v2', JSON.stringify({ ...first, activeLeafId: 'leaf-1' }))
+    const external = readChatGridLayout()
+    expect(external).not.toBe(first)
+    expect(external.activeLeafId).toBe('leaf-1')
+    parse.mockRestore()
+  })
+
   it('migrates the legacy four-pane layout with assignments and sizes', () => {
     localStorage.setItem('uam-chat-grid-layout-v1', JSON.stringify({
       paneCount: 4, activePane: 3, sessionIds: ['one', 'two', 'three', 'four'],
