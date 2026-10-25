@@ -56,13 +56,7 @@ namespace
 			session->protocol_kind = "gemini-acp";
 			session->session_id = "private-warm-session";
 			session->current_mode_id = "default";
-#if defined(_WIN32)
-			const fs::path script = temp.root / "capture.cmd";
-			UAM_ASSERT(uam::io::WriteTextFile(script, "@echo off\r\nsetlocal EnableDelayedExpansion\r\n:read\r\nset \"line=\"\r\nset /p \"line=\"\r\nif not defined line goto :eof\r\n>>\"%~1\" echo(!line!\r\ngoto read\r\n"));
-			const std::vector<std::string> command{"cmd", "/D", "/C", script.string(), output.string()};
-#else
-			const std::vector<std::string> command{"/bin/sh", "-c", "cat > \"$1\"", "private-skill-wire", output.string()};
-#endif
+			const std::vector<std::string> command = StdioCatArgv(output);
 			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, command, &error));
 			session->running = session->session_ready = session->initialized = true;
 			app.acp_sessions.push_back(std::move(owned));

@@ -55,15 +55,20 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD COMMAND "${{CMAKE_C
   "${{UAM_UI_DIST_SRC}}/index.html" "${{CMAKE_BINARY_DIR}}/packaged.html")
 ''')
             build = source / 'Builds'
+            logs = []
+
             def run(*args, success=True):
                 result = subprocess.run(['cmake', *map(str, args)], capture_output=True, text=True)
+                logs.append(result.stdout + result.stderr)
                 self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
 
             def count():
                 return len((ui / 'runs.txt').read_text().splitlines())
 
             def make():
-                run('--build', build, '--config', 'Release', '--parallel', '2')
+                # Diagnostic: MSBuild detailed verbosity logs why each CustomBuild is out of date.
+                verbose = ['--', '-v:d'] if (build / 'ALL_BUILD.vcxproj').exists() else []
+                run('--build', build, '--config', 'Release', '--parallel', '2', *verbose)
 
             def edit(path, content):
                 # Makefile generators compare timestamps at filesystem resolution.
@@ -79,7 +84,9 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD COMMAND "${{CMAKE_C
             make()
             run('-S', source, '-B', build)
             make()
-            self.assertEqual(count(), 1, 'No-op builds or reconfiguration rebuilt the UI')
+            self.assertEqual(count(), 1, 'No-op builds or reconfiguration rebuilt the UI\n' + '\n'.join(
+                line for log in logs[-3:] for line in log.splitlines()
+                if 'UI-V2' in line or 'out of date' in line.lower() or 'newer' in line.lower() or 'rebuild' in line.lower()))
             self.assertEqual(packaged.stat().st_mtime_ns, first, 'No-op build repackaged the app')
             edit(source / 'main.cpp', 'int main() { return 1; }\n')
             self.assertEqual(count(), 1, 'Native-only edit rebuilt the UI')

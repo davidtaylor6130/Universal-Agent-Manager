@@ -522,7 +522,8 @@ UAM_TEST(CentralMemoryDetailsRemainReadableThroughTheOwnedIndex)
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
 	const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
 	const fs::path instructions = uam::paths::PathFromUtf8(config["instructions"][0].get<std::string>());
-	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory / "memory/index.md")) != std::string::npos);
+	// __UAM_RESOURCE_ROOT__ is replaced textually, so the suffix keeps the instruction's '/' on every host.
+	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory) + "/memory/index.md") != std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "memory/global/Lessons/AI_Lessons/example.md"), detail);
 	UAM_ASSERT_EQ(ReadFile(memory / "example.md"), detail);
 }

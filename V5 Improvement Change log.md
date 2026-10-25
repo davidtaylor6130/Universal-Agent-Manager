@@ -878,6 +878,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Bugfix | Quit During Cold Picker | Quitting while the first folder picker of a session is still opening retries cancellation inside the picker loop until it closes, instead of leaving Quit ignored (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Cold Owned-image Retry Refusal | The stopped remote Claude owned-image case asserts the current exact refusal and stops there until cold saved-image Retry is qualified (#449); the text-resume variant keeps its full delivery checks. | Implemented; David Approved Interim Refusal Assertion 2026-10-25; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Windows Native Runtime Corrections | Windows command quoting keeps percent signs and trailing backslashes, staged publication and directory pins use the intended sharing, atomic writes rely on FlushFileBuffers instead of per-write write-through, long paths are enabled, runner memory reads long workspaces and sources compile as UTF-8 (#442). | Implemented; Windows CI Pending; Un-Reviewed; Not User Tested |
+| Native verification | Code Only | Windows Native Test Fixtures | Windows native tests use a byte-exact stdio sink, fixture Git without system autocrlf, long-path-safe store paths, closed readers before publication and the platform path forms the product already publishes (#442). | Implemented; Windows CI Pending; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 

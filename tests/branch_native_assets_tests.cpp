@@ -1141,7 +1141,7 @@ namespace
 			std::string part;
 			while (std::getline(text, part, ':')) parts.push_back(part);
 			UAM_ASSERT(parts.size() == 5 && parts[0] == "na1");
-			const auto blob = app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin");
+			const auto blob = uam_test::NativePath(app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin"));
 			UAM_ASSERT(fs::is_regular_file(blob));
 			UAM_ASSERT_EQ(uam_test::ReadFile(blob), expected_original);
 			return blob;

@@ -5536,7 +5536,8 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 		const std::size_t end = source.find(end_text, start);
 		UAM_ASSERT(start != std::string::npos);
 		UAM_ASSERT(end != std::string::npos);
-		const std::string handler = source.substr(start, end - start);
+		std::string handler = source.substr(start, end - start);
+		std::erase(handler, '\r'); // Windows checkouts use CRLF; restore_text spans a line break.
 		const std::size_t snapshot = handler.find(snapshot_text);
 		const std::size_t mutation = handler.find(mutation_text);
 		const std::size_t save = handler.find(save_text);
@@ -5885,7 +5886,10 @@ UAM_TEST(ShellEscapedArgumentJoiningPreservesEmptyArguments)
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[0]), uam::shell::EscapeArg(args[0]).size());
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[2]), uam::shell::EscapeArg(args[2]).size());
 #if defined(_WIN32)
-	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b%%c  d\""));
+	// cmd.exe command-line mode keeps %% literally, so % is caret-escaped outside the quotes.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b\"^%\"c  d\""));
+	// A trailing separator must not escape the closing quote for the CRT argv parser.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("C:\\dir\\"), std::string("\"C:\\dir\\\\\""));
 #else
 	UAM_ASSERT_EQ(uam::shell::EscapeArg("quote's"), std::string("'quote'\\''s'"));
 #endif
@@ -11467,7 +11471,16 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(RunGitForTest(repo, "commit --allow-empty -m initial"));
-	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo)));
+	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
+		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
+		return uam::strings::Trim(result.output);
+	};
+	// The service keys worktrees by Git's verified top level, which Git for Windows reports in
+	// long-name form even when the runner's TEMP uses an 8.3 alias such as RUNNER~1.
+	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(git_output("rev-parse --show-toplevel")))));
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(app.data_root / "worktrees" / repo_key / "review")).size();
@@ -11477,13 +11490,6 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	const std::string logical_name = "review/" + std::string(80, 'a');
 	const fs::path original = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(logical_name);
 	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original) / ".git").size(), static_cast<std::size_t>(268));
-	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
-	{
-		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
-		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
-		return uam::strings::Trim(result.output);
-	};
 	std::vector<ChatSession> chats(4);
 	for (std::size_t index = 0; index < chats.size(); ++index)
 	{
@@ -25773,6 +25779,21 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+	if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--uam-test-stdio-cat")
+	{
+		// Paired with uam_test::StdioCatArgv: copy stdin unchanged until EOF.
+		const HANDLE output = argc == 3
+		    ? CreateFileW(std::filesystem::path(argv[2]).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+		    : GetStdHandle(STD_OUTPUT_HANDLE);
+		if (output == INVALID_HANDLE_VALUE) return 1;
+		char buffer[8192];
+		DWORD count = 0, written = 0;
+		while (::ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, sizeof(buffer), &count, nullptr) && count > 0)
+			if (!::WriteFile(output, buffer, count, &written, nullptr) || written != count) return 1;
+		return 0;
+	}
+#endif
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;
@@ -25862,6 +25883,10 @@ int main(int argc, char** argv)
 		return *fixture_result;
 	}
 #endif
+	// Fixture repositories must check out the bytes they commit. Git for Windows ships a system
+	// core.autocrlf=true, which turns committed "x\n" into "x\r\n" and adds LF/CRLF warnings to
+	// captured output; product-owned repositories already pin this per command.
+	const ScopedEnvVar git_line_endings("GIT_CONFIG_PARAMETERS", "'core.autocrlf=false'");
 	int failures = 0;
 	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
 	{

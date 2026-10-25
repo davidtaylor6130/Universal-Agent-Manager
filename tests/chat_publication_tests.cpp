@@ -717,9 +717,17 @@ UAM_TEST(ChatPublicationUnfinishedPrivateSpoolRejectsReplacementAndPreservesByte
 	{
 		uam::chat_pages::Builder builder(primary, chat.id, records);
 		UAM_ASSERT(builder.Add(spans.front(), chat.messages.front()));
+#if defined(_WIN32)
+		// The spool stream is an MSVC fstream without FILE_SHARE_DELETE, so Windows refuses the
+		// foreign replacement itself (ReplaceFileW needs DELETE on the replaced file).
+		UAM_ASSERT(!uam::io::AtomicWriteFileDetailed(records, foreign).success);
+		UAM_ASSERT(PublicationBytes(records) != foreign);
+	}
+#else
 		UAM_ASSERT(uam::io::AtomicWriteFileDetailed(records, foreign).success);
 		UAM_ASSERT_EQ(PublicationBytes(records), foreign);
 		UAM_ASSERT(!builder.Add(spans.front(), chat.messages.front()));
 	}
 	UAM_ASSERT_EQ(PublicationBytes(records), foreign);
+#endif
 }
