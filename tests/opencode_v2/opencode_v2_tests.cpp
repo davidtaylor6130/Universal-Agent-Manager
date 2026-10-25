@@ -1,4 +1,4 @@
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #include "common/runtime/cli_version_parser.h"
 #include <iostream>
 #include <stdexcept>

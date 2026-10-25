@@ -2,7 +2,7 @@
 #include "runtime_orchestration_services.h"
 #include "runtime_orchestration_internal.h"
 #include "common/provider/native_agent_history.h"
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 
 #include "app/chat_domain_service.h"
 #include "app/managed_subagent_control_service.h"

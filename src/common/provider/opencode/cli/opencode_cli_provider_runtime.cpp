@@ -4,7 +4,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #include "app/opencode_native_activity_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"

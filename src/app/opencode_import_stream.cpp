@@ -1,5 +1,5 @@
 #include "app/opencode_import_stream.h"
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #include "app/runtime_orchestration_services.h"
 #include "core/native_import_content.h"
 #include "common/platform/platform_services.h"

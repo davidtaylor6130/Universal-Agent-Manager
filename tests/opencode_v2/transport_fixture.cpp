@@ -1,4 +1,4 @@
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/utils/base64.h"

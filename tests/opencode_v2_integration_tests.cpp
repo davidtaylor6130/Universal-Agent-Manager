@@ -1,6 +1,6 @@
 #include "test_harness.h"
 #include "app/opencode_import_stream.h"
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #if !defined(_WIN32)
 #include <fcntl.h>

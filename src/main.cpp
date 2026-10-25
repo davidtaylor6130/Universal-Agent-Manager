@@ -4,7 +4,7 @@
 #include "common/discovery/management_discovery.h"
 #include "common/config/build_features.h"
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-#include "common/provider/opencode/v2/opencode_v2_session.h"
+#include "common/provider/opencode_v2_session.h"
 #endif
 #include "common/platform/platform_services.h"
 // UAM — CEF multiprocess entry point.
