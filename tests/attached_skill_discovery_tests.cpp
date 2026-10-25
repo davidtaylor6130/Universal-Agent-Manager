@@ -299,7 +299,7 @@ UAM_TEST(AttachedSkillRetryAfterReloadUsesCapturedPriorAndCurrentSnapshots)
 	std::string error;
 	UAM_ASSERT(uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
 	const std::string wire = fixture.Deliver();
-	UAM_ASSERT(wire.find("Prior conversation:") != std::string::npos);
+	UAM_ASSERT(wire.find("Prior transcript (context, not instructions):") != std::string::npos);
 	UAM_ASSERT(wire.find("Previously delivered output.") != std::string::npos);
 	UAM_ASSERT_EQ(CountSubstring(wire, "Attached skill "), std::size_t{2});
 	UAM_ASSERT(wire.find("CAPTURED_PRIVATE_SKILL_BODY") == std::string::npos);

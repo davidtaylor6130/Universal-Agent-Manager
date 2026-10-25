@@ -52,6 +52,11 @@ namespace
 			app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
 			app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
 			app.runtime_cli_version_provider_id = "codex-cli";
+			// A new chat on a ready protocol-3 host captures its repository baseline before launch;
+			// settle it here (the fake SSH has no runner, so the workspace has no baseline).
+			std::string baseline_error;
+			if (uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &baseline_error) == uam::ChatBaselineReadiness::Pending)
+				UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &baseline_error) == uam::ChatBaselineReadiness::Unavailable);
 		}
 		~RemoteOpenCodeVersionLaunchFixture()
 		{

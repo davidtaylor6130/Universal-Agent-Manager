@@ -749,6 +749,12 @@ UAM_TEST(CliTerminalRoutesRemoteChatsThroughSshWithoutLaunchingTheProviderLocall
 	}
 	app.provider_profiles.front() = provider;
 	chat.native_session_id.clear();
+	// HandleStartCli settles a new chat's repository baseline (over SSH) before session setup;
+	// do the same, then reset the capture so the refusal below is proven not to reach SSH.
+	std::string baseline_error;
+	if (uam::PrepareChatRepositoryBaseline(app, chat, &baseline_error) == uam::ChatBaselineReadiness::Pending)
+		UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &baseline_error) == uam::ChatBaselineReadiness::Unavailable);
+	(void)fs::remove(captured);
 	UAM_ASSERT(!uam::StartCliTerminalForChat(app, terminal, chat, 24, 80));
 	UAM_ASSERT(terminal.last_error.find("saved session") != std::string::npos);
 	UAM_ASSERT(!fs::exists(captured));

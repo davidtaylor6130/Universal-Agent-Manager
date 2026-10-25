@@ -873,6 +873,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Bugfix | Intel CEF Framework Signing | The macOS helper script signs an unsigned CEF framework before the helpers and main executable, and the signing test now starts from an unsigned framework (#443). | Implemented; Signing Test Fails Before And Passes After; Intel CI Pending; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Warm Composer Budget Measurement | The empty new-chat composer budget mounts another chat untimed first so its unchanged 100 ms measurement excludes one-time worker start-up. | Implemented; Frontend CI Pending; Un-Reviewed; Not User Tested |
 | Build and evidence | Misc | Test V5 Base Pushes | CI now also runs on pushes to uam/v5-improvements so the integration branch itself is tested. | Implemented; Un-Reviewed; Not User Tested |
+| Native verification | Code Only | Base Fixture Contract Updates | Native fixtures assert the `<UAM History>` retry format and receipt-based memory rollback, settle the new pre-launch repository baseline, and flush deferred admission saves before reading chats (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 

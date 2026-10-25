@@ -5529,7 +5529,8 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 	const std::string settings = ReadFile(source_root / "src/cef/settings_handlers.cpp");
 	const std::string markdown = ReadFile(source_root / "src/cef/markdown_handlers.cpp");
 	const auto assert_rollback = [](const std::string& source, std::string_view start_text, std::string_view end_text,
-	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text)
+	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text,
+	                                std::string_view save_text = "if (!PersistenceCoordinator().SaveSettings(m_app))")
 	{
 		const std::size_t start = source.find(start_text);
 		const std::size_t end = source.find(end_text, start);
@@ -5538,7 +5539,7 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 		const std::string handler = source.substr(start, end - start);
 		const std::size_t snapshot = handler.find(snapshot_text);
 		const std::size_t mutation = handler.find(mutation_text);
-		const std::size_t save = handler.find("if (!PersistenceCoordinator().SaveSettings(m_app))");
+		const std::size_t save = handler.find(save_text);
 		const std::size_t restore = handler.find(restore_text, save);
 		const std::size_t failure = handler.find("cb->Failure(500", restore);
 		UAM_ASSERT(snapshot != std::string::npos);
@@ -5552,8 +5553,11 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 		UAM_ASSERT(restore < failure);
 	};
 
+	// Memory settings restore only on a receipt-proven pre-replace rejection; an unknown outcome stays latched.
 	assert_rollback(settings, "void UamQueryHandler::HandleSetMemorySettings", "void UamQueryHandler::HandleSetMcpServers",
-	                "const AppSettings previous = m_app.settings;", "m_app.settings.memory_enabled_default =", "m_app.settings = previous;");
+	                "SettingsMemoryCanonicalValues previous = CaptureMemorySettings(m_app.settings);", "ApplyMemorySettings(m_app.settings, CaptureMemorySettings(candidate));",
+	                "else if (receipt.outcome == SettingsMemoryWriteOutcome::RejectedBeforeReplace)\n\t\tApplyMemorySettings(m_app.settings, std::move(previous));",
+	                "PersistenceCoordinator().SaveSettings(m_app, &receipt");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetProviderChatDefaults", "void UamQueryHandler::HandleSetSidebarSettings",
 	                "const AppSettings previous = m_app.settings;", "m_app.settings.default_new_chat_provider_id =", "m_app.settings = previous;");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetEditorSettings", "void UamQueryHandler::HandleRefreshCliProviderVersion",
@@ -12334,6 +12338,7 @@ UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First original prompt", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(!app.acp_sessions.empty());
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12382,6 +12387,7 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Keep this prompt once", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));

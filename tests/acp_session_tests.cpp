@@ -3404,6 +3404,10 @@ UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 		app.chats.push_back(std::move(chat));
 
 		std::string error;
+		// Settle the new chat's pre-launch repository baseline so this Send exercises the cold version wait.
+		if (uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Pending)
+			UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at("remote-e2e"), {}, &error) != uam::ChatBaselineReadiness::Failed);
+		error.clear();
 		UAM_ASSERT(uam::SendAcpPrompt(app, "remote-e2e", "Answer through the runner.", {}, {},
 		                              false, &error));
 		UAM_ASSERT(app.acp_sessions.front()->pending_local_launch != nullptr && !app.acp_sessions.front()->running);
