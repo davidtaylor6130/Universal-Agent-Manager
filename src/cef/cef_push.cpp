@@ -41,6 +41,8 @@ namespace
 	bool g_state_push_deferred = false;
 	// Earliest moment a deferred summary leaves its throttle window; quiet ticks skip the fingerprint until then.
 	std::chrono::steady_clock::time_point g_deferred_state_push_due_at{};
+	// Throttle decisions read this clock so unit tests can step time deterministically.
+	std::chrono::steady_clock::time_point (*g_state_push_clock)() = &std::chrono::steady_clock::now;
 	std::unordered_map<std::string, nlohmann::json> g_last_pushed_chat_summaries_by_chat_id;
 	nlohmann::json g_last_pushed_folders_fingerprint;
 	nlohmann::json g_last_pushed_resource_collections_fingerprint;
@@ -234,7 +236,7 @@ namespace
 			const auto previous_chat_it = g_last_pushed_chat_summaries_by_chat_id.find(chat_id);
 			if (previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() || previous_chat_it->second != chat)
 			{
-				const auto now = std::chrono::steady_clock::now();
+				const auto now = g_state_push_clock();
 				const auto last_summary_push_it = g_last_summary_push_time_by_chat_id.find(chat_id);
 				const bool launch_changed = previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() ||
 				    CliLaunchIdentityChanged(previous_chat_it->second, chat);
@@ -420,9 +422,14 @@ namespace uam
 		return g_state_push_deferred;
 	}
 
+	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())
+	{
+		g_state_push_clock = clock != nullptr ? clock : &std::chrono::steady_clock::now;
+	}
+
 	bool DeferredStatePushDue()
 	{
-		return g_state_push_deferred && std::chrono::steady_clock::now() >= g_deferred_state_push_due_at;
+		return g_state_push_deferred && g_state_push_clock() >= g_deferred_state_push_due_at;
 	}
 
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)

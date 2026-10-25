@@ -436,8 +436,22 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		throw TestFailure("streaming state push cost " + std::to_string(per_second) + " ms/s; limit " + std::to_string(kStreamingPushBudgetPerSecond.count()) + " ms/s");
 }
 
+namespace
+{
+	std::chrono::steady_clock::time_point g_fake_push_now{std::chrono::hours(1)};
+
+	/// <summary>Steps the push throttle clock by hand and restores the real clock even when an assertion throws.</summary>
+	struct FakeStatePushClock
+	{
+		FakeStatePushClock() { uam::SetStatePushClockForTests([] { return g_fake_push_now; }); }
+		~FakeStatePushClock() { uam::SetStatePushClockForTests(nullptr); }
+		void Advance(std::chrono::milliseconds by) { g_fake_push_now += by; }
+	};
+}
+
 UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 {
+	FakeStatePushClock clock;
 	uam::AppState app;
 	for (const char* id : {"selected-chat", "background-chat"})
 	{
@@ -450,12 +464,15 @@ UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 	uam::PushStateUpdate(nullptr, app);
 	app.chats[1].title = "First stream update";
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(50));
 	app.chats[1].title = "Second stream update";
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT(uam::HasDeferredStatePush());
 	// A quiet tick inside the window must not rebuild the fingerprint.
 	UAM_ASSERT(!uam::DeferredStatePushDue());
-	std::this_thread::sleep_for(std::chrono::milliseconds(110));
+	clock.Advance(std::chrono::milliseconds(49));
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	clock.Advance(std::chrono::milliseconds(1));
 	UAM_ASSERT(uam::DeferredStatePushDue());
 	// The deferred final state is published once due; nothing is lost or repeated.
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));

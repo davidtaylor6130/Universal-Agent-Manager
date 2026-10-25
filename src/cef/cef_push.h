@@ -5,6 +5,7 @@
 #include "common/state/app_state.h"
 #include "common/platform/platform_services.h"
 
+#include <chrono>
 #include <string>
 
 namespace uam
@@ -27,6 +28,8 @@ namespace uam
 	/// no other state change should rebuild the fingerprint and flush it.
 	/// </summary>
 	bool DeferredStatePushDue();
+	/// <summary>Replaces the summary-throttle clock; nullptr restores steady_clock::now.</summary>
+	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)());
 	inline std::string StateFingerprintForTests(const AppState& app)
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();
