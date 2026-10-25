@@ -1,0 +1,116 @@
+name: Build flag leak gate
+
+# Each matrix row builds with one flag OFF (or all providers but one) and fails when the output still
+# mentions what the flags excluded. See docs/build-flags.md and scripts/build_flag_leak_allowlist.json.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 5 * * 2'
+  pull_request:
+    paths:
+      - '.github/workflows/build-flag-leaks.yml'
+      - 'scripts/check_build_flag_leaks.py'
+      - 'scripts/build_flag_leak_allowlist.json'
+      - 'tests/build_flag_leak_gate_test.py'
+      - 'cmake/build_features.cmake'
+      - 'cmake/ui_build.cmake'
+      - 'cmake/build_ui.cmake.in'
+      - 'CMakeLists.txt'
+      - 'src/common/config/build_features.h'
+      - 'src/common/provider/provider_ids.h'
+      - 'UI-V2/**'
+
+permissions:
+  contents: read
+
+jobs:
+  gate-self-test:
+    name: Gate self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tests/build_flag_leak_gate_test.py
+      - run: python3 tests/ui_build_incremental_test.py
+
+  ui:
+    name: UI ${{ matrix.name }}
+    needs: gate-self-test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'no Gemini', off: 'GEMINI' }
+          - { name: 'no Codex', off: 'CODEX' }
+          - { name: 'no Claude', off: 'CLAUDE' }
+          - { name: 'no OpenCode', off: 'OPENCODE' }
+          - { name: 'no Copilot', off: 'COPILOT' }
+          - { name: 'no Antigravity', off: 'ANTIGRAVITY' }
+          - { name: 'no SSH', off: 'SSH' }
+          - { name: 'no computer use', off: 'COMPUTER_USE' }
+          - { name: 'no phone access', off: 'MOBILE_COMPANION' }
+          - { name: 'only Gemini', off: 'CODEX CLAUDE OPENCODE COPILOT ANTIGRAVITY' }
+          - { name: 'only Codex', off: 'GEMINI CLAUDE OPENCODE COPILOT ANTIGRAVITY' }
+          - { name: 'only Claude', off: 'GEMINI CODEX OPENCODE COPILOT ANTIGRAVITY' }
+          - { name: 'only OpenCode', off: 'GEMINI CODEX CLAUDE COPILOT ANTIGRAVITY' }
+          - { name: 'only Copilot', off: 'GEMINI CODEX CLAUDE OPENCODE ANTIGRAVITY' }
+          - { name: 'only Antigravity', off: 'GEMINI CODEX CLAUDE OPENCODE COPILOT' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+      - run: npm --prefix UI-V2 ci
+      - name: Build the bundle with the flags OFF
+        shell: bash
+        run: |
+          for flag in ${{ matrix.off }}; do export "UAM_FEATURE_${flag}=0"; done
+          VITE_UAM_OUT_DIR="$RUNNER_TEMP/dist" npm --prefix UI-V2 run build
+      - name: Check the bundle for excluded names
+        run: python3 scripts/check_build_flag_leaks.py --dist "$RUNNER_TEMP/dist" --disabled ${{ matrix.off }}
+
+  native:
+    name: Native ${{ matrix.name }}
+    needs: ui
+    # Full application builds are expensive; pull requests run them only when the flag plumbing changes.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'no Gemini', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF' }
+          - { name: 'no Codex', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF' }
+          - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF' }
+          - { name: 'no OpenCode', cmake: '-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF' }
+          - { name: 'no Copilot', cmake: '-DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF' }
+          - { name: 'no Antigravity', cmake: '-DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'no SSH', cmake: '-DUAM_ENABLE_SSH=OFF' }
+          - { name: 'no computer use', cmake: '-DUAM_ENABLE_COMPUTER_USE=OFF' }
+          - { name: 'no phone access', cmake: '-DUAM_ENABLE_MOBILE_COMPANION=OFF' }
+          - { name: 'runner only, no OpenCode or Antigravity', cmake: '-DUAM_RUNNER_ONLY=ON -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF', target: uam_runner }
+          - { name: 'only Gemini', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'only Codex', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'only Claude', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'only OpenCode', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'only Copilot', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
+          - { name: 'only Antigravity', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: Builds/flags/_deps
+          key: macOS-uam-flag-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: macOS-uam-flag-deps-
+      - run: npm --prefix UI-V2 ci
+      - run: cmake -S . -B Builds/flags -DCMAKE_BUILD_TYPE=Release -DUAM_PACKAGE_REMOTE_RUNNERS=OFF ${{ matrix.cmake }}
+      - run: cmake --build Builds/flags --config Release --target ${{ matrix.target || 'universal_agent_manager' }} --parallel 4
+      - name: Check the application, runner and bundle for excluded names
+        run: python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags

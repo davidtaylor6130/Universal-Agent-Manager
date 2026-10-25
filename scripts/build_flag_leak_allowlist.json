@@ -1,0 +1,46 @@
+{
+  "description": "Reviewed exceptions for scripts/check_build_flag_leaks.py. Every entry needs a reason. 'path' is a glob over the artifact-relative path, 'pattern' a case-insensitive regex over the surrounding text, 'match' a case-sensitive full match of the matched identifier and 'max' caps how many matches the entry may excuse. Budgets only shrink: the gate notes when one can be lowered.",
+  "entries": [
+    {
+      "flag": "GEMINI",
+      "scope": "ui",
+      "pattern": "zodiac-gemini",
+      "reason": "lucide-react's astrological 'zodiac-gemini' icon in the custom chat icon picker; it names the star sign, not the Gemini provider."
+    },
+    {
+      "flag": "CODEX",
+      "scope": "ui",
+      "pattern": "set(Chat|Session)CodexOptions",
+      "max": 6,
+      "reason": "Shared reasoning and speed bridge action used by every provider with those options (Copilot, Claude); the action name is part of the desktop, companion and iOS protocol, so renaming it is a separate protocol change."
+    },
+    {
+      "flag": "MOBILE_COMPANION",
+      "scope": "ui",
+      "pattern": "\\{companion:",
+      "max": 1,
+      "reason": "Optional NewChatModal prop key; builds without phone access never pass it and the companion shell that does is not bundled."
+    },
+    {
+      "flag": "SSH",
+      "scope": "ui",
+      "match": "[eE]xecutionRouting",
+      "max": 17,
+      "reason": "Store and settings field and method names of the shared state protocol (executionRouting, setExecutionRoutingSettings). The routing page, dialog, wait notice, remote host pages, helper updates and requests are removed and the store methods are empty. Dropping the field names needs the native state serializer and the UI store schema to omit routing in SSH-free builds (Build Flag Complete Removal follow-up)."
+    },
+    {
+      "flag": "SSH",
+      "scope": "ui",
+      "pattern": "remote\\|runner\\|ssh\\|bridge",
+      "max": 1,
+      "reason": "Connection-error classifier regex that recognises transport failures in provider output text; it is not an SSH entry point or label."
+    },
+    {
+      "flag": "COMPUTER_USE",
+      "scope": "ui",
+      "match": "computerUse|ComputerUse",
+      "max": 129,
+      "reason": "Session, settings and composer field, prop and store-method names of the shared state protocol (computerUseEnabled, computerUseTargetId, setSessionComputerUseEnabled). Every computer-use control, label, page, request and message is removed and the store methods refuse. Dropping the field names requires gating the native state serializer and UI sanitizers, which task-1290 is changing (Build Flag Complete Removal follow-up)."
+    }
+  ]
+}
