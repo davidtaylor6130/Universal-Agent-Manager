@@ -226,6 +226,29 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     noReplay()
   })
 
+  it.each([true, undefined] as const)('offers exact receipt Retry for a row-less held direct input only when native allows it (retryAllowed=%s)', async retryAllowed => {
+    // Native emits retryAllowed only for the receipt held by a failed pre-launch repository baseline.
+    act(() => root.unmount())
+    useAppStore.setState(state => ({ messages: { 'delivery-fixture': [] },
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 0 })) }))
+    root = createRoot(host)
+    await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const held = { id: 'baseline-held', revision: 1, text: TEXT, attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '',
+      ...(retryAllowed ? { retryAllowed } : {}) }
+    act(() => useAppStore.setState(state => ({ acpBindingBySessionId: { 'delivery-fixture': acpBindingFromCppChat(chat({
+      lifecycleState: 'error', running: false, lastError: 'Failed to save the chat repository baseline.',
+      unsentDirectPrompts: [held] }), state.acpBindingBySessionId['delivery-fixture']) } })))
+    const row = host.querySelector('[data-unsent-receipt-id="baseline-held"]')!
+    expect(row).not.toBeNull()
+    const retry = row.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')!
+    expect(retry.disabled).toBe(!retryAllowed)
+    expect(row.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')?.disabled).toBe(false)
+    await act(async () => retry.click())
+    expect(requests.filter(request => request.action === 'manageQueuedAcpPrompt')).toEqual(retryAllowed ? [expect.objectContaining({
+      payload: { chatId: 'delivery-fixture', operation: 'retry', index: 0, expected: { id: 'baseline-held', revision: 1 } } })] : [])
+    expect(sends()).toEqual([])
+  })
+
   it('keeps two deliberate identical attempts distinct when one native row cannot identify either', async () => {
     await send(); exactResources()
     const first = host.querySelector('[data-outgoing-message]')!; const firstArticle = first.querySelector('article')!

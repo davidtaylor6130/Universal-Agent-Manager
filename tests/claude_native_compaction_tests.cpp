@@ -212,7 +212,8 @@ UAM_TEST(ClaudeFastTerminalSettingsPreservePermissionsAndFileOverrides)
 		chat.service_tier = fast ? "fast" : "";
 		chat.service_tier_explicit = true;
 		AppSettings settings;
-		settings.provider_extra_flags = "--settings '{\"permissions\":{\"deny\":[\"Bash\"]},\"disableAllHooks\":true}'";
+		// Double quotes with escaped inner quotes split identically under POSIX rules and Windows CommandLineToArgvW.
+		settings.provider_extra_flags = R"(--settings "{\"permissions\":{\"deny\":[\"Bash\"]},\"disableAllHooks\":true}")";
 		const auto argv = runtime.BuildInteractiveArgv(profile, chat, settings);
 		const auto flag = std::ranges::find(argv, "--settings");
 		UAM_ASSERT(flag != argv.end() && std::next(flag) != argv.end());

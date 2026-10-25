@@ -173,6 +173,14 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
+		// Without its created native session this launch is refused anyway; refuse before worktree,
+		// baseline or SSH work. HandleStartCli creates the session (after the baseline) before calling here.
+		if (std::string session_error; runtime.RequiresNativeSessionCreation() &&
+		    ResolveProviderInteractiveResumeId(app, chat, provider).empty() &&
+		    !runtime.PrepareInteractiveSession(app, chat, provider, {}, *execution_host, &session_error))
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, session_error);
+		}
 
 		if (runtime.ModelOptionsRequireRestart() && !chat.reasoning_effort.empty())
 		{
