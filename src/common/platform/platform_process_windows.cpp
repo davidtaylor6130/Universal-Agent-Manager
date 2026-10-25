@@ -880,8 +880,8 @@ class WindowsProcessService final : public IPlatformProcessService
 			if (error_out != nullptr) *error_out = "The terminal command is empty.";
 			return false;
 		}
-		const std::optional<std::string> windows_powershell = ResolveWindowsCommandPath("powershell.exe");
-		const std::optional<std::string> pwsh = ResolveWindowsCommandPath("pwsh.exe");
+		const std::optional<std::string> windows_powershell = ResolveInstalledPowerShellPath(false);
+		const std::optional<std::string> pwsh = ResolveInstalledPowerShellPath(true);
 		const std::string selected = uam::powershell::Select(powershell_preference, windows_powershell.has_value(), pwsh.has_value(), error_out);
 		if (selected.empty()) return false;
 		const std::wstring executable = WideFromUtf8(selected == "pwsh.exe" ? *pwsh : *windows_powershell);

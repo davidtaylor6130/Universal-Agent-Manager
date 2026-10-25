@@ -6587,11 +6587,12 @@ UAM_TEST(WindowsTerminalScriptRunsOnWindowsPowerShell51)
 	// The SSH terminal window script must run on built-in Windows PowerShell 5.1, not only PowerShell 7.
 	const std::string command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " +
 	    uam::remote::WindowsTerminalEncodedCommand({"cmd.exe", "/d", "/c", "echo", "uam-ps51-terminal-ok"}) +
-	    " & powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$PSVersionTable.PSVersion.Major\"";
+	    " & powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"'uam-ps-major=' + $PSVersionTable.PSVersion.Major\"";
 	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 30000);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT(result.output.find("uam-ps51-terminal-ok") != std::string::npos);
-	UAM_ASSERT(result.output.find("\n5") != std::string::npos);
+	// Merged stderr can carry CLIXML progress records, so look for an explicit marker.
+	UAM_ASSERT(result.output.find("uam-ps-major=5") != std::string::npos);
 }
 #endif
 
