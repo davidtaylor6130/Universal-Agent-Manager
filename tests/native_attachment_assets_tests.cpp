@@ -377,7 +377,7 @@ UAM_TEST(NativeAssetStoreRejectsHardlinkedOriginalWithoutChangingItsOtherName)
 	UAM_ASSERT(batch);
 	Publish(*batch);
 	const auto ref = batch->Assets().front();
-	const auto file = Generation(temp.root, batch->Receipt()) / (ref.digest + ".bin");
+	const auto file = uam_test::NativePath(Generation(temp.root, batch->Receipt()) / (ref.digest + ".bin"));
 	batch.reset();
 	const auto outside = temp.root / "outside-hardlink";
 	std::filesystem::create_hard_link(file, outside);
