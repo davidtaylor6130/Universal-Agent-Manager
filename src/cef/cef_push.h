@@ -18,10 +18,15 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
 
 	/// <summary>
-	/// True when a throttled selected-chat messages payload is still waiting to
-	/// be flushed by a later PushStateUpdateIfChanged call.
+	/// True when a throttled chat summary is still waiting to be flushed by a
+	/// later PushStateUpdateIfChanged call.
 	/// </summary>
 	bool HasDeferredStatePush();
+	/// <summary>
+	/// True when a deferred summary's throttle window has elapsed, so a tick with
+	/// no other state change should rebuild the fingerprint and flush it.
+	/// </summary>
+	bool DeferredStatePushDue();
 	inline std::string StateFingerprintForTests(const AppState& app)
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();

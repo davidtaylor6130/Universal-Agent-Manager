@@ -16,6 +16,10 @@ CEF accepts bridge messages only from the trusted bundled page and main frame. K
 - Native dispatch and replies: `src/cef/uam_query_handler.*`, `src/cef/*_handlers.cpp`, `src/cef/state_serializer.*`, `src/cef/cef_push.*`.
 - Focused checks: `UI-V2/src/store/cpp/`, `UI-V2/src/ipc/companionBridge.test.ts`, `tests/uam_control_transport_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`.
 
+## State push cost
+
+While runtime state changes, each 16 ms `Application::PollTick` rebuilds the compact fingerprint and `cef_push` diffs it against per-slice baselines. Changed chat summaries, selected or background, publish at most every 100 ms per chat; a new pending permission or user-input request, or a new CLI launch identity, bypasses that window. A tick without other changes rebuilds only after a deferred summary's window elapses (`DeferredStatePushDue`), so the final state still reaches the frontend. PNG icon data URLs are reused until the asset's size or modification time changes, and slice baselines compare JSON structurally instead of re-dumping it. Live tool calls still inline up to 64 KB of content because subagent summaries, managed-launch correlation and history fallbacks read it directly from the push. `PerformanceStreamingStatePushTick` measures 63 chats with PNG folder icons, one selected streaming chat with 30 × 50 KB tools and two background streaming chats.
+
 No stable latency budget is defined for the full bridge. `UI-V2/src/test/interactionBudgets.ts` sets a 250 ms budget for its explicitly covered frontend interactions; do not generalize it to all IPC calls.
 
 ## File review presentation
