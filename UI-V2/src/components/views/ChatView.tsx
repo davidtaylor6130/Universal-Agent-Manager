@@ -1954,7 +1954,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     return retryUnsentAcpPrompt(session.id, receipt)
   }
-  const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0
+  const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     const generation = ++messageBranchGenerationRef.current

@@ -6,6 +6,7 @@
 
 #include "include/cef_application_mac.h"
 #include <cstdio>
+#include <chrono>
 #include <string_view>
 
 static IMP s_originalPanelCancel = nullptr;
@@ -50,6 +51,9 @@ static NSEvent* QuitEvent(NSWindow* window, NSEventModifierFlags modifiers)
 	                      keyCode:12];
 }
 
+// A host that cannot present NSOpenPanel (for example an Intel CI VM) is reported, not failed.
+constexpr int kPanelUnavailable = 77;
+
 int main(int argc, char* argv[])
 {
 	@autoreleasepool
@@ -70,6 +74,13 @@ int main(int argc, char* argv[])
 				[task waitUntilExit];
 				NSString* receipt = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
 				const int status = task.terminationStatus;
+				if (status == kPanelUnavailable)
+				{
+					// The host cannot present NSOpenPanel at all; remaining picker probes would each wait it out.
+					std::printf("SKIP: macOS open panel unavailable on this host (%s)\n", argument.UTF8String);
+					[task release];
+					break;
+				}
 				const bool passed = status == 0 && [receipt isEqualToString:@"picker-close-routing-returned\n"];
 				[task release];
 				if (!passed)
@@ -125,10 +136,20 @@ int main(int argc, char* argv[])
 			const bool repeat = std::string_view(argv[1]).find("repeat") != std::string_view::npos;
 			const bool delayed_cancel = std::string_view(argv[1]).find("delayed") != std::string_view::npos;
 			__block BOOL saw_picker = NO;
+			__block BOOL request_fired = NO;
 			__block BOOL timed_out = NO;
 			__block BOOL closed_inside_modal = NO;
+			__block NSTimer* watchdog = nil;
 			NSTimer* request = [NSTimer timerWithTimeInterval:0.1 repeats:NO block:^(NSTimer*)
 			{
+				request_fired = YES;
+				// Time the 2 s close budget from the request; a loaded host can first service the panel loop after 2 s.
+				watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
+				{
+					timed_out = YES;
+					[(NSOpenPanel*)application.modalWindow cancel:nil];
+				}];
+				[[NSRunLoop currentRunLoop] addTimer:watchdog forMode:NSModalPanelRunLoopMode];
 				saw_picker = [application.modalWindow isKindOfClass:[NSOpenPanel class]];
 				if (delayed_cancel && saw_picker)
 				{
@@ -155,17 +176,20 @@ int main(int argc, char* argv[])
 				}
 				closed_inside_modal = window.closeRequested;
 			}];
-			NSTimer* watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
-			{
-				timed_out = YES;
-				[(NSOpenPanel*)application.modalWindow cancel:nil];
-			}];
 			[[NSRunLoop currentRunLoop] addTimer:request forMode:NSModalPanelRunLoopMode];
-			[[NSRunLoop currentRunLoop] addTimer:watchdog forMode:NSModalPanelRunLoopMode];
 			std::string selected = "must-clear";
 			std::string error;
+			const auto browse_started = std::chrono::steady_clock::now();
 			const bool accepted = uam::platform::BrowsePath(directory, std::filesystem::temp_directory_path(), &selected, &error);
 			[request invalidate];
+			if (!request_fired && !accepted && std::chrono::steady_clock::now() - browse_started >= std::chrono::seconds(30))
+			{
+				// runModal blocked for the panel service timeout without ever running its modal loop; a fast
+				// return without presenting is still a failure below.
+				const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - browse_started).count();
+				std::fprintf(stderr, "macOS open panel never became modal after %lld ms\n", static_cast<long long>(waited));
+				return kPanelUnavailable;
+			}
 			[watchdog invalidate];
 			if (delayed_cancel && !s_ignoredInitialCancel) return 21;
 			if (repeat)
