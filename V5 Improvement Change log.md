@@ -881,6 +881,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Native verification | Code Only | Windows Native Test Fixtures | Windows native tests use a byte-exact stdio sink, fixture Git without system autocrlf, long-path-safe store paths, closed readers before publication and the platform path forms the product already publishes (#442). | Implemented; Windows CI Pending; Un-Reviewed; Not User Tested |
 | Chat and subagents | Bugfix | Baseline Failure Holds Retryable Input | A first prompt whose repository baseline fails is held with its error, stops silent reconnects and offers an exact-receipt Retry that reruns the baseline once (#444). | Implemented; Native32/32 And UI3017/3017 Passed; Claude Review; Un-Reviewed; Not User Tested |
 | Providers and MCP | Bugfix | Copilot First Remote Prompt Delivery | Copilot reports no turn identity before its first prompt, so a queued first remote prompt is no longer refused as an unconfirmed delivery forever (#444). | Implemented; Copilot Remote Cases 3/3 Runs Passed; Un-Reviewed; Not User Tested |
+| Workspaces and terminals | Bugfix | Sessionless Remote Terminal Refusal | A remote OpenCode CLI View launch without a resumable native session is refused before any worktree, baseline or SSH work (#444). | Implemented; Original Terminal Assertions Restored And Passing; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
