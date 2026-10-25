@@ -886,6 +886,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Native verification | Code Only | Windows UI Build Graph Test | The UI incremental-build test keeps its fixture outside TEMP, which MSBuild tracking ignores, and checks no-op repackaging only on Make/Ninja because Visual Studio runs POST_BUILD every build (#442). | Implemented; Windows Box And macOS Passed; David Approved VS Relaxation 2026-10-25; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Windows Backup Install Over Open Witness | Windows recovery-backup installation retries with POSIX rename semantics when a retained publication witness still holds the previous backup open, so own-chat publication keeps returning its receipt (#442). | Implemented; Windows Publication Families62/62 Passed; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Picker Probe Unavailable Panel | The macOS picker probe reports SKIP instead of failing when NSOpenPanel never becomes modal on a host, as on the Intel CI VM, and runs every assertion where the panel appears (#444). | Implemented; ARM 14/14 Probes Passed; Intel Panel Service Unconfirmed; David Approved 2026-10-25; Un-Reviewed; Not User Tested |
+| Build and evidence | Performance | Windows Immutable Resource Install | Windows installs immutable digest-addressed provider resources without per-file write-through, matching the POSIX link path; replaced configuration files keep it (#442). | Implemented; 2-core Install Rename 0.7-4.0s To 0.22s; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 

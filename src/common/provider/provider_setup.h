@@ -82,7 +82,9 @@ namespace uam::provider_setup
 		{ error = "Could not stage central runtime configuration."; return false; }
 		std::error_code ec;
 #if defined(_WIN32)
-		if (!MoveFileExW(temporary.c_str(), target.c_str(), (replace_existing ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
+		// Immutable digest-addressed resources match POSIX link(): Prepare re-verifies them, and a
+		// per-file write-through flush made thousand-file skill bundles take seconds to install.
+		if (!MoveFileExW(temporary.c_str(), target.c_str(), replace_existing ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH : 0))
 			ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
 #else
 		if (replace_existing) std::filesystem::rename(temporary, target, ec);
