@@ -167,6 +167,24 @@ UAM_TEST(ColdSummaryCacheRegenerationPreservesPrimaryHistory)
 	}
 }
 
+UAM_TEST(UndatedChatSummaryCacheIsReusedWithoutRegeneration)
+{
+	TempDir temp("uam-undated-summary-reuse");
+	ChatSession chat;
+	chat.id = "undated-summary";
+	chat.messages = {Message{MessageRole::User, "Request"}};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path cache = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	const std::string saved = uam::io::ReadTextFile(cache);
+	const std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), std::size_t{1});
+	// A rejected cache is rewritten from the primary on every catalogue load.
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(cache), saved);
+	const std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(full.has_value());
+	UAM_ASSERT_EQ(summaries.front().persisted_messages_digest, full->persisted_messages_digest);
+}
+
 UAM_TEST(AtomicCacheWritesPreserveFaultSafetyAndDurableDefaults)
 {
 	TempDir temp("uam-atomic-cache-safety");
