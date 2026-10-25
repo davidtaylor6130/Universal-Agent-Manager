@@ -1684,9 +1684,14 @@ namespace
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
+	std::string SummaryDigest(std::string_view updated_at, std::size_t message_count)
+	{
+		return std::string(updated_at) + ":" + std::to_string(message_count);
+	}
+
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
-		return chat.updated_at + ":" + std::to_string(message_count);
+		return SummaryDigest(chat.updated_at, message_count);
 	}
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -2619,7 +2624,11 @@ namespace
 		if (expected_source_size > 0 &&
 		    chat.persisted_messages_digest != SummaryDigest(chat, chat.persisted_message_count))
 		{
-			return {std::nullopt, "contains a stale message digest"};
+			// Saves digest the stored timestamp; the load fallbacks above may fill an empty one.
+			// Report the filled form a primary load derives instead of rejecting and rewriting the cache.
+			if (chat.persisted_messages_digest != SummaryDigest(JsonStringOrEmpty(root.Find(kChatUpdatedAtField)), chat.persisted_message_count))
+				return {std::nullopt, "contains a stale message digest"};
+			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 		}
 
 		if (publish_summary_cache && !include_messages && expected_source_size == 0 && path.extension() == ".json")

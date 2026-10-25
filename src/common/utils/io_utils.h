@@ -1070,7 +1070,30 @@ namespace uam::io
 	/// <summary>Atomically publishes reconstructible cache data without durable disk sync.</summary>
 	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
 	{
+#if defined(_WIN32)
+		// Still temp+rename, minus the durable writer's global lock, directory probe, second
+		// destination probe and abandoned-temp sweeps: each is a filter-driver round trip on
+		// Windows, and together they doubled cold 1000-chat summary regeneration.
+		const std::filesystem::path temp_path = MakeTempWritePath(path);
+		std::filesystem::path native_parent, native_path, native_temp;
+		AtomicWriteResult result;
+		std::error_code ec;
+		if (path.filename().empty() || !NativeFilePath(path, native_path, result.error) || !NativeFilePath(temp_path, native_temp, result.error)) return false;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, ec);
+		if (status.type() != std::filesystem::file_type::not_found && !std::filesystem::is_regular_file(status)) return false;
+		bool written = WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		if (!written)
+		{
+			RemoveAtomicTempNoThrow(temp_path);
+			written = NativeFilePath(path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path(), native_parent, result.error, true) &&
+			    uam::paths::CreateDirectoriesNoThrow(native_parent) && WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		}
+		if (written && MoveFileExW(native_temp.c_str(), native_path.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+		RemoveAtomicTempNoThrow(temp_path);
+		return false;
+#else
 		return AtomicWriteFileDetailed(path, content, {}, false, false).success;
+#endif
 	}
 
 	inline bool AtomicWriteFileWithBackup(const std::filesystem::path& path, std::string_view content)
