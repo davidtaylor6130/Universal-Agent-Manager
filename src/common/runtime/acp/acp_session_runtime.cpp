@@ -4062,6 +4062,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
+	bool AcpBaselineHoldRetryAllowed(const AppState& app, const ChatSession& chat, const AcpSessionState* session)
+	{
+		if (!chat.messages_loaded || chat.imported_read_only || chat.acp_queue_storage_error || !chat.acp_queue_held ||
+		    chat.acp_dispatched_queued_prompt_count != 0 || chat.acp_queued_prompts.size() != 1 ||
+		    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id))
+			return false;
+		const AcpQueuedUserPromptState& receipt = chat.acp_queued_prompts.front();
+		if (!receipt.repository_baseline_hold || !receipt.direct_admission || receipt.prepared_for_delivery ||
+		    !receipt.claude_quota_continuation_id.empty() || receipt.existing_user_message_index >= 0 || receipt.id.empty() || receipt.revision < 1)
+			return false;
+		return session == nullptr || (session->queue_held && !session->running && !session->processing && !session->reconnect_pending &&
+		    session->queued_prompt.empty() && session->prompt_request_id == 0 && !AcpSessionIsWaitingForInput(*session) &&
+		    session->queued_user_prompts.size() == 1 && session->queued_user_prompts.front() == receipt);
+	}
+
 	/// Explicit receipt Retry preserves the authored row and reuses native known-unsent recovery.
 	bool RetryQueuedAcpPrompt(AppState& app, const std::string& chat_id,
 	    const std::pair<std::string, int>& expected, std::string* error_out)
@@ -4072,34 +4087,35 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat && chat->acp_queued_prompts.size() == 1 && chat->acp_queued_prompts.front().id == expected.first &&
+		    chat->acp_queued_prompts.front().revision == expected.second && AcpBaselineHoldRetryAllowed(app, *chat, FindAcpSessionForChat(app, chat_id)))
+		{
+			// Row-less first input held by a failed baseline: re-run that baseline once, then the normal launch path.
+			AcpSessionState& held = EnsureAcpSessionForChat(app, *chat);
+			if (PrepareChatRepositoryBaseline(app, *chat, error_out, nullptr, true) == ChatBaselineReadiness::Failed) return false;
+			const std::deque<AcpQueuedUserPromptState> previous_queue = held.queued_user_prompts;
+			held.queued_user_prompts.front().repository_baseline_hold = false;
+			held.queue_held = false;
+			if (!PersistQueuedPromptOutbox(app, held, *chat, error_out, true))
+			{
+				held.queued_user_prompts = previous_queue;
+				held.queue_held = chat->acp_queue_held = true;
+				chat->acp_queued_prompts.assign(previous_queue.begin(), previous_queue.end());
+				return false;
+			}
+			held.reconnect_pending = true;
+			held.reconnect_attempts = 0;
+			held.reconnect_not_before_time_s = 0.0;
+			held.lifecycle_state = kAcpLifecycleStarting;
+			held.last_error.clear();
+			return true;
+		}
 		if (!chat || !chat->messages_loaded || chat->imported_read_only || expected.first.empty() || expected.second < 1 ||
 		    chat->acp_queue_storage_error || !chat->acp_queue_held || chat->acp_dispatched_queued_prompt_count != 0 ||
 		    chat->acp_queued_prompts.size() != 1 || app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
 		    app.pending_chat_save_tasks.contains(chat_id))
 			return reject("This message is still being checked or has changed. Your input is kept; refresh before retrying.");
 		const AcpQueuedUserPromptState& receipt = chat->acp_queued_prompts.front();
-		if (AcpSessionState* held = FindAcpSessionForChat(app, chat_id); held && held->queue_held && !held->running &&
-		    held->baseline_failed_receipt == expected && held->queued_user_prompts.size() == 1 &&
-		    held->queued_user_prompts.front() == receipt && receipt.direct_admission && !receipt.prepared_for_delivery &&
-		    receipt.existing_user_message_index < 0 && receipt.claude_quota_continuation_id.empty() && !held->processing && held->queued_prompt.empty() &&
-		    held->prompt_request_id == 0 && !AcpSessionIsWaitingForInput(*held))
-		{
-			// Baseline-failed first input has no transcript row: retry the baseline once, then the normal launch path.
-			if (PrepareChatRepositoryBaseline(app, *chat, error_out, nullptr, true) == ChatBaselineReadiness::Failed) return false;
-			held->queue_held = chat->acp_queue_held = false;
-			if (!PersistQueuedPromptOutbox(app, *held, *chat, error_out, true))
-			{
-				held->queue_held = chat->acp_queue_held = true;
-				return false;
-			}
-			held->baseline_failed_receipt = {};
-			held->reconnect_pending = true;
-			held->reconnect_attempts = 0;
-			held->reconnect_not_before_time_s = 0.0;
-			held->lifecycle_state = kAcpLifecycleStarting;
-			held->last_error.clear();
-			return true;
-		}
 		if (receipt.id != expected.first || receipt.revision != expected.second || !receipt.direct_admission ||
 		    receipt.prepared_for_delivery || !receipt.claude_quota_continuation_id.empty() || receipt.existing_user_message_index < 0)
 			return reject("The retained message changed or its delivery is unresolved. Your input is kept.");
@@ -7026,16 +7042,31 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (baseline == ChatBaselineReadiness::Failed)
 					{
 						// Same pre-launch failure hold as workspace preparation: keep input, stop reconnecting.
-						const AcpQueuedUserPromptState& head = session.queued_user_prompts.front();
-						session.baseline_failed_receipt = session.queued_user_prompts.size() == 1 && head.direct_admission &&
-						    head.existing_user_message_index < 0 ? std::pair<std::string, int>{head.id, head.revision} : std::pair<std::string, int>{};
+						// Only a lone row-less direct receipt gains the saved baseline Retry marker.
+						AcpQueuedUserPromptState& head = session.queued_user_prompts.front();
+						head.repository_baseline_hold = session.queued_user_prompts.size() == 1 && head.direct_admission &&
+						    !head.prepared_for_delivery && head.existing_user_message_index < 0;
 						session.reconnect_pending = false;
-						session.queue_held = reconnect_chat->acp_queue_held = true;
+						session.queue_held = true;
+						if (!PersistQueuedPromptOutbox(app, session, *reconnect_chat, nullptr, true))
+						{
+							// The scheduled full save below still carries the marker, so Retry survives a failed outbox write.
+							reconnect_chat->acp_queue_held = true;
+							if (reconnect_chat->acp_queued_prompts.size() == 1 && reconnect_chat->acp_queued_prompts.front().id == head.id)
+								reconnect_chat->acp_queued_prompts.front().repository_baseline_hold = head.repository_baseline_hold;
+						}
 						session.last_error = baseline_error;
 						session.lifecycle_state = kAcpLifecycleError;
 						ScheduleChatSave(app, *reconnect_chat, 0.0);
 						changed = true;
 						continue;
+					}
+					// A passed baseline ends that hold reason; later launch failures must not inherit its Retry.
+					if (std::ranges::any_of(session.queued_user_prompts, &AcpQueuedUserPromptState::repository_baseline_hold))
+					{
+						for (AcpQueuedUserPromptState& prompt : session.queued_user_prompts) prompt.repository_baseline_hold = false;
+						for (AcpQueuedUserPromptState& prompt : reconnect_chat->acp_queued_prompts) prompt.repository_baseline_hold = false;
+						ScheduleChatSave(app, *reconnect_chat, 0.0);
 					}
 					const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *reconnect_chat);
 					if (reconnect_chat->execution_host_id == uam::execution_hosts::kLocalHostId)

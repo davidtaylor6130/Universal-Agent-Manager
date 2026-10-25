@@ -689,8 +689,7 @@ namespace uam
 					}
 					auto receipt = SerializeQueuedAcpUserPrompt(*prompt);
 					// Only the exact receipt held by a failed repository baseline gains row-less Retry.
-					if (session && session->queue_held && prompt->existing_user_message_index < 0 &&
-					    session->baseline_failed_receipt == std::pair<std::string, int>{prompt->id, prompt->revision})
+					if (prompt->repository_baseline_hold && AcpBaselineHoldRetryAllowed(app, chat, session))
 						receipt["retryAllowed"] = true;
 					result["unsentDirectPrompts"].push_back(std::move(receipt));
 					continue;

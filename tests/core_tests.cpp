@@ -12387,7 +12387,7 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "repository-review", "storage unavailable"));
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatSession chat;
-	chat.id = "failed-baseline-retry";
+	chat.id = "chat-failed-baseline-retry"; // A new-chat id, so restore does not adopt it as a native session id.
 	chat.provider_id = uam::provider_ids::kGeminiCli;
 	chat.workspace_directory = repo.string();
 	app.chats.push_back(chat);
@@ -12398,24 +12398,57 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
 	// The app tick holds the input and stops reconnecting instead of silently retrying the failed baseline.
-	(void)uam::PollAllAcpSessions(app);
-	uam::FlushPendingChatSaves(app, true);
+	const auto settle_hold = [&]()
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app, true);
+	};
+	const auto retry_allowed = [](const uam::AppState& state)
+	{
+		const nlohmann::json projected = uam::StateSerializer::Serialize(state).at("chats").at(0).at("acpSession");
+		UAM_ASSERT(projected.at("pendingDirectPrompts").empty() && projected.at("unsentDirectPrompts").size() == 1);
+		return projected.at("unsentDirectPrompts").at(0).value("retryAllowed", false);
+	};
+	settle_hold();
 	const uam::AcpSessionState& held = *app.acp_sessions.front();
 	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.running);
 	UAM_ASSERT(!held.last_error.empty());
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
+	// The hold reason is saved, so a restart keeps the exact receipt retryable.
+	const fs::path restart_root = temp.root / "restart-data";
+	fs::copy(app.data_root, restart_root, fs::copy_options::recursive);
+	UAM_ASSERT(fs::remove(restart_root / "repository-review"));
+	const auto restored = ChatRepository::LoadLocalChat(restart_root, chat.id, true, &error);
+	UAM_ASSERT(restored && restored->acp_queue_held && restored->acp_queued_prompts.size() == 1 &&
+	           restored->acp_queued_prompts.front().repository_baseline_hold);
+	const uam::AcpQueuedUserPromptState receipt = app.chats.front().acp_queued_prompts.front();
+	// A stale identity is refused without touching the hold.
+	const std::string held_error = held.last_error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
+	UAM_ASSERT_EQ(error, std::string("The retained message changed or its delivery is unresolved. Your input is kept."));
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && held.last_error == held_error);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front() == receipt);
+	// Retrying while storage still fails re-holds the same input with a fresh marker once the baseline fails again.
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error)); // Fresh capture is pending.
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending && !app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
+	settle_hold();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.last_error.empty());
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
 	UAM_ASSERT(fs::remove(app.data_root / "repository-review"));
 	(void)uam::PollAllAcpSessions(app);
 	UAM_ASSERT(held.queue_held && !held.reconnect_pending);
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
-	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), static_cast<std::size_t>(1));
-	const uam::AcpQueuedUserPromptState receipt = app.chats.front().acp_queued_prompts.front();
-	const nlohmann::json projected = uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession");
-	UAM_ASSERT(projected.at("pendingDirectPrompts").empty() && projected.at("unsentDirectPrompts").size() == 1);
-	UAM_ASSERT(projected.at("unsentDirectPrompts").at(0).value("retryAllowed", false));
-	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
 	error.clear();
 	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
 	UAM_ASSERT(error.empty() && !held.queue_held && held.reconnect_pending);
+	UAM_ASSERT(!app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending);
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12423,6 +12456,57 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Keep this prompt once"));
+	// Restored state: no session yet; the saved hold alone authorizes the same exact Retry.
+	uam::AppState restarted;
+	restarted.data_root = restart_root;
+	restarted.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	restarted.chats.push_back(*restored);
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	UAM_ASSERT(retry_allowed(restarted));
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(restarted, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !restarted.acp_sessions.front()->queue_held && restarted.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(restarted.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
+	UAM_ASSERT(!restarted.acp_sessions.front()->running);
+}
+
+UAM_TEST(AcpRepositoryBaselineHoldRetryIsOfferedOnlyForTheLoneMarkedReceipt)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "baseline-hold-projection";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.acp_queue_held = true;
+	uam::AcpQueuedUserPromptState marked;
+	marked.id = "marked";
+	marked.revision = 1;
+	marked.text = "Held by a failed baseline";
+	marked.direct_admission = true;
+	marked.repository_baseline_hold = true;
+	uam::AcpQueuedUserPromptState unrelated = marked;
+	unrelated.id = "unrelated";
+	unrelated.repository_baseline_hold = false;
+	const auto retry_flags = [&](std::vector<uam::AcpQueuedUserPromptState> outbox)
+	{
+		app.chats = {chat};
+		app.chats.front().acp_queued_prompts = std::move(outbox);
+		std::vector<bool> flags;
+		const nlohmann::json state = uam::StateSerializer::Serialize(app);
+		for (const auto& receipt : state.at("chats").at(0).at("acpSession").at("unsentDirectPrompts"))
+			flags.push_back(receipt.value("retryAllowed", false));
+		return flags;
+	};
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{true});
+	UAM_ASSERT(uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	UAM_ASSERT(retry_flags({unrelated}) == std::vector<bool>{false});
+	UAM_ASSERT(retry_flags({marked, unrelated}) == (std::vector<bool>{false, false}));
+	UAM_ASSERT(!uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	std::string error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {marked.id, marked.revision}, &error));
+	UAM_ASSERT(app.acp_sessions.empty() || app.acp_sessions.front()->queue_held);
+	chat.acp_queue_held = false;
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{false});
 }
 
 UAM_TEST(VcsChatComparisonExcludesUnchangedPreexistingIndexAndWorkingChanges)

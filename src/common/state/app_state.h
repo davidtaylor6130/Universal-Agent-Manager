@@ -790,10 +790,6 @@ namespace uam
 		std::string pending_referenced_queue_launch_fingerprint;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		bool queue_held = false;
-		// Exact id/revision of the direct receipt held by a failed pre-launch repository baseline;
-		// only that receipt may use explicit receipt Retry without a transcript row.
-		// ponytail: runtime-only; after an app restart the held receipt keeps Remove but not Retry.
-		std::pair<std::string, int> baseline_failed_receipt;
 		// Definite queued write rollback is not dispatchable until its complete history is saved.
 		// Survives runtime reset; a committed full save clears it, never a queue-only journal.
 		bool queued_rollback_save_pending = false;
