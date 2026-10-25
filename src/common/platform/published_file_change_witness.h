@@ -138,14 +138,21 @@ namespace uam::platform
 #if defined(_WIN32)
 		using Handle = HANDLE;
 		static Handle Invalid() { return INVALID_HANDLE_VALUE; }
-		static Handle Open(const std::filesystem::path& path, bool content)
+		// Retained handles stay attribute-only: ReplaceFileW opens its replacement with no sharing,
+		// so a held GENERIC_READ witness on a staged file fails the publish with ERROR_SHARING_VIOLATION.
+		static Handle Open(const std::filesystem::path& path, bool)
 		{
-			return CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | (content ? GENERIC_READ : 0),
+			return CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
 			    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-			    FILE_FLAG_OPEN_REPARSE_POINT | (content ? FILE_FLAG_OVERLAPPED : 0), nullptr);
+			    FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 		}
-		static std::ptrdiff_t ReadAt(Handle handle, char* bytes, std::size_t wanted, std::uint64_t offset)
+		static std::ptrdiff_t ReadAt(Handle retained, char* bytes, std::size_t wanted, std::uint64_t offset)
 		{
+			// Content reads reopen the SAME held object (never its pathname) and close before returning.
+			HandleOwner content{ReOpenFile(retained, GENERIC_READ,
+			    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED)};
+			if (content.value == Invalid()) return -1;
+			const Handle handle = content.value;
 			HandleOwner event{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
 			if (!event.value || event.value == Invalid()) return -1;
 			OVERLAPPED operation{};

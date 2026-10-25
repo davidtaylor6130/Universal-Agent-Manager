@@ -519,7 +519,7 @@ namespace
 			if (entry.path().filename() == attachment.content_digest + ".bin")
 			{
 				UAM_ASSERT(original.empty());
-				original = entry.path();
+				original = uam_test::NativePath(entry.path());
 			}
 		UAM_ASSERT(!original.empty());
 		return original;
