@@ -1071,7 +1071,7 @@ export type ParsedPushResult =
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
 
 export interface CentralProviderConfiguration {
-  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean }>
+  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>
   enabled: boolean
   instructions: string
   instructionFiles: string[]

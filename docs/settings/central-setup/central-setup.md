@@ -2,6 +2,8 @@
 
 Central Setup is UAM’s one shared definition of instructions, skills, agents and related resources, adapted for each provider rather than maintained separately in every CLI. At provider launch, UAM prepares the selected resources on the executing computer, including SSH, without overwriting user-owned workspace or provider-home configuration. Existing sessions keep their captured setup until a supported restart or explicit update; saving shared resources must not pretend they have already reached a running provider.
 
+The native-backed [OpenCode discovery preference](../providers.md) is captured with the selected provider/host's launch configuration, including MCP-only setup when shared resources are disabled; changing it during pending preparation invalidates that captured launch rather than silently changing its scope.
+
 - [Instructions](instructions.md)
 - [Skills](skills.md)
 - [Agents](agents.md)

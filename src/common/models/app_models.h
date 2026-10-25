@@ -969,6 +969,7 @@ struct ProviderMcpOverride
 	std::string execution_host_id;
 	std::string server_id;
 	bool enabled = true;
+	bool is_preference = false;
 };
 
 /// <summary>Resources UAM installs privately for configured provider launches.</summary>

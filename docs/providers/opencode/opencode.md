@@ -13,7 +13,7 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Implemented | Guarded chosen-prefix branches preserve source history, compacted context and branch-owned originals; supported local regeneration exists, while native/model/SSH continuation and acceptance retain their explicit limits. |
 | `editing-messages` | UAM | Implemented | Definitely-unsent edits save locally; delivered edits branch with independently selected files and captured skills; unsupported recorded-source delivery refuses explicitly and visual/platform/user acceptance remains pending. |
-| `mcp-connections` | Both | Implemented | Shared launch setup supplies connections; transport and observed status vary. |
+| `mcp-connections` | Both | Implemented | Shared launch setup supplies connections; [progressive discovery](#progressive-mcp-discovery) has a saved provider/host opt-in, with native session, independent UI review and user acceptance pending; transport and observed status vary. |
 | `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
 | `attachments` | Both | Partial | Native input uses executing-host files or ACP blocks; local saved-original Retry additionally checks owned native server/current-model vision evidence. Commands, remote saved-original Retry and unadmitted companions remain gaps; live/platform acceptance is pending. |
 | `compaction` | Both | Implemented | Native metadata and verified summary identities drive active state, collapsed summaries, historical repair and compacted replay; unavailable structured manual control is not offered, and live/platform acceptance remains pending. |
@@ -30,12 +30,16 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 | `permissions` | Both | Partial | ACP parent actions and authenticated child approvals retain the [implemented captured-read boundary](../permissions/permissions.md#captured-read-restrictions) and [qualified question identity](#repeated-call-questions), with protocol verification and scoped source review; [Windows workspace spelling](#workspace-identity) retains exact native IDs and read ceilings with live acceptance pending. Shared [UAM-managed delegation](../../settings/central-setup/agents.md#built-in-delegation) retains parent and captured read ceilings, while provider-native Task permissions remain separate; environment scoping and desktop/live/platform acceptance remain open. |
 | `usage` | Both | Partial | Token/history routes exist; no independent account-quota reader is integrated, and local request counts do not establish a provider allowance. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
-| `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
+| `central-setup` | UAM | Implemented | Shared immutable launch resources capture the host's progressive MCP preference; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
 
 ## Version compatibility
 
 OpenCode V1 and V2 require separately verified launch and native-service integration. The local Alpha150 workaround uses V1.19.4; V2.1.2 returned command-line help instead of ACP JSON when launched with the existing V1 companion arguments. V2 compatibility remains open, including its session, configuration, MCP, history, permission and cancellation routes. Passing the minimum-version check does not establish support for a newer major version, and a desktop-only update does not verify remote helpers.
+
+## Progressive MCP discovery
+
+The [provider setting](../../settings/providers.md) currently governs UAM's automatic native V1 Code Mode hint for OpenCode on one execution host. The inspected route admits checked versions 1.17.20 and 1.18.35 only; enabling the preference does not qualify 1.19.4, V2 or another version. Explicit executing-host or launch environment values retain precedence, and older format-1 helpers may ignore the optional hint and keep eager discovery. V2 session/location MCP registration is independent of this preference; neither the V1 environment flag nor reserved-server deadline metadata establishes a V2 discovery capability. An upstream per-server V2 Code Mode schema field is a [capability lead requiring separate verification](../../reference/central-configuration.md), with no current preference wiring. Saving the preference does not restart warm processes or reconfigure recovered processes. Live provider and platform verification, Claude GUI review and user acceptance remain pending; historical discovery/Umami activation failures remain unresolved by this settings addition.
 
 ## Workspace identity
 
