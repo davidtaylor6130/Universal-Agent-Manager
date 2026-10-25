@@ -46,6 +46,14 @@ foreach(_uam_feature IN LISTS UAM_BUILD_FEATURES)
   endif()
 endforeach()
 
+# A restricted build excludes at least one provider or feature.
+set(UAM_RESTRICTED_BUILD OFF)
+foreach(_uam_feature_value IN LISTS UAM_FEATURE_DEFINITIONS UAM_PROVIDER_DEFINITIONS)
+  if(_uam_feature_value MATCHES "=0$")
+    set(UAM_RESTRICTED_BUILD ON)
+  endif()
+endforeach()
+
 if(UAM_ENABLED_PROVIDER_COUNT EQUAL 0)
   message(FATAL_ERROR "At least one provider runtime must be enabled.")
 endif()

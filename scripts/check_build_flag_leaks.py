@@ -35,7 +35,7 @@ OPTION_TO_FLAG = {option: name for name, (option, _) in FLAGS.items()}
 FALSE_VALUES = {'0', 'OFF', 'NO', 'FALSE', 'N', 'IGNORE', 'NOTFOUND', ''}
 TEXT_SUFFIXES = {'.js', '.mjs', '.css', '.html', '.json', '.webmanifest', '.svg', '.txt', '.toml', '.md', '.uam', '.map', '.plist', '.sha256', '.version'}
 # Third-party runtime files that UAM does not author; scanning them would only find Chromium text.
-SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader'}
+SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2'}
 SKIP_SUFFIXES = {'.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
 PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
 
@@ -104,6 +104,11 @@ def find_leaks(disabled, artifacts):
     return leaks
 
 
+def entry_flags(entry):
+    flags = entry['flag'] if isinstance(entry['flag'], list) else [entry['flag']]
+    return {flag_name(flag) for flag in flags}
+
+
 def apply_allowlist(leaks, entries, disabled):
     """Return (failures, unused budget notes). An entry excuses a match by artifact path glob ('path'), a
     case-insensitive regex over the surrounding text ('pattern') and/or a case-sensitive full match of the
@@ -112,7 +117,7 @@ def apply_allowlist(leaks, entries, disabled):
     failures = []
     for leak in leaks:
         for index, entry in enumerate(entries):
-            if flag_name(entry['flag']) != leak['flag'] or entry.get('scope', leak['scope']) != leak['scope']:
+            if leak['flag'] not in entry_flags(entry) or entry.get('scope', leak['scope']) != leak['scope']:
                 continue
             if 'path' in entry and not fnmatch.fnmatch(leak['path'], entry['path']):
                 continue
@@ -127,7 +132,7 @@ def apply_allowlist(leaks, entries, disabled):
         else:
             failures.append(leak)
     notes = [f"{entry['flag']} {entry.get('scope', '*')}: budget {entry['max']} but only {used[index]} used; lower it."
-             for index, entry in enumerate(entries) if 'max' in entry and used[index] < entry['max'] and flag_name(entry['flag']) in disabled]
+             for index, entry in enumerate(entries) if 'max' in entry and used[index] < entry['max'] and entry_flags(entry) & set(disabled)]
     return failures, notes
 
 
@@ -136,7 +141,8 @@ def native_artifacts(build_dir, values):
     bundle = build_dir / 'universal_agent_manager.app'
     if bundle.is_dir():
         found.append(('native', bundle / 'Contents' / 'MacOS' / 'universal_agent_manager'))
-        found.append(('resources', bundle / 'Contents' / 'Resources'))
+        found.append(('resources', bundle / 'Contents' / 'Resources'))  # UI-V2 inside is skipped; dist is scanned as 'ui'
+        found.append(('resources', bundle / 'Contents' / 'Info.plist'))
         frameworks = bundle / 'Contents' / 'Frameworks'
         if frameworks.is_dir():
             found.extend(('resources', path) for path in frameworks.iterdir() if path.name not in SKIP_NAMES and not path.name.startswith('universal_agent_manager Helper'))

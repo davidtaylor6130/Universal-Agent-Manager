@@ -11,7 +11,7 @@
       "flag": "CODEX",
       "scope": "ui",
       "pattern": "set(Chat|Session)CodexOptions",
-      "max": 6,
+      "max": 5,
       "reason": "Shared reasoning and speed bridge action used by every provider with those options (Copilot, Claude); the action name is part of the desktop, companion and iOS protocol, so renaming it is a separate protocol change."
     },
     {
@@ -41,6 +41,70 @@
       "match": "computerUse|ComputerUse",
       "max": 129,
       "reason": "Session, settings and composer field, prop and store-method names of the shared state protocol (computerUseEnabled, computerUseTargetId, setSessionComputerUseEnabled). Every computer-use control, label, page, request and message is removed and the store methods refuse. Dropping the field names requires gating the native state serializer and UI sanitizers, which task-1290 is changing (Build Flag Complete Removal follow-up)."
+    },
+    {
+      "flag": [
+        "GEMINI",
+        "CODEX",
+        "CLAUDE",
+        "OPENCODE",
+        "COPILOT",
+        "ANTIGRAVITY",
+        "SSH",
+        "COMPUTER_USE",
+        "MOBILE_COMPANION"
+      ],
+      "scope": "resources",
+      "path": "markdown-store/*",
+      "reason": "Markdown Store skill text copied into the bundle (CMake copies the whole markdown-store folder, including personal skills, which is audit finding D2). Skill prose naming providers is user content, not an entry point; shipping only reviewed bundled skills is tracked separately."
+    },
+    {
+      "flag": "GEMINI",
+      "scope": "native",
+      "max": 129,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "CODEX",
+      "scope": "native",
+      "max": 129,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "OPENCODE",
+      "scope": "native",
+      "max": 99,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "COPILOT",
+      "scope": "native",
+      "max": 30,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "ANTIGRAVITY",
+      "scope": "native",
+      "max": 34,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "SSH",
+      "scope": "native",
+      "max": 122,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "COMPUTER_USE",
+      "scope": "native",
+      "max": 75,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "MOBILE_COMPANION",
+      "scope": "native",
+      "max": 8,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
     }
   ]
 }

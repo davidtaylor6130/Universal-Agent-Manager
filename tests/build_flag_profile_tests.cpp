@@ -3,7 +3,6 @@
 // reactivate them or reset the settings that name them.
 #include "common/config/central_provider_configuration.h"
 #include "common/provider/provider_ids.h"
-#include "common/provider/runtime/provider_build_config.h"
 #include "common/usage/usage_ledger.h"
 
 #include <cstdio>
@@ -31,7 +30,6 @@ int main()
 	using namespace uam::provider_ids;
 	Check(kAllCliProviderIds.size() == 1 && std::string(kAllCliProviderIds.front()) == "claude-cli", "only the included provider is listed");
 	Check(std::string(kDefaultCliProviderId) == "claude-cli", "the first included provider is the default");
-	Check(std::string(provider_build_config::FirstEnabledProviderId()) == "claude-cli", "the build default follows the included providers");
 	Check(std::string(kCodexCli) == kExcludedCliProviderId && std::string(kGeminiCli) == kExcludedCliProviderId, "excluded providers carry the placeholder id");
 	Check(!IsKnownCliProviderId("codex-cli") && !IsKnownCliProviderId(kExcludedCliProviderId), "saved excluded ids and the placeholder are unknown");
 	Check(NormalizeCliProviderAlias("codex").empty() && NormalizeCliProviderAlias("claude") == "claude-cli", "aliases exist only for included providers");

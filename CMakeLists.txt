@@ -758,6 +758,11 @@ if(APPLE)
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,QuartzCore>"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-weak_framework,ScreenCaptureKit>"
   )
+  if(UAM_RESTRICTED_BUILD)
+    # Restricted release builds drop unreferenced code and local symbol names, so shared code that only an
+    # excluded provider or feature reached does not ship. MSVC release links already remove unreferenced code.
+    target_link_options(universal_agent_manager PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-Wl,-dead_strip;-Wl,-x>")
+  endif()
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
     nlohmann_json::nlohmann_json
@@ -827,6 +832,13 @@ if(APPLE)
     # build time.  Generator expressions are expanded via a GENEX_EVAL wrapper.
     # -----------------------------------------------------------------------
     set(_cef_plists_dir "${CMAKE_BINARY_DIR}/cef_helper_plists")
+    # Local network access exists only for phone access; builds without it neither declare nor require it.
+    set(_uam_privacy_keys NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription)
+    set(_uam_local_network_plist "")
+    if(UAM_ENABLE_MOBILE_COMPANION)
+      list(APPEND _uam_privacy_keys NSLocalNetworkUsageDescription)
+      set(_uam_local_network_plist "\n  <key>NSLocalNetworkUsageDescription</key><string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>")
+    endif()
 
     # JIT entitlement plist (needed on macOS 12+ for V8 to work).
     set(_jit_entitlements "${_cef_plists_dir}/jit.entitlements")
@@ -863,7 +875,7 @@ function(sign_owned_code target entitlements)
   endif()
 endfunction()
 function(require_dictation_usage_descriptions plist)
-  foreach(key IN ITEMS NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSLocalNetworkUsageDescription)
+  foreach(key IN ITEMS ${_uam_privacy_keys})
     execute_process(COMMAND /usr/bin/plutil -extract \"\${key}\" raw -o - \"\${plist}\"
       RESULT_VARIABLE status OUTPUT_VARIABLE description OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(NOT status EQUAL 0 OR description STREQUAL \"\")
@@ -914,8 +926,7 @@ endif()
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.15.0</string>
-  <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>
-  <key>NSLocalNetworkUsageDescription</key><string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>${_uam_local_network_plist}
   <key>NSSpeechRecognitionUsageDescription</key><string>Universal Agent Manager converts your spoken prompt into text when dictation is active.</string>
 </dict>
 </plist>")
@@ -1287,6 +1298,10 @@ endif()
 
 if(APPLE)
   target_compile_definitions(universal_agent_manager PRIVATE GL_SILENCE_DEPRECATION)
+  set(UAM_LOCAL_NETWORK_USAGE_PLIST "")
+  if(UAM_ENABLE_MOBILE_COMPANION)
+    set(UAM_LOCAL_NETWORK_USAGE_PLIST "<key>NSLocalNetworkUsageDescription</key>\n  <string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>")
+  endif()
   if(UAM_MACOS_BUNDLE)
     set_target_properties(universal_agent_manager PROPERTIES
       MACOSX_BUNDLE_BUNDLE_NAME "Universal Agent Manager"
