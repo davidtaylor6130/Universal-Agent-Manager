@@ -11,10 +11,13 @@
 
 namespace uam
 {
-	inline std::optional<AcpStopProjectionOwner> CaptureAcpStopProjectionOwner(const AcpSessionState& session)
+	/// Fences against the chat incarnation current when the stop is issued, so a still-owned
+	/// runtime always settles; only a later replacement chat or runtime is refused.
+	inline std::optional<AcpStopProjectionOwner> CaptureAcpStopProjectionOwner(const AcpSessionState& session, const ChatSession* chat)
 	{
 		if (!session.shutdown_chat_incarnation) return {};
-		return AcpStopProjectionOwner{session.shutdown_data_root, session.shutdown_chat_incarnation, session.permission_review_incarnation, &session};
+		return AcpStopProjectionOwner{session.shutdown_data_root, chat ? chat->metadata_incarnation : session.shutdown_chat_incarnation,
+		    session.permission_review_incarnation, &session};
 	}
 
 	inline bool AcpStopProjectionStillOwned(const AppState& app, const AcpSessionState* session, const ChatSession* chat,

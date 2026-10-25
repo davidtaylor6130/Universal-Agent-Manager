@@ -9677,7 +9677,7 @@ namespace
 		task.chat_id = runtime.chat_id;
 		task.turn_serial = runtime.turn_serial;
 		task.observe_exit = true;
-		task.projection_owner = uam::CaptureAcpStopProjectionOwner(runtime);
+		task.projection_owner = uam::CaptureAcpStopProjectionOwner(runtime, nullptr);
 		task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
 		task.result->exit_confirmed = true;
 		task.finished = std::make_shared<std::atomic<bool>>(true);

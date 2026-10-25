@@ -5881,7 +5881,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id)) task.turn_serial = session->turn_serial;
 		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
 		    session && static_cast<const platform::StdioProcessPlatformFields*>(session) == &process)
-			task.projection_owner = CaptureAcpStopProjectionOwner(*session);
+			task.projection_owner = CaptureAcpStopProjectionOwner(*session, FindAcpRuntimeChatById(app, task.chat_id));
 		else
 		{
 			for (const auto& pending : app.pending_acp_remote_stops)
@@ -6325,7 +6325,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			auto pending = std::make_unique<PendingAcpRemoteStop>();
 			pending->chat_id = chat_id;
-			pending->projection_owner = CaptureAcpStopProjectionOwner(*session);
+			pending->projection_owner = CaptureAcpStopProjectionOwner(*session, chat);
 			pending->deadline_time_s = GetAppTimeSeconds() + acp_detail::kRemoteStopConfirmationTimeoutSeconds;
 			pending->recoverable_turn = recoverable_remote_turn;
 			pending->restart_after_stop = session->restart_after_remote_stop_cleanup;
