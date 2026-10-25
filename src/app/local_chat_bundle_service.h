@@ -55,5 +55,11 @@ namespace uam
 		static LocalChatBundleImportResult Import(
 		    const std::filesystem::path& data_root,
 		    const std::filesystem::path& bundle_path);
+		// Copies chats and folders from a previous version's data root into data_root,
+		// keeping their ids and leaving the source untouched. Existing ids are skipped,
+		// and a fully imported source is recorded so later runs never import it again.
+		static LocalChatBundleImportResult ImportLegacyDataRoot(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
 	};
 } // namespace uam

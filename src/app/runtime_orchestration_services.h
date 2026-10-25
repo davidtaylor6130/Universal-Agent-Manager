@@ -205,6 +205,8 @@ class ChatHistorySyncService
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys, const std::unordered_set<std::string>& retained_keys = {}) const;
 	bool FilterDeletedNativeHistory(const std::filesystem::path& data_root, std::vector<ChatSession>& chats, std::string* error_out = nullptr) const;
+	// Exact deletion keys (NativeIdentityKeyForHistoryImport); nullopt when the records cannot be read.
+	std::optional<std::unordered_set<std::string>> NativeImportTombstoneKeys(const std::filesystem::path& data_root) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
 	/// Build a loaded detached candidate without storage or live-runtime access; false preserves a longer baseline.

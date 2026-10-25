@@ -2,6 +2,8 @@
 
 UAM persists chat history and lightweight catalogue metadata separately from transient runtime state. Data-root selection retains the current order: explicit UAM_DATA_DIR, OS app-data, temporary storage, then relative data only as a final fallback. A chat ID, provider-native session ID, workspace and process identity remain distinct. Saves and cleanup must preserve the correct owner across concurrent work and restart, and cache refresh must not resurrect deleted conversations or overwrite newer history.
 
+Startup also looks for chats left by an earlier release beside the executable, in `data` or the executable directory itself, and imports them once into the resolved data root. Import is read-only on the source, keeps chat and folder IDs, skips any ID already stored or matching a native-session deletion record, and records completed sources plus every imported chat and folder ID in `legacy-data-imports.json`, so a deleted imported chat does not return. A source with an unreadable chat stays unrecorded and retries on the next start; the result is reported through the application status line. Other earlier locations, such as the default app-data root when `UAM_DATA_DIR` points elsewhere, are not scanned.
+
 [Chat](../chat/chat.md) · [Storage](../settings/storage.md).
 
 [Engineering reference](../reference/architecture/app-state-persistence.md).

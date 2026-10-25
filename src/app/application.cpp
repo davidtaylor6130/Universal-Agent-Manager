@@ -2,6 +2,7 @@
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
 #include "common/platform/platform_speech_output.h"
+#include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
@@ -848,6 +849,23 @@ bool Application::InitializeState()
 		}
 	}
 
+	// Releases before v4.8 could keep their data beside the executable; import it once, read-only.
+	std::string legacy_import_notice;
+	if (!executable_path.empty())
+	{
+		for (const fs::path& legacy_root : {executable_path.parent_path() / "data", executable_path.parent_path()})
+		{
+			if (!uam::paths::IsDirectoryNoThrow(AppPaths::UamChatsRootPath(legacy_root))) continue;
+			const uam::LocalChatBundleImportResult imported = uam::LocalChatBundleService::ImportLegacyDataRoot(m_app.data_root, legacy_root);
+			const std::string source = uam::paths::Utf8PathString(legacy_root);
+			for (const std::string& error : imported.errors) uam::diagnostics::Write("[legacy-import] " + error);
+			if (imported.imported_count > 0)
+				legacy_import_notice += "Imported " + std::to_string(imported.imported_count) + " chat" + (imported.imported_count == 1 ? "" : "s") + " from a previous version in " + source + ". ";
+			if (!imported.ok)
+				legacy_import_notice += "Some chats from a previous version in " + source + " could not be imported; UAM will retry on the next start. ";
+		}
+		if (!legacy_import_notice.empty()) legacy_import_notice += "The original files were left in place.";
+	}
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 
@@ -914,6 +932,9 @@ bool Application::InitializeState()
 		m_app.status_line =
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
+
+	if (!legacy_import_notice.empty())
+		m_app.status_line = m_app.status_line.empty() ? legacy_import_notice : m_app.status_line + " " + legacy_import_notice;
 
 	if (settings_dirty)
 		PersistenceCoordinator().SaveSettings(m_app);
