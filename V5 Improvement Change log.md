@@ -884,6 +884,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Workspaces and terminals | Bugfix | Sessionless Remote Terminal Refusal | A remote OpenCode CLI View launch without a resumable native session is refused before any worktree, baseline or SSH work (#444). | Implemented; Original Terminal Assertions Restored And Passing; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Remote Stop During Poll Connect | The runner proxy reads Stop before connecting its poll channel and interrupts that connect, leases start when the process is running, and the drainer wakes at the lease deadline (#444). | Implemented; Remote Timing Cases 20/20 Under Load; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Windows UI Build Graph Test | The UI incremental-build test keeps its fixture outside TEMP, which MSBuild tracking ignores, and checks no-op repackaging only on Make/Ninja because Visual Studio runs POST_BUILD every build (#442). | Implemented; Windows Box And macOS Passed; David Approved VS Relaxation 2026-10-25; Un-Reviewed; Not User Tested |
+| Build and evidence | Bugfix | Windows Backup Install Over Open Witness | Windows recovery-backup installation retries with POSIX rename semantics when a retained publication witness still holds the previous backup open, so own-chat publication keeps returning its receipt (#442). | Implemented; Windows Publication Families62/62 Passed; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
