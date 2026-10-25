@@ -27,7 +27,8 @@ describe('chat grid storage', () => {
   })
 
   it('parses the stored layout once per stored value and reparses after any write', () => {
-    writeChatGridLayout(splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal'))
+    // A value no other test stores, so the module-level cache cannot already hold it.
+    writeChatGridLayout(resizeChatSplit(splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal'), 'split-1', [37, 63]))
     const parse = vi.spyOn(JSON, 'parse')
     const first = readChatGridLayout()
     expect(readChatGridLayout()).toBe(first)

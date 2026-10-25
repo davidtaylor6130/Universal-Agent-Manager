@@ -3,7 +3,6 @@
 #include "common/config/custom_icon.h"
 
 #include <numeric>
-#include <thread>
 
 using namespace uam_test;
 
@@ -261,7 +260,8 @@ namespace
 	// Generous ceiling for native fingerprint+patch work per second of streaming on the CEF UI thread.
 	// Spending over 30% of UI-thread wall time on state pushes starves input and rendering. On the
 	// 2026-10-25 loaded macOS host this fixture measured ~400-440 ms/s before the push fixes and
-	// ~165-185 ms/s after; the printed values show drift long before this limit trips.
+	// ~165-185 ms/s after; the printed values show drift long before this limit trips. The push
+	// counts asserted beside it are deterministic and fail without the throttle fixes on any host.
 	constexpr std::chrono::milliseconds kStreamingPushBudgetPerSecond{300};
 
 	std::string FixturePng(std::size_t size)
@@ -383,6 +383,20 @@ namespace
 	}
 }
 
+namespace
+{
+	std::chrono::steady_clock::time_point g_fake_push_now;
+
+	/// <summary>Steps the push throttle clock by hand and restores the real clock even when an assertion throws.</summary>
+	struct FakeStatePushClock
+	{
+		// Starts at real time so recorded push times stay plausible for later tests.
+		FakeStatePushClock() { g_fake_push_now = std::chrono::steady_clock::now(); uam::SetStatePushClockForTests([] { return g_fake_push_now; }); }
+		~FakeStatePushClock() { uam::SetStatePushClockForTests(nullptr); }
+		void Advance(std::chrono::milliseconds by) { g_fake_push_now += by; }
+	};
+}
+
 UAM_TEST(PerformanceStreamingStatePushTick)
 {
 	TempDir temp("uam-performance-streaming-push");
@@ -398,12 +412,15 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		UAM_ASSERT_EQ(fingerprint["chats"].size(), std::size_t{63});
 	}
 
-	uam::PushStateUpdate(nullptr, app);
 	// Mirrors Application::PollTick: tokens land on every other 16 ms tick; quiet ticks only flush deferred pushes.
+	// Throttle decisions use a stepped clock so counts are deterministic; push work is timed with the real clock.
+	FakeStatePushClock clock;
+	uam::PushStateUpdate(nullptr, app);
+	constexpr int kTicks = 62;
+	constexpr std::chrono::milliseconds kTick{16};
 	std::vector<double> calls;
 	int pushes = 0;
-	const std::chrono::steady_clock::time_point window_started = std::chrono::steady_clock::now();
-	for (int tick = 0; tick < 62; ++tick)
+	for (int tick = 0; tick < kTicks; ++tick)
 	{
 		const bool streamed = tick % 2 == 0;
 		if (streamed) AppendStreamToken(app, tick);
@@ -413,18 +430,24 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 			pushes += uam::PushStateUpdateIfChanged(nullptr, app) ? 1 : 0;
 			calls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(16));
+		clock.Advance(kTick);
 	}
-	const double window_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - window_started).count();
+	const double window_seconds = std::chrono::duration<double>(kTicks * kTick).count();
+
+	// Three streaming chats share one 100 ms window each: at most one push per window per chat (plus the first),
+	// and quiet ticks rebuild only when a deferred summary is due.
+	const int windows = static_cast<int>((kTicks * kTick) / std::chrono::milliseconds(100)) + 1;
+	UAM_ASSERT(pushes <= windows + 1);
+	UAM_ASSERT(static_cast<int>(calls.size()) <= kTicks / 2 + windows);
 
 	// Final streamed state must reach the frontend: flush deferred work, then nothing may remain unsent.
 	for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(16));
-		uam::PushStateUpdateIfChanged(nullptr, app);
+		clock.Advance(kTick);
+		if (uam::DeferredStatePushDue()) uam::PushStateUpdateIfChanged(nullptr, app);
 	}
 	UAM_ASSERT(!uam::HasDeferredStatePush());
-	std::this_thread::sleep_for(std::chrono::milliseconds(120));
+	clock.Advance(std::chrono::milliseconds(120));
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 
 	const double total = std::accumulate(calls.begin(), calls.end(), 0.0);
@@ -436,18 +459,6 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 		throw TestFailure("streaming state push cost " + std::to_string(per_second) + " ms/s; limit " + std::to_string(kStreamingPushBudgetPerSecond.count()) + " ms/s");
 }
 
-namespace
-{
-	std::chrono::steady_clock::time_point g_fake_push_now{std::chrono::hours(1)};
-
-	/// <summary>Steps the push throttle clock by hand and restores the real clock even when an assertion throws.</summary>
-	struct FakeStatePushClock
-	{
-		FakeStatePushClock() { uam::SetStatePushClockForTests([] { return g_fake_push_now; }); }
-		~FakeStatePushClock() { uam::SetStatePushClockForTests(nullptr); }
-		void Advance(std::chrono::milliseconds by) { g_fake_push_now += by; }
-	};
-}
 
 UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 {
@@ -470,10 +481,14 @@ UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
 	UAM_ASSERT(uam::HasDeferredStatePush());
 	// A quiet tick inside the window must not rebuild the fingerprint.
 	UAM_ASSERT(!uam::DeferredStatePushDue());
+	// The poll scheduler wakes exactly when the window ends.
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 50);
 	clock.Advance(std::chrono::milliseconds(49));
 	UAM_ASSERT(!uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 1);
 	clock.Advance(std::chrono::milliseconds(1));
 	UAM_ASSERT(uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 1);
 	// The deferred final state is published once due; nothing is lost or repeated.
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT(!uam::HasDeferredStatePush());

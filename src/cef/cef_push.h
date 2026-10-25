@@ -28,6 +28,11 @@ namespace uam
 	/// no other state change should rebuild the fingerprint and flush it.
 	/// </summary>
 	bool DeferredStatePushDue();
+	/// <summary>
+	/// Milliseconds (at least 1) until the pending deferred summary is due; the poll
+	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
+	/// </summary>
+	int MillisecondsUntilDeferredStatePushDue();
 	/// <summary>Replaces the summary-throttle clock; nullptr restores steady_clock::now.</summary>
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)());
 	inline std::string StateFingerprintForTests(const AppState& app)

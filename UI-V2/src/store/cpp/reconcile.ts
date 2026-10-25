@@ -465,6 +465,7 @@ function configOptionsEquivalent(existing: AcpConfigOption[], next: AcpConfigOpt
   })
 }
 
+// Compare every field sanitizeTurnEvent keeps: shareTurnEvents reuses the prior object when this says equal.
 function turnEventEquivalent(event: AcpTurnEvent, other: AcpTurnEvent) {
   if (event.type !== other.type) return false
   if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&

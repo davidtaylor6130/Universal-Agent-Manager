@@ -156,6 +156,7 @@ namespace
 	}
 
 	// Structural comparison: dumping these slices (folder icons carry PNG data URLs) cost milliseconds per tick.
+	// Unlike dumped text, 1 and 1.0 compare equal and a NaN never does; these slices carry neither in practice.
 	void AddChangedJsonField(nlohmann::json& patch_data, const char* field_name, const nlohmann::json& value, nlohmann::json& last_value)
 	{
 		if (value == last_value)
@@ -420,6 +421,12 @@ namespace uam
 	bool HasDeferredStatePush()
 	{
 		return g_state_push_deferred;
+	}
+
+	int MillisecondsUntilDeferredStatePushDue()
+	{
+		const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(g_deferred_state_push_due_at - g_state_push_clock()).count();
+		return remaining < 1 ? 1 : static_cast<int>(remaining);
 	}
 
 	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)())
