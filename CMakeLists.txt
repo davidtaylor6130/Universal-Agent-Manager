@@ -1387,7 +1387,7 @@ if(UAM_BUILD_TESTS)
   add_test(NAME uam_build_flag_leak_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/build_flag_leak_gate_test.py")
   # A reduced profile's id tables and saved-data handling; the all-provider core tests cannot observe them.
-  add_executable(uam_build_flag_profile_tests tests/build_flag_profile_tests.cpp)
+  add_executable(uam_build_flag_profile_tests tests/build_flag_profile_tests.cpp src/common/config/settings_store.cpp)
   target_include_directories(uam_build_flag_profile_tests PRIVATE src)
   target_link_libraries(uam_build_flag_profile_tests PRIVATE nlohmann_json::nlohmann_json)
   target_compile_definitions(uam_build_flag_profile_tests PRIVATE NOMINMAX

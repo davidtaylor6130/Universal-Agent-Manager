@@ -14,3 +14,6 @@
       UAM_ENABLE_RUNTIME_COPILOT_CLI || UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
 #error "At least one provider runtime must be enabled."
 #endif
+// A full build rejects unknown provider ids in saved data; a build that excludes providers keeps them inert.
+#define UAM_ALL_PROVIDERS_INCLUDED (UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_CLAUDE_CLI && \
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)

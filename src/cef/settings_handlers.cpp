@@ -1108,6 +1108,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 		return;
 	}
 	const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
+	uam::central_configuration::KeepExcludedProviderOverrides(previous, configuration);
 	m_app.settings.central_provider_configuration = std::move(configuration);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{

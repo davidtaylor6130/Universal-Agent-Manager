@@ -1,11 +1,15 @@
 // Compiled with Claude as the only provider and every optional feature off (see CMakeLists.txt):
 // excluded providers must vanish from the id tables, and saved data written by a full build must not
-// reactivate them or reset the settings that name them.
+// reactivate them, reset the settings that name them, or be dropped when this build saves.
 #include "common/config/central_provider_configuration.h"
+#include "common/config/provider_availability.h"
+#include "common/config/settings_store.h"
 #include "common/provider/provider_ids.h"
 #include "common/usage/usage_ledger.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <random>
 #include <string>
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI || UAM_ENABLE_RUNTIME_CODEX_CLI || !UAM_ENABLE_RUNTIME_CLAUDE_CLI || UAM_ENABLE_SSH
@@ -43,7 +47,44 @@ int main()
 	    {{"providerId", "claude-cli"}, {"executionHostId", "local"}, {"serverId", "files"}, {"enabled", false}},
 	})}};
 	Check(uam::central_configuration::Parse(saved, configuration, error), "a full build's configuration still loads");
-	Check(configuration.mcp_overrides.size() == 1 && configuration.mcp_overrides.front().provider_id == "claude-cli", "excluded providers' switches are skipped, included ones kept");
+	Check(configuration.mcp_overrides.size() == 2, "excluded providers' switches are kept as saved data");
+	Check(uam::central_configuration::McpEnabled(configuration, "claude-cli", "local", "files", true) == false, "included providers' switches still apply");
+	Check(!IsRetainedExcludedProviderId("claude-cli") && IsRetainedExcludedProviderId("codex-cli") && !IsRetainedExcludedProviderId(kExcludedCliProviderId) && !IsRetainedExcludedProviderId("Bad Id"),
+	    "only well-formed excluded ids are retained");
+	CentralProviderConfiguration edited; // The interface sends included providers only.
+	edited.mcp_overrides.push_back({"claude-cli", "local", "files", true});
+	uam::central_configuration::KeepExcludedProviderOverrides(configuration, edited);
+	Check(edited.mcp_overrides.size() == 2 && edited.mcp_overrides.back().provider_id == "codex-cli" && !edited.mcp_overrides.back().enabled, "an interface save keeps excluded providers' switches");
+
+	std::vector<ProviderAvailabilityOverride> availability;
+	Check(uam::provider_availability::Parse(nlohmann::json::array({{{"providerId", "codex-cli"}, {"executionHostId", "local"}, {"enabled", false}}}), availability) && availability.size() == 1,
+	    "a full build's availability policy stays valid (an invalid one would discard the whole settings file)");
+
+	// Round trip: settings a full build saved, loaded and saved again here, keep every excluded provider's entry.
+	const std::filesystem::path root = std::filesystem::temp_directory_path() / ("uam-build-flag-profile-" + std::to_string(std::random_device{}()));
+	std::filesystem::create_directories(root);
+	const std::filesystem::path file = root / "settings.txt";
+	AppSettings full;
+	full.provider_availability = {{"codex-cli", "local", false}, {"claude-cli", "local", false}};
+	full.central_provider_configuration.mcp_overrides = configuration.mcp_overrides;
+	full.provider_chat_defaults["codex-cli"].model_id = "gpt-saved";
+	full.memory_worker_bindings["codex-cli"] = {"codex-cli", "worker-saved"};
+	full.memory_worker_bindings["claude-cli"] = {"codex-cli", "claude-worker"};
+	Check(SettingsStore::Save(file, full), "settings with excluded providers save");
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		AppSettings loaded;
+		const SettingsLoadResult result = SettingsStore::Load(file, loaded);
+		Check(result.loaded && !result.recovered_from_backup && !result.unrecovered_error, "the saved settings load as valid, not from a backup");
+		Check(loaded.provider_availability.size() == 2 && !uam::provider_availability::IsEnabled(loaded, "claude-cli"), "availability keeps every provider's entry");
+		Check(loaded.central_provider_configuration.mcp_overrides.size() == 2, "MCP switches keep every provider's entry");
+		Check(loaded.provider_chat_defaults.contains("codex-cli") && loaded.provider_chat_defaults["codex-cli"].model_id == "gpt-saved", "chat defaults keep the excluded provider's entry");
+		Check(loaded.memory_worker_bindings.contains("codex-cli") && loaded.memory_worker_bindings["codex-cli"].worker_model_id == "worker-saved", "worker bindings keep the excluded provider's entry");
+		Check(loaded.memory_worker_bindings["claude-cli"].worker_provider_id == "codex-cli", "an included provider's binding keeps its saved worker");
+		Check(SettingsStore::Save(file, loaded), "the restricted build saves the loaded settings");
+	}
+	std::error_code ignored;
+	std::filesystem::remove_all(root, ignored);
 
 	// Usage accounting written by a full build: excluded providers' rows are skipped, not treated as corruption.
 	const nlohmann::json coverage = nlohmann::json::array({{{"providerId", "codex-cli"}}, {{"providerId", "claude-cli"}}});

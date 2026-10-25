@@ -241,7 +241,8 @@ namespace
 			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' requires a skill file.";
 			return false;
 		}
-		if (!result.provider_id.empty() && !uam::provider_ids::IsKnownCliProviderId(result.provider_id))
+		// An action saved for a provider this build excludes stays in the list, inert: it is neither installed nor run.
+		if (!result.provider_id.empty() && !uam::provider_ids::IsKnownCliProviderId(result.provider_id) && !uam::provider_ids::IsRetainedExcludedProviderId(result.provider_id))
 		{
 			if (error_out != nullptr) *error_out = "Shell action '" + result.label + "' has an unsupported provider.";
 			return false;
@@ -537,7 +538,7 @@ namespace
 	{
 		const std::string action_id = SafeId(request.value("actionId", ""));
 		const auto action_it = std::find_if(app.shell_actions.begin(), app.shell_actions.end(), [&](const ShellAction& action) { return action.id == action_id; });
-		if (action_it == app.shell_actions.end() || !action_it->enabled)
+		if (action_it == app.shell_actions.end() || !action_it->enabled || uam::provider_ids::IsRetainedExcludedProviderId(action_it->provider_id))
 		{
 			status = "Shell action is no longer available.";
 			return false;
@@ -708,6 +709,7 @@ bool ShellActionService::Apply(const uam::AppState& app, const std::filesystem::
 	{
 		ShellAction normalized;
 		if (!NormalizeAction(action, normalized, error_out)) return false;
+		if (uam::provider_ids::IsRetainedExcludedProviderId(normalized.provider_id)) normalized.enabled = false;
 		if (normalized.enabled && !normalized.open_workspace)
 		{
 			std::filesystem::path skill;

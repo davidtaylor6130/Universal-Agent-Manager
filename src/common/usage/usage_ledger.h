@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/provider/provider_ids.h"
 #include "common/usage/usage_aggregation.h"
 #include <nlohmann/json.hpp>
 #include <functional>
@@ -10,13 +11,7 @@ namespace uam::usage
 	/// records and coverage rows for providers it does not include. Full builds reject unknown providers as before.</summary>
 	inline bool SkipsExcludedProvider(const nlohmann::json& provider_id)
 	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_CLAUDE_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-		(void)provider_id;
-		return false;
-#else
-		return provider_id.is_string() && !provider_id.get_ref<const std::string&>().empty() && provider_id.get_ref<const std::string&>().size() <= 160 &&
-		    !provider_ids::IsKnownCliProviderId(provider_id.get_ref<const std::string&>());
-#endif
+		return provider_id.is_string() && provider_ids::IsRetainedExcludedProviderId(provider_id.get_ref<const std::string&>());
 	}
 	/// <summary>Wire accounting rows are [identity, created, [provider, ...]].</summary>
 	inline bool SkipsExcludedProviderRecord(const nlohmann::json& wire)

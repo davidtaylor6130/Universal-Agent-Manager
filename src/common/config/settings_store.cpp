@@ -112,6 +112,16 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	std::string NormalizeProviderId(std::string_view value);
 
+	/// <summary>Per-provider saved entries keep an excluded provider's id as inert data instead of dropping the entry;
+	/// lookups only ever use included ids. Selections such as the active provider keep using NormalizeProviderId.</summary>
+	std::string NormalizeStoredProviderId(std::string_view value)
+	{
+		const std::string normalized = uam::provider_ids::NormalizeCliProviderAlias(value);
+		if (!normalized.empty()) return normalized;
+		const std::string lowered = uam::strings::TrimAndLowerAscii(value);
+		return uam::provider_ids::IsRetainedExcludedProviderId(lowered) ? lowered : "";
+	}
+
 	bool IsValidSettingsText(std::string_view text)
 	{
 		bool saw_setting = false;
@@ -211,8 +221,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	                                     std::string& normalized_chat_provider_id,
 	                                     MemoryWorkerBinding& normalized_binding)
 	{
-		normalized_chat_provider_id = NormalizeProviderId(chat_provider_id);
-		normalized_binding.worker_provider_id = NormalizeProviderId(binding.worker_provider_id);
+		normalized_chat_provider_id = NormalizeStoredProviderId(chat_provider_id);
+		normalized_binding.worker_provider_id = NormalizeStoredProviderId(binding.worker_provider_id);
 		normalized_binding.worker_model_id = uam::strings::Trim(binding.worker_model_id);
 		return !normalized_chat_provider_id.empty() && !normalized_binding.worker_provider_id.empty();
 	}
@@ -341,7 +351,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	                                      std::string& normalized_provider_id,
 	                                      ProviderChatDefaults& normalized_defaults)
 	{
-		normalized_provider_id = NormalizeProviderId(provider_id);
+		normalized_provider_id = NormalizeStoredProviderId(provider_id);
 		if (normalized_provider_id.empty())
 		{
 			return false;

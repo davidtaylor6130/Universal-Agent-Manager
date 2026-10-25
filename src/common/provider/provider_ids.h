@@ -113,6 +113,20 @@ namespace uam::provider_ids
 		return ContainsProviderId(kAllCliProviderIds, provider_id);
 	}
 
+	/// <summary>True only in a build that excludes providers, for a well-formed provider id it does not include. Saved data
+	/// for such a provider stays on disk as inert data: runtime lookups use included ids, so it is never matched or used, and a
+	/// fuller build finds it again. Full builds keep rejecting unknown ids.</summary>
+	inline bool IsRetainedExcludedProviderId(std::string_view provider_id)
+	{
+#if UAM_ALL_PROVIDERS_INCLUDED
+		(void)provider_id;
+		return false;
+#else
+		return !provider_id.empty() && provider_id.size() <= 128 && provider_id.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-_") == std::string_view::npos &&
+		    !IsKnownCliProviderId(provider_id);
+#endif
+	}
+
 	inline bool IsVersionManagedCliProviderId(std::string_view provider_id)
 	{
 		return ContainsProviderId(kVersionManagedCliProviderIds, provider_id);
