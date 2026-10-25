@@ -834,6 +834,17 @@ endfunction()
 # Remove legacy UI-V2/dist from Contents/MacOS/ — it was moved to Contents/Resources/.
 # If left in MacOS/, codesign finds the .woff fonts and produces a broken signature.
 file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
+# Sign inside-out: the Intel CEF framework ships unsigned, and codesign rejects
+# the main executable while the bundle holds unsigned nested code.
+set(_cef_framework \"\${UAM_BUNDLE_CONTENTS}/Frameworks/Chromium Embedded Framework.framework\")
+execute_process(COMMAND /usr/bin/codesign --verify --strict \"\${_cef_framework}\" RESULT_VARIABLE status OUTPUT_QUIET ERROR_QUIET)
+if(NOT status EQUAL 0)
+  execute_process(COMMAND /usr/bin/codesign --force --sign \"${UAM_MACOS_SIGNING_IDENTITY}\" \"\${_cef_framework}\"
+    RESULT_VARIABLE status ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR \"Failed to sign \${_cef_framework} with configured identity '${UAM_MACOS_SIGNING_IDENTITY}': \${error}\")
+  endif()
+endif()
 ")
 
     foreach(_hname IN ITEMS
@@ -1176,8 +1187,6 @@ if(APPLE AND UAM_MACOS_BUNDLE AND UAM_ENABLE_MOBILE_COMPANION)
 endif()
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND /bin/sh -c
-      "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign '${UAM_MACOS_SIGNING_IDENTITY}' '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
     COMMAND codesign --force --sign "${UAM_MACOS_SIGNING_IDENTITY}" --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2

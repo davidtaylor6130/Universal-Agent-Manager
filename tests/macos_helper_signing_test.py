@@ -70,7 +70,8 @@ class MacosHelperSigningTests(unittest.TestCase):
                 (framework / 'Versions/Current').symlink_to('A')
                 (framework / 'Resources').symlink_to('Versions/Current/Resources')
                 (framework / 'Chromium Embedded Framework').symlink_to('Versions/Current/Chromium Embedded Framework')
-                self.run_tool('/usr/bin/codesign', '--force', '--sign', '-', framework)
+                # Intel CEF ships unsigned; strip the linker's arm64 signature to match.
+                self.run_tool('/usr/bin/codesign', '--remove-signature', version / 'Chromium Embedded Framework')
                 generated = work / 'generated'
                 generated.mkdir()
                 script = work / 'generate.cmake'
