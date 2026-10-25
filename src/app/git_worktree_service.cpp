@@ -4,6 +4,7 @@
 #include "app/worktree_launch_preparation_service.h"
 
 #include "app/provider_resolution_service.h"
+#include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/paths/path_utils.h"
@@ -316,21 +317,7 @@ namespace uam
 
 		bool IsSvnWorkspace(const std::filesystem::path& workspace)
 		{
-			if (uam::paths::PathExistsNoThrow(workspace / ".svn"))
-			{
-				return true;
-			}
-
-			std::filesystem::path current = workspace;
-			while (!current.empty() && current.has_parent_path() && current != current.parent_path())
-			{
-				if (uam::paths::PathExistsNoThrow(current / ".svn"))
-				{
-					return true;
-				}
-				current = current.parent_path();
-			}
-			return false;
+			return uam::paths::FindNearestVcsRoot(workspace).svn;
 		}
 
 		enum class LocalSnapshotSource { Unknown, Git, Svn, Plain };
@@ -446,8 +433,41 @@ namespace uam
 			return value.empty() || relative.is_absolute() || value == ".." || value.starts_with("../") || value.find('\n') != std::string::npos || value.find('\r') != std::string::npos || value.find('\0') != std::string::npos;
 		}
 
+		/// svn:ignore and global-ignores items ('I' rows). Empty when svn cannot list them, which keeps the full copy.
+		std::set<std::filesystem::path> SvnIgnoredSnapshotPaths(const std::filesystem::path& source_root)
+		{
+			std::set<std::filesystem::path> ignored;
+			const ProcessExecutionResult listed = RunSvn(source_root, {"status", "--no-ignore", "--non-interactive", "--", "."});
+			if (!CommandSucceeded(listed) || listed.output_truncated) return ignored;
+			for (const VcsChangedFile& file : ParseSvnStatusOutput(listed.output, paths::Utf8PathString(source_root)))
+				if (file.status.front() == 'I') ignored.insert(paths::PathFromUtf8(file.path).lexically_normal());
+			return ignored;
+		}
+
+		/// Keeps ignored SVN items untracked in the managed repository, so later checkpoints and ports skip them too.
+		bool WriteSnapshotExcludes(const std::filesystem::path& repository, const std::set<std::filesystem::path>& ignored, std::string& error)
+		{
+			if (ignored.empty()) return true;
+			std::string patterns;
+			for (const std::filesystem::path& path : ignored)
+			{
+				// ponytail: escapes glob characters only; a trailing space in a name stays unescaped.
+				patterns += '/';
+				for (const char ch : paths::PortablePathString(path))
+				{
+					if (ch == '\\' || ch == '*' || ch == '?' || ch == '[') patterns += '\\';
+					patterns += ch;
+				}
+				patterns += '\n';
+			}
+			std::error_code ec;
+			if (paths::CreateDirectoriesNoThrow(repository / ".git" / "info", &ec) && io::WriteTextFile(repository / ".git" / "info" / "exclude", patterns)) return true;
+			error = "Could not record SVN ignore rules for the managed snapshot.";
+			return false;
+		}
+
 		bool CollectSnapshotFiles(const AppState& app, const std::filesystem::path& source_root,
-		    bool source_is_git, std::vector<SnapshotFile>& files, std::string& error)
+		    bool source_is_git, std::vector<SnapshotFile>& files, std::string& error, const std::set<std::filesystem::path>& ignored = {})
 		{
 			files.clear();
 			error.clear();
@@ -531,7 +551,7 @@ namespace uam
 					const auto path = it->path();
 					// relative() resolves links and can replace their authored path with their target.
 					const auto relative = path.lexically_relative(source_root);
-					if (IsExcludedSnapshotPath(relative) || (!app.data_root.empty() && PathIsWithin(path, app.data_root))) it.disable_recursion_pending();
+					if (IsExcludedSnapshotPath(relative) || ignored.contains(relative.lexically_normal()) || (!app.data_root.empty() && PathIsWithin(path, app.data_root))) it.disable_recursion_pending();
 					else if (!collect(path, relative)) return false;
 					it.increment(ec);
 				}
@@ -1800,9 +1820,10 @@ namespace uam
 		if (unborn_source && !app.settings.git_snapshot_plain_folders)
 		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled."; return result; }
 		const bool managed_repository = !result.status.is_git_repository || unborn_source;
+		LocalSnapshotSource source_kind = LocalSnapshotSource::Unknown;
 		if (managed_repository && !unborn_source)
 		{
-			const LocalSnapshotSource source_kind = ClassifyLocalSnapshotSource(source_root);
+			source_kind = ClassifyLocalSnapshotSource(source_root);
 			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
 			{
 				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory.";
@@ -1848,7 +1869,8 @@ namespace uam
 		if (managed_repository)
 		{
 			std::vector<SnapshotFile> files;
-			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message))
+			const std::set<std::filesystem::path> svn_ignored = source_kind == LocalSnapshotSource::Svn ? SvnIgnoredSnapshotPaths(source_root) : std::set<std::filesystem::path>{};
+			if (!CollectSnapshotFiles(app, source_root, unborn_source, files, result.message, svn_ignored))
 			{
 				return result;
 			}
@@ -1875,6 +1897,7 @@ namespace uam
 			    !GitCommand(repository, "config user.name UAM", &result.message, stop) ||
 			    !GitCommand(repository, "config core.autocrlf false", &result.message, stop) ||
 			    !GitCommand(repository, "config core.symlinks true", &result.message, stop) ||
+			    !WriteSnapshotExcludes(repository, svn_ignored, result.message) ||
 			    !CopySnapshotFiles(files, repository, result.message) ||
 			    !GitCommand(repository, "add -A", &result.message, stop) ||
 			    !GitCommand(repository, "commit --allow-empty -m " + uam::shell::EscapeArg("UAM isolation baseline"), &result.message, stop))

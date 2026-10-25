@@ -2,6 +2,7 @@
 
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <string>
@@ -124,6 +125,23 @@ inline RiskLevel ClassifyCommand(std::string_view command)
 				return RiskLevel::Allowed;
 			}
 		}
+		return RiskLevel::WarnHigh;
+	}
+	if (executable == "svn")
+	{
+		const std::size_t start = normalized.find_first_not_of(" \t", executable.size());
+		const std::string_view rest = start == std::string::npos ? std::string_view{} : std::string_view(normalized).substr(start);
+		const std::string_view action = rest.substr(0, rest.find_first_of(" \t"));
+		constexpr auto read_svn = std::to_array<std::string_view>({
+			"status", "stat", "st", "info", "log", "list", "ls", "cat", "blame", "praise", "annotate", "ann",
+			"propget", "pget", "pg", "proplist", "plist", "pl", "diff", "di",
+		});
+		// A configured or explicit diff-cmd/config override can run another program; only the internal diff is read-only.
+		const bool runs_diff = action == "diff" || action == "di" || rest.find("--diff") != std::string_view::npos;
+		if (std::ranges::find(read_svn, action) != read_svn.end() &&
+		    !ContainsAny(normalized, std::to_array<std::string_view>({"--diff-cmd", "--config-option", "--config-dir"})) &&
+		    (!runs_diff || normalized.find("--internal-diff") != std::string::npos))
+			return RiskLevel::Allowed;
 		return RiskLevel::WarnHigh;
 	}
 	for (std::string_view read_command : read_commands)
