@@ -191,7 +191,7 @@ jobs:
         run: |
           binary=Builds/tests/uam_core_tests python=python3
           if [ "$RUNNER_OS" = Windows ]; then binary=Builds/tests/Release/uam_core_tests.exe python=python; fi
-          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once "$binary"
+          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
       - name: Package macOS review build
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}

@@ -74,6 +74,18 @@ class NativeRunnerTests(unittest.TestCase):
             attempts.clear()
             self.assertEqual(runner.run_tests(Path('/fixture'), 1, ['Flaky']), 1)
 
+    def test_quarantine_reports_only_listed_failures(self):
+        def execute(command, **kwargs):
+            if command[1] == '--list-tests':
+                return subprocess.CompletedProcess(command, 0, 'Known\nOther\nSteady')
+            output = ''.join(f'[PASS] {name}\n' for name in command[1:] if name == 'Steady')
+            return subprocess.CompletedProcess(command, 0 if output and len(command) == 2 else 1, output)
+        for requested, expected in [(['Known', 'Steady'], 0), (['Known', 'Other'], 1)]:
+            with self.subTest(requested=requested), patch.object(runner.subprocess, 'run', side_effect=execute), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runner.run_tests(Path('/fixture'), 1, requested, True, {'Known': '#1'}), expected)
+                self.assertIn('QUARANTINED: Known (#1)', output.getvalue())
+
     def test_empty_and_duplicate_inventory_are_rejected(self):
         for inventory in ['', 'Case1\nCase1', '[PASS] Case1']:
             result = subprocess.CompletedProcess([], 0, inventory)

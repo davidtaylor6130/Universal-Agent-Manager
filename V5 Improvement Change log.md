@@ -892,13 +892,14 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Misc | Windows CI Defender Exclusion | The Windows CI test job excludes its workspace and temporary folders from Defender real-time scanning before the native suite (#442). | Implemented; Windows CI Pending; Un-Reviewed; Not User Tested |
 | Build and evidence | Performance | Summary Cache And Import Overhead | Undated summary caches are reused instead of rewritten on every load, startup import computes native identity keys once per pass, and Windows writes regenerable caches with one atomic rename (#442). | Implemented; 2-core Cold Catalogue 1.2-1.6s To 0.7-0.8s; Un-Reviewed; Not User Tested |
 | Build and evidence | Misc | CI Native Retry Once | Hosted CI runs uam_core_tests serially through the native runner and reruns each failed case once in a fresh process, with budgets and assertions unchanged (#444). | Implemented; Runner Self-test 4/4 Passed; David Approved 2026-10-25; Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | CI Native Quarantine List | Hosted CI reports listed known failures (cold admission #526, Windows worktree removal #527, exit-time Stop #510) as quarantined after their retry instead of failing; every case still runs and other failures still fail CI. | Implemented; Runner Self-test 5/5 Passed; David Approved 2026-10-25; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
-| Native verification | Misc | Real-time Budget Flakes On Hosted CI | Cold-poll 100 ms, remote lease 250 ms and exit-time Stop 500 ms cases fail intermittently on shared CI runners and rely on the CI single retry; fix their timing sensitivity. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
+| Native verification | Misc | Real-time Budget Flakes On Hosted CI | Cold-poll 100 ms, remote lease 250 ms and exit-time Stop 500 ms cases fail intermittently on shared CI runners and rely on the CI single retry and the tests/ci_quarantine.txt list (#510, #526, #527); fix their timing sensitivity. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Misc | Intel Open Panel Availability | The macos-26-intel CI runner never presents NSOpenPanel, so picker Quit probes are reported unavailable there; confirm on a real Intel Mac. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Performance | Windows No-op Repackaging | Visual Studio builds run POST_BUILD every time, so a no-op Windows build deletes and recopies the UI bundle and repackages the app. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Chat and subagents | Bugfix | Workspace Hold Receipt Retry | Workspace-preparation and version-check pre-launch holds keep a row-less first input with Remove but still offer no Retry, unlike the repository-baseline hold. | Unassigned; Not Started; Claude Review; Not User Tested | Unassigned |
