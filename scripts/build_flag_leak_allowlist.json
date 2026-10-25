@@ -1,5 +1,5 @@
 {
-  "description": "Reviewed exceptions for scripts/check_build_flag_leaks.py. Every entry needs a reason. 'path' is a glob over the artifact-relative path, 'pattern' a case-insensitive regex over the surrounding text, 'match' a case-sensitive full match of the matched identifier and 'max' caps how many matches the entry may excuse. Budgets only shrink: the gate notes when one can be lowered.",
+  "description": "Reviewed exceptions for scripts/check_build_flag_leaks.py. Every entry needs a reason. 'path' is a glob over the artifact-relative path, 'pattern' a case-insensitive regex over the surrounding text, 'match' a case-sensitive full match of the matched identifier and 'max' caps how many matches the entry may excuse. Budgets only shrink: the gate notes when one can be lowered. Native executables are not excused here: scripts/build_flag_native_residue.json lists their exact reviewed strings.",
   "entries": [
     {
       "flag": "GEMINI",
@@ -57,102 +57,6 @@
       "scope": "resources",
       "path": "markdown-store/*",
       "reason": "Markdown Store skill text copied into the bundle (CMake copies the whole markdown-store folder, including personal skills, which is audit finding D2). Skill prose naming providers is user content, not an entry point; shipping only reviewed bundled skills is tracked separately."
-    },
-    {
-      "flag": "GEMINI",
-      "scope": "native",
-      "max": 129,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "CODEX",
-      "scope": "native",
-      "max": 129,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "OPENCODE",
-      "scope": "native",
-      "max": 99,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "COPILOT",
-      "scope": "native",
-      "max": 30,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "ANTIGRAVITY",
-      "scope": "native",
-      "max": 34,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "SSH",
-      "scope": "native",
-      "max": 122,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "COMPUTER_USE",
-      "scope": "native",
-      "max": 75,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "MOBILE_COMPANION",
-      "scope": "native",
-      "max": 8,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
-    },
-    {
-      "flag": "GEMINI",
-      "scope": "runner",
-      "max": 75,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "CODEX",
-      "scope": "runner",
-      "max": 22,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "OPENCODE",
-      "scope": "runner",
-      "max": 17,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "COPILOT",
-      "scope": "runner",
-      "max": 11,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "ANTIGRAVITY",
-      "scope": "runner",
-      "max": 8,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "COMPUTER_USE",
-      "scope": "runner",
-      "max": 1,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "CLAUDE",
-      "scope": "native",
-      "max": 54,
-      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings (protocol and configuration keys, history id prefixes, supported-provider lists), measured on the macOS all-but-Claude release profile with dead-code stripping (2026-10-25). Claude's sources, quota continuation, allowance reader, history and import roots are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink."
-    },
-    {
-      "flag": "CLAUDE",
-      "scope": "runner",
-      "max": 23,
-      "reason": "Residual names in the shared remote runner (native-history snapshot routes and diagnostics), measured on the macOS all-but-Claude profile with dead-code stripping (2026-10-25). Budgets only shrink."
     }
   ]
 }

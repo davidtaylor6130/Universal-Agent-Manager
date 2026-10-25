@@ -11,13 +11,14 @@ on:
       - '.github/workflows/build-flag-leaks.yml'
       - 'scripts/check_build_flag_leaks.py'
       - 'scripts/build_flag_leak_allowlist.json'
+      - 'scripts/build_flag_native_residue.json'
       - 'tests/build_flag_leak_gate_test.py'
-      - 'cmake/build_features.cmake'
-      - 'cmake/ui_build.cmake'
-      - 'cmake/build_ui.cmake.in'
       - 'CMakeLists.txt'
-      - 'src/common/config/build_features.h'
-      - 'src/common/provider/provider_ids.h'
+      - 'cmake/**'
+      # Native sources and everything the bundle packages (resources, skills, UI) can add an excluded name.
+      - 'src/**'
+      - 'assets/**'
+      - 'markdown-store/**'
       - 'UI-V2/**'
 
 permissions:
@@ -90,6 +91,9 @@ jobs:
           - { name: 'no SSH', cmake: '-DUAM_ENABLE_SSH=OFF' }
           - { name: 'no computer use', cmake: '-DUAM_ENABLE_COMPUTER_USE=OFF' }
           - { name: 'no phone access', cmake: '-DUAM_ENABLE_MOBILE_COMPANION=OFF' }
+          # Packaging-only profiles: nothing is excluded, but the helper folders and expected executable are checked.
+          - { name: 'all on, no packaged remote helpers', cmake: '' }
+          - { name: 'runner only, all providers', cmake: '-DUAM_RUNNER_ONLY=ON', target: uam_runner }
           - { name: 'runner only, no OpenCode or Antigravity', cmake: '-DUAM_RUNNER_ONLY=ON -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF', target: uam_runner }
           - { name: 'only Gemini', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
           - { name: 'only Codex', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
@@ -114,3 +118,13 @@ jobs:
       - run: cmake --build Builds/flags --config Release --target ${{ matrix.target || 'universal_agent_manager' }} --parallel 4
       - name: Check the application, runner and bundle for excluded names
         run: python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags
+      - name: Record unreviewed native strings for review
+        if: failure()
+        run: |
+          cp scripts/build_flag_native_residue.json "$RUNNER_TEMP/build_flag_native_residue.json"
+          python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags --residue "$RUNNER_TEMP/build_flag_native_residue.json" --record-residue || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: native-residue-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/build_flag_native_residue.json

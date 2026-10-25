@@ -3,10 +3,14 @@
 
 Scans the printable strings of the native executables, packaged resource files, file names and
 UI dist/** for each disabled flag's identifiers. Matches are excused only by a reviewed entry in
-scripts/build_flag_leak_allowlist.json (each entry carries a justification).
+scripts/build_flag_leak_allowlist.json (each entry carries a justification). Native executables are
+excused only string by string: scripts/build_flag_native_residue.json lists, per executable and flag,
+the exact text around each reviewed match and how often it occurs, so removing one match never makes
+room for a new one.
 
   check_build_flag_leaks.py --build-dir Builds/flags-off            # flags read from CMakeCache.txt
   check_build_flag_leaks.py --dist Builds/ui-off/dist --disabled CODEX SSH
+  check_build_flag_leaks.py --build-dir Builds/flags-off --record-residue   # add new native matches for review
 """
 import argparse
 import fnmatch
@@ -17,6 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALLOWLIST = ROOT / 'scripts' / 'build_flag_leak_allowlist.json'
+DEFAULT_RESIDUE = ROOT / 'scripts' / 'build_flag_native_residue.json'
+NATIVE_SCOPES = {'native', 'runner'}
 
 # Short name -> (CMake option, identifiers). Identifiers are case-insensitive regular expressions
 # covering names, ids such as codex-cli, logo file names, action names and settings keys.
@@ -165,6 +171,51 @@ def native_artifacts(build_dir, values):
     return found
 
 
+def apply_residue(leaks, residue):
+    """Excuse native matches whose exact surrounding text is recorded for that executable and flag, at most as often
+    as recorded. Returns the remaining matches."""
+    remaining = {}
+    left = []
+    for leak in leaks:
+        if leak['scope'] not in NATIVE_SCOPES:
+            left.append(leak)
+            continue
+        key = (leak['path'], leak['flag'], leak['text'])
+        if key not in remaining:
+            remaining[key] = residue.get('artifacts', {}).get(leak['path'], {}).get(leak['flag'], {}).get(leak['text'], 0)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+        else:
+            left.append(leak)
+    return left
+
+
+def residue_failures(residue):
+    reasons = residue.get('reasons', {})
+    flags = {flag for per_flag in residue.get('artifacts', {}).values() for flag in per_flag}
+    return [f'Native residue for {flag} has no reviewed reason in {DEFAULT_RESIDUE.name}.'
+            for flag in sorted(flags) if not reasons.get(flag, '').strip() or reasons[flag].startswith('TODO')]
+
+
+def record_residue(path, residue, leaks):
+    """Merge unexcused native matches into the residue file; their flags need a reviewed reason before the gate passes."""
+    counts = {}
+    for leak in leaks:
+        if leak['scope'] in NATIVE_SCOPES:
+            key = (leak['path'], leak['flag'], leak['text'])
+            counts[key] = counts.get(key, 0) + 1
+    artifacts = residue.setdefault('artifacts', {})
+    for (artifact, flag, text), count in counts.items():
+        strings = artifacts.setdefault(artifact, {}).setdefault(flag, {})
+        strings[text] = max(strings.get(text, 0), count)
+        residue.setdefault('reasons', {}).setdefault(flag, 'TODO: review these strings and explain why they remain.')
+    for per_flag in artifacts.values():
+        for flag, strings in per_flag.items():
+            per_flag[flag] = dict(sorted(strings.items()))
+    path.write_text(json.dumps(residue, indent=2, ensure_ascii=False) + '\n')
+    print(f'Recorded {sum(counts.values())} native matches ({len(counts)} distinct) in {path}.')
+
+
 def structural_failures(build_dir, values):
     """Packaging rules that are about folders rather than strings."""
     failures = []
@@ -186,6 +237,8 @@ def main(argv=None):
     parser.add_argument('--dist', type=Path, help='UI dist folder (defaults to <build-dir>/UI-V2/dist)')
     parser.add_argument('--disabled', nargs='*', default=None, help='Disabled flags, short (CODEX) or CMake (UAM_ENABLE_SSH) names')
     parser.add_argument('--allowlist', type=Path, default=DEFAULT_ALLOWLIST)
+    parser.add_argument('--residue', type=Path, default=DEFAULT_RESIDUE, help='Reviewed exact native strings per executable')
+    parser.add_argument('--record-residue', action='store_true', help='Add unexcused native matches to the residue file for review')
     parser.add_argument('--ui-only', action='store_true', help='Scan only the UI dist even when a build folder is given')
     args = parser.parse_args(argv)
     if not args.build_dir and not args.dist:
@@ -196,10 +249,6 @@ def main(argv=None):
         disabled = sorted({flag_name(value) for value in args.disabled})
     else:
         disabled = sorted(name for name, (option, _) in FLAGS.items() if not cmake_bool(values.get(option, 'ON')))
-    if not disabled:
-        print('No provider or feature flag is disabled; nothing to check.')
-        return 0
-
     artifacts = []
     dist = args.dist or (args.build_dir / 'UI-V2' / 'dist')
     if dist.is_dir():
@@ -214,15 +263,30 @@ def main(argv=None):
             failures.append(f'No {"runner" if expected == "runner" else "application"} executable found in {args.build_dir}.')
         artifacts.extend(native)
         failures.extend(structural_failures(args.build_dir, values))
-    if not artifacts:
+    if not artifacts and not failures:
         parser.error('No artifacts to scan.')
+    if not disabled:
+        # Packaging-only profiles (UAM_PACKAGE_REMOTE_RUNNERS=OFF, or UAM_RUNNER_ONLY=ON with every provider on) still
+        # need the expected executable and folder rules; there are no names to search for.
+        for failure in failures:
+            print(f'FAIL: {failure}')
+        if failures:
+            print(f'Build flag leak gate failed: {len(failures)} packaging failures.')
+            return 1
+        print('No provider or feature flag is disabled; packaging checks passed.')
+        return 0
 
     entries = json.loads(args.allowlist.read_text()).get('entries', []) if args.allowlist.exists() else []
     for entry in entries:
         if not entry.get('reason', '').strip():
             failures.append(f'Allowlist entry without a justification: {entry}')
+    residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
     leaks = find_leaks(disabled, artifacts)
-    leak_failures, notes = apply_allowlist(leaks, entries, disabled)
+    leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)
+    if args.record_residue:
+        record_residue(args.residue, residue, leak_failures)
+        leak_failures = [leak for leak in leak_failures if leak['scope'] not in NATIVE_SCOPES]
+    failures.extend(residue_failures(residue))
 
     print(f"Disabled: {', '.join(disabled)}; scanned: {', '.join(f'{scope}:{path}' for scope, path in artifacts)}")
     summary = {}
