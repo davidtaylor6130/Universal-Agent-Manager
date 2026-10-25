@@ -1267,6 +1267,12 @@ UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
 		session.ephemeral_model_discovery = ephemeral;
 		session.goal_internal_session = kind == 2;
 		std::string error;
+		// A new chat's pre-launch repository baseline makes this direct Start return false while Pending
+		// (product callers queue and retry); settle it, then drop its runner probe so only the provider launch is inspected.
+		if (!session.model_discovery_only && uam::PrepareChatRepositoryBaseline(app, launched, &error) == uam::ChatBaselineReadiness::Pending)
+			UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Unavailable);
+		error.clear();
+		(void)fs::remove(log);
 		const bool started = uam::acp_detail::StartAcpProcessForChat(app, session, launched, &error);
 		struct Guard
 		{

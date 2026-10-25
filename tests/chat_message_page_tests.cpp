@@ -59,14 +59,17 @@ namespace
 		UAM_ASSERT(prepared);
 		const std::optional<uam::chat_pages::Index> staged_index = uam::chat_pages::ReadIndex(prepared->index_temp, prepared->primary_revision);
 		UAM_ASSERT(staged_index);
-		std::ifstream staged_primary(prepared->primary_temp, std::ios::binary);
-		std::string opening, closing, staged_metadata;
-		UAM_ASSERT(uam::chat_pages::ReadSpan(staged_primary, {staged_index->array_begin, 1}, opening));
-		UAM_ASSERT(uam::chat_pages::ReadSpan(staged_primary, {staged_index->array_end, 1}, closing));
-		UAM_ASSERT_EQ(opening, std::string("["));
-		UAM_ASSERT_EQ(closing, std::string("]"));
-		UAM_ASSERT(uam::chat_pages::ReadMetadata(staged_primary, *staged_index, staged_metadata));
-		UAM_ASSERT_EQ(nlohmann::json::parse(staged_metadata)["id"].get<std::string>(), metadata.id);
+		{
+			// Close before publishing: MSVC streams omit FILE_SHARE_DELETE, which blocks the Windows rename.
+			std::ifstream staged_primary(prepared->primary_temp, std::ios::binary);
+			std::string opening, closing, staged_metadata;
+			UAM_ASSERT(uam::chat_pages::ReadSpan(staged_primary, {staged_index->array_begin, 1}, opening));
+			UAM_ASSERT(uam::chat_pages::ReadSpan(staged_primary, {staged_index->array_end, 1}, closing));
+			UAM_ASSERT_EQ(opening, std::string("["));
+			UAM_ASSERT_EQ(closing, std::string("]"));
+			UAM_ASSERT(uam::chat_pages::ReadMetadata(staged_primary, *staged_index, staged_metadata));
+			UAM_ASSERT_EQ(nlohmann::json::parse(staged_metadata)["id"].get<std::string>(), metadata.id);
+		}
 		UAM_ASSERT(ChatRepository::PublishPreparedChatSave(prepared, true, &metadata));
 		UAM_ASSERT(!metadata.messages_loaded);
 		UAM_ASSERT(metadata.messages.empty());

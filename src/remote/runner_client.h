@@ -79,7 +79,8 @@ namespace uam::remote
 		RunnerClient(const RunnerClient&) = delete;
 		RunnerClient& operator=(const RunnerClient&) = delete;
 
-		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// interrupt is polled while the handshake waits, like PollProcess interrupts.
+		bool Connect(std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::function<bool()>& interrupt = {});
 		bool IsConnected() const { return m_connected; }
 		bool InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool SupportsProviderNativeContext() const { return m_providerNativeContext; }

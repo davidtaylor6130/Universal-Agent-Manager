@@ -293,6 +293,8 @@ namespace uam
 		bool include_prior_context = false;
 		/// <summary>Direct input awaiting admission, distinct from a follow-up queued behind active work.</summary>
 		bool direct_admission = false;
+		/// <summary>Held because its pre-launch repository baseline failed; explicit receipt Retry re-runs that baseline.</summary>
+		bool repository_baseline_hold = false;
 		bool prepared_for_delivery = false;
 		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
