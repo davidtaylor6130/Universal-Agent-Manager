@@ -6,7 +6,7 @@ import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, projectUnsentPrompts, reviewAssistantLabel } from './ChatView'
-import { useAppStore } from '../../store/useAppStore'
+import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
 import type { CppChat } from '../../store/cpp/types'
@@ -595,6 +595,7 @@ describe('ChatView', () => {
       },
       cliBindingBySessionId: {},
       getVcsCommitStatus: vi.fn(() => Promise.resolve(null)),
+      branchSwitching: undefined,
     })
   })
 
@@ -1943,7 +1944,7 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-workspace-row')).toBeNull()
     expect(host.querySelector('button[aria-label="Select provider"]')).toBeNull()
     const workspaceTab = host.querySelector('.uam-composer-workspace-tab')
-    expect(workspaceTab?.textContent).toContain('project')
+    expect(workspaceTab?.textContent).toContain('Project')
     expect(workspaceTab?.querySelector('svg')).toBeTruthy()
     expect(workspaceTab?.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
     expect(workspaceTab?.parentElement?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
@@ -6230,7 +6231,7 @@ describe('ChatView', () => {
       branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '',
     }))
     useAppStore.setState((state) => ({
-      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceBranchName: '' } : session),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'gitWorktree', workspaceBranchName: '' } : session),
       getVcsCommitStatus,
       branchSwitching: false,
     }))
@@ -6238,10 +6239,10 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
-    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')).toBeNull()
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
     expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
     await act(async () => { useAppStore.setState({ branchSwitching: true }) })
-    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')?.textContent).toContain('feature/composer')
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')?.textContent).toContain('feature/composer')
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ branchSwitching: undefined })
@@ -6265,6 +6266,98 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('shows the source workspace name before the branch while preserving the worktree path', async () => {
+    const directory = '/tmp/worktrees/chat-random'
+    useAppStore.setState((state) => ({
+      folders: state.folders.map((folder) => ({ ...folder, name: 'Original project' })),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: directory, workspaceSourceDirectory: '/tmp/project', workspaceIsolationKind: 'gitWorktree' } : session),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: directory, branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const tab = host.querySelector('.uam-composer-workspace-tab')!
+      expect(tab.textContent).toContain('Original projectfeature/composer')
+      expect(tab.textContent).not.toContain('chat-random')
+      expect(tab.querySelector('[title="/tmp/worktrees/chat-random"]')).toBeTruthy()
+      expect(useAppStore.getState().sessions[0].workspaceDirectory).toBe(directory)
+      act(() => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, name: 'Renamed project' })) })))
+      expect(tab.textContent).toContain('Renamed projectfeature/composer')
+      expect(useAppStore.getState().sessions[0].workspaceDirectory).toBe(directory)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { label: 'plain workspace', workspaceIsolationKind: '', executionHostId: 'local', temporaryParentChatId: undefined },
+    { label: 'remote worktree', workspaceIsolationKind: 'gitWorktree', executionHostId: 'remote', temporaryParentChatId: undefined },
+    { label: 'side chat', workspaceIsolationKind: 'gitWorktree', executionHostId: 'local', temporaryParentChatId: 'parent' },
+  ])('keeps the branch read-only for a $label despite the global capability', async (context) => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, ...context, workspaceBranchName: 'feature/composer' } : session),
+      branchSwitching: true,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
+      expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('displays an SVN revision without offering Git selection or a stale saved branch', async () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceIsolationKind: 'gitWorktree', workspaceBranchName: 'old-git-branch' } : session),
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['svn'], activeVcsType: 'svn', workspaceDirectory: '/tmp/project', branchOrRevision: '42', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const tab = host.querySelector('.uam-composer-workspace-tab')!
+      expect(tab.querySelector('button[aria-haspopup="dialog"]')).toBeNull()
+      expect(tab.querySelector('[aria-label="SVN revision 42"]')?.textContent).toBe('SVN r42')
+      expect(tab.textContent).not.toContain('old-git-branch')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers SVN folder selection for an editable plain local working copy', async () => {
+    useAppStore.setState({
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['svn'], activeVcsType: 'svn', workspaceDirectory: '/tmp/project', branchOrRevision: '42', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const trigger = host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')
+      expect(trigger?.getAttribute('aria-label')).toBe('Switch SVN folder, current revision 42')
+      expect(trigger?.textContent).toBe('SVN r42')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('clears a stale saved branch when the current workspace has no repository', async () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceIsolationKind: 'gitWorktree', workspaceBranchName: 'old-git-branch' } : session),
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: false, vcsTypes: [], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).not.toContain('old-git-branch')
+      expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('selects the per-chat memory level from options and /memory', async () => {
