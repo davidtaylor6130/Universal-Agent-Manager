@@ -1,5 +1,7 @@
 # Provider attachments
 
+Explicit [file, branch and worktree snapshots](../chat/composer/attachments.md) are UAM-supplied quoted text with authored composer messages for all six structured providers, rather than native attachment blocks or permission-bearing paths. Their capture metadata remains historical context; native input identity and delivery observations still come from the existing send service. This shared source-implemented text route does not resolve native attachment limitations or substitute for verification of [David's goal/plan action-send contract](../documentation-review.md#referenced-context-action-sends); native/runtime verification and acceptance remain separate.
+
 Files and images attached to a message must reach the intended provider session in a representation it can use, with their names and relationship to the message preserved. Remote execution requires delivery to the remote environment rather than a controller-only path. UAM should supply an equivalent where possible; if an image or file cannot be consumed, report that limitation without silently dropping it or claiming visual understanding from its filename.
 
 [Composer attachments](../chat/composer/attachments.md).
