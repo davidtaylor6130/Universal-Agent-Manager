@@ -121,7 +121,7 @@ UAM_TEST(StateSerializerPublishesPersistedLocalWorktreeCatalog)
 	{
 		if (catalog.value("providerId", "") != "opencode-cli" ||
 		    catalog.value("executionHostId", "") != "local" ||
-		    catalog.value("workspaceDirectory", "") != uam::paths::Utf8PathString(worktree)) continue;
+		    catalog.value("workspaceDirectory", "") != worktree.generic_string()) continue; // Catalog scopes publish generic separators.
 		found_worktree_catalog = true;
 		bool found_cached_model = false;
 		for (const nlohmann::json& model : catalog["availableModels"])
@@ -176,6 +176,7 @@ UAM_TEST(StateSerializerPublishesPersistedWorktreeCatalogAfterLargeFolderProject
 		app.folders.push_back(folder);
 	}
 	const std::string worktree = uam::paths::Utf8PathString(temp.root / "private-worktree");
+	const std::string catalog_worktree = (temp.root / "private-worktree").generic_string(); // Catalog scopes publish generic separators.
 	fs::create_directories(worktree);
 	const nlohmann::json models = nlohmann::json::array({{{"id", "cached/worktree-model"}}});
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, worktree));
@@ -188,7 +189,7 @@ UAM_TEST(StateSerializerPublishesPersistedWorktreeCatalogAfterLargeFolderProject
 		for (std::size_t index = 512; index < catalogs.size(); ++index)
 		{
 			const nlohmann::json& catalog = catalogs[index];
-			if (catalog.value("providerId", "") != "claude-cli" || catalog.value("executionHostId", "") != "local" || catalog.value("workspaceDirectory", "") != worktree) continue;
+			if (catalog.value("providerId", "") != "claude-cli" || catalog.value("executionHostId", "") != "local" || catalog.value("workspaceDirectory", "") != catalog_worktree) continue;
 			UAM_ASSERT_EQ(catalog["availableModels"], models);
 			found = true;
 		}
