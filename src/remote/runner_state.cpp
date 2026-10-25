@@ -562,6 +562,7 @@ namespace uam::remote
 						    LeaseClockMilliseconds() >= process.lease_deadline_ms.load(
 						        std::memory_order_acquire))
 						{
+							process.lease_terminating.store(true, std::memory_order_release);
 							std::scoped_lock lock(process.mutex);
 							ProcessService().TerminateStdioProcess(process.fields, true);
 							process.exit_code.store(-1, std::memory_order_release);
@@ -738,7 +739,8 @@ namespace uam::remote
 				std::atomic<bool>& active;
 				~CleanupClaim() { active.store(false, std::memory_order_release); }
 			} claim{process->retirement_cleanup_active};
-			if (!CleanupProcess(process, true)) continue;
+			// The drainer's own bounded lease kill holds the mutex; wait for it rather than report the dying process as live.
+			if (!CleanupProcess(process, !process->lease_terminating.load(std::memory_order_acquire))) continue;
 			std::scoped_lock lock(m_stateMutex);
 			const auto found = m_retiringProcesses.find(session_id);
 			if (found != m_retiringProcesses.end() && found->second == process)

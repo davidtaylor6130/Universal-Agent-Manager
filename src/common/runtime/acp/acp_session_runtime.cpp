@@ -348,6 +348,16 @@ namespace uam
 			    (exit_code == 70 && RemoteProxyExitConfirmsMissingProcess(stderr_tail)));
 		}
 
+		/// The proxy writes its token-bound outcome line only after the runner removed the owned process.
+		bool RemoteStopOutcomeReported(const std::string& delivery_token, std::string_view stderr_tail)
+		{
+			if (delivery_token.empty()) return false;
+			const std::string prefix = std::string(uam::remote::kRemoteStopOutcomePrefix) + delivery_token + " ";
+			for (std::size_t found = stderr_tail.find(prefix); found != std::string_view::npos; found = stderr_tail.find(prefix, found + 1))
+				if ((found == 0 || stderr_tail[found - 1] == '\n') && stderr_tail.find('\n', found) != std::string_view::npos) return true;
+			return false;
+		}
+
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
 		bool DrainRemoteStopStderr(platform::StdioProcessPlatformFields& process, std::string& stderr_tail, bool* made_progress = nullptr)
 		{
@@ -7674,13 +7684,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    PollStdioProcessExited(*stop.session, &exit_code);
 				bool stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail, &made_progress);
 				bool stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr, &made_progress);
+				// The outcome line follows the proxy's final output, so remote cleanup is confirmed without
+				// also waiting for the proxy to tear down its runner bridges; exit teardown stops it below.
+				const bool outcome_reported = RemoteStopOutcomeReported(stop.session->remote_output_delivery_token, stop.stderr_tail);
 				// Both pipes must drain so the proxy can flush its final output and exit.
-				while (exited && (stderr_pending || stdout_pending))
+				while ((exited || outcome_reported) && (stderr_pending || stdout_pending))
 				{
 					stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
 					stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr);
 				}
-				stop.confirmed = RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail);
+				stop.confirmed = outcome_reported || RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail);
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;
