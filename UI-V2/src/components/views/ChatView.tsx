@@ -357,7 +357,7 @@ type ParentViewportDetails = {
 }
 const parentViewportVisits = new Map<string, ParentViewportDetails & { top: number; nearBottom: boolean; renderedCount: number }>()
 
-const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0
+const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
 
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
   const showComposerRef = useRef(showComposer)

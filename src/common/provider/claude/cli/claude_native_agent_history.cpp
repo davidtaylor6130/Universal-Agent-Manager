@@ -87,8 +87,9 @@ std::optional<ChatSession> ParseNativeTranscript(std::string_view text, const st
 	chat.id = session_id;
 	chat.native_session_id = chat.id;
 	chat.provider_id = uam::provider_ids::kClaudeCli;
-	for (const nlohmann::json& record : chain)
-		if (record.contains("cwd") && record["cwd"].is_string()) { chat.workspace_directory = record["cwd"].get<std::string>(); break; }
+	// The chain is leaf-first; a session stays in the workspace where it started, even after a later cd.
+	for (auto record = chain.rbegin(); record != chain.rend(); ++record)
+		if (record->contains("cwd") && (*record)["cwd"].is_string()) { chat.workspace_directory = (*record)["cwd"].get<std::string>(); break; }
 	if (chat.workspace_directory.empty()) chat.workspace_directory = workspace;
 	if (chat.workspace_directory.empty() || (!workspace.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(chat.workspace_directory), uam::paths::PathFromUtf8(workspace)))) return std::nullopt;
 	std::unordered_set<std::string> summarized_boundaries;
