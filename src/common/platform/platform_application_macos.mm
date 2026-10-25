@@ -39,10 +39,7 @@
 	if ([[self modalWindow] isKindOfClass:[NSOpenPanel class]])
 	{
 		pickerQuitPending_ = YES;
-		NSOpenPanel* panel = (NSOpenPanel*)[self modalWindow];
-		[panel cancel:sender];
-		// Cancellation can arrive before the panel accepts actions; still unwind its owned loop.
-		if ([self modalWindow] == panel) [self stopModalWithCode:NSModalResponseCancel];
+		[self cancelPickerForQuit:(NSOpenPanel*)[self modalWindow]];
 		// Unwind BrowsePath and its CEF query callback before closing the browser.
 		[self performSelector:@selector(completePickerQuit:) withObject:nil afterDelay:0];
 		return;
@@ -61,6 +58,18 @@
 		}
 	}
 	if (window != nil) [window performClose:sender];
+}
+
+/// A cold first picker can drop both requests before it accepts actions; retry inside its loop until it unwinds.
+- (void)cancelPickerForQuit:(NSOpenPanel*)panel
+{
+	if ([self modalWindow] != panel) return;
+	[panel cancel:self];
+	// Cancellation can arrive before the panel accepts actions; still unwind its owned loop.
+	if ([self modalWindow] != panel) return;
+	[self stopModalWithCode:NSModalResponseCancel];
+	// ponytail: a retry left queued after the loop unwinds no-ops at the modalWindow guard.
+	[self performSelector:@selector(cancelPickerForQuit:) withObject:panel afterDelay:0.05 inModes:@[NSModalPanelRunLoopMode]];
 }
 
 - (void)completePickerQuit:(id)sender

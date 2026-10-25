@@ -875,6 +875,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Build and evidence | Misc | Test V5 Base Pushes | CI now also runs on pushes to uam/v5-improvements so the integration branch itself is tested. | Implemented; Un-Reviewed; Not User Tested |
 | Native verification | Code Only | Base Fixture Contract Updates | Native fixtures assert the `<UAM History>` retry format and receipt-based memory rollback, settle the new pre-launch repository baseline, and flush deferred admission saves before reading chats (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 | Providers and MCP | Bugfix | Claude Discovery Starting Workspace | Claude native discovery assigns a session to the workspace where it started instead of a directory reached by a later cd (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
+| Build and evidence | Bugfix | Quit During Cold Picker | Quitting while the first folder picker of a session is still opening retries cancellation inside the picker loop until it closes, instead of leaving Quit ignored (#444). | Implemented; macOS ARM CI Pending; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
