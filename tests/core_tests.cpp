@@ -11518,7 +11518,8 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	for (const ChatSession& chat : chats)
 	{
 		std::string error;
-		UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		if (!service.RemoveUnusedBranchWorktree(app, chat, &error))
+			uam_test::Fail(("RemoveUnusedBranchWorktree(" + chat.id + ") refused: " + error + " worktree=" + chat.workspace_worktree_directory + " source=" + chat.workspace_source_directory).c_str(), __FILE__, __LINE__);
 		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
 	}
 	UAM_ASSERT(git_output("worktree list --porcelain").find("refs/heads/" + logical_name) == std::string::npos);
