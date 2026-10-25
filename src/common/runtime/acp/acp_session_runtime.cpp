@@ -7557,8 +7557,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::unordered_set<std::string> completed_ephemeral_ids;
 		for (const auto& session : app.acp_sessions)
 		{
+			// A discovery parked on its host version check has not completed yet.
 			if (session == nullptr || !session->ephemeral_model_discovery || session->running ||
-			    session->reconnect_pending || AcpStopInProgress(app, session->chat_id)) continue;
+			    session->pending_local_launch || session->reconnect_pending || AcpStopInProgress(app, session->chat_id)) continue;
 			const std::vector<ChatSession>::iterator discovery = std::ranges::find_if(app.model_discovery_chats,
 			    [&session](const ChatSession& chat) { return chat.id == session->chat_id; });
 			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&
