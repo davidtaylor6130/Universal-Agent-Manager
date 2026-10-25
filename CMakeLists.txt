@@ -478,6 +478,10 @@ if(APPLE)
     "-Wl,-framework,IOKit"
     "-Wl,-framework,Foundation"
   )
+  if(UAM_RESTRICTED_BUILD)
+    # As for the app: restricted release helpers drop code and local symbol names only excluded paths reached.
+    target_link_options(uam_runner PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-Wl,-dead_strip;-Wl,-x>")
+  endif()
 elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp

@@ -105,6 +105,54 @@
       "scope": "native",
       "max": 8,
       "reason": "Residual names in shared native runtime, settings, state and diagnostics strings and RTTI type names, measured on the macOS Claude-only, SSH/computer-use/phone-off release profile with dead-code stripping (2026-10-25). Source lists, bridge routes, id tables and folder reads are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink; other CI profiles need their own measurement."
+    },
+    {
+      "flag": "GEMINI",
+      "scope": "runner",
+      "max": 75,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "CODEX",
+      "scope": "runner",
+      "max": 22,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "OPENCODE",
+      "scope": "runner",
+      "max": 17,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "COPILOT",
+      "scope": "runner",
+      "max": 11,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "ANTIGRAVITY",
+      "scope": "runner",
+      "max": 8,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "COMPUTER_USE",
+      "scope": "runner",
+      "max": 1,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes, usage scanning diagnostics, protocol capability keys and RTTI type names), measured on the macOS runner-only Claude profile with dead-code stripping (2026-10-25). Excluded providers' runner sources and request handlers are gated (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "CLAUDE",
+      "scope": "native",
+      "max": 54,
+      "reason": "Residual names in shared native runtime, settings, state and diagnostics strings (protocol and configuration keys, history id prefixes, supported-provider lists), measured on the macOS all-but-Claude release profile with dead-code stripping (2026-10-25). Claude's sources, quota continuation, allowance reader, history and import roots are gated; removing the rest needs provider-adapter and state-schema work (Build Flag Complete Removal). Budgets only shrink."
+    },
+    {
+      "flag": "CLAUDE",
+      "scope": "runner",
+      "max": 23,
+      "reason": "Residual names in the shared remote runner (native-history snapshot routes and diagnostics), measured on the macOS all-but-Claude profile with dead-code stripping (2026-10-25). Budgets only shrink."
     }
   ]
 }

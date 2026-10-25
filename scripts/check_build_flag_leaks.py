@@ -36,6 +36,8 @@ FALSE_VALUES = {'0', 'OFF', 'NO', 'FALSE', 'N', 'IGNORE', 'NOTFOUND', ''}
 TEXT_SUFFIXES = {'.js', '.mjs', '.css', '.html', '.json', '.webmanifest', '.svg', '.txt', '.toml', '.md', '.uam', '.map', '.plist', '.sha256', '.version'}
 # Third-party runtime files that UAM does not author; scanning them would only find Chromium text.
 SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2'}
+# Packaged copies of binaries that are scanned once in their own scope.
+SKIP_FILES = {'uam-runner', 'uam-runner.exe'}
 SKIP_SUFFIXES = {'.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
 PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
 
@@ -88,7 +90,7 @@ def collect(artifacts):
             continue
         for path, relative in walk(root):
             yield scope, relative, relative
-            if path.is_file() and path.suffix.lower() not in SKIP_SUFFIXES:
+            if path.is_file() and path.suffix.lower() not in SKIP_SUFFIXES and path.name not in SKIP_FILES:
                 for text in file_strings(path):
                     yield scope, relative, text
 
@@ -145,7 +147,13 @@ def native_artifacts(build_dir, values):
         found.append(('resources', bundle / 'Contents' / 'Info.plist'))
         frameworks = bundle / 'Contents' / 'Frameworks'
         if frameworks.is_dir():
-            found.extend(('resources', path) for path in frameworks.iterdir() if path.name not in SKIP_NAMES and not path.name.startswith('universal_agent_manager Helper'))
+            # Nested apps (CEF helpers, UAM Computer Use) run copies of the main executable, which is scanned once as 'native'.
+            for app in frameworks.iterdir():
+                if app.name in SKIP_NAMES or app.name.startswith('universal_agent_manager Helper'):
+                    continue
+                for part in (app / 'Contents' / 'Resources', app / 'Contents' / 'Info.plist'):
+                    if part.exists():
+                        found.append(('resources', part))
     for candidate in (build_dir / 'Release' / 'universal_agent_manager.exe', build_dir / 'universal_agent_manager.exe'):
         if candidate.is_file():
             found.append(('native', candidate))
