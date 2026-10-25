@@ -1249,6 +1249,7 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_subdirectory(tests/bootstrap_metadata)
   add_executable(uam_companion_protocol_tests
     tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
   target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")

@@ -3394,7 +3394,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 						state->message = uam::claude_input::Build(state->identity.prompt, paths::PathFromUtf8(state->identity.workspace), state->identity.images, state->error, true, state->cancel.get_token());
 					else
 					{
-						remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, remote::SshBridgeArgv(state->host.ssh_alias, state->host.platform, state->host.runner_version, state->host.runner_directory, state->host.runner_protocol_version), state->host.runner_version, state->host.runner_protocol_version);
+						remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, state->host);
 						state->message = uam::claude_input::BuildWithReader(state->identity.prompt, state->identity.images, state->error, true, state->cancel.get_token(), [&client, &state](const MessageAttachment& image, std::string& bytes, std::size_t max_bytes, std::string& error) { return client.ReadWorkspaceAttachment(state->identity.workspace, image.path, bytes, max_bytes, &error, state->cancel.get_token()); }, 2 * 1024 * 1024 - 16 * 1024);
 					}
 				}

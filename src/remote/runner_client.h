@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <stop_token>
 #include <unordered_map>
@@ -58,13 +59,22 @@ namespace uam::remote
 	/// Cached health may be stale; the connection handshake still validates the installed helper.
 	bool CanAttemptRunnerConnection(const ExecutionHost& host);
 
+	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
+	    const std::filesystem::path& directory, std::string* error_out = nullptr);
+
 	class RunnerClient
 	{
 	  public:
+		/// Ordinary saved-host clients enforce installation admission before starting a bridge.
+		RunnerClient(IPlatformProcessService& process_service, const ExecutionHost& host);
+		/// Explicit transport access for bootstrap/recovery and runner-side owned proxy channels.
 		RunnerClient(IPlatformProcessService& process_service,
 		             std::vector<std::string> bridge_argv,
 		             std::string expected_version = {},
 		             int expected_protocol_version = kRunnerProtocolVersion);
+		RunnerClient(IPlatformProcessService& process_service, std::initializer_list<std::string> bridge_argv,
+		    std::string expected_version = {}, int expected_protocol_version = kRunnerProtocolVersion)
+		    : RunnerClient(process_service, std::vector<std::string>(bridge_argv), std::move(expected_version), expected_protocol_version) {}
 		~RunnerClient();
 		RunnerClient(const RunnerClient&) = delete;
 		RunnerClient& operator=(const RunnerClient&) = delete;
@@ -186,6 +196,7 @@ namespace uam::remote
 		int m_expectedProtocolVersion = kRunnerProtocolVersion;
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
+		bool m_connectionAllowed = true;
 		bool m_directoryBrowsing = false;
 		bool m_safePathInspection = false;
 		bool m_contextRead = false;

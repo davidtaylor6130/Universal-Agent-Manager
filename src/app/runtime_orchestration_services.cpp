@@ -4508,9 +4508,7 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 		RemoteOpenCodeDiscovery result;
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		if (stop_token.stop_requested()) return result;
 		if (!client.Connect(&result.error)) return result;
 		std::string session_id = "history-" +
@@ -4948,7 +4946,7 @@ std::optional<ChatSession> ChatHistorySyncService::LoadRemoteNativeTranscript(co
 			*error = "The exact remote native session or its helper is not ready.";
 		return std::nullopt;
 	}
-	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, host);
 	nlohmann::json snapshot;
 	if (!client.ReadNativeHistory(uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id), chat.native_session_id, chat.workspace_directory, snapshot, error, stop_token))
 		return std::nullopt;
@@ -5073,9 +5071,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	}
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
-	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory, host.runner_protocol_version),
-	    host.runner_version, host.runner_protocol_version);
+	    host);
 	if (!client.Connect(&result.error)) return result;
 	if (stop_token.stop_requested())
 	{
@@ -5224,9 +5220,7 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 	}
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
-	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory, host.runner_protocol_version),
-	    host.runner_version, host.runner_protocol_version);
+	    host);
 	if (!client.Connect(&discovery.error)) return discovery;
 	for (const bool archived : {false, true})
 	{
@@ -5581,9 +5575,7 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 	}
 	uam::remote::RunnerClient client(
 	    PlatformServicesFactory::Instance().process_service,
-	    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-	                               host.runner_directory, host.runner_protocol_version),
-	    host.runner_version, host.runner_protocol_version);
+	    host);
 	if (!client.Connect(&transcript.error)) return transcript;
 	nlohmann::json read_result;
 	if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(chat.workspace_directory),
