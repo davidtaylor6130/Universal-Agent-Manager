@@ -883,12 +883,14 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Providers and MCP | Bugfix | Copilot First Remote Prompt Delivery | Copilot reports no turn identity before its first prompt, so a queued first remote prompt is no longer refused as an unconfirmed delivery forever (#444). | Implemented; Copilot Remote Cases 3/3 Runs Passed; Un-Reviewed; Not User Tested |
 | Workspaces and terminals | Bugfix | Sessionless Remote Terminal Refusal | A remote OpenCode CLI View launch without a resumable native session is refused before any worktree, baseline or SSH work (#444). | Implemented; Original Terminal Assertions Restored And Passing; Un-Reviewed; Not User Tested |
 | Build and evidence | Bugfix | Remote Stop During Poll Connect | The runner proxy reads Stop before connecting its poll channel and interrupts that connect, leases start when the process is running, and the drainer wakes at the lease deadline (#444). | Implemented; Remote Timing Cases 20/20 Under Load; Un-Reviewed; Not User Tested |
+| Native verification | Code Only | Windows UI Build Graph Test | The UI incremental-build test keeps its fixture outside TEMP, which MSBuild tracking ignores, and checks no-op repackaging only on Make/Ninja because Visual Studio runs POST_BUILD every build (#442). | Implemented; Windows Box And macOS Passed; David Approved VS Relaxation 2026-10-25; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Build and evidence | Performance | Windows No-op Repackaging | Visual Studio builds run POST_BUILD every time, so a no-op Windows build deletes and recopies the UI bundle and repackages the app. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Chat and subagents | Bugfix | Workspace Hold Receipt Retry | Workspace-preparation and version-check pre-launch holds keep a row-less first input with Remove but still offer no Retry, unlike the repository-baseline hold. | Unassigned; Not Started; Claude Review; Not User Tested | Unassigned |
 | Shared UI | Bugfix | Disabled Switch Input Visibility | A shared disabled-checkbox opacity rule reveals native checkbox glyphs inside disabled custom switches. | Not Started; Pre-existing Shared CSS Selector Collision And Pending-state Artifact Verified; Discovered During task-1082 GUI Review, Confirmed By Scoped R2; Separate Follow-up, No Shared CSS Change In task-1082; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Settings | Bugfix | Settings Control Descriptions | Shared settings rows do not programmatically associate consequence descriptions with their controls. | Not Started; Pre-existing Source Pattern Confirmed During task-1082 Scoped GUI R2; Assistive-technology Verification Pending; Separate Follow-up, No Shared Primitive Change In task-1082; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
