@@ -56,6 +56,7 @@ namespace uam::platform
 		const auto deadline = std::chrono::steady_clock::now() + grace;
 		for (;;)
 		{
+			const std::size_t drained_before = result.standard_output.size() + result.standard_error.size();
 			drain();
 			if (service.PollStdioProcessExited(process, &result.exit_code))
 			{
@@ -65,7 +66,9 @@ namespace uam::platform
 				return result;
 			}
 			if (std::chrono::steady_clock::now() >= deadline) break;
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			// A child still flushing output is drained again at once; the pause is only for an idle child.
+			if (result.standard_output.size() + result.standard_error.size() == drained_before)
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		if (!allow_forced_stop) { result.outcome = ProcessStopOutcome::Failed; return result; }
 		service.TerminateStdioProcess(process, true);

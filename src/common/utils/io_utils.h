@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -421,6 +422,29 @@ namespace uam::io
 		}
 		return true;
 	}
+
+	/// Installs a recovery backup over its predecessor. A retained attribute-only witness may still
+	/// hold that predecessor open (FILE_SHARE_DELETE); legacy rename-replace refuses an open target
+	/// with ERROR_ACCESS_DENIED, so retry with POSIX semantics, which unlinks it while handles stay valid.
+	inline bool InstallBackupReplacing(const std::filesystem::path& native_source, const std::filesystem::path& native_target)
+	{
+		if (MoveFileExW(native_source.c_str(), native_target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+		const DWORD legacy_error = GetLastError();
+		if (legacy_error != ERROR_ACCESS_DENIED) return false;
+		const HANDLE source = CreateFileW(native_source.c_str(), DELETE | SYNCHRONIZE,
+		    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH, nullptr);
+		if (source == INVALID_HANDLE_VALUE) { SetLastError(legacy_error); return false; }
+		const std::wstring& target = native_target.native();
+		std::vector<unsigned char> buffer(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
+		auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+		rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+		rename->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
+		std::copy(target.begin(), target.end(), rename->FileName);
+		const bool renamed = SetFileInformationByHandle(source, FileRenameInfoEx, rename, static_cast<DWORD>(buffer.size())) != FALSE;
+		CloseHandle(source);
+		if (!renamed) SetLastError(legacy_error);
+		return renamed;
+	}
 #else
 	inline std::string AtomicWriteSystemError(int code)
 	{
@@ -533,7 +557,9 @@ namespace uam::io
 #if defined(_WIN32)
 		std::filesystem::path native_path;
 		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
-		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		// Producers append small chunks; write-through would make each one a synchronous disk write.
+		// FlushFileBuffers below is the durability point, matching the POSIX fsync contract.
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
 		const auto close_file = [&]()
 		{
@@ -614,7 +640,7 @@ namespace uam::io
 #if defined(_WIN32)
 		std::filesystem::path native_path;
 		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
-		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr); // Synced by FlushFileBuffers, as above.
 		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
 		const auto close_file = [&]()
 		{
@@ -783,7 +809,7 @@ namespace uam::io
 				result.backup_degraded = true;
 				return result;
 			}
-			if (!MoveFileExW(native_backup_temp_path.c_str(), native_backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			if (!InstallBackupReplacing(native_backup_temp_path, native_backup_path))
 			{
 				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(GetLastError());
 				result.success = true;
@@ -950,7 +976,7 @@ namespace uam::io
 #if defined(_WIN32)
 				fs::path native_backup;
 				if (!NativeFilePath(backup, native_backup, result.error) ||
-				    !MoveFileExW(native_evidence.c_str(), native_backup.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+				    !InstallBackupReplacing(native_evidence, native_backup))
 				{
 					if (result.error.empty()) result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(GetLastError());
 					result.success = true;
@@ -1044,7 +1070,30 @@ namespace uam::io
 	/// <summary>Atomically publishes reconstructible cache data without durable disk sync.</summary>
 	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
 	{
+#if defined(_WIN32)
+		// Still temp+rename, minus the durable writer's global lock, directory probe, second
+		// destination probe and abandoned-temp sweeps: each is a filter-driver round trip on
+		// Windows, and together they doubled cold 1000-chat summary regeneration.
+		const std::filesystem::path temp_path = MakeTempWritePath(path);
+		std::filesystem::path native_parent, native_path, native_temp;
+		AtomicWriteResult result;
+		std::error_code ec;
+		if (path.filename().empty() || !NativeFilePath(path, native_path, result.error) || !NativeFilePath(temp_path, native_temp, result.error)) return false;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, ec);
+		if (status.type() != std::filesystem::file_type::not_found && !std::filesystem::is_regular_file(status)) return false;
+		bool written = WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		if (!written)
+		{
+			RemoveAtomicTempNoThrow(temp_path);
+			written = NativeFilePath(path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path(), native_parent, result.error, true) &&
+			    uam::paths::CreateDirectoriesNoThrow(native_parent) && WriteAndSyncAtomicTemp(temp_path, content, {}, result, false);
+		}
+		if (written && MoveFileExW(native_temp.c_str(), native_path.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+		RemoveAtomicTempNoThrow(temp_path);
+		return false;
+#else
 		return AtomicWriteFileDetailed(path, content, {}, false, false).success;
+#endif
 	}
 
 	inline bool AtomicWriteFileWithBackup(const std::filesystem::path& path, std::string_view content)

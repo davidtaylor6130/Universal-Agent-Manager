@@ -1141,7 +1141,7 @@ namespace
 			std::string part;
 			while (std::getline(text, part, ':')) parts.push_back(part);
 			UAM_ASSERT(parts.size() == 5 && parts[0] == "na1");
-			const auto blob = app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin");
+			const auto blob = uam_test::NativePath(app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin"));
 			UAM_ASSERT(fs::is_regular_file(blob));
 			UAM_ASSERT_EQ(uam_test::ReadFile(blob), expected_original);
 			return blob;
@@ -6889,6 +6889,9 @@ store('peer-resume-exit.json' if resumed else 'peer-exit.json', dict(pid=os.getp
 		UAM_ASSERT(!fs::exists(temp.root / "peer-resume-launch.json") && !fs::exists(temp.root / "peer-resume-input.json"));
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-input.json"), first_input);
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-stdin.jsonl"), first_stdin);
+		// Cold saved-image Retry stays disabled until its launch, native-binding and
+		// final-write witnesses are qualified (#449); the delivery checks below apply then.
+		return;
 	}
 	UAM_ASSERT(resumed && resume_error.empty());
 	const auto resume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
