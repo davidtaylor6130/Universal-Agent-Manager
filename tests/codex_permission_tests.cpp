@@ -17,11 +17,7 @@ namespace
 	public:
 		PermissionWire(uam::AcpSessionState& session, const std::filesystem::path& directory) : m_session(session)
 		{
-#if defined(_WIN32)
-			const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
-#else
-			const std::vector<std::string> sink = {"/bin/cat"};
-#endif
+			const std::vector<std::string> sink = StdioCatArgv();
 			std::string error;
 			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, directory, sink, &error));
 		}

@@ -167,7 +167,7 @@ namespace uam::remote
 		Disconnect();
 	}
 
-	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token)
+	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token, const std::function<bool()>& interrupt)
 	try
 	{
 		if (stop_token.stop_requested()) return false;
@@ -199,7 +199,7 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 		              {"nonce", nonce}},
-		             response, &error, [stop_token] { return stop_token.stop_requested(); }) || response.value("nonce", "") != nonce ||
+		             response, &error, [&] { return stop_token.stop_requested() || (interrupt && interrupt()); }) || response.value("nonce", "") != nonce ||
 		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
 		    (!m_expectedVersion.empty() &&
 		     response.value("runnerVersion", "") != m_expectedVersion) ||

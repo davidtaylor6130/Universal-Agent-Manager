@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class UiBuildTests(unittest.TestCase):
     def test_inputs_noop_recovery_and_packaging(self):
-        with tempfile.TemporaryDirectory(prefix='uam build graph ') as temporary:
+        # MSBuild's file tracker ignores %TEMP%, so a fixture there looks out of date on every
+        # Visual Studio build; keep it in the repository's ignored build folder instead.
+        scratch = ROOT / 'Builds'
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='uam build graph ', dir=scratch) as temporary:
             source = Path(temporary)
             ui = source / 'UI-V2'
             (ui / 'src').mkdir(parents=True)
@@ -80,7 +84,9 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD COMMAND "${{CMAKE_C
             run('-S', source, '-B', build)
             make()
             self.assertEqual(count(), 1, 'No-op builds or reconfiguration rebuilt the UI')
-            self.assertEqual(packaged.stat().st_mtime_ns, first, 'No-op build repackaged the app')
+            # Visual Studio runs POST_BUILD on every build, so only Make/Ninja skip a no-op repackage.
+            if not (build / 'ALL_BUILD.vcxproj').exists():
+                self.assertEqual(packaged.stat().st_mtime_ns, first, 'No-op build repackaged the app')
             edit(source / 'main.cpp', 'int main() { return 1; }\n')
             self.assertEqual(count(), 1, 'Native-only edit rebuilt the UI')
             edit(entry, 'changed')
