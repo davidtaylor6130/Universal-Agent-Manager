@@ -37,6 +37,12 @@ The supported release slice has six provider implementations and the React/CEF, 
 
 Commands and build-directory restriction are listed in [AGENTS.md](../../../AGENTS.md). Budgets are test-specific; do not treat an individual interaction assertion as a general startup or release performance target.
 
+## App icon
+
+`scripts/make_app_icon_art.py` draws the flat artwork (`assets/app_icon.png`) and `scripts/compose_macos_icon.swift` turns it into the approved icon tile (`assets/app_icon_macos.png`) and `app_icon.icns`. `scripts/make_windows_icon.py` generates `assets/app_icon.ico` from that tile with the 16, 20, 24, 32, 40, 48, 64, 96, 128 and 256 pixel sizes; each PNG entry records the tile's SHA-256. `src/uam.rc` embeds the `.ico` as `IDI_APP_ICON`, and the CEF window and taskbar icon load the same tile copied beside the executable. After changing the artwork, run on macOS with Pillow installed: `python3 scripts/make_app_icon_art.py`, `swift scripts/compose_macos_icon.swift assets/app_icon.png assets`, then `python3 scripts/make_windows_icon.py`.
+
+CTest `uam_app_icon_resource` (`tests/app_icon_resource_test.py`) fails when the `.ico` misses a size or was not generated from the current tile. On Windows it also reads the built executable's icon resource and requires the same images. Ninja tracks only `#include` in resource scripts, so CMake names the `.ico` as an object dependency of `src/uam.rc`; without it, incremental Ninja builds kept the previous icon. Explorer may still show a cached icon for an existing path until its icon cache refreshes.
+
 ## Local macOS signing
 
 Set `-DUAM_MACOS_SIGNING_IDENTITY=<40-character identity SHA-1>` to sign the app and its owned helpers with an available certificate from `security find-identity -v -p codesigning`. CMake rejects a missing identity and stops on signing failures. The default `-` keeps ad-hoc signing available for machines without a certificate. A stable certificate requirement lets macOS retain privacy grants across rebuilds after the signed app receives its initial grant; changing from ad-hoc signing can require consent again. Existing entitlements are preserved and a valid vendor-signed CEF framework is verified without being resigned. An unsigned CEF framework, as shipped for Intel, is signed before the helpers and main executable because codesign rejects a bundle executable while nested code is unsigned.
