@@ -12,6 +12,7 @@
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/base64.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -1234,8 +1235,13 @@ namespace uam
 		    !uam::paths::IsDirectoryNoThrow(AppPaths::UamChatsRootPath(legacy_root))) return false;
 		nlohmann::json ledger;
 		// An unreadable ledger cannot record any answer, so asking would only trap the user in the prompt.
-		return LoadLegacyImportLedger(data_root, ledger) &&
-		       !LedgerContains(ledger["completed_sources"], source_key) && !LedgerContains(ledger["declined_sources"], source_key);
+		if (!LoadLegacyImportLedger(data_root, ledger))
+		{
+			uam::diagnostics::Write("[legacy-import] Not offering " + uam::paths::Utf8PathString(legacy_root) + ": " +
+			                        uam::paths::Utf8PathString(data_root / kLegacyImportLedgerFilename) + " cannot be read.");
+			return false;
+		}
+		return !LedgerContains(ledger["completed_sources"], source_key) && !LedgerContains(ledger["declined_sources"], source_key);
 	}
 
 	bool LocalChatBundleService::DeclineLegacyDataRoot(

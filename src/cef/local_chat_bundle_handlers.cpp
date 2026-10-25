@@ -4,6 +4,7 @@
 #include "app/chat_domain_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "cef/cef_push.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -275,11 +276,12 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 		    if (!result.ok || !import_result->ok) live_app->pending_legacy_data_roots.push_back(legacy_root);
 		    for (ChatSession& summary : *imported_summaries)
 			    if (ChatDomainService().FindChatById(*live_app, summary.id) == nullptr) live_app->chats.push_back(std::move(summary));
-		    // Only folders this copy added; others on disk belong to their own save paths.
-		    // ponytail: the worker saves folders.txt itself; a concurrent UI folder save can win on disk, and the next save restores it from memory.
+		    // Only folders this copy added; the save from the live list keeps them even if a UI
+		    // folder save overwrote the worker's folders.txt meanwhile.
 		    for (ChatFolder& folder : import_result->imported_folders)
 			    if (std::ranges::none_of(live_app->folders, [&](const ChatFolder& existing) { return existing.id == folder.id; }))
 				    live_app->folders.push_back(std::move(folder));
+		    if (!import_result->imported_folders.empty()) (void)ChatFolderStore::Save(live_app->data_root, live_app->folders);
 		    if (import_result->imported_count > 0)
 			    live_app->status_line = "Copied " + std::to_string(import_result->imported_count) + " chat" +
 			        (import_result->imported_count == 1 ? "" : "s") + " from a previous version in " +
