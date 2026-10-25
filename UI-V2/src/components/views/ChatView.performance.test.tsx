@@ -38,16 +38,19 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
-  removeComposerDrafts([session.id])
+  removeComposerDrafts([session.id, 'performance-warm-up'])
   useAppStore.setState(initial, true)
   vi.unstubAllGlobals()
 })
 
 describe('chat interaction code-path performance', () => {
   it('makes an empty new-chat composer editable within 100ms', () => {
-    // The first ChatView mount in a worker pays one-time module and JIT start-up;
-    // a new chat in the running app does not, so mount another chat untimed first.
-    act(() => root.render(<ChatView session={{ ...session, id: 'performance-warm-up' }} />))
+    // The first ChatView mount in a worker pays one-time module and JIT start-up that
+    // later new chats do not, so mount another empty chat through the same path untimed.
+    const warmUp: Session = { ...session, id: 'performance-warm-up' }
+    useAppStore.setState((state) => ({ sessions: [...state.sessions, warmUp], messages: { ...state.messages, [warmUp.id]: [] } }))
+    act(() => root.render(<ChatView session={warmUp} />))
+    expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')?.disabled).toBe(false)
     act(() => root.unmount())
     root = createRoot(host)
     expectWithinBudget('empty chat to usable composer', INPUT_BUDGET_MS, () => {
