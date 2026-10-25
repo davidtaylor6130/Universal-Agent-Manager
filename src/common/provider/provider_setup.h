@@ -43,7 +43,14 @@ namespace uam::provider_setup
 			std::error_code error;
 			const std::filesystem::file_status status = std::filesystem::symlink_status(current, error);
 			if (error && error != std::errc::no_such_file_or_directory) return false;
-			if (std::filesystem::is_symlink(status) || uam::paths::IsLinkOrReparsePointNoThrow(current))
+			// One lstat per component; Windows also refuses junctions and other reparse points.
+#if defined(_WIN32)
+			const DWORD attributes = GetFileAttributesW(current.c_str());
+			const bool reparse_point = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+			const bool reparse_point = false;
+#endif
+			if (std::filesystem::is_symlink(status) || reparse_point)
 			{
 #if defined(__APPLE__)
 				// macOS exposes these system directories through fixed root aliases.
@@ -82,7 +89,9 @@ namespace uam::provider_setup
 		{ error = "Could not stage central runtime configuration."; return false; }
 		std::error_code ec;
 #if defined(_WIN32)
-		if (!MoveFileExW(temporary.c_str(), target.c_str(), (replace_existing ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH))
+		// Immutable digest-addressed resources match POSIX link(): Prepare re-verifies them, and a
+		// per-file write-through flush made thousand-file skill bundles take seconds to install.
+		if (!MoveFileExW(temporary.c_str(), target.c_str(), replace_existing ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH : 0))
 			ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
 #else
 		if (replace_existing) std::filesystem::rename(temporary, target, ec);
