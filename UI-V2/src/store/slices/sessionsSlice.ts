@@ -200,6 +200,13 @@ function clearPendingProviderChatDefaults(requestId?: string) {
 }
 
 export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
+  // Overlapping pin writes share the last acknowledged value, never another optimistic value.
+  const pendingPinChanges = new Map<string, {
+    confirmedPinned: Session['isPinned']
+    confirmedSequence: number
+    latestSequence: number
+    pendingCount: number
+  }>()
   const memorySettingsWrites = createMemorySettingsWrites({
     readValues: () => get(),
     applyValues: (values) => set(values),
@@ -1563,6 +1570,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const requestKey = `setSessionPinned:${id}`
         const requestId = createRequestId('setSessionPinned')
+        const pinChanges = pendingPinChanges.get(id) ?? {
+          confirmedPinned: previousSession.isPinned,
+          confirmedSequence: 0,
+          latestSequence: 0,
+          pendingCount: 0,
+        }
+        const sequence = ++pinChanges.latestSequence
+        pinChanges.pendingCount++
+        pendingPinChanges.set(id, pinChanges)
         rememberPendingRequest(requestKey, requestId)
         applyPinned()
         const response = await sendToCEF({
@@ -1571,18 +1587,31 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           requestId,
         })
 
+        const isLatest = isLatestPendingRequest(requestKey, response.requestId)
+        if (--pinChanges.pendingCount === 0) {
+          pendingPinChanges.delete(id)
+        }
+
         if (response.ok) {
+          if (sequence > pinChanges.confirmedSequence) {
+            pinChanges.confirmedPinned = pinned
+            pinChanges.confirmedSequence = sequence
+            // A later rejection may already have removed the optimistic value.
+            if (!isLatest && !pendingRequestIdsByKey.has(requestKey)) {
+              applyPinned()
+            }
+          }
           clearPendingRequest(requestKey, response.requestId)
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) {
+        if (isLatest) {
+          clearPendingRequest(requestKey, response.requestId)
           set((state) => ({
             sessions: state.sessions.map((s) =>
-              s.id === id ? { ...s, isPinned: previousSession.isPinned } : s
+              s.id === id ? { ...s, isPinned: pinChanges.confirmedPinned } : s
             ),
           }))
-          pendingRequestIdsByKey.delete(requestKey)
           reportAppFailure('Could not save the pin change.', 'The chat was returned to its previous state. Try again.')
         }
 
