@@ -28,6 +28,7 @@ import { AppShell } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 import { APP_FAILURE_EVENT, reportAppFailure } from '../../utils/appFailure'
+import { retainUnconfirmedFolderChoice, retainUnconfirmedFolderRestart } from '../settings/dataFolderSettings'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -297,6 +298,56 @@ describe('AppShell', () => {
       act(() => settings.click())
       expect(document.body.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
     } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps a pending data-folder cancellation open when the search shortcut requests navigation', async () => {
+    const previousQuery = window.cefQuery
+    const pending = { currentFolder: '/disposable/source', pendingFolder: '/disposable/destination',
+      revision: 'app/pending', lastOperationId: '', transitionState: 'awaitingMigration',
+      externalOverride: false, canChange: true, restartReady: false, message: 'Current folder remains in use.' }
+    let finishCancel: (() => void) | undefined
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      if (message.action === 'getDataFolderSettings') onSuccess(JSON.stringify(pending))
+      else if (message.action === 'cancelDataFolderChoice') finishCancel = () => {
+        onSuccess(JSON.stringify({ committed: true, error: '', settings: { ...pending,
+          pendingFolder: '', transitionState: 'none', revision: 'app/cancelled', lastOperationId: message.payload.operationId } }))
+        finishCancel = undefined
+      }
+      else onSuccess('{}')
+    }
+    useAppStore.setState({ setSettingsOpen: defaultSetSettingsOpen, isSettingsOpen: true,
+      refreshCustomThemes: vi.fn(async () => true), mcpServers: [] })
+    const host = document.createElement('div'), search = document.createElement('input')
+    search.setAttribute('data-chat-search-input', '')
+    document.body.append(host, search)
+    const root = createRoot(host)
+    const shortcut = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true,
+      cancelable: true, metaKey: FILE_MANAGER_NAME === 'Finder', ctrlKey: FILE_MANAGER_NAME !== 'Finder' }))
+    try {
+      await act(async () => { root.render(<AppShell />); await import('../settings/SettingsModal') })
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Storage"]')!.click())
+      const cancel = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Cancel folder change')!
+      act(() => cancel.click())
+      expect(finishCancel).toBeTypeOf('function')
+      expect(cancel.disabled).toBe(true)
+      act(() => { shortcut() })
+      expect(useAppStore.getState().isSettingsOpen).toBe(true)
+      expect(host.querySelector('[aria-label="Settings workspace"]')).toBeTruthy()
+      expect(document.activeElement).not.toBe(search)
+      await act(async () => { finishCancel!() })
+      expect(host.textContent).not.toContain('Saved folder choice')
+      act(() => { shortcut() })
+      expect(useAppStore.getState().isSettingsOpen).toBe(false)
+      await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+      expect(document.activeElement).toBe(search)
+    } finally {
+      await act(async () => { finishCancel?.(); root.unmount() })
+      host.remove(); search.remove()
+      window.cefQuery = previousQuery
+      retainUnconfirmedFolderChoice(null); retainUnconfirmedFolderRestart(null)
+      useAppStore.setState({ setSettingsOpen: defaultSetSettingsOpen, isSettingsOpen: false })
+    }
   })
 
   it('guards the Settings rail toggle and Back with the same unsaved draft confirmation', async () => {
