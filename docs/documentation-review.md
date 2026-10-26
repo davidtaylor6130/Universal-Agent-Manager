@@ -99,7 +99,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): older release exclusions conflict with the accessible Git/SVN commit panel. Its documentation preserves the existing surface without authorizing removal or expansion; David's scope disposition is pending.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. New panel features still need approval, and the `AGENTS.md` Release Slice exclusion still needs a matching update.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and V5 log retain broader capability and acceptance gaps.
 
 ## Helper metadata publication

@@ -562,12 +562,13 @@ info)
     *) exit 2 ;;
     esac ;;
 status)
+    if [ -f "$UAM_TEST_SVN_ROOT/locked" ]; then printf '%s\n' '  L     .'; fi
     if [ "$UAM_TEST_SVN_MODE" = conflict ] && [ -f "$UAM_TEST_SVN_ROOT/updates.log" ]; then
         printf '%s\n' 'C       source.txt'
     fi ;;
 update)
     printf '%s\n' update >> "$UAM_TEST_SVN_ROOT/updates.log"
-    if [ "$UAM_TEST_SVN_MODE" = failure ]; then exit 1; fi
+    if [ "$UAM_TEST_SVN_MODE" = failure ]; then printf '%s\n' "svn: E155004: Run 'svn cleanup' to remove locks" >&2; exit 1; fi
     if [ "$UAM_TEST_SVN_MODE" = truncated ]; then /usr/bin/head -c 5000000 /dev/zero; exit 0; fi
     if [ "$UAM_TEST_SVN_MODE" = blocked ]; then
         while [ ! -f "$UAM_TEST_SVN_ROOT/release" ]; do /bin/sleep 0.02; done
@@ -681,6 +682,8 @@ UAM_TEST(SvnUpdateBeforeChatFailureAndConflictBlockLaunch)
 		UAM_ASSERT(fixture.app.chats.front().workspace_worktree_directory.empty());
 		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 		UAM_ASSERT(!task->error.empty());
+		// svn's own E-code reaches the existing launch error instead of a generic failure.
+		if (behavior == "failure") UAM_ASSERT(task->error.find("E155004: Run 'svn cleanup' to remove locks") != std::string::npos);
 		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 	}
 #endif
@@ -722,11 +725,21 @@ UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
 		{
 			if (behavior == "truncated")
 				UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
-			const auto retry = fixture.Start();
-			fixture.Wait(retry);
-			UAM_ASSERT(!retry->merged);
+			// The interrupted receipt is verified first: a locked working copy still blocks another update.
+			UAM_ASSERT(uam::io::WriteTextFile(fixture.source / "locked", "locked"));
+			const auto locked = fixture.Start();
+			fixture.Wait(locked);
+			UAM_ASSERT(!locked->merged);
+			UAM_ASSERT(locked->error.find("Run svn cleanup") != std::string::npos);
 			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+			// A consistent working copy recovers the interrupted receipt by retrying the update once.
+			fs::remove(fixture.source / "locked");
+			UAM_ASSERT(uam::io::WriteTextFile(fixture.source / "release", "release"));
+			const auto retry = fixture.Start();
+			fixture.Wait(retry);
+			UAM_ASSERT_EQ(retry->merged, behavior == "canceled");
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\nupdate\n");
 		}
 	}
 #endif
