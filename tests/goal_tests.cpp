@@ -2340,7 +2340,8 @@ UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
 {
 	TempDir temp("uam-goal-loop-cap");
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
-	auto run_review = [&](const std::string& chat_id, int max_iterations, int initial_loop_count, bool expect_blocked) {
+	auto run_review = [&](const std::string& chat_id, int max_iterations, int initial_loop_count, bool expect_blocked, const std::string& blocker_kind = "") {
+		std::cout << "[CAP_CASE] " << chat_id << '\n';
 		uam::AppState app;
 		app.data_root = temp.root;
 		app.settings.goal_max_loop_iterations = max_iterations;
@@ -2353,6 +2354,8 @@ UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
 		goal.objective = "Finish without an unbounded loop.";
 		goal.status = GoalStatus::Active;
 		goal.loop_count = initial_loop_count;
+		goal.token_budget = 1000;
+		goal.tokens_used = 40;
 		chat.active_goal_id = goal.id;
 		chat.goals.push_back(goal);
 		app.chats.push_back(std::move(chat));
@@ -2369,38 +2372,92 @@ UAM_TEST(AcpGoalReviewContinuationHonorsConfiguredLoopCap)
 		session->goal_review_goal_id = "goal-1";
 		uam::AcpSessionState* raw_session = session.get();
 		app.acp_sessions.push_back(std::move(session));
+		struct SessionCleanup
+		{
+			uam::AppState& app;
+			const std::string& chat_id;
+			~SessionCleanup() { (void)uam::StopAcpSession(app, chat_id); }
+		} cleanup{app, chat_id};
 
-		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More work remains.\",\"nextPrompt\":\"Continue the implementation.\",\"progressUpdate\":{\"remaining\":[\"Continue the implementation.\"],\"currentStep\":\"Continue the implementation.\"}}"}}}})"));
+		nlohmann::json review = {
+			{"decision", blocker_kind.empty() ? "continue" : "blocked"},
+			{"reason", "More work remains."},
+			{"nextPrompt", "Continue the implementation."},
+			{"progressUpdate", {{"remaining", {"Continue the implementation."}}, {"currentStep", "Continue the implementation."}}}
+		};
+		if (!blocker_kind.empty()) review["blockerKind"] = blocker_kind;
+		const nlohmann::json update = {
+			{"jsonrpc", "2.0"},
+			{"method", "session/update"},
+			{"params", {{"update", {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", review.dump()}}}}}}}
+		};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), update.dump()));
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
 		UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, initial_loop_count + 1);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, static_cast<std::int64_t>(40));
+		UAM_ASSERT_EQ(app.chats.front().goals.front().token_budget, static_cast<std::int64_t>(1000));
 
 		if (!expect_blocked)
 		{
 			UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 			UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
 			UAM_ASSERT(raw_session->goal_internal_session);
-			UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Continue the implementation."));
+			if (blocker_kind.empty())
+			{
+				UAM_ASSERT_EQ(raw_session->queued_prompt, std::string("Continue the implementation."));
+			}
+			else
+			{
+				UAM_ASSERT(raw_session->queued_prompt.find(app.chats.front().goals.front().objective) != std::string::npos);
+				UAM_ASSERT_EQ(app.chats.front().goals.front().current_step, std::string("Continue the implementation."));
+				UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind, blocker_kind);
+			}
 			UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 			(void)uam::StopAcpSession(app, chat_id);
 			return;
 		}
 
 		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
-		UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker, std::string("Maximum goal loop iterations reached"));
+		UAM_ASSERT(app.chats.front().active_goal_id.empty());
 		UAM_ASSERT(raw_session->queued_prompt.empty());
-		UAM_ASSERT(!raw_session->diagnostics.empty());
-		UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("goal_blocked_max_loop_iterations_reached"));
+		UAM_ASSERT(raw_session->queued_user_prompts.empty());
+		const bool terminal_blocker = !blocker_kind.empty() && blocker_kind != "transient";
+		const std::string expected_blocker = terminal_blocker ? "More work remains." : "Maximum goal loop iterations reached";
+		const std::string expected_diagnostic = terminal_blocker ? "" : "goal_blocked_max_loop_iterations_reached";
+		UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker, expected_blocker);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, expected_diagnostic);
+		if (!terminal_blocker)
+		{
+			UAM_ASSERT(!raw_session->diagnostics.empty());
+			UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, expected_diagnostic);
+		}
+		if (!blocker_kind.empty()) UAM_ASSERT_EQ(app.chats.front().goals.front().last_blocker_kind, blocker_kind);
 		const std::vector<ChatSession> saved = ChatRepository::LoadLocalChats(temp.root);
 		const auto saved_chat = std::find_if(saved.begin(), saved.end(), [&](const ChatSession& candidate) { return candidate.id == chat_id; });
 		UAM_ASSERT(saved_chat != saved.end());
-		UAM_ASSERT_EQ(saved_chat->goals.front().last_blocker, std::string("Maximum goal loop iterations reached"));
-		UAM_ASSERT_EQ(saved_chat->goals.front().last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
+		UAM_ASSERT_EQ(saved_chat->goals.front().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(saved_chat->goals.front().loop_count, initial_loop_count + 1);
+		UAM_ASSERT_EQ(saved_chat->goals.front().tokens_used, static_cast<std::int64_t>(40));
+		UAM_ASSERT_EQ(saved_chat->goals.front().token_budget, static_cast<std::int64_t>(1000));
+		UAM_ASSERT_EQ(saved_chat->goals.front().last_blocker, expected_blocker);
+		UAM_ASSERT_EQ(saved_chat->goals.front().last_diagnostic, expected_diagnostic);
+		if (!blocker_kind.empty()) UAM_ASSERT_EQ(saved_chat->goals.front().last_blocker_kind, blocker_kind);
 	};
 
 	run_review("below-cap", 2, 0, false);
 	run_review("at-cap", 2, 1, true);
 	run_review("legacy-zero-is-bounded", 0, 199, true);
 	run_review("oversized-cap-is-bounded", 999, 199, true);
+	run_review("lower-cap", 1, 0, true);
+	run_review("transient-below-cap", 2, 0, false, "transient");
+	run_review("transient-at-cap", 2, 1, true, "transient");
+	run_review("transient-lower-cap", 1, 0, true, "transient");
+	run_review("transient-already-over-lowered-cap", 2, 5, true, "transient");
+	run_review("transient-legacy-zero-is-bounded", 0, 199, true, "transient");
+	run_review("transient-oversized-cap-is-bounded", 999, 199, true, "transient");
+	run_review("terminal-below-cap", 2, 0, true, "user_permission_approval");
+	run_review("terminal-at-cap", 1, 0, true, "user_permission_approval");
+	run_review("unknown-terminal-at-cap", 1, 0, true, "unknown");
 }
 
 UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
