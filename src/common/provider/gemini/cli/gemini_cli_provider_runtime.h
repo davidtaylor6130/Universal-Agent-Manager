@@ -17,6 +17,8 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool ModelOptionsRequireRestart() const override { return true; }
 	bool OnAcpHandleResult(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const std::string&, const std::string&, const nlohmann::json&) const override;
+	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const nlohmann::json&, const CefRefPtr<CefBrowser>&) const override;
 	bool OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	    const uam::acp_detail::AcpResponseFailureDetails& details) const override;
 	bool SupportsSavedImageRetry(const uam::AcpSessionState& session) const override;

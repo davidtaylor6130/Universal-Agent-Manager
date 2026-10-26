@@ -249,6 +249,25 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "Another goal is already active in this chat.";
 		return false;
 	}
+	std::string resume_error;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat->provider_id);
+	if (!runtime.OnAcpValidateGoalResume(*chat, *goal, app.settings, restart, resume_error))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = uam::strings::NonEmptyOrFallback(resume_error, "This provider cannot resume this goal.");
+		}
+		return false;
+	}
+	// A metered turn's captured revision owns its usage until retirement. Resetting
+	// the budget during that turn would discard charges from the old revision.
+	const bool current_turn = session && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 || AcpSessionHasPendingCancel(*session) || !session->queued_prompt.empty());
+	if (restart && runtime.AcpAccountsGoalUsage() && (current_turn || AcpStopInProgress(app, chat_id)))
+	{
+		if (error_out)
+			*error_out = "Pause the current turn and wait for it to stop before restarting the goal budget.";
+		return false;
+	}
 	if (!GoalService::IsProviderManaged(*goal) && (session == nullptr || !AcpSessionHasActiveTurn(*session)))
 	{
 		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, *chat);
@@ -646,7 +665,8 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "goal_loop_detected_review_notified", active_goal->id, worker_text);
 	}
 
-	GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpAccountsGoalUsage())
+		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
 	active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 	if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 	if (active_goal == nullptr)

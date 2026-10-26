@@ -10,6 +10,7 @@ import * as modelOptions from '../chat/modelOptions'
 const originalDiscoverProviderModels = useAppStore.getState().discoverProviderModels
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 const originalSetNewChatModalOpen = useAppStore.getState().setNewChatModalOpen
+const originalAddSession = useAppStore.getState().addSession
 
 describe('NewChatModal', () => {
   beforeEach(() => {
@@ -24,6 +25,10 @@ describe('NewChatModal', () => {
       providerChatDefaults: {},
       hostScopedSettingsValues: {},
       newChatFolderId: 'project',
+      newChatWorktreeContext: null,
+      gitEnabled: false,
+      gitAutoWorktree: false,
+      gitDefaultBaseBranch: '',
       resourceCollections: [],
 	  sessions: [],
 	  acpBindingBySessionId: {},
@@ -36,6 +41,196 @@ describe('NewChatModal', () => {
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
       ],
     })
+  })
+
+  it.each(['removed', 'detached', 'read-failure', 'unchanged', 'pending-create'].flatMap((result) =>
+    ['feature/base', 'Current branch (main)'].map((choice) => ({ result, choice }))))(
+    'reconciles a refreshed starting branch with the real creation payload: $choice / $result', async ({ result, choice }) => {
+      const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+      const context = { vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }
+      let finishRefresh!: () => void
+      let reads = 0
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const query = JSON.parse(request)
+        requests.push(query)
+        if (query.action !== 'getWorkspaceVcsContext') { onSuccess(JSON.stringify({ chatId: 'created-fixture' })); return }
+        reads += 1
+        if (reads === 1) { onFailure(409, 'Could not read local branches.'); return }
+        if (reads === 2) { onSuccess(JSON.stringify(context)); return }
+        finishRefresh = () => {
+          if (result === 'read-failure') onFailure(409, 'Branches are unavailable.')
+          else onSuccess(JSON.stringify(result === 'detached'
+            ? { vcs: 'git', currentBranch: '', detached: true }
+            : { ...context, localBranches: result === 'removed' ? context.localBranches.slice(0, 1) : context.localBranches }))
+        }
+      }
+      useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
+      const foldersBefore = useAppStore.getState().folders
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      const button = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === label)!
+      const trigger = () => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        await act(async () => button('Retry branches').click())
+        act(() => trigger().click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((entry) => entry.textContent?.startsWith(choice))!.click())
+        const refresh = button('Refresh branches')
+        refresh.focus()
+        act(() => refresh.click())
+        expect(trigger().disabled).toBe(true)
+        expect(trigger().textContent).toContain(choice)
+        expect(document.activeElement).toBe(refresh)
+        if (result !== 'pending-create') await act(async () => finishRefresh())
+        const keepsChoice = result === 'unchanged' || result === 'pending-create' || (result === 'removed' && choice !== 'feature/base')
+        expect(trigger().textContent).toContain(keepsChoice ? choice : 'Use default (main)')
+        expect(document.activeElement).toBe(refresh)
+        expect(requests.map((query) => query.action)).toEqual(Array(3).fill('getWorkspaceVcsContext'))
+        await act(async () => button('Create chat').click())
+        const payload = requests.at(-1)!.payload
+        expect(requests.map((query) => query.action)).toEqual([...Array(3).fill('getWorkspaceVcsContext'), 'createSession'])
+        expect(payload).toMatchObject({ folderId: 'project', providerId: 'gemini-cli' })
+        if (keepsChoice) expect(payload).toMatchObject({ gitBaseBranch: choice === 'feature/base' ? choice : '', workspaceDirectory: '/tmp/project' })
+        else expect(payload).not.toHaveProperty('gitBaseBranch')
+        expect(payload).not.toHaveProperty('sourceChatId')
+        expect(useAppStore.getState().folders).toBe(foldersBefore)
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['feature/base', 'Current branch (main)', 'Use default (main)'])(
+    'passes %s through the real creation store while deferring provider and worktree work', async (choice) => {
+      const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        const query = JSON.parse(request)
+        requests.push(query)
+        onSuccess(JSON.stringify(query.action === 'getWorkspaceVcsContext'
+          ? { vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }
+          : { chatId: 'created-fixture' }))
+      }
+      useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
+      const foldersBefore = useAppStore.getState().folders
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith(choice))!.click())
+        expect(requests.map((request) => request.action)).toEqual(['getWorkspaceVcsContext'])
+        // A provider change retains the workspace-scoped base choice.
+        act(() => useAppStore.setState((state) => ({ providers: state.providers.filter((provider) => provider.id === 'codex-cli') })))
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        expect(requests.map((request) => request.action)).toEqual(['getWorkspaceVcsContext', 'createSession'])
+        const payload = requests[1].payload
+        expect(payload).toMatchObject({ title: 'New chat', folderId: 'project', providerId: 'codex-cli' })
+        if (choice === 'Use default (main)') expect(payload).not.toHaveProperty('gitBaseBranch')
+        else {
+          expect(payload.gitBaseBranch).toBe(choice === 'feature/base' ? 'feature/base' : '')
+          expect(payload.workspaceDirectory).toBe('/tmp/project')
+        }
+        expect(payload).not.toHaveProperty('sourceChatId')
+        expect(useAppStore.getState().folders).toBe(foldersBefore)
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+        expect(useAppStore.getState().isNewChatModalOpen).toBe(false)
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['feature/base', 'Current branch (main)', 'Use default (main)'])(
+    'creates in the chosen workspace with starting branch choice %s and no repository mutation', async (choice) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      const requests: Array<{ action: string; payload: unknown }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        requests.push(JSON.parse(request))
+        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main' })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith(choice))!.click())
+        expect(addSession).not.toHaveBeenCalled()
+        expect(requests).toEqual([expect.objectContaining({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } })])
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        const expected = ['New chat', 'project', 'gemini-cli', '', '', 'chat']
+        if (choice !== 'Use default (main)') expected.push('local', '', 'explicit')
+        expect(addSession.mock.calls[0].slice(0, expected.length)).toEqual(expected)
+        if (choice === 'Use default (main)') expect(addSession.mock.calls[0]).toHaveLength(6)
+        else expect(addSession.mock.calls[0][9]).toEqual({ gitBaseBranch: choice === 'feature/base' ? 'feature/base' : '' })
+        expect(useAppStore.getState().folders[0].directory).toBe('/tmp/project')
+        expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['directory', 'folder', 'git-disabled', 'isolation-disabled'])(
+    'drops a prior starting branch when the workspace or eligibility changes: %s', async (change) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      const requests: Array<{ action: string; payload: unknown }> = []
+      window.cefQuery = ({ request, onSuccess }) => {
+        requests.push(JSON.parse(request))
+        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+        act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'feature/base')!.click())
+        await act(async () => {
+          if (change === 'git-disabled') useAppStore.setState({ gitEnabled: false })
+          else if (change === 'isolation-disabled') useAppStore.setState({ gitAutoWorktree: false })
+          else useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, id: change === 'folder' ? 'other' : folder.id, directory: '/tmp/other' })) }))
+        })
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+        expect(addSession.mock.calls[0]).toHaveLength(6)
+        expect(addSession.mock.calls[0][1]).toBe(change === 'folder' ? 'other' : 'project')
+        expect(requests.every((request) => request.action === 'getWorkspaceVcsContext')).toBe(true)
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it.each(['detached', 'unborn', 'plain', 'svn'])(
+    'keeps inherited creation available without an override for %s workspaces', async (vcs) => {
+      const addSession = vi.fn().mockResolvedValue(false)
+      window.cefQuery = ({ onSuccess, onFailure }) => {
+        if (vcs === 'unborn') { onFailure(409, 'Could not read local Git branches.'); return }
+        onSuccess(JSON.stringify(vcs === 'detached' ? { vcs: 'git', currentBranch: '', detached: true } : { vcs: vcs === 'plain' ? '' : 'svn' }))
+      }
+      useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+      const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+      try {
+        await act(async () => root.render(<NewChatModal />))
+        expect(host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.disabled).toBe(true)
+        const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+        expect(create.disabled).toBe(false)
+        await act(async () => create.click())
+        expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'gemini-cli', '', '', 'chat')
+      } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
+    },
+  )
+
+  it('ignores the old folder discovery after the selected workspace changes', async () => {
+    let oldReply!: (value: string) => void
+    const addSession = vi.fn().mockResolvedValue(false)
+    window.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).payload.folderId === 'project') { oldReply = onSuccess; return }
+      onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'other-main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'other-main', commit: 'a'.repeat(40) }] }))
+    }
+    useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      await act(async () => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, id: 'other', directory: '/tmp/other' })) })))
+      await act(async () => oldReply(JSON.stringify({ vcs: 'git', currentBranch: 'obsolete', currentCommit: 'b'.repeat(40), detached: false, localBranches: [{ name: 'obsolete', commit: 'b'.repeat(40) }] })))
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Starting branch"]')!.click())
+      expect(document.body.querySelector('[role="listbox"]')?.textContent).toContain('other-main')
+      expect(document.body.querySelector('[role="listbox"]')?.textContent).not.toContain('obsolete')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'other-main')!.click())
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+      expect(addSession.mock.calls[0][1]).toBe('other')
+      expect(addSession.mock.calls[0][9]).toEqual({ gitBaseBranch: 'other-main' })
+    } finally { act(() => root.unmount()); host.remove(); delete window.cefQuery }
   })
 
   it('does not discover models on opening or reopening the new chat picker', async () => {
@@ -322,15 +517,15 @@ describe('NewChatModal', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<NewChatModal />))
-    const search = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'no-such-model-xyz')
-      search.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    expect(document.body.querySelector('[role="status"]')?.textContent).toContain('No matching models')
-    act(() => root.unmount())
-    host.remove()
+    try {
+      act(() => root.render(<NewChatModal />))
+      const search = host.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'no-such-model-xyz')
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector('[data-testid="model-options"] [role="status"]')?.textContent).toContain('No matching models')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('defaults to the available workspace when opened globally', () => {
@@ -1104,11 +1299,15 @@ describe('NewChatModal', () => {
     const source = { id: 'source-chat', name: 'Source', viewMode: 'chat' as const, folderId: 'project', createdAt: new Date(), updatedAt: new Date(), executionHostId: 'local', workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', workspaceBranchName: 'selected-branch' }
     const context = { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: 'local' }
     const addSession = vi.fn().mockResolvedValue(false)
-    useAppStore.setState({ sessions: [source], activeSessionId: 'unrelated-chat', newChatFolderId: 'project', newChatWorktreeContext: context, addSession, setNewChatModalOpen: originalSetNewChatModalOpen })
+    const query = vi.fn()
+    window.cefQuery = query
+    useAppStore.setState({ sessions: [source], activeSessionId: 'unrelated-chat', newChatFolderId: 'project', newChatWorktreeContext: context, addSession, setNewChatModalOpen: originalSetNewChatModalOpen, gitEnabled: true, gitAutoWorktree: true })
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
     try {
       act(() => root.render(<NewChatModal />))
       expect(host.textContent).toContain('Using the selected worktree: selected-branch')
+      expect(host.querySelector('[aria-label="Starting branch"]')).toBeNull()
+      expect(query).not.toHaveBeenCalled()
       const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
       await act(async () => create().click())
       expect(addSession).toHaveBeenCalledOnce()
@@ -1123,7 +1322,7 @@ describe('NewChatModal', () => {
       expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
       act(() => useAppStore.getState().setNewChatModalOpen(true, 'project'))
       expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
-    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ newChatWorktreeContext: null }) }
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ newChatWorktreeContext: null }); delete window.cefQuery }
   })
 
   it('projects a configured SSH host provider and model defaults when opening', async () => {
