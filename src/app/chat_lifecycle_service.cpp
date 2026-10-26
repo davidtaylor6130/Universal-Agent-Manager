@@ -751,6 +751,7 @@ namespace
 	                                const std::unordered_set<std::string>& retained_native_keys,
 	                                const std::unordered_set<std::string>& retained_workspace_keys,
 	                                const std::vector<uam::NativeDeletionOwner>& retained_native_owners,
+	                                std::string_view storage_reason,
 	                                const std::function<void(std::size_t, std::size_t, const std::string&)>& progress = {})
 	{
 		std::size_t completed_items = 0;
@@ -762,7 +763,7 @@ namespace
 		};
 		for (const std::string& id : intent.chat_ids)
 		{
-			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;
+			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id, storage_reason).Failed()) return false;
 		}
 
 		// Gemini resolves related working directories to one physical project store.
@@ -850,7 +851,7 @@ namespace
 			}
 		}
 		return CommitDeletionMetadata(app, intent, next_chats, next_folders, deleted_chats, retained_native_keys) &&
-		       CleanupDeletionTransaction(app, intent, deleted_chats, native_cleanup_failed, retained_native_keys, retained_workspace_keys, retained_native_owners);
+		       CleanupDeletionTransaction(app, intent, deleted_chats, native_cleanup_failed, retained_native_keys, retained_workspace_keys, retained_native_owners, "deletion_recovery");
 	}
 
 	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved, bool native_cleanup_failed)
@@ -1801,7 +1802,7 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 		return false;
 	}
 	std::erase_if(app.acp_sessions, [&branch_id](const auto& session) { return session != nullptr && session->chat_id == branch_id; });
-	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, branch_id);
+	const ChatStorageDeleteResult storage_delete = ChatRepository::DeleteChatStorageFiles(app.data_root, branch_id, "branch_retry_cleanup");
 	if (storage_delete.Failed())
 	{
 		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
@@ -2287,7 +2288,7 @@ bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
 	bool native_cleanup_failed = false;
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
-	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed, task.retained_native_keys, task.retained_workspace_keys, task.retained_native_owners, task.progress);
+	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed, task.retained_native_keys, task.retained_workspace_keys, task.retained_native_owners, "user_deletion", task.progress);
 	task.snapshot.status_line = completed
 	    ? (task.deleting_chats
 	        ? std::to_string(task.deleted_ids.size()) + " chat(s) deleted." +

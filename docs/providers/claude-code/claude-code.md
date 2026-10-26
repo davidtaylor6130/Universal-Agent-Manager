@@ -6,7 +6,7 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Partial | Native stream input normalises into UAM messages and retains durable admission without RPC-only correlation for native envelopes; ordinary SSH image delivery has private helper-backed verification, while failure controls and broader acceptance remain pending. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
+| `structured-chat` | Both | Partial | Native stream input normalises into UAM messages and retains durable admission without RPC-only correlation for native envelopes; repeated parent, child and result envelopes are dropped by native identity within the most recent 4,096 per process, so memory stays bounded; ordinary SSH image delivery has private helper-backed verification, while failure controls and broader acceptance remain pending. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves the bound session and existing history; live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |

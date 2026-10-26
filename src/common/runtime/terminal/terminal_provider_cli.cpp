@@ -407,8 +407,8 @@ void RetryCliProviderContextCleanup(AppState& app, double now_s)
 			    std::string error;
 			    if (RemoveCliProviderHandoff(cleanup, intent, error, stop))
 			    {
-				    if (ChatRepository::DeleteChatStorageFiles(pending_root, intent.id).Failed())
-					    LogCliDiagnosticEvent(cleanup, "provider_context_cleanup", "intent_delete_failed", nullptr, "chat_id=" + intent.id);
+				    // The repository logs the delete outcome, including failure.
+				    (void)ChatRepository::DeleteChatStorageFiles(pending_root, intent.id, "context_cleanup_intent");
 			    }
 			    else LogCliDiagnosticEvent(cleanup, "provider_context_cleanup", "pending", nullptr, "chat_id=" + intent.id + ", " + error);
 		    }
