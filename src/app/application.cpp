@@ -2,6 +2,7 @@
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
 #include "common/platform/platform_speech_output.h"
+#include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
@@ -861,6 +862,10 @@ bool Application::InitializeState()
 		}
 	}
 
+	// Earlier releases could keep data beside the executable or in the default root that
+	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
+	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
+	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 

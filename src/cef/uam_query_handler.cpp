@@ -58,6 +58,12 @@ namespace
 			callback->Failure(503, "The native window is unavailable.");
 			return;
 		}
+		if (action == "quitApplication")
+		{
+			callback->Success("{}");
+			CefPostTask(TID_UI, new CloseWindowTask(window));
+			return;
+		}
 		if (action == "restartApplication")
 		{
 			if (!uam::platform::RequestApplicationRestart())
@@ -173,6 +179,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
+		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
+		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
@@ -347,6 +355,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #endif
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
 		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
+		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
+		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
@@ -490,7 +500,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
+	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication" || action == "quitApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
 		return true;

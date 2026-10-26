@@ -5,10 +5,13 @@
 #include "app/chat_domain_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "cef/cef_push.h"
+#include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 
+#include <algorithm>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -208,4 +211,101 @@ void UamQueryHandler::HandleImportLocalChats(
 		    }
 		    if (changed) uam::PushStateUpdateIfChanged(browser, *live_app);
 	    });
+}
+
+void UamQueryHandler::HandleGetLegacyChatImports(
+    CefRefPtr<CefBrowser> /*browser*/,
+    const nlohmann::json& /*payload*/,
+    CefRefPtr<Callback> cb)
+{
+	nlohmann::json sources = nlohmann::json::array();
+	for (const std::filesystem::path& root : m_app.pending_legacy_data_roots)
+	{
+		std::size_t chat_count = 0;
+		std::error_code ec;
+		for (std::filesystem::directory_iterator it(AppPaths::UamChatsRootPath(root), ec), end; !ec && it != end; it.increment(ec))
+			if (uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".json")) ++chat_count;
+		sources.push_back({{"path", uam::paths::Utf8PathString(root)}, {"chatCount", chat_count}});
+	}
+	cb->Success(nlohmann::json{{"sources", std::move(sources)}}.dump());
+}
+
+void UamQueryHandler::HandleResolveLegacyChatImport(
+    CefRefPtr<CefBrowser> browser,
+    const nlohmann::json& payload,
+    CefRefPtr<Callback> cb)
+{
+	const auto path = payload.find("path");
+	const auto choice = payload.find("choice");
+	if (path == payload.end() || !path->is_string() || choice == payload.end() || !choice->is_string())
+	{
+		cb->Failure(400, "A previous-version chat history and choice are required.");
+		return;
+	}
+	// Only a root found at startup can be resolved; the frontend never names an arbitrary folder.
+	std::vector<std::filesystem::path>& pending = m_app.pending_legacy_data_roots;
+	const auto found = std::ranges::find_if(pending, [&](const std::filesystem::path& root) { return uam::paths::Utf8PathString(root) == path->get_ref<const std::string&>(); });
+	if (found == pending.end())
+	{
+		cb->Failure(404, "This previous-version chat history is no longer waiting for a decision.");
+		return;
+	}
+	const std::filesystem::path legacy_root = *found;
+	const std::filesystem::path data_root = m_app.data_root;
+	if (*choice == "brandNew")
+	{
+		if (!uam::LocalChatBundleService::DeclineLegacyDataRoot(data_root, legacy_root))
+		{
+			cb->Failure(500, "Could not record this choice. Nothing was changed; try again.");
+			return;
+		}
+		pending.erase(found);
+		cb->Success(nlohmann::json{{"status", "complete"}}.dump());
+		return;
+	}
+	if (*choice != "copy")
+	{
+		cb->Failure(400, "Unknown previous-version chat history choice.");
+		return;
+	}
+
+	// Leaves the pending list while copying so a repeated request cannot start a second import.
+	pending.erase(found);
+	auto import_result = std::make_shared<uam::LocalChatBundleImportResult>();
+	auto imported_summaries = std::make_shared<std::vector<ChatSession>>();
+	uam::AppState* live_app = &m_app;
+	const bool posted = RunAsyncCefQuery(m_asyncLifetime,
+	    cb,
+	    [data_root, legacy_root, import_result, imported_summaries]() {
+		    *import_result = uam::LocalChatBundleService::ImportLegacyDataRoot(data_root, legacy_root);
+		    for (const uam::LocalChatBundleImportItem& item : import_result->items)
+		    {
+			    if (!item.imported) continue;
+			    if (std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(data_root, item.imported_id, false))
+				    imported_summaries->push_back(std::move(*summary));
+		    }
+		    return AsyncSuccess(nlohmann::json{
+		        {"status", BundleStatus(import_result->ok, import_result->degraded)},
+		        {"importedCount", import_result->imported_count},
+		        {"failedCount", import_result->failed_count},
+		        {"errors", import_result->errors},
+		    });
+	    },
+	    [live_app, browser, legacy_root, import_result, imported_summaries](AsyncCefResult& result) {
+		    if (!result.ok || !import_result->ok) live_app->pending_legacy_data_roots.push_back(legacy_root);
+		    for (ChatSession& summary : *imported_summaries)
+			    if (ChatDomainService().FindChatById(*live_app, summary.id) == nullptr) live_app->chats.push_back(std::move(summary));
+		    // Only folders this copy added; the save from the live list keeps them even if a UI
+		    // folder save overwrote the worker's folders.txt meanwhile.
+		    for (ChatFolder& folder : import_result->imported_folders)
+			    if (std::ranges::none_of(live_app->folders, [&](const ChatFolder& existing) { return existing.id == folder.id; }))
+				    live_app->folders.push_back(std::move(folder));
+		    if (!import_result->imported_folders.empty()) (void)ChatFolderStore::Save(live_app->data_root, live_app->folders);
+		    if (import_result->imported_count > 0)
+			    live_app->status_line = "Copied " + std::to_string(import_result->imported_count) + " chat" +
+			        (import_result->imported_count == 1 ? "" : "s") + " from a previous version in " +
+			        uam::paths::Utf8PathString(legacy_root) + ". The original files were left in place.";
+		    uam::PushStateUpdateIfChanged(browser, *live_app);
+	    });
+	if (!posted) pending.push_back(legacy_root);
 }

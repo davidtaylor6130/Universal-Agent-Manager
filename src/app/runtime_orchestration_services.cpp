@@ -2852,6 +2852,13 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 	return false;
 }
 
+std::optional<std::unordered_set<std::string>> ChatHistorySyncService::NativeImportTombstoneKeys(const fs::path& data_root) const
+{
+	NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	if (!tombstones.available) return std::nullopt;
+	return std::move(tombstones.keys);
+}
+
 bool ChatHistorySyncService::FilterDeletedNativeHistory(const fs::path& data_root, std::vector<ChatSession>& chats, std::string* error_out) const
 {
 	const NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
