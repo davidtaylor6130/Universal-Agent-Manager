@@ -851,19 +851,8 @@ bool Application::InitializeState()
 
 	// Earlier releases could keep data beside the executable or in the default root that
 	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
-	std::vector<fs::path> legacy_roots = {m_platformServices->path_service.DefaultDataRootPath()};
-	if (!executable_path.empty())
-	{
-		legacy_roots.push_back(executable_path.parent_path() / "data");
-		legacy_roots.push_back(executable_path.parent_path());
-	}
-	for (const fs::path& legacy_root : legacy_roots)
-	{
-		const std::string key = uam::paths::NormalizedNativePathString(legacy_root);
-		if (std::ranges::none_of(m_app.pending_legacy_data_roots, [&](const fs::path& known) { return uam::paths::NormalizedNativePathString(known) == key; }) &&
-		    uam::LocalChatBundleService::LegacyDataRootPending(m_app.data_root, legacy_root))
-			m_app.pending_legacy_data_roots.push_back(legacy_root);
-	}
+	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
+	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 

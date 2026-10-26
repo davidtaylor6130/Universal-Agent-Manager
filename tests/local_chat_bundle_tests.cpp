@@ -1347,3 +1347,30 @@ UAM_TEST(LegacyDataRootBrandNewStopsAskingWithoutCopying)
 	UAM_ASSERT(uam::io::WriteTextFile(damaged / "legacy-data-imports.json", "{not json"));
 	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(damaged, legacy));
 }
+
+UAM_TEST(LegacyDataRootDiscoveryFindsDefaultAppDataAndExecutableRoots)
+{
+	TempDir temp("uam-legacy-data-root-discovery");
+	const fs::path local_default = WriteV49DataRoot(temp.root / "Local" / "Universal Agent Manager");
+	const fs::path roaming = WriteV49DataRoot(temp.root / "Roaming" / "Universal Agent Manager");
+	const fs::path beside_exe = WriteV49DataRoot(temp.root / "old-exe" / "data");
+	const fs::path executable = temp.root / "old-exe" / "universal_agent_manager.exe";
+	const fs::path current = temp.root / "chosen-root";
+	fs::create_directories(current);
+	ScopedEnvVar app_data("APPDATA", uam::paths::Utf8PathString(temp.root / "Roaming"));
+
+	// UAM_DATA_DIR or a chosen folder elsewhere: every earlier root is offered once, in order.
+	const std::vector<fs::path> pending = uam::LocalChatBundleService::PendingLegacyDataRoots(current, local_default, executable);
+	UAM_ASSERT_EQ(pending.size(), std::size_t{3});
+	UAM_ASSERT(pending[0] == local_default);
+	UAM_ASSERT(pending[1] == roaming);
+	UAM_ASSERT(pending[2] == beside_exe);
+
+	// The default root in use is never offered to itself, and answered roots stop appearing.
+	UAM_ASSERT_EQ(uam::LocalChatBundleService::PendingLegacyDataRoots(local_default, local_default, executable).size(), std::size_t{2});
+	UAM_ASSERT(uam::LocalChatBundleService::DeclineLegacyDataRoot(current, roaming));
+	UAM_ASSERT(uam::LocalChatBundleService::ImportLegacyDataRoot(current, local_default).ok);
+	const std::vector<fs::path> remaining = uam::LocalChatBundleService::PendingLegacyDataRoots(current, local_default, executable);
+	UAM_ASSERT_EQ(remaining.size(), std::size_t{1});
+	UAM_ASSERT(remaining[0] == beside_exe);
+}

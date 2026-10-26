@@ -70,6 +70,12 @@ namespace uam
 		static bool LegacyDataRootPending(
 		    const std::filesystem::path& data_root,
 		    const std::filesystem::path& legacy_root);
+		// Earlier-release roots still awaiting an answer, deduplicated: default_root and the
+		// %APPDATA% fallback (when data_root is elsewhere), then <exe>/data and the exe directory.
+		static std::vector<std::filesystem::path> PendingLegacyDataRoots(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& default_root,
+		    const std::filesystem::path& executable_path);
 		// Records the "Brand new" choice so legacy_root is never offered again.
 		static bool DeclineLegacyDataRoot(
 		    const std::filesystem::path& data_root,

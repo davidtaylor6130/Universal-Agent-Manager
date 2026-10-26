@@ -13,6 +13,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/env_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
@@ -1254,5 +1255,31 @@ namespace uam
 		if (LedgerContains(ledger["declined_sources"], source_key)) return true;
 		ledger["declined_sources"].push_back(source_key);
 		return uam::io::WriteTextFile(data_root / kLegacyImportLedgerFilename, ledger.dump(2));
+	}
+
+	std::vector<std::filesystem::path> LocalChatBundleService::PendingLegacyDataRoots(
+	    const std::filesystem::path& data_root,
+	    const std::filesystem::path& default_root,
+	    const std::filesystem::path& executable_path)
+	{
+		std::vector<fs::path> candidates = {default_root};
+		// v4.x fell back to %APPDATA% when %LOCALAPPDATA% was unset.
+		if (const std::optional<fs::path> app_data = uam::env::GetTrimmedPath("APPDATA"))
+			candidates.push_back(*app_data / "Universal Agent Manager");
+		if (!executable_path.empty())
+		{
+			candidates.push_back(executable_path.parent_path() / "data");
+			candidates.push_back(executable_path.parent_path());
+		}
+		std::vector<fs::path> pending;
+		std::vector<std::string> seen;
+		for (const fs::path& candidate : candidates)
+		{
+			std::string key = uam::paths::NormalizedNativePathString(candidate);
+			if (candidate.empty() || std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+			seen.push_back(std::move(key));
+			if (LegacyDataRootPending(data_root, candidate)) pending.push_back(candidate);
+		}
+		return pending;
 	}
 } // namespace uam
