@@ -39,7 +39,7 @@ describe('shared motion contract', () => {
   })
 
   it('collapses every transition and animation under reduced motion', () => {
-    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\*, \*::before, \*::after \{[^}]*animation-duration: 0\.01ms !important;[^}]*transition-duration: 0\.01ms !important;/s)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\*, \*::before, \*::after \{[^}]*animation-duration: \.01ms !important;[^}]*transition-duration: \.01ms !important;/s)
     expect(settingsShell).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.uam-settings-nav__indicator \{ transition: none; \}/)
     expect(sidebar).toMatch(/\.uam-sb-row \{\s*animation: none;\s*transition: none;\s*\}/)
   })

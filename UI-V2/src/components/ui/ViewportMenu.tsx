@@ -60,7 +60,7 @@ export function placeViewportMenu(
  * unmount), and when the caller already ran its own exit (`data-state` other than open).
  */
 export function leaveMenuGhost(menu: HTMLElement | null) {
-  if (!menu?.isConnected || menu.style.visibility === 'hidden' || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed() || document.documentElement.getAttribute('data-motion') === 'off') return
+  if (!menu?.isConnected || menu.style.visibility === 'hidden' || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed()) return
   const ghost = menu.cloneNode(true) as HTMLElement
   ghost.dataset.state = 'closed'
   // The copy must not answer id lookups (ARIA references, a reopened picker) or test-id queries.
