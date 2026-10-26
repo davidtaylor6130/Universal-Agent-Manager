@@ -199,6 +199,7 @@ struct ModelPickerView: View
     @Binding var providerID: String
     @Binding var modelID: String
     var folder: WireObject = [:]
+    var sourceChat: MobileChat?
     @State private var search = ""
 
     var body: some View
@@ -217,6 +218,8 @@ struct ModelPickerView: View
                             Button { providerID = id; modelID = ""; dismiss() } label: {
                                 HStack { Text("Provider default"); Spacer(); if id == providerID && modelID.isEmpty { Image(systemName: "checkmark") } }
                             }
+                            Text("No model catalogue matches this computer and workspace. You can use the provider default.")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
                         ForEach(available.filter { search.isEmpty || $0.text("name", $0.text("id")).localizedCaseInsensitiveContains(search) }, id: \.selfID) { item in
                             Button { providerID = id; modelID = item.text("id"); dismiss() } label: {
@@ -240,10 +243,12 @@ struct ModelPickerView: View
     private func models(_ provider: String) -> [WireObject]
     {
         var result: [WireObject] = []
-        if model.chat?.providerID == provider { result += model.chat?.runtime.objects("availableModels") ?? [] }
-        let hostID = folder.text("executionHostId", model.chat?.hostID ?? "local")
-        for catalog in model.catalogs where catalog.text("providerId") == provider && catalog.text("executionHostId", "local") == hostID
-        { result += catalog.objects("availableModels") }
+        let source = sourceChat
+        let hostID = source?.hostID ?? folder.text("executionHostId", "local")
+        let workspace = source?.raw.text("workspaceDirectory") ?? folder.text("directory")
+        if let chat = source, chat.providerID == provider, chat.hostID == hostID, chat.raw.text("workspaceDirectory") == workspace
+        { result += chat.runtime.objects("availableModels") }
+        result += model.catalogModels(providerID: provider, hostID: hostID, workspace: workspace)
         var seen = Set<String>()
         return result.filter { seen.insert($0.text("id")).inserted }
     }

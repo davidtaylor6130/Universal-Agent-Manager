@@ -23,6 +23,7 @@ final class MobileAppModel
     var loadingHistory = false
     var busyActions: Set<String> = []
     var error: String?
+    private(set) var managedChildReaderError: String?
     private(set) var connectionProblem: String?
     private(set) var connectionRequiresPairing = false
     var lastUpdated: Date?
@@ -62,6 +63,60 @@ final class MobileAppModel
     @ObservationIgnored private var historyOwner: UUID?
     @ObservationIgnored private var historyRequestID: UUID?
     @ObservationIgnored private var draftWriteTask: Task<Void, Never>?
+    @ObservationIgnored private let managedChildDrafts = ManagedChildDraftStore()
+    @ObservationIgnored private var managedChildSessions: [[String]: ManagedChildSession] = [:]
+
+    func catalogModels(providerID: String, hostID: String, workspace: String) -> [WireObject]
+    {
+        let platform = settings.objects("executionHosts").first { $0.text("id") == hostID }?.text("platform") ?? ""
+        return catalogs.filter {
+            $0.text("providerId") == providerID && $0.text("executionHostId", "local") == hostID &&
+                NativeModelCatalogWorkspace.matches($0.text("workspaceDirectory"), workspace, platform: platform)
+        }.flatMap { $0.objects("availableModels") }
+    }
+
+    func managedChildrenSession(chatID: String, contextID: String) -> ManagedChildSession?
+    {
+        managedChildReaderError = nil
+        guard contextID == draftContextID, let connectionID = activeConnectionID, let chat, chat.id == chatID,
+              supports("listManagedSubagents") else { return nil }
+        let owner = managedParentIdentity(chat)
+        let cacheKey = [connectionID] + owner
+        if let cached = managedChildSessions[cacheKey] { return cached }
+        if managedChildSessions.count >= 8
+        {
+            guard let retired = managedChildSessions.first(where: { $0.value.canRetire })?.key else
+            {
+                // Offer bounded names only from this connection's current catalogue.
+                // Missing/other-computer roots keep the generic recovery guidance.
+                var seenNames = Set<String>()
+                let parents = chats.filter { parent in
+                    managedChildSessions[[connectionID] + managedParentIdentity(parent)]?.canRetire == false
+                }.map { String($0.title.prefix(80)) }.filter { !$0.isEmpty && seenNames.insert($0).inserted }
+                    .prefix(3).map { "“\($0)”" }
+                let guidance = parents.isEmpty ? "" : " On this computer, check \(parents.joined(separator: ", "))."
+                managedChildReaderError = "Subagent readers have pending or unconfirmed requests. Return to an existing reader to review them; drafts are kept." + guidance
+                return nil
+            }
+            managedChildSessions.removeValue(forKey: retired)
+        }
+        let identity = String(data: (try? JSONEncoder().encode(owner)) ?? Data(), encoding: .utf8) ?? ""
+        let session = ManagedChildSession(connectionID: connectionID, rootID: chatID, rootIdentity: identity, drafts: managedChildDrafts,
+            request: { [weak self] action, payload in
+                guard let self, let fields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? WireObject else { throw CancellationError() }
+                let result = try await self.request(action, fields)
+                return try CompanionProtocol.unwrap(CompanionProtocol.decode(JSONSerialization.data(withJSONObject: result)))
+            }, supports: { [weak self] in self?.supports($0) == true },
+            originCurrent: { [weak self] in
+                guard let self, self.connected, self.activeConnectionID == connectionID, let current = self.chat else { return false }
+                return self.managedParentIdentity(current) == owner
+            }, writable: { [weak self] in self?.chat?.readOnly == false && self?.capabilities.flag("readOnly") == false })
+        managedChildSessions[cacheKey] = session
+        return session
+    }
+
+    private func managedParentIdentity(_ chat: MobileChat) -> [String]
+    { [chat.id, chat.raw.text("createdAt"), chat.providerID, chat.hostID, chat.raw.text("workspaceDirectory"), chat.raw.text("folderId"), String(chat.readOnly)] }
 
     var connection: MobileConnection? { connections.first { $0.id == activeConnectionID } }
     var chat: MobileChat? { chats.first { $0.id == activeChatID } }
@@ -548,6 +603,59 @@ final class MobileAppModel
             await refresh(force: true)
         }
         catch { if generation == stamp { self.error = error.localizedDescription } }
+    }
+
+    @discardableResult
+    func performChatModelSetting(_ action: String, chatID: String, contextID: String, values: WireObject,
+                                 expectedProviderID: String? = nil, expectedModelID: String? = nil,
+                                 expectedContext: [String]? = nil) async -> Bool
+    {
+        let actions = ["setChatProvider", "setChatModel", "setChatCodexOptions", "setAcpConfigOption"]
+        guard actions.contains(action),
+              draftContextID == contextID, connected, supports(action), let chat, chat.id == chatID,
+              !chat.readOnly, !chat.processing, expectedProviderID == nil || chat.providerID == expectedProviderID,
+              expectedModelID == nil || chat.modelID == expectedModelID, busyActions.isDisjoint(with: actions) else { return false }
+        guard expectedContext == nil || chat.modelSettingsContext == expectedContext else
+        { error = "This chat's execution context changed. Reopen model settings before choosing again."; return false }
+        let stamp = generation
+        busyActions.insert(action)
+        defer { if generation == stamp { busyActions.remove(action) } }
+        var payload = values; payload["chatId"] = chatID
+        do
+        {
+            _ = try await request(action, payload)
+            guard draftContextID == contextID, expectedContext == nil || self.chat?.modelSettingsContext == expectedContext else { return false }
+            await refresh(force: true)
+            return draftContextID == contextID && (expectedContext == nil || self.chat?.modelSettingsContext == expectedContext)
+        }
+        catch { if draftContextID == contextID { self.error = error.localizedDescription }; return false }
+    }
+
+    @discardableResult
+    func requestNativeAutoRouting(_ preference: NativeOptionPresence<String?>, ownership: NativeModelOptionOwnership, contextID: String) async -> Bool
+    {
+        let action = preference == .absent ? "refreshNativeModelOptions" : "setNativeModelOption"
+        guard draftContextID == contextID, connected, supports(action), let chat, chat.id == ownership.chatID,
+              chat.canChangeNativeModelOptions, let option = chat.nativeAutoRouting, option.ownership == ownership,
+              !option.requestPending, !busyActions.contains("setNativeModelOption"), !busyActions.contains("refreshNativeModelOptions") else { return false }
+        let stamp = generation
+        busyActions.insert(action)
+        defer { if generation == stamp { busyActions.remove(action) } }
+        do
+        {
+            let payload: JSONValue
+            switch preference
+            {
+            case .absent: payload = ownership.payload
+            case .value(let value): payload = try option.preferencePayload(value)
+            }
+            guard let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as? WireObject else { return false }
+            _ = try await request(action, wire)
+            guard draftContextID == contextID else { return false }
+            await refresh(force: true)
+            return draftContextID == contextID && self.chat?.nativeAutoRouting?.ownership == ownership
+        }
+        catch { if draftContextID == contextID { self.error = error.localizedDescription }; return false }
     }
 
     @discardableResult

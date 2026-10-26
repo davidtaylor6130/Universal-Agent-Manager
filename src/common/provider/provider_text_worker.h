@@ -95,8 +95,11 @@ namespace uam::provider_workers
 		}
 	}
 
-	inline bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv)
+	inline bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv, bool private_isolation = false)
 	{
+		// The checked V2 bridge owns a proof-verified deny-all lease. Never leave
+		// a V1 opencode.json or V1 argv flags in that worker's empty workspace.
+		if (private_isolation) return IsProvider(profile, uam::provider_ids::kOpenCodeCli) && argv.size() == 5 && argv[1] == "--uam-opencode-v2-text-worker";
 		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 		{
 			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"agent":{"uam-text-worker":{"mode":"primary","prompt":"Complete the supplied text-only task directly. Do not delegate or compact. Tools are denied.","permission":{"*":"deny"}}},"share":"disabled","autoupdate":false})"))
