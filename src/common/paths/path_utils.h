@@ -305,4 +305,23 @@ namespace uam::paths
 		const std::filesystem::path relative = std::filesystem::relative(normalized->candidate, normalized->root, ec);
 		return ec || relative.empty() ? std::nullopt : std::optional<std::filesystem::path>{relative};
 	}
+
+	struct NearestVcsRoot
+	{
+		std::filesystem::path root;
+		bool git = false;
+		bool svn = false;
+	};
+
+	/// The nearest directory holding a .git or .svn marker owns the path, so Git nested in an SVN checkout is Git.
+	inline NearestVcsRoot FindNearestVcsRoot(const std::filesystem::path& start)
+	{
+		for (std::filesystem::path directory = start; !directory.empty(); directory = directory.parent_path())
+		{
+			NearestVcsRoot found{directory, PathExistsNoThrow(directory / ".git"), PathExistsNoThrow(directory / ".svn")};
+			if (found.git || found.svn) return found;
+			if (directory == directory.parent_path()) break;
+		}
+		return {};
+	}
 } // namespace uam::paths

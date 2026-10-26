@@ -703,6 +703,7 @@ interface PhoneAccessStatus {
   localAddresses?: string[]
   proxyRunning?: boolean
   loopbackRunning?: boolean
+  allowKeychainPrompts?: boolean
 }
 
 export interface SettingsHandle {
@@ -1623,7 +1624,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (manual) { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
     }
   }
-  const changeCompanion = async (action: 'setCompanionEnabled' | 'restartCompanion' | 'repairCompanionLanAddress', payload: Record<string, unknown> = {}) => {
+  const changeCompanion = async (action: 'setCompanionEnabled' | 'setCompanionKeychainPrompts' | 'restartCompanion' | 'repairCompanionLanAddress', payload: Record<string, unknown> = {}) => {
     if (companionInFlight.current) return
     companionInFlight.current = true
     setCompanionBusy(true)
@@ -1754,6 +1755,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
           <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
         </SettingRow>}
+        {typeof companionSettings?.allowKeychainPrompts === 'boolean' && <SettingRow
+          title="Allow Keychain prompts from phone"
+          description="When on, refreshing allowances from your phone can show the macOS Keychain dialog on this computer. When off, phone refreshes never show it."
+          status={companionBusyAction === 'setCompanionKeychainPrompts' ? <span role="status" aria-live="polite" style={{ color: 'var(--text-2)' }}>Saving…</span> : undefined}
+          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings.allowKeychainPrompts}
+            disabled={!companionSettings.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
+        />}
         <SettingRow title="Access token" description="For manual entry in the iPhone app. Pairing by QR code also configures secure certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
         {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}

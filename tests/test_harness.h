@@ -302,6 +302,29 @@ namespace uam_test
 		ScopedEnvVar profile{"USERPROFILE", directory.root.string()};
 	};
 
+	/// Fake `.svn` fixtures are not real working copies; SVN snapshots fail closed unless `svn status` succeeds,
+	/// so these fixtures get an `svn` that reports a clean checkout with nothing ignored.
+	struct ScopedCleanSvnStatus
+	{
+		TempDir bin{"uam-clean-svn"};
+		std::unique_ptr<ScopedEnvVar> path;
+
+		ScopedCleanSvnStatus()
+		{
+#if defined(_WIN32)
+			const fs::path shim = bin.root / "svn.cmd";
+			if (!uam::io::WriteTextFile(shim, "@exit /b 0\r\n")) throw std::runtime_error("Could not write the svn test shim.");
+			const std::string separator = ";";
+#else
+			const fs::path shim = bin.root / "svn";
+			if (!uam::io::WriteTextFile(shim, "#!/bin/sh\nexit 0\n")) throw std::runtime_error("Could not write the svn test shim.");
+			fs::permissions(shim, fs::perms::owner_all);
+			const std::string separator = ":";
+#endif
+			path = std::make_unique<ScopedEnvVar>("PATH", bin.root.string() + separator + uam::env::GetNonEmptyString("PATH").value_or(""));
+		}
+	};
+
 #if defined(_WIN32)
 	struct ScopedWideWindowsEnvVar
 	{

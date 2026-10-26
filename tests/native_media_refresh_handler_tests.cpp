@@ -4,6 +4,7 @@
 #include "app/uam_control_service.h"
 #include "cef_handler_fixture.h"
 #include "cef/uam_query_handler_async.h"
+#include "cef/cef_push.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/chat/chat_message_page_index.h"
 #include "common/runtime/native_refresh_lifetime.h"
@@ -24,6 +25,8 @@ struct NativeMediaRefreshHandlerTestAccess
 		handler.m_nativeMediaRefreshDispatcherForTests = dispatch;
 		handler.m_attachmentPreviewDispatcherForTests = std::move(dispatch);
 	}
+	static void Query(UamQueryHandler& handler, int64_t query_id) { handler.m_dispatchingQuery = {-1, "", query_id}; }
+	static void Cancel(UamQueryHandler& handler, int64_t query_id) { handler.OnQueryCanceled(nullptr, nullptr, query_id); }
 	static void Preview(UamQueryHandler& handler, const std::string& id, const std::string& attachment, CefRefPtr<UamQueryHandler::Callback> cb)
 	{
 		handler.HandleGetAttachmentImagePreview(nullptr, {{"chatId", id}, {"messageIndex", 0}, {"attachmentId", attachment}}, cb);
@@ -208,6 +211,27 @@ UAM_TEST(NativeMediaRefreshHandlerPublishesOnlyAfterBothWorkerPhases)
 	UAM_ASSERT(!attachment.native_inline_payload);
 	UAM_ASSERT(uam::native_assets::ReadOwned(fixture.app.data_root, current.id, attachment.native_asset_key).ok);
 	UAM_ASSERT(cb->body.dump().find("iVBOR") == std::string::npos);
+}
+
+UAM_TEST(NativeMediaRefreshHandlerCancelledQuerySavesWithoutDeliveryAndNextRequestReusesIt)
+{
+	MediaFixture fixture;
+	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app);
+	NativeMediaRefreshHandlerTestAccess::Query(*fixture.handler, 51);
+	const auto cancelled = fixture.Start();
+	NativeMediaRefreshHandlerTestAccess::Query(*fixture.handler, -1);
+	NativeMediaRefreshHandlerTestAccess::Cancel(*fixture.handler, 51);
+	fixture.Complete(0); fixture.Complete(1);
+	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app)); // The cancelled request published nothing.
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id, true, nullptr, false);
+	UAM_ASSERT(saved); UAM_ASSERT_EQ(saved->messages.front().attachments.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->messages.front().attachments.front().source, AttachmentSource::OwnedNativeAsset);
+	const auto next = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2}); // No second native read.
+	UAM_ASSERT_EQ(next->successes, 1); UAM_ASSERT_EQ(next->failures, 0);
+	UAM_ASSERT_EQ(next->body.at("messages").size(), std::size_t{1});
+	UAM_ASSERT(next->body.dump().find("iVBOR") == std::string::npos);
 }
 
 UAM_TEST(NativeMediaRefreshHandlerRejectsChangedOwnerBeforePreparation)
@@ -12322,6 +12346,27 @@ UAM_TEST(CodexCefNativeRefreshRetainsOwnedInputDataAndHumanCopies)
 	UAM_ASSERT_EQ(std::ranges::count(saved->messages, std::string("PRIVATE-MACHINE-ANSWER"), &Message::content), 1);
 	UAM_ASSERT_EQ(std::ranges::count(saved->messages, std::string("PRIVATE-HUMAN-COPY-ANSWER"), &Message::content), 1);
 	UAM_ASSERT(fixture.app.acp_sessions.empty() && saved->acp_queued_prompts.empty());
+}
+
+UAM_TEST(CodexCefNativeRefreshCancelledQuerySavesWithoutDeliveryAndNextRequestReusesIt)
+{
+	ParentInputRefreshFixtureR1 fixture;
+	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app);
+	NativeMediaRefreshHandlerTestAccess::Query(*fixture.handler, 61);
+	const auto cancelled = fixture.Start();
+	NativeMediaRefreshHandlerTestAccess::Query(*fixture.handler, -1);
+	NativeMediaRefreshHandlerTestAccess::Cancel(*fixture.handler, 61);
+	auto query = std::move(fixture.pending.front());
+	auto result = std::async(std::launch::async, query.worker).get(); UAM_ASSERT(result.ok);
+	CompleteAsyncCefQuery(query.cb, result, query.completion);
+	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app)); // The cancelled request published nothing.
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
+	UAM_ASSERT(saved); UAM_ASSERT_EQ(std::ranges::count(saved->messages, std::string("PRIVATE-MACHINE-ANSWER"), &Message::content), 1);
+	CefRefPtr<ParentInputRefreshCallbackR1> next = new ParentInputRefreshCallbackR1;
+	NativeMediaRefreshHandlerTestAccess::Invoke(*fixture.handler, fixture.app.chats.front().id, next);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1}); // No second native read.
+	UAM_ASSERT_EQ(next->successes, 1); UAM_ASSERT_EQ(next->failures, 0);
 }
 
 UAM_TEST(CodexCefNativeRefreshRejectsChangedPrimaryOrInputReceipt)
