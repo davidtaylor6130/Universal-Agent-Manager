@@ -2,6 +2,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_security.h"
+#include "common/companion/protocol.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
@@ -184,7 +185,10 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
 		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
-		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
+		const std::string action = request.at("action").get<std::string>();
+		nlohmann::json payload = request.value("payload", nlohmann::json::object());
+		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
+		if (!DispatchAction(action, browser, payload, callback))
 			callback->Failure(404, "Unknown companion action.");
 	});
 	const nlohmann::json status = m_companion->Status();
@@ -323,6 +327,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
 		{"restartCompanion", &UamQueryHandler::HandleRestartCompanion},
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
+		{"setCompanionKeychainPrompts", &UamQueryHandler::HandleSetCompanionKeychainPrompts},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
