@@ -9,7 +9,9 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string_view>
+#include <unordered_map>
 
 namespace uam::icons
 {
@@ -68,9 +70,32 @@ namespace uam::icons
 		const std::filesystem::path file = directory / icon.value;
 		const std::filesystem::file_status status = std::filesystem::symlink_status(file, error);
 		if (error || !std::filesystem::is_regular_file(status)) return {};
+		const std::uintmax_t size = std::filesystem::file_size(file, error);
+		if (error) return {};
+		const std::filesystem::file_time_type modified = std::filesystem::last_write_time(file, error);
+		if (error) return {};
+		// State fingerprints run every streaming tick; reuse the encoded asset until its file changes.
+		struct CachedPng
+		{
+			std::uintmax_t size = 0;
+			std::filesystem::file_time_type modified;
+			std::string data_url;
+		};
+		static std::mutex cache_mutex;
+		static std::unordered_map<std::string, CachedPng> cache;
+		const std::string key = file.string();
+		{
+			const std::lock_guard<std::mutex> lock(cache_mutex);
+			if (const auto found = cache.find(key); found != cache.end() && found->second.size == size && found->second.modified == modified)
+				return found->second.data_url;
+		}
 		std::string bytes;
 		if (!uam::io::TryReadTextFile(file, bytes, kMaximumPngBytes) || !HasBoundedPngHeader(bytes)) return {};
-		return "data:image/png;base64," + uam::base64::Encode(bytes);
+		std::string data_url = "data:image/png;base64," + uam::base64::Encode(bytes);
+		const std::lock_guard<std::mutex> lock(cache_mutex);
+		if (cache.size() >= 256) cache.clear(); // ponytail: wholesale reset bounds stale entries; LRU only if icon counts grow.
+		cache[key] = CachedPng{size, modified, data_url};
+		return data_url;
 	}
 
 	inline void AddFrontendAsset(nlohmann::json& object, const std::filesystem::path& data_root,

@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "app/transcript_retention_service.h"
+#include "common/config/custom_icon.h"
+
+#include <numeric>
 
 using namespace uam_test;
 
@@ -250,4 +253,286 @@ UAM_TEST(PerformanceSettingsLoadResponse)
 	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", restored).loaded);
 	UAM_ASSERT(!restored.git_enabled && restored.svn_enabled);
 	RequireBudget("settings load response", started, kInteractionBudget);
+}
+
+namespace
+{
+	// The streaming fixture's UI-thread cost (ms of push work per simulated second) is printed, not gated:
+	// on the shared, heavily loaded build host the same binary measured 230-446 ms/s between runs, so a
+	// wall-clock limit only measured host load. Its deterministic push/rebuild counts are the regression gate
+	// (they fail without the throttle fixes), and CustomPngDataUrlIsReusedUntilTheIconFileChanges guards the icon cache.
+	// The structural slice comparison is not gated; a revert would show only in the printed figure.
+
+	std::string FixturePng(std::size_t size)
+	{
+		std::string bytes("\x89PNG\r\n\x1a\n", 8);
+		bytes += std::string("\0\0\0\rIHDR", 8);
+		bytes += std::string("\0\0\1\0\0\0\1\0", 8); // 256 x 256
+		bytes.resize(size, '\x5a');
+		return bytes;
+	}
+
+	Message StreamingTurn(std::size_t tool_count, std::size_t tool_bytes)
+	{
+		Message message{MessageRole::Assistant, "Working on it"};
+		message.created_at = "2026-10-25T10:00:00Z";
+		for (std::size_t index = 0; index < tool_count; ++index)
+		{
+			ToolCall tool;
+			tool.id = "tool-" + std::to_string(index);
+			tool.name = "Read";
+			tool.kind = "read";
+			tool.status = "completed";
+			tool.args_json = "{\"path\":\"src/file_" + std::to_string(index) + ".cpp\"}";
+			tool.result_text = std::string(tool_bytes, static_cast<char>('a' + index % 26));
+			message.tool_calls.push_back(std::move(tool));
+		}
+		return message;
+	}
+
+	std::unique_ptr<uam::AcpSessionState> StreamingSession(const ChatSession& chat, std::size_t tool_count, std::size_t tool_bytes)
+	{
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->session_id = chat.id + "-native";
+		session->running = true;
+		session->processing = true;
+		session->lifecycle_state = "processing";
+		for (std::size_t index = 0; index < tool_count; ++index)
+		{
+			uam::AcpToolCallState tool;
+			tool.id = "tool-" + std::to_string(index);
+			tool.title = "Read src/file_" + std::to_string(index) + ".cpp";
+			tool.kind = "read";
+			tool.status = "completed";
+			tool.content = std::string(tool_bytes, static_cast<char>('a' + index % 26));
+			session->tool_calls.push_back(tool);
+			session->turn_events.push_back({"assistant_text", "Reading file " + std::to_string(index) + ". "});
+			session->turn_events.push_back({"tool_call", "", tool.id});
+		}
+		session->turn_events.push_back({"assistant_text", "Summarising"});
+		return session;
+	}
+
+	/// 63 chats, PNG folder/chat icons, one selected streaming chat with 30 x 50 KB tools, two background streaming chats.
+	void BuildStreamingPushFixture(uam::AppState& app, const fs::path& root)
+	{
+		app.data_root = root;
+		fs::create_directories(root / "icons");
+		std::vector<CustomIcon> icons;
+		for (int index = 0; index < 8; ++index)
+		{
+			const CustomIcon icon{"png", "00000000-0000-4000-8000-00000000000" + std::to_string(index) + ".png"};
+			UAM_ASSERT(uam::icons::IsValid(icon));
+			UAM_ASSERT(uam::io::WriteBinaryFile(root / "icons" / icon.value, FixturePng(100 * 1024 + index * 20 * 1024)));
+			icons.push_back(icon);
+			ChatFolder folder;
+			folder.id = "folder-" + std::to_string(index);
+			folder.title = folder.id;
+			folder.directory = (root / folder.id).generic_string();
+			folder.custom_icon = icon;
+			app.folders.push_back(std::move(folder));
+		}
+		for (int index = 0; index < 63; ++index)
+		{
+			ChatSession chat;
+			chat.id = "push-chat-" + std::to_string(index);
+			chat.title = chat.id;
+			chat.provider_id = "claude-cli";
+			chat.folder_id = "folder-" + std::to_string(index % 8);
+			chat.custom_icon = icons[index % icons.size()];
+			chat.updated_at = "2026-10-25T10:00:00Z";
+			if (index < 3)
+			{
+				const std::size_t history = index == 0 ? 120 : 200;
+				for (std::size_t message = 0; message < history; ++message)
+					chat.messages.push_back(Message{message % 2 == 0 ? MessageRole::User : MessageRole::Assistant,
+					    "History " + std::to_string(message) + ": " + std::string(2048, 'h')});
+				chat.messages.push_back(StreamingTurn(index == 0 ? 30 : 5, 50 * 1024));
+				app.acp_sessions.push_back(StreamingSession(chat, index == 0 ? 30 : 5, 50 * 1024));
+			}
+			else
+			{
+				chat.messages_loaded = false;
+				chat.persisted_message_count = 80;
+				chat.persisted_messages_digest = "persisted-" + std::to_string(index);
+			}
+			app.chats.push_back(std::move(chat));
+		}
+		app.selected_chat_index = 0;
+	}
+
+	void AppendStreamToken(uam::AppState& app, int token)
+	{
+		for (std::size_t index = 0; index < 3; ++index)
+		{
+			const std::string text = " token-" + std::to_string(token);
+			app.chats[index].messages.back().content += text;
+			app.acp_sessions[index]->turn_events.back().text += text;
+		}
+	}
+
+	double Median(std::vector<double> values)
+	{
+		if (values.empty()) return 0.0;
+		std::sort(values.begin(), values.end());
+		const std::size_t middle = values.size() / 2;
+		return values.size() % 2 == 0 ? (values[middle - 1] + values[middle]) / 2.0 : values[middle];
+	}
+}
+
+namespace
+{
+	std::chrono::steady_clock::time_point g_fake_push_now;
+
+	/// <summary>Steps the push throttle clock by hand and restores the real clock even when an assertion throws.</summary>
+	struct FakeStatePushClock
+	{
+		// Starts at real time so recorded push times stay plausible for later tests.
+		FakeStatePushClock() { g_fake_push_now = std::chrono::steady_clock::now(); uam::SetStatePushClockForTests([] { return g_fake_push_now; }); }
+		~FakeStatePushClock() { uam::SetStatePushClockForTests(nullptr); }
+		void Advance(std::chrono::milliseconds by) { g_fake_push_now += by; }
+	};
+}
+
+UAM_TEST(PerformanceStreamingStatePushTick)
+{
+	TempDir temp("uam-performance-streaming-push");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+
+	std::vector<double> fingerprints;
+	for (int iteration = 0; iteration < 11; ++iteration)
+	{
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app, true);
+		fingerprints.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		UAM_ASSERT_EQ(fingerprint["chats"].size(), std::size_t{63});
+	}
+
+	// Mirrors Application::PollTick: tokens land on every other 16 ms tick; quiet ticks only flush deferred pushes.
+	// Throttle decisions use a stepped clock so counts are deterministic; push work is timed with the real clock.
+	// The one-second window runs three times; the cheapest run is reported as the least load-affected figure.
+	FakeStatePushClock clock;
+	constexpr int kTicks = 62;
+	constexpr std::chrono::milliseconds kTick{16};
+	const double window_seconds = std::chrono::duration<double>(kTicks * kTick).count();
+	double per_second = 0.0;
+	std::vector<double> calls;
+	int pushes = 0;
+	for (int run = 0; run < 3; ++run)
+	{
+		uam::PushStateUpdate(nullptr, app);
+		std::vector<double> run_calls;
+		int run_pushes = 0;
+		for (int tick = 0; tick < kTicks; ++tick)
+		{
+			const bool streamed = tick % 2 == 0;
+			if (streamed) AppendStreamToken(app, run * kTicks + tick);
+			if (streamed || uam::DeferredStatePushDue())
+			{
+				const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+				run_pushes += uam::PushStateUpdateIfChanged(nullptr, app) ? 1 : 0;
+				run_calls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+			}
+			clock.Advance(kTick);
+		}
+
+		// The three streaming chats share one 100 ms window: pushes land on ticks 0, 7, 14 ... 56 (every 112 ms),
+		// so 9 pushes; rebuilds are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// Without the background-chat throttle pushes rise to ~31; rebuilding every deferred quiet tick gives ~58.
+		UAM_ASSERT_EQ(run_pushes, 9);
+		UAM_ASSERT_EQ(run_calls.size(), std::size_t{35});
+
+		// Final streamed state must reach the frontend: flush deferred work, then nothing may remain unsent.
+		for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
+		{
+			clock.Advance(kTick);
+			if (uam::DeferredStatePushDue()) uam::PushStateUpdateIfChanged(nullptr, app);
+		}
+		UAM_ASSERT(!uam::HasDeferredStatePush());
+		clock.Advance(std::chrono::milliseconds(120));
+		UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+		const double run_per_second = std::accumulate(run_calls.begin(), run_calls.end(), 0.0) / window_seconds;
+		if (run == 0 || run_per_second < per_second)
+		{
+			per_second = run_per_second;
+			calls = std::move(run_calls);
+			pushes = run_pushes;
+		}
+	}
+
+	std::cout << "[TIMING] streaming push fixture: fingerprint p50=" << Median(fingerprints) << " ms; ticks=62 rebuilds="
+	          << calls.size() << " pushes=" << pushes << " per-rebuild p50=" << Median(calls) << " ms; UI-thread push cost="
+	          << per_second << " ms/s, cheapest of 3 windows\n";
+}
+
+
+UAM_TEST(StatePushThrottlesBackgroundSummariesAndFlushesOnlyWhenDue)
+{
+	FakeStatePushClock clock;
+	uam::AppState app;
+	for (const char* id : {"selected-chat", "background-chat"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.title = "Original";
+		app.chats.push_back(std::move(chat));
+	}
+	app.selected_chat_index = 0;
+	uam::PushStateUpdate(nullptr, app);
+	app.chats[1].title = "First stream update";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	clock.Advance(std::chrono::milliseconds(50));
+	app.chats[1].title = "Second stream update";
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(uam::HasDeferredStatePush());
+	// A quiet tick inside the window must not rebuild the fingerprint.
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	// The poll scheduler wakes exactly when the window ends.
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 50);
+	clock.Advance(std::chrono::milliseconds(49));
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 1);
+	clock.Advance(std::chrono::milliseconds(1));
+	UAM_ASSERT(uam::DeferredStatePushDue());
+	UAM_ASSERT_EQ(uam::MillisecondsUntilDeferredStatePushDue(), 1);
+	// The deferred final state is published once due; nothing is lost or repeated.
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::HasDeferredStatePush());
+	UAM_ASSERT(!uam::DeferredStatePushDue());
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+}
+
+UAM_TEST(CustomPngDataUrlIsReusedUntilTheIconFileChanges)
+{
+	TempDir temp("uam-custom-icon-cache");
+	const CustomIcon icon{"png", "11111111-2222-4333-8444-555555555555.png"};
+	const fs::path file = temp.root / "icons" / icon.value;
+	fs::create_directories(file.parent_path());
+	std::string first = FixturePng(4096);
+	UAM_ASSERT(uam::io::WriteBinaryFile(file, first));
+	const std::string original = uam::icons::PngDataUrl(temp.root, icon);
+	UAM_ASSERT(original.starts_with("data:image/png;base64,"));
+	const fs::file_time_type stamp = fs::last_write_time(file);
+	// Same size and timestamp: served from the cache without rereading the file.
+	std::string same_shape = first;
+	same_shape.back() = 'q';
+	UAM_ASSERT(uam::io::WriteBinaryFile(file, same_shape));
+	fs::last_write_time(file, stamp);
+	UAM_ASSERT_EQ(uam::icons::PngDataUrl(temp.root, icon), original);
+	// A newer timestamp or different size re-encodes the replacement.
+	fs::last_write_time(file, stamp + std::chrono::seconds(2));
+	const std::string touched = uam::icons::PngDataUrl(temp.root, icon);
+	UAM_ASSERT(touched != original);
+	std::string encoded_replacement;
+	UAM_ASSERT(uam::base64::Decode(touched.substr(std::string_view("data:image/png;base64,").size()), encoded_replacement));
+	UAM_ASSERT_EQ(encoded_replacement, same_shape);
+	UAM_ASSERT(uam::io::WriteBinaryFile(file, FixturePng(8192)));
+	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, icon).size() > touched.size());
+	// Validation still runs before the cache: a removed asset yields no data URL.
+	fs::remove(file);
+	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, icon).empty());
 }
