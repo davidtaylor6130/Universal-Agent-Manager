@@ -291,6 +291,15 @@
 .status-bed__z--2 { animation-delay: 1.6s; font-size: 6.5px; }
 @keyframes scene-breathe { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.18); } }
 
+/* Refreshing history: a page whose three lines are read in turn, left to right. */
+.status-page__sheet { opacity: .8; }
+.status-page__line { transform-box: fill-box; transform-origin: left center; animation: scene-read 1.8s var(--ease) infinite; }
+.status-page__line--2 { animation-delay: .3s; }
+.status-page__line--3 { animation-delay: .6s; }
+/* Appearance > Motion Off stops the page; the title and time still state the work. */
+[data-motion="off"] .status-scene--refresh * { animation: none !important; }
+@keyframes scene-read { 0% { opacity: .25; transform: scaleX(.15); } 40%, 70% { opacity: 1; transform: scaleX(1); } 100% { opacity: .25; transform: scaleX(1); } }
+
 @media (prefers-reduced-motion: reduce) {
   .chat-status-strip, .chat-status-strip[data-state="closed"] { animation: none; }
   .chat-status-strip[data-state="closed"] { display: none; }
@@ -301,6 +310,13 @@
   .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
   .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
 }
+/* Appearance Motion Off keeps the same still working picture as OS reduced motion. */
+:root[data-motion="off"] .chat-status-strip[data-state="closed"] { display: none; }
+:root[data-motion="off"] .status-scene__box { opacity: .85; }
+:root[data-motion="off"] .status-scene__box--1 { transform: translateX(4px); }
+:root[data-motion="off"] .status-scene__box--2 { transform: translateX(21px) scaleY(.45); }
+:root[data-motion="off"] .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
+:root[data-motion="off"] .status-bed__z--1, :root[data-motion="off"] .status-agent--asleep .status-agent__z { opacity: .8; }
 
 /* Undelivered direct input keeps its transcript slot: dotted grey until native delivery state changes. */
 .conversation-turn[data-delivery] > .conversation-turn__body {

@@ -1316,7 +1316,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
                 icon={<Check size={14} />}
                 label="Create workspace"
                 size="sm"
-                style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'white' }}
+                style={{ background: 'var(--accent)', borderColor: 'var(--accent)', color: 'var(--on-accent)' }}
                 disabled={!newFolderName.trim() || !newFolderDirectory.trim()}
                 onClick={commitAddFolder}
               />
@@ -2077,19 +2077,27 @@ const FolderRow = memo(function FolderRow({
               : 'none',
       }}
     >
-      {/* Folder header */}
+      {/* Folder header; its actions button is a sibling, not nested inside the role=button header. */}
+      <div
+        className="relative group"
+        onContextMenu={(event) => {
+          if (isCompanionContext()) { event.preventDefault(); event.stopPropagation(); return }
+          event.preventDefault()
+          event.stopPropagation()
+          setMenuPos({ x: event.clientX, y: event.clientY })
+        }}
+      >
       <div
         data-testid={`folder-header-${folder.id}`}
         data-workspace-id={folder.id}
         title={isCompanionContext() ? undefined : "Shift-click to select workspaces"}
         role="button"
         aria-label={`${folder.name}${selected ? ", selected for bulk actions" : ""}`}
-        aria-pressed={selected}
-        tabIndex={draggable ? 0 : -1}
+        tabIndex={0}
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
-        aria-keyshortcuts="ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space"
-        className="relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer group rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+        aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
+        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-[-1px]"
         style={{
           background: selected ? 'var(--accent-dim)' : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
@@ -2105,12 +2113,6 @@ const FolderRow = memo(function FolderRow({
           if (!draggable || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return
           event.preventDefault()
           onMove(event.key === 'ArrowUp' ? -1 : 1)
-        }}
-        onContextMenu={(event) => {
-          if (isCompanionContext()) { event.preventDefault(); event.stopPropagation(); return }
-          event.preventDefault()
-          event.stopPropagation()
-          setMenuPos({ x: event.clientX, y: event.clientY })
         }}
       >
         {selected ? <Check size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden /> : <CustomIcon icon={folder.customIcon} secondary={host?.customIcon} fallback={shouldShowSessions ? (
@@ -2141,15 +2143,15 @@ const FolderRow = memo(function FolderRow({
         )}
         {/* Count */}
         <span
-          className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 transition-opacity duration-100"
+          className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 transition-opacity duration-100"
           style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
         >
           {sessionIds.length}
         </span>
-        {/* Overflow menu trigger */}
+      </div>
+        {/* Overflow menu trigger: revealed on hover and whenever keyboard focus is in the row. */}
         <div
-          className={`absolute right-2 transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-          onClick={(e) => e.stopPropagation()}
+          className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
           {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
             <button
@@ -2158,7 +2160,7 @@ const FolderRow = memo(function FolderRow({
               aria-label="Folder actions"
               aria-haspopup="menu"
               aria-expanded={Boolean(menuPos)}
-              className="flex items-center justify-center rounded"
+              className="flex items-center justify-center rounded focus-visible:outline-offset-[-2px]"
               style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
               onClick={(e) => {
                 e.stopPropagation()

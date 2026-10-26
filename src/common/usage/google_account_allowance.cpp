@@ -283,9 +283,9 @@ namespace uam::usage
 		if (!credentials.is_object()) return Failure("The existing Gemini CLI account credential is invalid.", true);
 		return FetchGeminiAccountAllowanceWithProcessService(PlatformServicesFactory::Instance().process_service, directory, std::move(credentials), stop);
 	}
-	AccountAllowanceFetchResult FetchAntigravityAccountAllowance(const std::filesystem::path& directory, std::stop_token stop)
+	AccountAllowanceFetchResult FetchAntigravityAccountAllowance(const std::filesystem::path& directory, std::stop_token stop, bool allow_prompt)
 	{
-		auto credential = ReadMacAccountCredential("gemini", "antigravity", stop);
+		auto credential = ReadMacAccountCredential("gemini", "antigravity", allow_prompt, stop);
 		if (!credential.error.empty()) return Failure(credential.error, credential.account_unavailable);
 		if (credential.credential.starts_with("go-keyring-base64:"))
 		{

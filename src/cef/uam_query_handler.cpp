@@ -2,6 +2,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_security.h"
+#include "common/companion/protocol.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
@@ -184,7 +185,10 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
 		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
-		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
+		const std::string action = request.at("action").get<std::string>();
+		nlohmann::json payload = request.value("payload", nlohmann::json::object());
+		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
+		if (!DispatchAction(action, browser, payload, callback))
 			callback->Failure(404, "Unknown companion action.");
 	});
 	const nlohmann::json status = m_companion->Status();
@@ -323,6 +327,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
 		{"restartCompanion", &UamQueryHandler::HandleRestartCompanion},
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
+		{"setCompanionKeychainPrompts", &UamQueryHandler::HandleSetCompanionKeychainPrompts},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
@@ -527,6 +532,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		if (action == "submitManagedSubagentFollowup")
 			m_managedFollowupQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "searchChatMessages") m_searchQueryId = query_id;
+		m_dispatchingQuery = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "setGoal" || action == "updateGoalStatus" || action == "resumeGoal" ||
 		    action == "updateGoalObjective" || action == "setActiveGoal" || action == "removeGoal")
 			m_goalQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
@@ -564,7 +570,82 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	m_chatIconQueryIdentities.erase(callback.get());
 	m_remoteInstallQueryIdentities.erase(callback.get());
 	m_goalQueryIdentities.erase(callback.get());
+	m_dispatchingQuery = ChatIconQueryIdentity{-1, "", -1};
 	return true;
+}
+
+namespace
+{
+	// A cancelled native history query keeps its read and save but receives no history.
+	class NativeHistoryDeliveryCallback final : public CefMessageRouterBrowserSide::Callback
+	{
+	  public:
+		NativeHistoryDeliveryCallback(CefRefPtr<CefMessageRouterBrowserSide::Callback> inner, std::function<bool()> withdrawn)
+		    : m_inner(std::move(inner)), m_withdrawn(std::move(withdrawn)) {}
+		void Success(const CefString& response) override
+		{
+			if (m_withdrawn()) Withdraw(); else m_inner->Success(response);
+		}
+		void Success(const void* data, size_t size) override
+		{
+			if (m_withdrawn()) Withdraw(); else m_inner->Success(data, size);
+		}
+		void Failure(int code, const CefString& message) override
+		{
+			if (m_withdrawn()) Withdraw(); else m_inner->Failure(code, message);
+		}
+
+	  private:
+		void Withdraw() { m_inner->Failure(409, "A newer history request replaced this one."); }
+		CefRefPtr<CefMessageRouterBrowserSide::Callback> m_inner;
+		std::function<bool()> m_withdrawn;
+		IMPLEMENT_REFCOUNTING(NativeHistoryDeliveryCallback);
+	};
+}
+
+std::shared_ptr<UamQueryHandler::NativeHistoryRequest> UamQueryHandler::BeginNativeHistoryRead(const std::string& key,
+    CefRefPtr<Callback>& cb, std::shared_ptr<NativeHistoryRequest> request)
+{
+	request->query = m_dispatchingQuery;
+	m_nativeHistoryRequests[key] = request;
+	cb = new NativeHistoryDeliveryCallback(cb, [weak = std::weak_ptr<NativeHistoryRequest>(request)]()
+	{
+		const auto current = weak.lock();
+		return current && current->delivery_cancelled;
+	});
+	return request;
+}
+
+bool UamQueryHandler::AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry)
+{
+	const auto pending = m_nativeHistoryRequests.find(key);
+	if (pending == m_nativeHistoryRequests.end()) return false;
+	// The newer request replaces delivery, not the read: it retries once the read has saved its result.
+	pending->second->delivery_cancelled = true;
+	pending->second->waiters.push_back({m_dispatchingQuery, std::move(cb), std::move(retry)});
+	return true;
+}
+
+void UamQueryHandler::FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request)
+{
+	const auto found = m_nativeHistoryRequests.find(key);
+	if (found == m_nativeHistoryRequests.end() || found->second != request) return;
+	m_nativeHistoryRequests.erase(found);
+	const auto waiters = std::move(request->waiters);
+	request->waiters.clear();
+	// Waiters reuse the saved result directly; otherwise the next request for this chat does.
+	if (waiters.empty() && request->delivery_cancelled && request->cache_filled) m_reusableNativeHistory.insert(key);
+	const ChatIconQueryIdentity outer = m_dispatchingQuery;
+	for (const auto& waiter : waiters)
+	{
+		m_dispatchingQuery = waiter.query;
+		m_retryReusesSavedRead = request->cache_filled;
+		try { waiter.retry(); }
+		catch (const std::exception& ex) { waiter.callback->Failure(500, std::string("Bridge request failed: ") + ex.what()); }
+		catch (...) { waiter.callback->Failure(500, "Bridge request failed."); }
+		m_retryReusesSavedRead = false;
+	}
+	m_dispatchingQuery = outer;
 }
 
 void UamQueryHandler::BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id)
@@ -603,6 +684,11 @@ void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<C
 		if (install.first == goal_identity)
 			if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 	CancelChatIconQuery(browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
+	for (const auto& [key, request] : m_nativeHistoryRequests)
+	{
+		if (request->query == goal_identity) request->delivery_cancelled = true;
+		std::erase_if(request->waiters, [&](const NativeHistoryRequest::Waiter& waiter) { return waiter.query == goal_identity; });
+	}
 	if (query_id == m_searchQueryId)
 	{
 		++*m_searchGeneration;

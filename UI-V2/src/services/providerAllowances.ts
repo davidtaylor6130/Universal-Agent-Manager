@@ -125,7 +125,7 @@ export function preloadProviderAllowances(host = 'local', refresh = false): Prom
     try {
       if (!isCefContext()) throw new Error('Account allowances are available in the desktop app.')
       const reply = await Promise.race([
-        sendToCEF({ action: 'getProviderAllowances', payload: { executionHostId: host, ...(refresh ? { refresh: true } : {}) } }, false),
+        sendToCEF({ action: 'getProviderAllowances', payload: { executionHostId: host, allowKeychainPrompt: true, ...(refresh ? { refresh: true } : {}) } }, false),
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Account allowances took too long to load. Try refreshing.')), 15000) }),
       ])
       if (!reply.ok) throw new Error(reply.error || 'Could not read account allowances.')

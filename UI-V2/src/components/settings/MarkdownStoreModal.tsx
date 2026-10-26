@@ -6,7 +6,7 @@ import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
-import { SettingRow, SettingsLoading } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { ChevronRight, Download, ExternalLink, FileInput, FileText, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
@@ -410,9 +410,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
             {confirmation === 'overwrite' && <p className="text-xs mt-1">This replaces the saved entry.</p>}
             <div className="mt-3 flex flex-wrap justify-end gap-2">
               <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
-              {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <Button variant="danger" size="sm" disabled={submitting} onClick={() => void saveDraft(true)}>{submitting ? 'Saving...' : 'Overwrite'}</Button>}
+              {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
             </div>
-          </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>{submitting ? 'Saving...' : 'Save'}</Button></div>}
+          </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
         </> : imports.length ? <>
           <strong className="text-sm shrink-0">Import preview</strong>
           {resultsView}

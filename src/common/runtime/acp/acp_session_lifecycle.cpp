@@ -4076,7 +4076,18 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 					input.small_model_mode = state->identity.small_model_mode;
 					state->context = MemoryService::BuildRecallPreface(detached, input, state->identity.query, state->cancel.get_token());
 				}
-				catch (...) { state->error = "Memory recall could not be prepared. Retry the prompt."; }
+				catch (...)
+				{
+					// The handler must not throw either: an escaped exception terminates the app.
+					try
+					{
+						state->error = "Memory recall could not be prepared. Retry the prompt.";
+					}
+					catch (...)
+					{
+						state->context.clear();
+					}
+				}
 				state->finished.store(true, std::memory_order_release);
 			});
 			app.memory_recall_tasks.push_back(std::move(task));

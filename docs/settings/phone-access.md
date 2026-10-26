@@ -4,6 +4,8 @@ Phone Access turns publication of the controller’s shared companion interface 
 
 [Phone access](../phone-access.md) · [Build flags](../build-flags.md).
 
+On macOS, Allow Keychain prompts from phone decides whether refreshing account allowances from the phone may show the macOS Keychain dialog on this computer. It is off by default, so a phone refresh stays silent and the allowance row asks for Refresh allowances on the Mac; only the desktop can change it.
+
 Copy URL and Copy token expose distinct connection values; neither implies the browser is connected. A changed network address must report the current published route and preserve authentication rather than silently claiming the old URL still works.
 
 Phone access changes apply to the running connection without restarting provider work. Enabling, disabling, retrying and repairing an address return the same observed status: saved intent, starting/ready/failed state and the effective route remain distinct. Pairing and Copy URL become available only after both the local interface and secure listener are ready. Failures keep Retry phone access, current-address repair choices and Restart Universal Agent Manager beside their explanation; successful status refreshes clear recovered load errors without erasing a failed user action; restart-required changes also expose that inline application action. Network repair replaces the local interface and proxy together before advertising the new route.
