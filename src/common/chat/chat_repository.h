@@ -232,7 +232,10 @@ class ChatRepository
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
-	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr, const std::function<bool()>& still_owned = {});
+	/// Optional primary observation is DATA only: Rejected before write admission,
+	/// Uncertain after admission without confirmation, Committed on the atomic receipt.
+	/// Summary-only saves leave it Rejected; it never replaces the bool acknowledgement.
+	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr, const std::function<bool()>& still_owned = {}, ChatPublicationState* primary_publication_state = nullptr, const std::function<bool(uam::io::AtomicWriteStage)>& primary_stage_hook_for_tests = {});
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Stages display-only lineage after an explicit native open; requires actual source tool evidence and matching identities. The caller must publish or roll back the chat save.</summary>
 	static bool ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id);
@@ -301,6 +304,12 @@ class ChatRepository
 	    std::string* warning_out = nullptr, const std::function<bool()>& cancelled = {});
 	/// <summary>Rejects detached pages after transcript or provider/workspace ownership changes.</summary>
 	static bool MatchesMessagePage(const ChatSession& current, const ChatMessagePage& page);
+	/// Bounded passive observation of the current primary, independent of stale live/summary counts; never adopts or acknowledges it.
+	static std::optional<ChatMessagePage> ReadSavedPrimaryMessagePage(const std::filesystem::path& data_root,
+	    std::string_view chat_id, std::size_t limit, std::optional<std::size_t> before = {},
+	    std::string* warning_out = nullptr, const std::function<bool()>& cancelled = {});
+	/// Identity check for passive display only; differing saved recency/content grants no write or adoption authority.
+	static bool MatchesSavedPrimaryObservation(const ChatSession& current, const ChatMessagePage& page);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr, std::size_t max_read_bytes = 0);
 	/// <summary>Checks transcript ownership before adoption or detached page publication.</summary>

@@ -24,9 +24,10 @@ const attachment: Attachment = {
 }
 const validPreview = { mimeType: 'image/png', dataBase64: 'aGk=', width: 2, height: 1 }
 
-function render(index = 7, chatId = 'source-chat', value = attachment) {
+function render(index = 7, chatId = 'source-chat', value = attachment, describeUnavailable = false) {
   act(() => root.render(<ImageAttachmentPreview chatId={chatId} messageIndex={index} attachment={value}
-    fallback={<span>original-file-entry</span>} />))
+    fallback={<span>original-file-entry</span>}
+    {...(describeUnavailable ? { unavailableFallback: <span>original-file-entry · Preview unavailable</span> } : {})} />))
 }
 
 async function reveal() {
@@ -68,6 +69,62 @@ it('requests only after visibility, scopes by native index and revokes on unmoun
   act(() => root.unmount())
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:private-preview')
   root = createRoot(host)
+})
+
+it('pins recovered image requests to their displayed history and replaces stale previews', async () => {
+  request.mockResolvedValue({ ok: true, data: validPreview })
+  const first = { ...attachment, historyDigest: '0123456789abcdef' }
+  const next = { ...attachment, historyDigest: 'fedcba9876543210' }
+  expect(sanitizeAttachment(first)).toMatchObject({ historyDigest: first.historyDigest })
+  expect(attachmentsEquivalent([first], [next])).toBe(false)
+  render(7, 'source-chat', first)
+  await reveal()
+  expect(request.mock.calls[0][0].payload.historyDigest).toBe(first.historyDigest)
+  render(7, 'source-chat', next)
+  expect(host.querySelector('img')).toBeNull()
+  await reveal()
+  expect(request.mock.calls[1][0].payload.historyDigest).toBe(next.historyDigest)
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:private-preview')
+})
+
+it('retries a busy recovered preview without remounting or changing its history binding', async () => {
+  const recovered = { ...attachment, historyDigest: '0123456789abcdef' }
+  request.mockResolvedValueOnce({ ok: false, error: 'Saved history checking is busy. Retry shortly.' })
+    .mockResolvedValue({ ok: true, data: validPreview })
+  render(7, 'source-chat', recovered)
+  await reveal()
+  const retry = host.querySelector<HTMLButtonElement>('button[aria-label="Retry image preview for photo.png"]')
+  expect(retry).not.toBeNull()
+  expect(host.textContent).toContain('original-file-entry')
+  await act(async () => retry!.click())
+  expect(request).toHaveBeenCalledTimes(2)
+  expect(request.mock.calls[1][0]).toEqual(request.mock.calls[0][0])
+  expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:private-preview')
+  expect(host.querySelector('button')).toBeNull()
+})
+
+it.each(['replace', 'unmount'] as const)('discards a recovered preview retry after %s', async (change) => {
+  const recovered = { ...attachment, historyDigest: '0123456789abcdef' }
+  let resolve!: (value: unknown) => void
+  request.mockResolvedValueOnce({ ok: false, error: 'Temporarily busy' })
+    .mockImplementationOnce(() => new Promise((complete) => { resolve = complete }))
+  render(7, 'source-chat', recovered, true)
+  await reveal()
+  expect(host.textContent).toContain('Preview unavailable')
+  const retry = host.querySelector<HTMLButtonElement>('button[aria-label="Retry image preview for photo.png"]')
+  expect(retry).not.toBeNull()
+  await act(async () => retry!.click())
+  expect(retry!.disabled).toBe(true)
+  expect(host.textContent).toContain('original-file-entry')
+  expect(host.textContent).not.toContain('Preview unavailable')
+  act(() => retry!.click())
+  expect(request).toHaveBeenCalledTimes(2)
+  if (change === 'replace') render(7, 'source-chat', { ...recovered, historyDigest: 'fedcba9876543210' })
+  else { act(() => root.unmount()); root = createRoot(host) }
+  await act(async () => resolve({ ok: true, data: validPreview }))
+  expect(URL.createObjectURL).not.toHaveBeenCalled()
+  expect(host.querySelector('img')).toBeNull()
+  expect(request).toHaveBeenCalledTimes(2)
 })
 
 it('never derives an index from a legacy renderer id', () => {

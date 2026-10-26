@@ -3397,9 +3397,9 @@ namespace
 			JsonStringOrEmpty(document->Find("temporary_storage_owner_token")) == token && StorageRevision(primary) == revision;
 	}
 
-	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs)
+	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs, bool require_same_recency = true)
 	{
-		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
+		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && (!require_same_recency || lhs.updated_at == rhs.updated_at) && lhs.provider_id == rhs.provider_id &&
 		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
 		    lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		    lhs.temporary_storage_owner_token == rhs.temporary_storage_owner_token &&
@@ -3483,6 +3483,30 @@ bool ChatRepository::MatchesMessagePage(const ChatSession& current, const ChatMe
 	return !current.messages_loaded && PageOwnerMatches(current, page.chat) &&
 	    current.persisted_message_count == page.total_count &&
 	    current.persisted_messages_digest == page.chat.persisted_messages_digest;
+}
+
+std::optional<ChatMessagePage> ChatRepository::ReadSavedPrimaryMessagePage(const fs::path& data_root,
+    std::string_view chat_id, std::size_t limit, std::optional<std::size_t> before,
+    std::string* warning_out, const std::function<bool()>& cancelled)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || limit == 0 || limit > 200) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	if (uam::paths::IsLinkOrReparsePointNoThrow(primary) || uam::paths::IsLinkOrReparsePointNoThrow(uam::chat_pages::IndexPath(primary))) return std::nullopt;
+	const auto revision = ChatStorageRevision(data_root, chat_id);
+	if (!revision || *revision == "missing" || (cancelled && cancelled())) return std::nullopt;
+	const auto index = EnsureMessageIndex(primary, *revision, chat_id, cancelled);
+	const auto metadata = index ? ReadIndexedMetadata(primary, *index) : std::nullopt;
+	if (!metadata || ChatStorageRevision(data_root, chat_id) != revision) return std::nullopt;
+	// The strict existing page reader verifies this primary's own metadata/count,
+	// each selected span and the physical revision. Only its derived index may change.
+	auto page = ReadMessagePage(data_root, *metadata, limit, before, warning_out, cancelled);
+	if (!page || page->storage_revision != *revision) return std::nullopt;
+	return page;
+}
+
+bool ChatRepository::MatchesSavedPrimaryObservation(const ChatSession& current, const ChatMessagePage& page)
+{
+	return PageOwnerMatches(current, page.chat, false);
 }
 
 namespace
@@ -4723,8 +4747,9 @@ catch (const std::exception& error)
 	return nullptr;
 }
 
-bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned)
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned, ChatPublicationState* primary_publication_state, const std::function<bool(uam::io::AtomicWriteStage)>& primary_stage_hook_for_tests)
 {
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Rejected;
 	if (!prepared) return false;
 	if (!PreparedChatAcknowledgementMatches(*prepared, committed_chat)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
@@ -4735,7 +4760,9 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	if (prepared->primary_temp.empty())
 		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	if (!CanonicalBirthAllowsStage(prepared->primary_path, prepared->primary_temp)) return false;
-	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Uncertain;
+	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, primary_stage_hook_for_tests, sync_directory);
+	if (primary_publication_state && primary.primary_committed) *primary_publication_state = ChatPublicationState::Committed;
 	if (!primary.success) return false;
 	if (!prepared->index_temp.empty()) (void)uam::io::CommitSyncedAtomicTemp(prepared->index_path, prepared->index_temp, false, {}, sync_directory);
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
