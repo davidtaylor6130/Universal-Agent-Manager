@@ -426,14 +426,14 @@ void AutoRoutingError(nlohmann::json& routing, std::string_view method, const st
 		routing["providerDefault"] = AutoRoutingAbsent();
 	}
 	else routing["stateStatus"] = status;
-	routing["lastError"] = error.substr(0, 2048);
+	routing["lastError"] = std::string(uam::strings::Utf8Prefix(error, 2048));
 }
 
 void RecordAutoRoutingSwitchUnsupported(nlohmann::json& routing, const std::string& reason)
 {
 	// Observation freshness cannot establish a mutation method already rejected by this owner/lifetime.
 	routing["switchUnsupported"] = true;
-	routing["switchUnsupportedReason"] = reason.substr(0, 2048);
+	routing["switchUnsupportedReason"] = std::string(uam::strings::Utf8Prefix(reason, 2048));
 }
 
 void RetireAutoRoutingTransportRequest(AcpSessionState& session, const std::string& key, const std::string& method)
@@ -631,7 +631,7 @@ void RejectSavedImageEvidence(AcpSessionState& session, nlohmann::json& state, c
 			RetireAutoRoutingTransportRequest(session, it.key(), Text(*it, "method"));
 	requests = nlohmann::json::object();
 	state["phase"] = "rejected";
-	state["error"] = error.substr(0, 2048);
+	state["error"] = std::string(uam::strings::Utf8Prefix(error, 2048));
 }
 
 bool PollSavedImageEvidence(const AppState& app, AcpSessionState& session, const ChatSession& chat)
@@ -1234,6 +1234,7 @@ void ApplyTokenUsage(AcpSessionState& session, const nlohmann::json& data)
 	usage.total.cached_input_tokens = add(usage.total.cached_input_tokens, usage.last.cached_input_tokens);
 	usage.total.cache_write_input_tokens = add(usage.total.cache_write_input_tokens, usage.last.cache_write_input_tokens);
 	usage.total.total_tokens = add(usage.total.total_tokens, usage.last.total_tokens);
+	RecordGoalReviewTurnUsage(session, usage.last.total_tokens, true);
 }
 
 }
@@ -1242,6 +1243,9 @@ std::string CopilotCliProviderRuntime::AcpTurnIdentity(const uam::AcpSessionStat
 {
 	// A confirmed completed turn must not regain replay authority on a later save.
 	// Failed/unresolved turns retain their identity; restore runs before processing starts.
+	// Serial 0 means no input was ever started: a save between native setup and the first
+	// queued prompt must not publish a phantom turn that blocks that prompt's admission.
+	if (session.turn_serial == 0) return {};
 	const bool completed = session.turn_serial > 0 &&
 	    session.last_settled_turn_serial == session.turn_serial && session.last_turn_outcome == "completed" &&
 	    !session.processing && session.prompt_request_id == 0;

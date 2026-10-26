@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -424,6 +425,86 @@ inline std::string JoinWindowsPathUtf8(const std::string& directory, const std::
 	return uam::paths::Utf8PathString(uam::paths::PathFromUtf8(directory) / uam::paths::PathFromUtf8(filename));
 }
 
+inline std::string NormalizedWindowsPathEntry(std::string entry)
+{
+	while (entry.size() > 1 && (entry.back() == '\\' || entry.back() == '/'))
+	{
+		entry.pop_back();
+	}
+	return uam::strings::ToLowerAscii(entry);
+}
+
+// Appends fresh entries missing from the current list, so the current order and private entries win.
+inline std::string AppendMissingWindowsPathEntries(const std::string& current_path, const std::string& fresh_path)
+{
+	std::string merged = current_path;
+	std::vector<std::string> known;
+	for (const std::string& entry : SplitWindowsPathList(current_path))
+	{
+		known.push_back(NormalizedWindowsPathEntry(entry));
+	}
+
+	for (const std::string& entry : SplitWindowsPathList(fresh_path))
+	{
+		std::string normalized = NormalizedWindowsPathEntry(entry);
+		if (uam::ranges::Contains(known, normalized))
+		{
+			continue;
+		}
+		if (!merged.empty() && merged.back() != ';')
+		{
+			merged.push_back(';');
+		}
+		merged += entry;
+		known.push_back(std::move(normalized));
+	}
+	return merged;
+}
+
+inline std::string ReadRegistryPathValueUtf8(HKEY root, const wchar_t* subkey)
+{
+	// RRF_RT_REG_SZ expands REG_EXPAND_SZ values against the current process environment.
+	for (DWORD size = 4096; size <= 1024 * 1024; size *= 2)
+	{
+		std::wstring value(static_cast<std::size_t>(size) / sizeof(wchar_t), L'\0');
+		DWORD written = size;
+		const LSTATUS status = RegGetValueW(root, subkey, L"Path", RRF_RT_REG_SZ, nullptr, value.data(), &written);
+		if (status == ERROR_MORE_DATA)
+		{
+			continue;
+		}
+		if (status != ERROR_SUCCESS)
+		{
+			return "";
+		}
+		value.resize(wcsnlen(value.c_str(), value.size()));
+		return WideToUtf8(value);
+	}
+	return "";
+}
+
+// Long-lived app and helper processes keep their logon PATH. Commands installed since then (npm, winget,
+// PowerShell 7) resolve only after new registry PATH entries are appended for this process and its children.
+// ponytail: entries naming variables created after start (%PNPM_HOME%) stay unexpanded until UAM restarts.
+inline void RefreshProcessPathFromRegistry()
+{
+	static std::mutex refresh_mutex;
+	const std::lock_guard<std::mutex> lock(refresh_mutex);
+	const std::string current_path = GetWindowsEnvironmentVariableUtf8(L"PATH");
+	if (current_path.empty() && GetEnvironmentVariableW(L"PATH", nullptr, 0) > 1)
+	{
+		return; // An unreadable PATH must not be replaced by registry entries alone.
+	}
+	const std::string fresh_path = ReadRegistryPathValueUtf8(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment") + ";" +
+	                               ReadRegistryPathValueUtf8(HKEY_CURRENT_USER, L"Environment");
+	const std::string merged_path = AppendMissingWindowsPathEntries(current_path, fresh_path);
+	if (merged_path != current_path)
+	{
+		// The Win32 block is what children inherit; the CRT getenv copy is left alone so no reader sees it freed.
+		(void)SetEnvironmentVariableW(L"PATH", WideFromUtf8(merged_path).c_str());
+	}
+}
+
 inline std::optional<std::string> ResolveWindowsCommandPath(const std::string& command)
 {
 	const std::string trimmed = uam::strings::Trim(command);
@@ -502,6 +583,34 @@ inline std::string ResolveComSpecPath()
 	return "cmd.exe";
 }
 
+/// <summary>Find an installed PowerShell, checking its fixed install location before PATH so PATH order cannot substitute another copy.</summary>
+inline std::optional<std::string> ResolveInstalledPowerShellPath(const bool pwsh)
+{
+	if (pwsh)
+	{
+		const std::string program_files = GetWindowsEnvironmentVariableUtf8(L"ProgramFiles");
+		if (!program_files.empty())
+		{
+			if (auto installed = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(program_files, "PowerShell\\7\\pwsh.exe")))
+			{
+				return installed;
+			}
+		}
+		return ResolveWindowsCommandPath("pwsh.exe");
+	}
+	std::wstring system_directory(static_cast<std::size_t>(MAX_PATH), L'\0');
+	const UINT length = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+	if (length > 0 && length < system_directory.size())
+	{
+		system_directory.resize(static_cast<std::size_t>(length));
+		if (auto installed = LaunchableCommandPathIfExists(WideToUtf8(system_directory) + "\\WindowsPowerShell\\v1.0\\powershell.exe"))
+		{
+			return installed;
+		}
+	}
+	return ResolveWindowsCommandPath("powershell.exe");
+}
+
 inline std::string BuildCmdScriptInvocation(const std::string& script_path, const std::vector<std::string>& argv)
 {
 	std::ostringstream out;
@@ -526,6 +635,7 @@ struct WindowsLaunchCommand
 
 inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::string>& argv)
 {
+	RefreshProcessPathFromRegistry();
 	WindowsLaunchCommand launch;
 	launch.original_command_line = BuildWindowsCommandLine(argv);
 
@@ -546,7 +656,7 @@ inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::str
 	if (IsWindowsCommandScriptExtension(extension))
 	{
 		launch.uses_cmd_wrapper = true;
-		launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
+		launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /V:OFF /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
 		return launch;
 	}
 
@@ -569,7 +679,7 @@ inline std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& lau
 	}
 	if (launch.uses_cmd_wrapper)
 	{
-		out << " Wrapper: cmd.exe /D /S /C.";
+		out << " Wrapper: cmd.exe /D /V:OFF /S /C.";
 	}
 	return out.str();
 }

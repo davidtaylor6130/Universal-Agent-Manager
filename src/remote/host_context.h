@@ -31,8 +31,7 @@ namespace uam::remote
 			context = "--- BEGIN HOST INSTRUCTIONS ---\n" + *host.instruction_text + "\n--- END HOST INSTRUCTIONS ---\n\n";
 		const bool read_instruction_file = !host.instruction_text && !host.instruction_file.empty();
 		if (!read_instruction_file && memory_budget <= 0) return true;
-		RunnerClient client(service, SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		    host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		RunnerClient client(service, host);
 		if (!client.Connect(&error, stop_token)) return false;
 		std::string text;
 		if (read_instruction_file)

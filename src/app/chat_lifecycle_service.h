@@ -21,6 +21,12 @@ namespace uam
 		bool unresolved_session = false;
 	};
 
+	struct DeletionRejection
+	{
+		std::string id;
+		std::string error;
+	};
+
 	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
 	struct WorkspaceDeletionTask
 	{
@@ -31,6 +37,8 @@ namespace uam
 		std::unordered_set<std::string> retained_workspace_keys;
 		std::vector<NativeDeletionOwner> retained_native_owners;
 		std::unordered_map<std::string, std::string> native_stores_by_directory;
+		/// <summary>Requested chat families or workspaces refused by their safeguards while the rest proceed.</summary>
+		std::vector<DeletionRejection> rejected;
 		/// <summary>Worker-only logical item completions; observers must marshal live state to the UI thread.</summary>
 		std::function<void(std::size_t, std::size_t, const std::string&)> progress;
 		bool commit_rejected = false;
@@ -43,6 +51,10 @@ namespace uam
 	bool PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task);
 	/// <summary>Preflights selected chats and captures only their rollback snapshots.</summary>
 	bool PrepareChatDeletion(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task);
+	/// <summary>Multi-selection preflight: admits each branch family separately and records refused families in task.rejected.</summary>
+	bool PrepareChatDeletionBatch(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task);
+	/// <summary>Multi-selection preflight: admits each workspace separately and records refused workspaces in task.rejected.</summary>
+	bool PrepareWorkspaceDeletionBatch(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task);
 	/// <summary>Writes the durable recovery transaction using only owned snapshots on a worker.</summary>
 	bool StageWorkspaceDeletion(WorkspaceDeletionTask& task);
 	/// <summary>Persists branch and folder metadata, then merges deletion into current live state on the UI thread.</summary>
@@ -101,7 +113,7 @@ namespace uam
 		std::string reference;
 	};
 	/// <summary>Builds a bounded reference from recent messages without copying full message bodies.</summary>
-	std::string BuildTemporarySideChatContext(const std::vector<Message>& messages);
+	std::string BuildTemporarySideChatContext(const std::vector<Message>& messages, std::string* error = nullptr);
 	/// <summary>Reads a detached tail page on a worker; the parent remains unhydrated.</summary>
 	std::optional<TemporarySideChatContext> PrepareTemporarySideChatContext(const std::filesystem::path& data_root,
 	    const ChatSession& parent, const std::function<bool()>& cancelled = {});

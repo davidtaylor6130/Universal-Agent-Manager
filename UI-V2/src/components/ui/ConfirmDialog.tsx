@@ -17,16 +17,24 @@ export interface ConfirmDialogProps {
   tone?: 'danger' | 'primary'
   busy?: boolean
   error?: string
+  /** Defaults to Cancel. */
+  cancelLabel?: string
+  /** Optional middle action between cancel and confirm. */
+  secondaryAction?: { label: string; onClick: () => void }
+  /** False keeps Escape and backdrop clicks from cancelling, for choices that must be made explicitly. */
+  dismissible?: boolean
 }
 
-/** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle. */
-export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error }: ConfirmDialogProps) {
+/** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle unless dismissible is false. */
+export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
   const onCancelRef = useRef(onCancel)
   onCancelRef.current = onCancel
+  const dismissibleRef = useRef(dismissible)
+  dismissibleRef.current = dismissible
 
   useEffect(() => {
     if (!open) return
@@ -41,7 +49,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        if (!busyRef.current) onCancelRef.current()
+        if (!busyRef.current && dismissibleRef.current) onCancelRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -67,7 +75,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
   }, [open, busy])
 
   return (
-    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy) onCancel() }}>
+    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) onCancel() }}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -90,7 +98,8 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
           </div>
         </div>
         <div className="flex justify-end gap-2 px-5 pb-5">
-          <Button ref={cancelRef} size="sm" disabled={busy} onClick={onCancel}>Cancel</Button>
+          <Button ref={cancelRef} size="sm" disabled={busy} onClick={onCancel}>{cancelLabel}</Button>
+          {secondaryAction && <Button size="sm" disabled={busy} onClick={secondaryAction.onClick}>{secondaryAction.label}</Button>}
           <Button size="sm" variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/config/execution_host_config.h"
+#include "common/provider/provider_ids.h"
 #include "common/paths/workspace_file_reader.h"
 #include "common/provider/gemini_history_journal.h"
 #include "common/provider/gemini_history_paths.h"
@@ -190,11 +191,11 @@ namespace uam::remote::native_history
 	{
 		result = {};
 		error = "The exact native history is unavailable or its workspace identity does not match.";
-		if (!SafeId(id) || (!agent_id.empty() && (!SafeId(agent_id) || (provider != "claude-cli" && provider != "gemini-cli"))) || !execution_hosts::IsAbsoluteRemotePath(Platform(), workspace)) return false;
+		if (!SafeId(id) || (!agent_id.empty() && (!SafeId(agent_id) || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli))) || !execution_hosts::IsAbsoluteRemotePath(Platform(), workspace)) return false;
 		const auto home = env::GetUserHomePath();
-		if (provider != "gemini-cli" && (!home || !home->is_absolute())) return false;
+		if (provider != uam::provider_ids::kGeminiCli && (!home || !home->is_absolute())) return false;
 		result.provider = provider; result.session_id = id; result.agent_id = agent_id;
-		if (provider == "copilot-cli")
+		if (provider == uam::provider_ids::kCopilotCli)
 		{
 			const auto root = env::GetTrimmedPath("COPILOT_HOME").value_or(*home / ".copilot") / "session-state";
 			auto text = Read(root, std::filesystem::path(id) / "events.jsonl", kMaxSnapshotBytes);
@@ -202,7 +203,7 @@ namespace uam::remote::native_history
 			result.text = std::move(*text);
 			if (const auto yaml = Read(root, std::filesystem::path(id) / "workspace.yaml", 16 * 1024)) result.workspace_yaml = *yaml;
 		}
-		else if (provider == "claude-cli")
+		else if (provider == uam::provider_ids::kClaudeCli)
 		{
 			const auto root = env::GetTrimmedPath("CLAUDE_CONFIG_DIR").value_or(*home / ".claude") / "projects";
 			std::error_code scan_error;
@@ -229,7 +230,7 @@ namespace uam::remote::native_history
 			}
 			if (scan_error || result.text.empty()) return false;
 		}
-		else if (provider == "gemini-cli")
+		else if (provider == uam::provider_ids::kGeminiCli)
 		{
 			std::size_t total = 0;
 			const bool visited = VisitGeminiParentFiles(id, workspace, [&](const auto& root, const auto& parent_file)

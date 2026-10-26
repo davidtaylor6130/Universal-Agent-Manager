@@ -2,21 +2,18 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.11.0 LANGUAGES C CXX)
-set(UAM_PRODUCT_VERSION "4.11.0")
+project(universal_agent_manager VERSION 5.0.0 LANGUAGES C CXX)
+if(MSVC)
+  # Sources and narrow literals are UTF-8; without this MSVC encodes "\u00e9" in the ANSI code page.
+  add_compile_options(/utf-8)
+endif()
+set(UAM_PRODUCT_VERSION "5.0.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
 set(UAM_LOCAL_BUILD_VERSION "" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
 uam_local_build_presentation("${UAM_PRODUCT_VERSION}" "${UAM_LOCAL_BUILD_VERSION}" UAM_PRESENTATION_VERSION)
 
-option(UAM_ENABLE_COMPUTER_USE "Include UAM computer use and platform input/capture support." ON)
-option(UAM_ENABLE_SSH "Include SSH remote execution and bundled helpers." ON)
-option(UAM_ENABLE_MOBILE_COMPANION "Include the mobile companion server and frontend." ON)
-set(UAM_FEATURE_DEFINITIONS
-  UAM_ENABLE_COMPUTER_USE=$<BOOL:${UAM_ENABLE_COMPUTER_USE}>
-  UAM_ENABLE_SSH=$<BOOL:${UAM_ENABLE_SSH}>
-  UAM_ENABLE_MOBILE_COMPANION=$<BOOL:${UAM_ENABLE_MOBILE_COMPANION}>
-)
+include("${CMAKE_SOURCE_DIR}/cmake/build_features.cmake")
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
 option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
 set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
@@ -116,12 +113,15 @@ endif()
 # ---------------------------------------------------------------------------
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
-option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable Gemini CLI runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable Claude Code CLI runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_OPENCODE_CLI "Enable OpenCode CLI runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_COPILOT_CLI "Enable GitHub Copilot CLI runtime backend." ON)
-option(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI "Enable Antigravity CLI terminal runtime backend." ON)
+option(UAM_SVN_BRANCH_TESTS_ONLY "Configure only the isolated SVN branch service tests, without CEF or provider processes." OFF)
+if(UAM_SVN_BRANCH_TESTS_ONLY)
+  if(NOT UAM_BUILD_TESTS)
+    message(FATAL_ERROR "UAM_SVN_BRANCH_TESTS_ONLY requires UAM_BUILD_TESTS=ON.")
+  endif()
+  enable_testing()
+  add_subdirectory(tests/svn-branch)
+  return()
+endif()
 
 foreach(_removed_runtime_flag IN ITEMS
   UAM_ENABLE_RUNTIME_GEMINI_STRUCTURED
@@ -137,9 +137,6 @@ foreach(_removed_runtime_flag IN ITEMS
   endif()
 endforeach()
 
-if(NOT UAM_ENABLE_RUNTIME_GEMINI_CLI AND NOT UAM_ENABLE_RUNTIME_CODEX_CLI AND NOT UAM_ENABLE_RUNTIME_CLAUDE_CLI AND NOT UAM_ENABLE_RUNTIME_OPENCODE_CLI AND NOT UAM_ENABLE_RUNTIME_COPILOT_CLI AND NOT UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
-  message(FATAL_ERROR "At least one provider runtime must be enabled.")
-endif()
 
 set(UAM_FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH
   "Directory used for FetchContent source checkouts.")
@@ -187,6 +184,16 @@ set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 set(CMAKE_FOLDER "")
+
+option(UAM_DATA_FOLDER_TESTS_ONLY "Build only isolated disposable data-folder and supervisor tests, without CEF or helpers." OFF)
+if(UAM_DATA_FOLDER_TESTS_ONLY)
+  if(UAM_PACKAGE_REMOTE_RUNNERS)
+    message(FATAL_ERROR "Focused data-folder tests require UAM_PACKAGE_REMOTE_RUNNERS=OFF.")
+  endif()
+  enable_testing()
+  include("${CMAKE_SOURCE_DIR}/cmake/data_folder_tests.cmake")
+  return()
+endif()
 
 # ---------------------------------------------------------------------------
 # CEF (Chromium Embedded Framework) — platform-aware prebuilt download
@@ -258,28 +265,59 @@ endif()
 # Provider sources
 # ---------------------------------------------------------------------------
 
+# Provider and feature implementations are listed only when their build flag is ON, so an
+# excluded provider or feature contributes no code to the app or the runner.
+# UAM_PROVIDER_SOURCES: provider runtimes (also linked by the all-provider test target).
+# UAM_PROVIDER_APP_SOURCES: further provider-only app code. UAM_RUNNER_PROVIDER_SOURCES: shared with the runner.
 set(UAM_PROVIDER_SOURCES)
+set(UAM_PROVIDER_APP_SOURCES)
+set(UAM_RUNNER_PROVIDER_SOURCES)
 if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
     src/common/provider/gemini/cli/gemini_native_agent_history.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
   )
+  list(APPEND UAM_PROVIDER_APP_SOURCES src/core/gemini_cli_compat.cpp)
+endif()
+if(UAM_ENABLE_RUNTIME_GEMINI_CLI OR UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
+  # Google account allowance reads serve Gemini and Antigravity.
+  list(APPEND UAM_PROVIDER_APP_SOURCES src/common/usage/google_account_allowance.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_CODEX_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
   )
+  list(APPEND UAM_PROVIDER_APP_SOURCES src/common/provider/codex/cli/codex_acp_message_handlers.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
     src/common/provider/claude/cli/claude_native_agent_history.cpp
   )
+  list(APPEND UAM_PROVIDER_APP_SOURCES
+    src/common/provider/claude/cli/claude_acp_message_handlers.cpp
+    src/common/runtime/acp/claude_quota_continuation.cpp
+    src/common/usage/claude_account_allowance.cpp
+  )
 endif()
 if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+    src/common/provider/opencode/v2/opencode_v2_session.cpp
+    src/common/provider/opencode/v2/opencode_v2_policy.cpp
+    src/common/provider/opencode/v2/opencode_v2_bridge.cpp
+  )
+  list(APPEND UAM_PROVIDER_APP_SOURCES
+    src/app/opencode_native_activity_service.cpp
+    src/common/provider/opencode/cli/opencode_terminal_activity.cpp
+    src/app/opencode_compaction_sync_service.cpp
+    src/app/opencode_compaction_history.cpp
+    src/app/opencode_import_stream.cpp
+  )
+  list(APPEND UAM_RUNNER_PROVIDER_SOURCES
+    src/common/usage/opencode_history_scan.cpp
+    src/common/provider/opencode/cli/opencode_native_http.cpp
   )
 endif()
 if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
@@ -288,8 +326,8 @@ if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
     src/common/provider/copilot/cli/copilot_native_protocol.cpp
     src/common/provider/copilot/cli/copilot_managed_read_policy.cpp
   )
+  list(APPEND UAM_PROVIDER_APP_SOURCES src/app/copilot_agent_history_service.cpp)
 endif()
-
 if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   if(NOT UAM_RUNNER_ONLY)
     include("${CMAKE_SOURCE_DIR}/cmake/antigravity_history_crypto.cmake")
@@ -299,6 +337,28 @@ if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
     src/common/provider/antigravity/cli/antigravity_native_history.cpp
     src/common/platform/private_temp_directory.cpp
   )
+  list(APPEND UAM_RUNNER_PROVIDER_SOURCES
+    src/common/usage/antigravity_accounting.cpp
+    src/common/usage/antigravity_history_scan.cpp
+  )
+endif()
+
+set(UAM_FEATURE_APP_SOURCES)
+if(UAM_ENABLE_SSH)
+  list(APPEND UAM_FEATURE_APP_SOURCES
+    src/cef/remote_host_handlers.cpp
+    src/cef/repository_route_handlers.cpp
+    src/remote/runner_bootstrap.cpp
+  )
+endif()
+if(UAM_ENABLE_MOBILE_COMPANION)
+  list(APPEND UAM_FEATURE_APP_SOURCES
+    src/cef/companion_server.cpp
+    src/common/platform/companion_network_platform.cpp
+  )
+endif()
+if(UAM_ENABLE_COMPUTER_USE)
+  list(APPEND UAM_FEATURE_APP_SOURCES src/computer_use/computer_use_mcp_server.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -317,7 +377,9 @@ set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_incremental_sha256.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
-  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
+  list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
+  # Ninja only tracks #include in .rc files, so name the ICON file or incremental builds keep the old icon.
+  set_source_files_properties(src/uam.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.ico")
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_pty_windows.cpp
@@ -366,18 +428,15 @@ endif()
 add_executable(uam_runner
   src/common/memory/memory_library_store.cpp
   src/common/usage/transcript_usage.cpp
-  src/common/usage/antigravity_accounting.cpp
-  src/common/usage/antigravity_history_scan.cpp
+  ${UAM_RUNNER_PROVIDER_SOURCES}
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
-  src/common/usage/opencode_history_scan.cpp
   src/common/usage/usage_history_service.cpp
   src/common/usage/usage_ledger.cpp
   src/common/usage/usage_store.cpp
   src/common/usage/usage_collector.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
-  src/common/provider/opencode/cli/opencode_native_http.cpp
   src/remote/runner_main.cpp
   src/remote/runner_client.cpp
   src/remote/runner_protocol.cpp
@@ -426,10 +485,15 @@ if(APPLE)
     "-Wl,-framework,IOKit"
     "-Wl,-framework,Foundation"
   )
+  if(UAM_RESTRICTED_BUILD)
+    # As for the app: restricted release helpers drop code and local symbol names only excluded paths reached.
+    target_link_options(uam_runner PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-Wl,-dead_strip;-Wl,-x>")
+  endif()
 elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
     src/remote/runner_service_windows.cpp
+    src/uam_long_paths.manifest
   )
   target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32 ws2_32)
 elseif(UNIX)
@@ -452,12 +516,7 @@ target_compile_definitions(uam_runner PRIVATE
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_HEADLESS_RUNNER=1
-  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
-  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
-  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
-  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
-  UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
-  UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
+  ${UAM_PROVIDER_DEFINITIONS}
 )
 set(UAM_RUNNER_SHA256_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.sha256")
 set(UAM_RUNNER_VERSION_FILE "$<TARGET_FILE_DIR:uam_runner>/uam-runner.version")
@@ -494,9 +553,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
   src/common/platform/app_crash_supervisor.cpp
-  src/common/platform/companion_network_platform.cpp
 	  src/computer_use/computer_use_mcp_config.cpp
-	  $<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:src/computer_use/computer_use_mcp_server.cpp>
+  ${UAM_FEATURE_APP_SOURCES}
 	  src/app/agent_definition_service.cpp
 	  src/app/agent_run_ledger.cpp
 	  src/app/agent_run_scheduler.cpp
@@ -512,6 +570,10 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/git_worktree_service.cpp
   src/app/worktree_retention_service.cpp
   src/app/storage_retention_service.cpp
+  src/app/data_folder_preflight.cpp
+  src/app/data_folder_settings_service.cpp
+  src/app/data_folder_transition.cpp
+  src/common/platform/data_folder_tree.cpp
   src/app/worktree_launch_preparation_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
@@ -534,25 +596,21 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
     src/app/chat_title_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
-  src/app/copilot_agent_history_service.cpp
   src/app/native_agent_history_service.cpp
-  src/app/opencode_native_activity_service.cpp
-  src/common/provider/opencode/cli/opencode_terminal_activity.cpp
   src/app/runtime_orchestration_services.cpp
   src/app/startup_native_import_service.cpp
-  src/app/opencode_compaction_sync_service.cpp
-  src/app/opencode_compaction_history.cpp
   src/app/model_discovery_service.cpp
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
   src/app/vcs_commit_service.cpp
   src/common/discovery/management_discovery.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
   src/cef/uam_bridge_request.cpp
-  $<$<BOOL:${UAM_ENABLE_MOBILE_COMPANION}>:src/cef/companion_server.cpp>
   src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
@@ -564,14 +622,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_config_handlers.cpp
   src/cef/managed_subagent_handlers.cpp
   src/cef/settings_handlers.cpp
-  src/cef/remote_host_handlers.cpp
   src/cef/local_chat_bundle_handlers.cpp
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
   src/cef/chat_branch_handlers.cpp
-  src/cef/repository_route_handlers.cpp
   src/cef/resource_collection_handlers.cpp
   src/cef/memory_handlers.cpp
   src/cef/workspace_handlers.cpp
@@ -586,17 +642,16 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
   src/common/chat/chat_message_page_index.cpp
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
   src/common/usage/transcript_usage.cpp
-  src/common/usage/antigravity_accounting.cpp
-  src/common/usage/antigravity_history_scan.cpp
+  ${UAM_RUNNER_PROVIDER_SOURCES}
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
-  src/common/usage/opencode_history_scan.cpp
   src/common/usage/usage_history_service.cpp
   src/common/usage/usage_ledger.cpp
   src/common/usage/usage_store.cpp
@@ -605,13 +660,12 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
     src/common/usage/account_allowance_fetcher.cpp
     src/common/usage/account_allowance_service.cpp
     src/common/usage/account_credentials_macos.cpp
-    src/common/usage/google_account_allowance.cpp
-    src/common/usage/claude_account_allowance.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
-  src/app/opencode_import_stream.cpp
   src/common/config/settings_store.cpp
+  src/common/config/settings_store_data_folder.cpp
+  src/common/chat/chat_folder_data_folder.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
@@ -619,9 +673,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/runtime/provider_runtime_registry.cpp
   src/common/provider/runtime/provider_acp_strategy.cpp
   src/common/provider/structured_attachments.cpp
-  src/common/provider/opencode/cli/opencode_native_http.cpp
-  src/common/provider/claude/cli/claude_acp_message_handlers.cpp
-  src/common/provider/codex/cli/codex_acp_message_handlers.cpp
   src/common/runtime/acp/acp_content_text.cpp
   src/common/runtime/acp/acp_diagnostics.cpp
   src/common/runtime/acp/acp_goal_helpers.cpp
@@ -640,7 +691,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/acp/acp_message_detail.cpp
   src/common/runtime/acp/acp_request_builders.cpp
   src/common/runtime/acp/acp_resume_rules.cpp
-  src/common/runtime/acp/claude_quota_continuation.cpp
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/acp_wait_state.cpp
@@ -652,10 +702,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/terminal/terminal_idle_classifier.cpp
   src/common/runtime/terminal/terminal_identity.cpp
   src/common/runtime/terminal/terminal_lifecycle.cpp
-  src/core/gemini_cli_compat.cpp
   ${UAM_PROVIDER_SOURCES}
+  ${UAM_PROVIDER_APP_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
-  src/remote/runner_bootstrap.cpp
   src/remote/runner_client.cpp
   src/remote/runner_proxy.cpp
   src/common/platform/platform_services.cpp
@@ -734,6 +783,11 @@ if(APPLE)
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,QuartzCore>"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-weak_framework,ScreenCaptureKit>"
   )
+  if(UAM_RESTRICTED_BUILD)
+    # Restricted release builds drop unreferenced code and local symbol names, so shared code that only an
+    # excluded provider or feature reached does not ship. MSVC release links already remove unreferenced code.
+    target_link_options(universal_agent_manager PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-Wl,-dead_strip;-Wl,-x>")
+  endif()
 elseif(WIN32)
   target_link_libraries(universal_agent_manager PRIVATE
     nlohmann_json::nlohmann_json
@@ -758,12 +812,7 @@ target_compile_definitions(universal_agent_manager PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
-  UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
-  UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
-  UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
-  UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
-  UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
-  UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
+  ${UAM_PROVIDER_DEFINITIONS}
 )
 
 set_target_properties(universal_agent_manager PROPERTIES FOLDER "App")
@@ -808,6 +857,13 @@ if(APPLE)
     # build time.  Generator expressions are expanded via a GENEX_EVAL wrapper.
     # -----------------------------------------------------------------------
     set(_cef_plists_dir "${CMAKE_BINARY_DIR}/cef_helper_plists")
+    # Local network access exists only for phone access; builds without it neither declare nor require it.
+    set(_uam_privacy_keys NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription)
+    set(_uam_local_network_plist "")
+    if(UAM_ENABLE_MOBILE_COMPANION)
+      list(APPEND _uam_privacy_keys NSLocalNetworkUsageDescription)
+      set(_uam_local_network_plist "\n  <key>NSLocalNetworkUsageDescription</key><string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>")
+    endif()
 
     # JIT entitlement plist (needed on macOS 12+ for V8 to work).
     set(_jit_entitlements "${_cef_plists_dir}/jit.entitlements")
@@ -844,7 +900,7 @@ function(sign_owned_code target entitlements)
   endif()
 endfunction()
 function(require_dictation_usage_descriptions plist)
-  foreach(key IN ITEMS NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSLocalNetworkUsageDescription)
+  foreach(key IN ITEMS ${_uam_privacy_keys})
     execute_process(COMMAND /usr/bin/plutil -extract \"\${key}\" raw -o - \"\${plist}\"
       RESULT_VARIABLE status OUTPUT_VARIABLE description OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(NOT status EQUAL 0 OR description STREQUAL \"\")
@@ -855,6 +911,17 @@ endfunction()
 # Remove legacy UI-V2/dist from Contents/MacOS/ — it was moved to Contents/Resources/.
 # If left in MacOS/, codesign finds the .woff fonts and produces a broken signature.
 file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
+# Sign inside-out: the Intel CEF framework ships unsigned, and codesign rejects
+# the main executable while the bundle holds unsigned nested code.
+set(_cef_framework \"\${UAM_BUNDLE_CONTENTS}/Frameworks/Chromium Embedded Framework.framework\")
+execute_process(COMMAND /usr/bin/codesign --verify --strict \"\${_cef_framework}\" RESULT_VARIABLE status OUTPUT_QUIET ERROR_QUIET)
+if(NOT status EQUAL 0)
+  execute_process(COMMAND /usr/bin/codesign --force --sign \"${UAM_MACOS_SIGNING_IDENTITY}\" \"\${_cef_framework}\"
+    RESULT_VARIABLE status ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR \"Failed to sign \${_cef_framework} with configured identity '${UAM_MACOS_SIGNING_IDENTITY}': \${error}\")
+  endif()
+endif()
 ")
 
     foreach(_hname IN ITEMS
@@ -884,8 +951,7 @@ file(REMOVE_RECURSE \"\${UAM_BUNDLE_CONTENTS}/MacOS/UI-V2\")
   <key>CFBundleVersion</key><string>${PROJECT_VERSION}</string>
   <key>LSBackgroundOnly</key><true/>
   <key>LSMinimumSystemVersion</key><string>10.15.0</string>
-  <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>
-  <key>NSLocalNetworkUsageDescription</key><string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Universal Agent Manager uses the microphone when you choose to dictate a prompt.</string>${_uam_local_network_plist}
   <key>NSSpeechRecognitionUsageDescription</key><string>Universal Agent Manager converts your spoken prompt into text when dictation is active.</string>
 </dict>
 </plist>")
@@ -916,6 +982,13 @@ sign_owned_code(\"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_hname}.app\" \"${_jit_en
     # screen-capture and accessibility permissions to the least-privileged process.
     if(UAM_ENABLE_COMPUTER_USE)
     set(_computer_use_name "UAM Computer Use")
+    # The Gemini computer-use policy ships only when Gemini is part of the build.
+    set(_computer_use_gemini_policy_copy "")
+    if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+      set(_computer_use_gemini_policy_copy "file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/gemini-policy.toml\" \"\${_computer_use_dir}/Resources/gemini-policy.toml\" ONLY_IF_DIFFERENT)")
+    else()
+      set(_computer_use_gemini_policy_copy "file(REMOVE \"\${_computer_use_dir}/Resources/gemini-policy.toml\")")
+    endif()
     file(WRITE "${_cef_plists_dir}/computer-use-Info.plist"
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -945,7 +1018,7 @@ file(COPY_FILE \"\${UAM_MAIN_EXE}\" \"\${_computer_use_dir}/MacOS/${_computer_us
 file(COPY_FILE \"${_cef_plists_dir}/computer-use-Info.plist\" \"\${_computer_use_dir}/Info.plist\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png\" \"\${_computer_use_dir}/Resources/SoftwareCursor.png\" ONLY_IF_DIFFERENT)
 file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/app_icon.icns\" \"\${_computer_use_dir}/Resources/app_icon.icns\" ONLY_IF_DIFFERENT)
-file(COPY_FILE \"${CMAKE_SOURCE_DIR}/assets/computer-use/gemini-policy.toml\" \"\${_computer_use_dir}/Resources/gemini-policy.toml\" ONLY_IF_DIFFERENT)
+${_computer_use_gemini_policy_copy}
 if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\")
   file(CREATE_LINK \"../../../Chromium Embedded Framework.framework\"
        \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\"
@@ -1095,23 +1168,28 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD
     "-DUAM_UI_SOURCE=${UAM_UI_DIST_SRC}"
     "-DUAM_UI_DEST=${UAM_RESOURCE_DEST}/UI-V2/dist"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ui_dist.cmake"
+  # Only product skills ship; top-level markdown-store/*.uam are maintainer-local.
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store" "${UAM_RESOURCE_DEST}/markdown-store"
-  COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/markdown-store/skill-builder.uam"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store/bundled"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled" "${UAM_RESOURCE_DEST}/markdown-store/bundled"
   COMMENT "Copying UI-V2 and bundled Markdown Store entries"
   VERBATIM
 )
 if(UAM_ENABLE_COMPUTER_USE)
+  if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
+    set(_uam_gemini_policy_command COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml" "${UAM_RESOURCE_DEST}/gemini-policy.toml")
+  else()
+    set(_uam_gemini_policy_command COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/gemini-policy.toml")
+  endif()
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/gemini-policy.toml" "${UAM_RESOURCE_DEST}/gemini-policy.toml"
+    ${_uam_gemini_policy_command}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/computer-use/SoftwareCursor.png" "${UAM_RESOURCE_DEST}/SoftwareCursor.png"
     VERBATIM
   )
 endif()
 if(UAM_ENABLE_SSH)
+  # Recreate the folder so helpers from an earlier UAM_PACKAGE_REMOTE_RUNNERS=ON build never linger.
   add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${UAM_RESOURCE_DEST}/remote"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${UAM_RESOURCE_DEST}/remote"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:uam_runner>" "${UAM_RESOURCE_DEST}/remote/$<TARGET_FILE_NAME:uam_runner>"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${UAM_RUNNER_SHA256_FILE}" "${UAM_RESOURCE_DEST}/remote/uam-runner.sha256"
@@ -1127,11 +1205,8 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
-if(APPLE)
-  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon_macos.png")
-else()
-  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
-endif()
+# The approved icon tile; assets/app_icon.ico is generated from it, so the window and taskbar match the executable.
+set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon_macos.png")
 set(UAM_BUNDLE_ICON_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.icns")
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -1197,8 +1272,6 @@ if(APPLE AND UAM_MACOS_BUNDLE AND UAM_ENABLE_MOBILE_COMPANION)
 endif()
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
-    COMMAND /bin/sh -c
-      "codesign --verify --strict '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework' || codesign --force --sign '${UAM_MACOS_SIGNING_IDENTITY}' '$<TARGET_BUNDLE_DIR:universal_agent_manager>/Contents/Frameworks/Chromium Embedded Framework.framework'"
     COMMAND codesign --force --sign "${UAM_MACOS_SIGNING_IDENTITY}" --entitlements "${_jit_entitlements}"
       "$<TARGET_BUNDLE_DIR:universal_agent_manager>"
     COMMAND codesign --verify --deep --strict --verbose=2
@@ -1248,6 +1321,10 @@ endif()
 
 if(APPLE)
   target_compile_definitions(universal_agent_manager PRIVATE GL_SILENCE_DEPRECATION)
+  set(UAM_LOCAL_NETWORK_USAGE_PLIST "")
+  if(UAM_ENABLE_MOBILE_COMPANION)
+    set(UAM_LOCAL_NETWORK_USAGE_PLIST "<key>NSLocalNetworkUsageDescription</key>\n  <string>Universal Agent Manager uses your local network so your phone can connect to this Mac.</string>")
+  endif()
   if(UAM_MACOS_BUNDLE)
     set_target_properties(universal_agent_manager PROPERTIES
       MACOSX_BUNDLE_BUNDLE_NAME "Universal Agent Manager"
@@ -1270,17 +1347,27 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
-  add_executable(uam_companion_protocol_tests
-    tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
-  target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
-  target_link_libraries(uam_companion_protocol_tests PRIVATE nlohmann_json::nlohmann_json)
-  target_compile_definitions(uam_companion_protocol_tests PRIVATE
+  add_subdirectory(tests/bootstrap_metadata)
+  add_executable(uam_opencode_progressive_mcp_checks
+    tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
+  target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_opencode_progressive_mcp_checks PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_opencode_progressive_mcp_checks PRIVATE ${UAM_FEATURE_DEFINITIONS} NOMINMAX
     UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
     UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
     UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
     UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
     UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
     UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>)
+  set_target_properties(uam_opencode_progressive_mcp_checks PROPERTIES FOLDER "Tests")
+  add_test(NAME uam_opencode_progressive_mcp_safe COMMAND uam_opencode_progressive_mcp_checks)
+  add_executable(uam_companion_protocol_tests
+    tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
+  target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_companion_protocol_tests PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_companion_protocol_tests PRIVATE
+    ${UAM_FEATURE_DEFINITIONS}
+    ${UAM_PROVIDER_DEFINITIONS})
   set_target_properties(uam_companion_protocol_tests PROPERTIES FOLDER "Tests")
   foreach(companion_case IN ITEMS
       TransferRoundTripCommitOnce TransferMalformedOffsets TransferStrictBase64AndBounds
@@ -1304,7 +1391,7 @@ if(UAM_BUILD_TESTS)
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)
   target_include_directories(uam_crash_supervisor_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
-  foreach(crash_case normal once loop term nonzero bypass restart restart_many)
+  foreach(crash_case normal once loop term nonzero bypass restart restart_many folder_restart folder_unconfirmed)
     add_test(NAME uam_crash_supervisor_${crash_case} COMMAND uam_crash_supervisor_tests ${crash_case})
   endforeach()
 
@@ -1316,11 +1403,35 @@ if(UAM_BUILD_TESTS)
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
   add_test(NAME uam_ui_build_incremental
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ui_build_incremental_test.py")
+  add_test(NAME uam_build_flag_leak_gate
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/build_flag_leak_gate_test.py")
+  # A reduced profile's id tables and saved-data handling; the all-provider core tests cannot observe them.
+  add_executable(uam_build_flag_profile_tests tests/build_flag_profile_tests.cpp src/common/config/settings_store.cpp)
+  target_include_directories(uam_build_flag_profile_tests PRIVATE src)
+  target_link_libraries(uam_build_flag_profile_tests PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_build_flag_profile_tests PRIVATE NOMINMAX
+    UAM_ENABLE_COMPUTER_USE=0 UAM_ENABLE_SSH=0 UAM_ENABLE_MOBILE_COMPANION=0
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=0 UAM_ENABLE_RUNTIME_CODEX_CLI=0 UAM_ENABLE_RUNTIME_CLAUDE_CLI=1
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=0 UAM_ENABLE_RUNTIME_COPILOT_CLI=0 UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=0)
+  set_target_properties(uam_build_flag_profile_tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  add_test(NAME uam_build_flag_profile COMMAND uam_build_flag_profile_tests)
+  # build_features.h must stop compilation when the flag definitions are missing.
+  add_library(uam_build_features_undefined OBJECT EXCLUDE_FROM_ALL tests/build_features_undefined.cpp)
+  target_include_directories(uam_build_features_undefined PRIVATE src)
+  add_test(NAME uam_build_features_require_definitions
+    COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target uam_build_features_undefined --config $<CONFIG>)
+  set_tests_properties(uam_build_features_require_definitions PROPERTIES PASS_REGULAR_EXPRESSION "must be defined by CMake")
   if(APPLE)
     add_test(NAME uam_macos_helper_signing
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/macos_helper_signing_test.py"
         --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}")
     set_tests_properties(uam_macos_helper_signing PROPERTIES TIMEOUT 120)
+  endif()
+  if(WIN32)
+    add_test(NAME uam_app_icon_resource
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py" "$<TARGET_FILE:universal_agent_manager>")
+  else()
+    add_test(NAME uam_app_icon_resource COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py")
   endif()
   add_test(NAME uam_native_test_runner
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/native_test_runner_test.py")
@@ -1328,11 +1439,22 @@ if(UAM_BUILD_TESTS)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
+  if(NOT WIN32)
+    # Each compiles extracted Computer Use source with clang++/c++ in a few seconds.
+    foreach(computer_use_check capture_recovery global_permission scope)
+      add_test(NAME uam_computer_use_${computer_use_check}_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/computer_use_${computer_use_check}_check.py")
+      set_tests_properties(uam_computer_use_${computer_use_check}_check PROPERTIES
+        ENVIRONMENT "UAM_NLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include")
+    endforeach()
+  endif()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
   add_executable(uam_core_tests
+    tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp
@@ -1382,6 +1504,7 @@ if(UAM_BUILD_TESTS)
     tests/native_remote_history_refresh_tests.cpp
     tests/copilot_native_protocol_tests.cpp
     tests/opencode_native_http_tests.cpp
+    tests/opencode_v2_integration_tests.cpp
     tests/opencode_native_activity_tests.cpp
     tests/opencode_terminal_activity_tests.cpp
     tests/antigravity_mcp_tests.cpp
@@ -1446,6 +1569,9 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/data_folder_preflight_tests.cpp
+    tests/data_folder_settings_tests.cpp
+    tests/data_folder_transition_tests.cpp
     tests/worktree_launch_preparation_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
@@ -1461,6 +1587,7 @@ if(UAM_BUILD_TESTS)
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
     tests/remote_runner_tests.cpp
+    tests/process_exit_drain_tests.cpp
     tests/runner_startup_rollback_tests.cpp
     tests/remote_cli_elevation_tests.cpp
     tests/runner_retirement_tests.cpp
@@ -1519,6 +1646,10 @@ if(UAM_BUILD_TESTS)
     src/app/git_worktree_service.cpp
     src/app/worktree_retention_service.cpp
     src/app/storage_retention_service.cpp
+    src/app/data_folder_preflight.cpp
+    src/app/data_folder_settings_service.cpp
+    src/app/data_folder_transition.cpp
+    src/common/platform/data_folder_tree.cpp
     src/app/worktree_launch_preparation_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
@@ -1554,6 +1685,8 @@ if(UAM_BUILD_TESTS)
     src/app/theme_service.cpp
     src/app/vcs_commit_service.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
     src/cef/cef_push.cpp
@@ -1564,6 +1697,7 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
+    src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
     src/common/chat/chat_message_page_index.cpp
@@ -1631,6 +1765,8 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
+    src/common/config/settings_store_data_folder.cpp
+    src/common/chat/chat_folder_data_folder.cpp
     src/remote/runner_protocol.cpp
     src/remote/runner_bootstrap.cpp
     src/remote/runner_client.cpp
@@ -1674,7 +1810,7 @@ if(UAM_BUILD_TESTS)
       "-Wl,-weak_framework,ScreenCaptureKit"
     )
   elseif(WIN32)
-    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp)
+    target_sources(uam_core_tests PRIVATE src/remote/runner_service_windows.cpp src/uam_long_paths.manifest)
     target_link_libraries(uam_core_tests PRIVATE
       nlohmann_json::nlohmann_json
       libcef_dll_wrapper
@@ -1703,12 +1839,7 @@ if(UAM_BUILD_TESTS)
   target_compile_definitions(uam_core_tests PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
     NOMINMAX
-    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
-    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
-    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
-    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
-    UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
-    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>
+    ${UAM_PROVIDER_DEFINITIONS}
   )
   if(MSVC)
     target_compile_options(uam_core_tests PRIVATE /bigobj)
@@ -1799,7 +1930,7 @@ endif()
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
   endif()
-  # Actual goal bridge timing fixtures keep their three-case inventory separate.
+  # Actual goal bridge timing fixtures keep their selectable inventory separate.
   add_executable(uam_goal_handler_timing_tests EXCLUDE_FROM_ALL
     tests/goal_handler_timing_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
   set_target_properties(uam_goal_handler_timing_tests PROPERTIES
@@ -1822,6 +1953,31 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/chrome_elf.dll")
   endif()
   # Keep this opt-in executable outside the standard CTest inventory until built.
+
+  # Safe data/injected remote-publication controls: no CEF browser startup,
+  # provider launch, SSH transport, helper build or desktop packaging dependency.
+  add_executable(uam_remote_refresh_feedback_tests EXCLUDE_FROM_ALL
+    tests/remote_refresh_feedback_test_main.cpp tests/remote_refresh_feedback_tests.cpp
+    tests/native_media_chat_save_tests.cpp tests/chat_publication_tests.cpp tests/native_refresh_lifetime_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_remote_refresh_feedback_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_FEEDBACK_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_FEEDBACK_TEST_VALUE universal_agent_manager ${UAM_FEEDBACK_TEST_PROPERTY})
+    if(NOT UAM_FEEDBACK_TEST_VALUE STREQUAL "UAM_FEEDBACK_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_remote_refresh_feedback_tests PROPERTY ${UAM_FEEDBACK_TEST_PROPERTY} "${UAM_FEEDBACK_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_remote_refresh_feedback_tests PRIVATE tests)
+  if(APPLE)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/chrome_elf.dll")
+  endif()
 
   add_executable(uam_managed_subagent_handler_tests EXCLUDE_FROM_ALL
     tests/managed_subagent_handler_tests.cpp tests/native_media_refresh_handler_tests.cpp tests/native_model_options_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
@@ -1867,6 +2023,11 @@ endif()
     )
     add_test(NAME uam_macos_application_tests COMMAND uam_macos_application_tests)
   endif()
+  add_test(
+    NAME uam_packaged_markdown_store
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} "-DPACKAGED_STORE=${UAM_RESOURCE_DEST}/markdown-store"
+      -P ${CMAKE_SOURCE_DIR}/cmake/check_packaged_markdown_store.cmake
+  )
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake

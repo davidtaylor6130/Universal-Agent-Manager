@@ -1,4 +1,5 @@
 #include "common/provider/gemini/cli/gemini_cli_provider_runtime.h"
+#include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
@@ -31,6 +32,33 @@ namespace fs = std::filesystem;
 
 namespace
 {
+	std::string_view ManagedGeminiCompletedModel(const nlohmann::json& result)
+	{
+		if (uam::nlohmann_json::StringViewOrEmpty(result, "stopReason") != "end_turn" || result.contains("configOptions") || result.contains("models") || result.contains("modes")) return {};
+		const auto* meta = uam::nlohmann_json::FindObjectField(result, "_meta");
+		const auto* quota = meta ? uam::nlohmann_json::FindObjectField(*meta, "quota") : nullptr;
+		const auto* models = quota ? uam::nlohmann_json::FindArrayField(*quota, "model_usage") : nullptr;
+		const auto* total = quota ? uam::nlohmann_json::FindObjectField(*quota, "token_count") : nullptr;
+		if (!models || models->size() != 1 || !total) return {};
+		const auto* counts = uam::nlohmann_json::FindObjectField(models->front(), "token_count");
+		if (!counts) return {};
+		const auto count = [](const nlohmann::json& object, const char* key) -> std::optional<std::int64_t>
+		{
+			const auto* value = uam::nlohmann_json::FindField(object, key);
+			if (!value || !value->is_number_integer() || (value->is_number_unsigned() && value->get<std::uint64_t>() > static_cast<std::uint64_t>(uam::usage::kMaxExactTokenCount))) return std::nullopt;
+			const auto number = value->get<std::int64_t>();
+			return number >= 0 && number <= uam::usage::kMaxExactTokenCount ? std::optional<std::int64_t>{number} : std::nullopt;
+		};
+		const auto input = count(*counts, "input_tokens"), output = count(*counts, "output_tokens");
+		if (!input || !output || *output > uam::usage::kMaxExactTokenCount - *input || *input + *output == 0 || count(*total, "input_tokens") != input || count(*total, "output_tokens") != output) return {};
+		if (result.contains("usage"))
+		{
+			const auto* usage = uam::nlohmann_json::FindObjectField(result, "usage");
+			if (!usage || count(*usage, "inputTokens") != input || count(*usage, "outputTokens") != output || count(*usage, "totalTokens") != std::optional<std::int64_t>{*input + *output}) return {};
+		}
+		return uam::nlohmann_json::StringViewOrEmpty(models->front(), "model");
+	}
+
 	nlohmann::json GeminiSavedImageOwner(const uam::AcpSessionState& session, const ChatSession& settings)
 	{
 		const auto process = uam::acp_detail::AcpProcessHandleLabel(session);
@@ -270,11 +298,60 @@ bool GeminiCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSess
 	return RetrySessionNewAfterInvalidLoad(app, session, chat, details);
 }
 
-/// <summary>Count Gemini prompt replies observed by this attachment, never an inferred native-history total.</summary>
-bool GeminiCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
-    const std::string& method, const std::string&, const nlohmann::json& result) const
+bool GeminiCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+    const nlohmann::json& message, const CefRefPtr<CefBrowser>&) const
 {
+	if (session.managed_initial_owner && uam::nlohmann_json::StringViewOrEmpty(message, "method") == uam::acp_methods::kSessionUpdate)
+	{
+		const auto* params = uam::nlohmann_json::FindObjectField(message, "params");
+		const auto* update = params ? uam::nlohmann_json::FindObjectField(*params, "update") : nullptr;
+		const auto type = update ? uam::nlohmann_json::StringViewOrEmpty(*update, "sessionUpdate") : std::string_view{};
+		const auto native = params ? uam::nlohmann_json::StringViewOrEmpty(*params, "sessionId") : std::string_view{};
+		const auto* content = update ? uam::nlohmann_json::FindObjectField(*update, "content") : nullptr;
+		// Both qualified native versions emit approval-mode changes as this text
+		// notification, not current_mode_update. It can revoke proof but never mint it.
+		const bool native_mode_signal = type == "agent_message_chunk" && content && uam::nlohmann_json::StringViewOrEmpty(*content, "text").starts_with("[MODE_UPDATE]");
+		if (native.empty() || native != session.session_id || native != chat.native_session_id || native_mode_signal || type == "current_mode_update" || type == "config_option_update" || type == "current_model_update")
+		{
+			// This initial-only tranche cannot prove a configuration transition. Even
+			// restoration to matching projected fields cannot repair the old proof.
+			uam::AgentRunScheduler::InitialGeminiExecutionObserved(app, session, chat, {}, {}, {}, {});
+		}
+	}
+	return false; // Retain ordinary ACP projection and the initial one-shot behavior.
+}
+
+/// <summary>Observe raw initial binding evidence and current-process prompt usage without native-history inference.</summary>
+bool GeminiCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+    const std::string& method, const std::string& request_id, const nlohmann::json& result) const
+{
+	if (session.managed_initial_owner && method == uam::acp_methods::kSessionNew)
+	{
+		const auto* models = uam::nlohmann_json::FindObjectField(result, "models");
+		const auto* modes = uam::nlohmann_json::FindObjectField(result, "modes");
+		const auto* options = uam::nlohmann_json::FindField(result, "configOptions");
+		const auto model = models ? uam::nlohmann_json::StringViewOrEmpty(*models, "currentModelId") : std::string_view{};
+		const auto* advertised_models = models ? uam::nlohmann_json::FindArrayField(*models, "availableModels") : nullptr;
+		const auto* advertised_modes = modes ? uam::nlohmann_json::FindArrayField(*modes, "availableModes") : nullptr;
+		// These exact versions' newSession/initialize implementations were inspected.
+		// Minimum-semver launch support does not qualify future native binding proof.
+		const bool qualified_native = session.agent_name == "gemini-cli" && (session.agent_version == "0.55.1" || session.agent_version == "0.64.0");
+		const bool advertised = advertised_models && advertised_modes && advertised_models->size() <= 128 && advertised_modes->size() <= 32 && std::ranges::count_if(*advertised_models, [model](const auto& entry) { return uam::nlohmann_json::StringViewOrEmpty(entry, "modelId") == model; }) == 1 && std::ranges::count_if(*advertised_modes, [](const auto& entry) { return uam::nlohmann_json::StringViewOrEmpty(entry, "id") == uam::approval_modes::kPlanApprovalMode; }) == 1;
+		// Shared projection may normalize strings or override models/modes from
+		// configOptions. Neither fallback is native proof for this narrow route.
+		const bool unambiguous = qualified_native && advertised && (!options || (options->is_array() && options->empty()));
+		uam::AgentRunScheduler::InitialGeminiExecutionObserved(app, session, chat, request_id,
+		    unambiguous ? uam::nlohmann_json::StringViewOrEmpty(result, "sessionId") : std::string_view{},
+		    model,
+		    modes ? uam::nlohmann_json::StringViewOrEmpty(*modes, "currentModeId") : std::string_view{});
+	}
+	else if (session.managed_initial_owner && (method == uam::acp_methods::kSessionSetMode || method == uam::acp_methods::kSessionSetModel || method == uam::acp_methods::kSessionSetConfigOption))
+	{
+		uam::AgentRunScheduler::InitialGeminiExecutionObserved(app, session, chat, {}, {}, {}, {});
+	}
 	if (method != uam::acp_methods::kSessionPrompt) return false;
+	if (session.managed_initial_owner)
+		uam::AgentRunScheduler::InitialGeminiResultObserved(app, session, chat, request_id, ManagedGeminiCompletedModel(result));
 	uam::AcpTokenUsageState& usage = session.provider_usage.token_usage;
 	if (usage.session_id != session.session_id) usage = {};
 	if (session.session_id.empty() || session.session_id.size() > 512) return false;
@@ -328,6 +405,7 @@ bool GeminiCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSession
 	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
 	usage.total.total_tokens += last.total_tokens;
 	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	uam::acp_detail::RecordGoalReviewTurnUsage(session, last.total_tokens);
 	return false;
 }
 

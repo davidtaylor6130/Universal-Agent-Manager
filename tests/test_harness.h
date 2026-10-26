@@ -190,6 +190,14 @@ namespace uam_test
 		}
 	};
 
+	// std::filesystem uses plain Win32 paths; private stores can exceed MAX_PATH under the runner temp root.
+	inline fs::path NativePath(const fs::path& path)
+	{
+		fs::path native;
+		std::string error;
+		return uam::io::NativeFilePath(path, native, error) ? native : path;
+	}
+
 	inline std::string ReadFile(const fs::path& path)
 	{
 		return uam::io::ReadTextFile(path);
@@ -230,41 +238,7 @@ namespace uam_test
 
 	inline std::string ShellQuoteForTest(const std::string& value)
 	{
-#if defined(_WIN32)
-		std::string escaped = "\"";
-		for (const char ch : value)
-		{
-			if (ch == '"')
-			{
-				escaped += "\"\"";
-			}
-			else if (ch == '%')
-			{
-				escaped += "%%";
-			}
-			else
-			{
-				escaped.push_back(ch == '\n' || ch == '\r' ? ' ' : ch);
-			}
-		}
-		escaped.push_back('"');
-		return escaped;
-#else
-		std::string escaped = "'";
-		for (const char ch : value)
-		{
-			if (ch == '\'')
-			{
-				escaped += "'\\''";
-			}
-			else
-			{
-				escaped.push_back(ch);
-			}
-		}
-		escaped.push_back('\'');
-		return escaped;
-#endif
+		return uam::shell::EscapeArg(value);
 	}
 
 	inline bool RunTestCommand(const std::string& command)
@@ -377,6 +351,19 @@ namespace uam_test
 		}
 	};
 #endif
+
+	/// <summary>Byte-exact stdin sink, optionally appending to a file. Windows `more` rewrites LF as CRLF and adds a blank line; `set /p` splits lines at 1023 bytes.</summary>
+	inline std::vector<std::string> StdioCatArgv(const fs::path& output = {})
+	{
+#if defined(_WIN32)
+		std::vector<std::string> argv{uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()), "--uam-test-stdio-cat"};
+		if (!output.empty()) argv.push_back(uam::paths::Utf8PathString(output));
+		return argv;
+#else
+		if (output.empty()) return {"/bin/cat"};
+		return {"/bin/sh", "-c", "cat > \"$1\"", "uam-test-stdio-cat", output.string()};
+#endif
+	}
 } // namespace uam_test
 
 #define UAM_TEST(name)                                                    \

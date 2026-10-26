@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/computer_use/computer_use_mcp_server.cpp"
-JSON_INCLUDE = next((ROOT / "Builds").glob("*/_deps/nlohmann_json-src/include"), None)
+JSON_INCLUDE = os.environ.get("UAM_NLOHMANN_INCLUDE") or next((ROOT / "Builds").glob("*/_deps/nlohmann_json-src/include"), None)
 
 
 def extract(source: str, start_marker: str, end_marker: str) -> str:

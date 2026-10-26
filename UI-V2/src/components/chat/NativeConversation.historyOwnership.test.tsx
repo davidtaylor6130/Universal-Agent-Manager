@@ -197,7 +197,7 @@ async function mutateOneCurrentIdentity(dimension: Dimension) {
     return currentAvailable
 }
 
-function expectNoInputOrGlobalNavigation() {
+function expectNoInputOrGlobalNavigation(allowNativeRefresh = false) {
     const state = useAppStore.getState()
     expect(state.activeSessionId).toBe(parent.id); expect(state.chatSearchNavigation).toBeNull()
     expect(host.querySelector('textarea, input, form')).toBeNull()
@@ -206,8 +206,329 @@ function expectNoInputOrGlobalNavigation() {
     expect(state.stopAcpSession).not.toHaveBeenCalled(); expect(state.retryFailedMessage).not.toHaveBeenCalled()
     expect(state.resumeQueuedAcpPrompts).not.toHaveBeenCalled()
     expect(envelopes.filter(item => item.action === 'selectSession' || item.payload?.refreshNative === true)).toEqual([])
-    expect(envelopes.filter(item => item.action !== 'getChatMessages' && item.action !== 'releaseChatMessages')).toEqual([])
+    expect(envelopes.filter(item => item.action !== 'getChatMessages' && item.action !== 'releaseChatMessages' &&
+        !(allowNativeRefresh && item.action === 'openNativeSessionChat'))).toEqual([])
 }
+
+describe('passive native-journal refresh refusal feedback', () => {
+    const refusal = "Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it."
+    const generic = 'The native conversation could not be read. Refresh to try again.'
+
+    function prepareJournal(loaded: 'missing' | 'empty' | 'tail' = 'tail') {
+        const tail = useAppStore.getState().messages[child.id]
+        parent = { ...parent, providerId: 'gemini-cli' }
+        child = { ...child, id: `gemini-agent-refusal-${serial}`, providerId: 'gemini-cli' }
+        useAppStore.setState(state => ({ sessions: [parent, child], providers: [fallbackProviderForId('gemini-cli')],
+            messages: { [parent.id]: state.messages[parent.id], ...(loaded === 'missing' ? {} : {
+                [child.id]: loaded === 'empty' ? [] : tail.map(row => ({ ...row, sessionId: child.id })),
+            }) }, historyStartIndexBySessionId: { [parent.id]: 0, [child.id]: 1150 } }))
+        expect(useAppStore.getState().openSubAgentSession).toBe(previous.openSubAgentSession)
+        expect(useAppStore.getState().loadSessionMessages).toBe(previous.loadSessionMessages)
+    }
+
+    it('shows a new refusal after dismissing an earlier saved-read error with messages retained', async () => {
+        prepareJournal()
+        const realCef = window.cefQuery!
+        let firstRead = true
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action === 'openNativeSessionChat') {
+                envelopes.push(envelope); settledEnvelopes += 1; args.onFailure(502, refusal); return
+            }
+            if (envelope.action === 'getChatMessages' && firstRead) {
+                firstRead = false; envelopes.push(envelope); settledEnvelopes += 1
+                args.onFailure(503, 'Temporary saved history read failure.'); return
+            }
+            realCef(args)
+        }
+        await render()
+        const savedMessages = useAppStore.getState().messages[child.id]
+        expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+        expect(host.querySelector('[role="alert"] p')?.textContent).toContain(generic)
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss native conversation error"]')!.click())
+        expect(host.querySelector('[role="alert"]')).toBeNull()
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+        expect(host.querySelector('[role="alert"] details')).toBeNull()
+        expect(useAppStore.getState().messages[child.id]).toBe(savedMessages)
+        expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+        expect(envelopes.filter(item => item.action === 'getChatMessages')).toHaveLength(1)
+        expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(1)
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it.each(['missing', 'empty'] as const)('recovers saved history after an initial failed read and refusal with %s messages', async loaded => {
+        prepareJournal(loaded)
+        const parentMessages = useAppStore.getState().messages[parent.id]
+        const realCef = window.cefQuery!
+        let reads = 0
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action === 'openNativeSessionChat') {
+                envelopes.push(envelope); settledEnvelopes += 1
+                args.onFailure(502, refusal); return
+            }
+            if (envelope.action === 'getChatMessages' && ++reads === 1) {
+                envelopes.push(envelope); settledEnvelopes += 1
+                args.onFailure(503, 'Temporary saved history read failure.'); return
+            }
+            realCef(args)
+        }
+        await render()
+        expect(ownRow(1198)).toBeNull()
+        expect(useAppStore.getState().chatHistoryErrorBySessionId[child.id]).toBeDefined()
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+        expect(host.querySelector('[role="alert"] details')).toBeNull()
+        expect(host.textContent).not.toContain('This native conversation is unavailable.')
+        expect(host.textContent).not.toContain('Loaded messages are still shown.')
+        expect(useAppStore.getState().chatHistoryErrorBySessionId[child.id]).toBeUndefined()
+        expect(useAppStore.getState().messages[parent.id]).toBe(parentMessages)
+        expect(useAppStore.getState().chatHistoryPageBySessionId[child.id]).toMatchObject({
+            chatId: child.id, birth: child.createdAt.getTime(), summaryDigest: child.messagesDigest, totalCount: 1200,
+        })
+        const savedReads = envelopes.filter(item => item.action === 'getChatMessages')
+        expect(savedReads).toHaveLength(2)
+        savedReads.forEach(item => expect(item.payload).toEqual({ chatId: child.id, limit: 50, deferToolCallContent: true, messagesDigest: '' }))
+        expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(1)
+        await drainProgrammaticScrollFrames()
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it.each(['missing', 'empty'] as const)('explains a failed saved recovery after refusal with %s messages', async loaded => {
+        prepareJournal(loaded)
+        const parentMessages = useAppStore.getState().messages[parent.id]
+        const realCef = window.cefQuery!
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action === 'openNativeSessionChat' || envelope.action === 'getChatMessages') {
+                envelopes.push(envelope); settledEnvelopes += 1
+                args.onFailure(503, envelope.action === 'openNativeSessionChat' ? refusal : 'SAVED READ DIAGNOSTIC FROM A DIFFERENT OPERATION')
+                return
+            }
+            realCef(args)
+        }
+        await render()
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+        expect(host.querySelector('[role="status"]')?.textContent).toBe('Saved history was retained, but could not be read this time. Refresh to try reading it again.')
+        expect(host.querySelector('[role="alert"] details')).toBeNull()
+        expect(host.textContent).not.toContain('The provider has not supplied a readable transcript.')
+        expect(ownRow(1198)).toBeNull()
+        expect(useAppStore.getState().messages[parent.id]).toBe(parentMessages)
+        const reads = envelopes.filter(item => item.action === 'getChatMessages')
+        expect(reads).toHaveLength(2)
+        reads.forEach(item => expect(item.payload).toEqual({ chatId: child.id, limit: 50, deferToolCallContent: true, messagesDigest: '' }))
+        expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(1)
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it.each(['success', 'error'] as const)('keeps the refusal across a count-only saved-history %s', async outcome => {
+        prepareJournal()
+        const realCef = window.cefQuery!
+        let countChanged = false
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action === 'openNativeSessionChat' || countChanged && outcome === 'error' && envelope.action === 'getChatMessages') {
+                envelopes.push(envelope); settledEnvelopes += 1
+                args.onFailure(503, envelope.action === 'openNativeSessionChat' ? refusal : 'BACKGROUND SAVED READ DIAGNOSTIC')
+                return
+            }
+            realCef(args)
+        }
+        await render()
+        const parentMessages = useAppStore.getState().messages[parent.id]
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+        const retainedMessages = useAppStore.getState().messages[child.id]
+        child = { ...child, messageCount: 1202, userMessageIndices: indices(1202) }
+        countChanged = true
+        await act(async () => useAppStore.setState({ sessions: [parent, child] }))
+        await render()
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+        expect(host.querySelector('[role="alert"] details')).toBeNull()
+        if (outcome === 'error') expect(useAppStore.getState().messages[child.id]).toBe(retainedMessages)
+        else expect(ownRow(1200)?.textContent).toContain('Canonical child history row 1200')
+        expect(useAppStore.getState().messages[parent.id]).toBe(parentMessages)
+        expect(envelopes.filter(item => item.action === 'getChatMessages')).toHaveLength(2)
+        expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(1)
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it('refuses a different existing chat before recording lineage or reading its saved history', async () => {
+        prepareJournal()
+        const other: Session = { ...child, id: `unrelated-child-${serial}`, subagentParentChatId: undefined,
+            subagentParentCreatedAt: undefined, messagesDigest: 'unrelated-digest', messageCount: 50, userMessageIndices: indices(50) }
+        const unrelatedMessages = wire(0, 50).map((row, index) => buildMessageFromCpp(other.id, row, index))
+        useAppStore.setState(state => ({ sessions: [parent, child, other], messages: { ...state.messages, [other.id]: unrelatedMessages } }))
+        expect(subagentParentFor(other, useAppStore.getState().sessions)).toBeUndefined()
+        const realCef = window.cefQuery!
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action !== 'openNativeSessionChat') { realCef(args); return }
+            envelopes.push(envelope); settledEnvelopes += 1
+            args.onSuccess(JSON.stringify({ ok: true, data: { chatId: other.id } }))
+        }
+        await render()
+        const savedMessages = useAppStore.getState().messages[child.id]
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(generic + ' Loaded messages are still shown.')
+        expect(subagentParentFor(other, useAppStore.getState().sessions)).toBeUndefined()
+        expect(envelopes.filter(item => item.action === 'getChatMessages' && item.payload?.chatId === other.id)).toEqual([])
+        expect(useAppStore.getState().messages[other.id]).toBe(unrelatedMessages)
+        expect(useAppStore.getState().messages[child.id]).toBe(savedMessages)
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it.each(['pane', 'child-birth', 'digest'] as const)('rejects an old saved recovery after a newer refusal and %s change', async dimension => {
+        prepareJournal('missing')
+        const realCef = window.cefQuery!
+        let reads = 0, finishOld: (() => void) | undefined
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action === 'openNativeSessionChat') {
+                envelopes.push(envelope); settledEnvelopes += 1; args.onFailure(502, refusal); return
+            }
+            if (envelope.action === 'getChatMessages') {
+                reads += 1
+                if (reads === 1 || reads === 3) {
+                    envelopes.push(envelope); settledEnvelopes += 1
+                    args.onFailure(503, 'Temporary saved read failure.'); return
+                }
+                if (reads === 2) {
+                    const captured = child
+                    envelopes.push(envelope)
+                    finishOld = () => {
+                        finishOld = undefined; settledEnvelopes += 1
+                        args.onSuccess(JSON.stringify({ ok: true, data: { chatId: captured.id, messagesDigest: captured.messagesDigest,
+                            startIndex: 1150, totalCount: 1200, userMessageIndices: indices(1200),
+                            messages: wire(1150, 1200).map(row => ({ ...row, content: 'OBSOLETE SAVED RECOVERY MUST NOT REPLACE CURRENT MESSAGES' })) } }))
+                    }
+                    return
+                }
+            }
+            realCef(args)
+        }
+        try {
+            await render()
+            await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+            expect(finishOld).toBeDefined()
+            if (dimension === 'pane') navigationKey += '-new'
+            else if (dimension === 'child-birth') child = { ...child, createdAt: new Date(child.createdAt.getTime() + 1) }
+            else child = { ...child, messagesDigest: 'new-current-digest' }
+            await act(async () => useAppStore.setState({ sessions: [parent, child] }))
+            await render()
+            await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+            expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+            const currentMessages = useAppStore.getState().messages[child.id]
+            const currentPage = useAppStore.getState().chatHistoryPageBySessionId[child.id]
+            await act(async () => finishOld!())
+            expect(useAppStore.getState().messages[child.id]).toBe(currentMessages)
+            expect(useAppStore.getState().chatHistoryPageBySessionId[child.id]).toBe(currentPage)
+            expect(host.querySelector('[role="alert"] p')?.textContent).toBe(refusal)
+            expect(host.textContent).not.toContain('OBSOLETE SAVED RECOVERY')
+            expectNoInputOrGlobalNavigation(true)
+        } finally { await act(async () => finishOld?.()) }
+    })
+
+    it.each(['transport', 'lookalike refusal', 'wrong chat id'] as const)('uses safe primary copy for a %s response', async response => {
+        prepareJournal()
+        const realCef = window.cefQuery!
+        const raw = response === 'lookalike refusal' ? refusal + ' RAW TRANSPORT DIAGNOSTICS' : '\u001b[31mSSH runner /private/diagnostic\u0000\u202e ' + 'x'.repeat(800)
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action !== 'openNativeSessionChat') { realCef(args); return }
+            envelopes.push(envelope); settledEnvelopes += 1
+            if (response === 'wrong chat id') args.onSuccess(JSON.stringify({ ok: true, data: { chatId: 'different-child' } }))
+            else args.onFailure(502, raw)
+        }
+        await render()
+        const savedMessages = useAppStore.getState().messages[child.id]
+        await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.click())
+        expect(host.querySelector('[role="alert"] p')?.textContent).toBe(generic + ' Loaded messages are still shown.')
+        expect(useAppStore.getState().messages[child.id]).toBe(savedMessages)
+        expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+        const details = host.querySelector<HTMLDetailsElement>('[role="alert"] details')
+        if (response === 'wrong chat id') expect(details).toBeNull()
+        else {
+            expect(details?.open).toBe(false)
+            expect(details?.querySelector('summary')?.textContent).toBe('Technical details')
+            const detail = details?.querySelector('pre')?.textContent || ''
+            expect(detail.length).toBeGreaterThan(0); expect(detail.length).toBeLessThanOrEqual(401)
+            expect(detail).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/)
+            await act(async () => { details!.open = true })
+            expect(details?.open).toBe(true)
+        }
+        expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(1)
+        expectNoInputOrGlobalNavigation(true)
+    })
+
+    it.each(['current pane', 'replaced pane'] as const)('retains saved messages and current refusal feedback in the %s', async mode => {
+        const oldId = child.id
+        parent = { ...parent, providerId: 'gemini-cli' }
+        child = { ...child, id: `gemini-agent-refusal-${serial}`, providerId: 'gemini-cli' }
+        useAppStore.setState(state => ({ sessions: [parent, child], providers: [fallbackProviderForId('gemini-cli')],
+            messages: { ...state.messages, [child.id]: state.messages[oldId].map(row => ({ ...row, sessionId: child.id })) },
+            historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [child.id]: 1150 } }))
+        expect(useAppStore.getState().openSubAgentSession).toBe(previous.openSubAgentSession)
+        expect(vi.isMockFunction(useAppStore.getState().openSubAgentSession)).toBe(false)
+        const imports: { done: boolean; finish: (success: boolean) => void }[] = []
+        const realCef = window.cefQuery!
+        window.cefQuery = args => {
+            const envelope = JSON.parse(args.request) as Envelope
+            if (envelope.action !== 'openNativeSessionChat') { realCef(args); return }
+            envelopes.push(envelope)
+            expect(envelope.payload).toMatchObject({ chatId: parent.id, nativeSessionId: child.id, selectChat: false, refreshHistory: true })
+            const pending = { done: false, finish: (success: boolean) => {
+                if (pending.done) return
+                pending.done = true; settledEnvelopes += 1
+                if (success) args.onSuccess(JSON.stringify({ ok: true, data: { chatId: child.id } }))
+                else args.onFailure(502, refusal)
+            } }
+            imports.push(pending)
+        }
+        try {
+            await render()
+            const parentMessages = useAppStore.getState().messages[parent.id]
+            expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+            const refresh = host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!
+            await act(async () => refresh.click())
+            expect(imports).toHaveLength(1)
+            expect(refresh.disabled).toBe(true)
+            if (mode === 'replaced pane') {
+                navigationKey += '-replacement'; await render()
+                const currentRefresh = host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!
+                expect(currentRefresh.disabled).toBe(false)
+                await act(async () => currentRefresh.click())
+                expect(imports).toHaveLength(2)
+            }
+            const savedMessages = useAppStore.getState().messages[child.id]
+            const readsBeforeRefusal = envelopes.filter(item => item.action === 'getChatMessages').length
+            await act(async () => imports[imports.length - 1].finish(false))
+            expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(imports.length)
+            expect(envelopes.filter(item => item.action === 'getChatMessages')).toHaveLength(readsBeforeRefusal)
+            expect(useAppStore.getState().messages[child.id]).toBe(savedMessages)
+            expect(useAppStore.getState().messages[parent.id]).toBe(parentMessages)
+            expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+            expect(host.querySelector('[role="alert"]')?.textContent).toContain(refusal)
+            expect(host.textContent).not.toContain('Loaded messages are still shown.')
+            expect(host.textContent).not.toContain('The native conversation could not be read. Refresh to try again.')
+            if (mode === 'replaced pane') {
+                // The old pane's delayed success must not clear the current refusal.
+                await act(async () => imports[0].finish(true))
+                expect(host.querySelector('[role="alert"]')?.textContent).toContain(refusal)
+                expect(ownRow(1198)?.textContent).toContain('Canonical child history row 1198')
+            }
+            expect(host.querySelector<HTMLButtonElement>('button[aria-label="Refresh conversation"]')!.disabled).toBe(false)
+            await drainProgrammaticScrollFrames()
+            expect(envelopes.filter(item => item.action === 'openNativeSessionChat')).toHaveLength(imports.length)
+            expectNoInputOrGlobalNavigation(true)
+        } finally {
+            await act(async () => imports.forEach(pending => pending.finish(false)))
+        }
+    })
+})
 
 describe('actual NativeConversation held history ownership, authored UNRUN', () => {
     it('positively adopts the same-owner bounded target through real initial hydration without shared state mutation', async () => {
@@ -302,7 +623,7 @@ describe('passive summary ownership continuation controls, authored UNRUN', () =
         expect(refresh.disabled).toBe(false)
         await act(async () => refresh.click())
         expect(reimport).toHaveBeenCalledTimes(1)
-        expect(reimport).toHaveBeenCalledWith(parent.id, child.id, child.name, false)
+        expect(reimport).toHaveBeenCalledWith(parent.id, child.id, child.name, false, expect.any(Function))
         expect(reads()).toHaveLength(2)
         expect(reads()[1].payload?.messagesDigest).toBe('')
         await changeOnlyCatalogue('digest')

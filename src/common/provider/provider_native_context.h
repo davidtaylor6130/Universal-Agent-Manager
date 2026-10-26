@@ -332,11 +332,13 @@ namespace uam::provider_native_context
 			bool exited = false;
 			while (!stop_token.stop_requested() && std::chrono::steady_clock::now() < deadline)
 			{
+				// Observe exit before the final read: output written before exit is already in the pipe.
+				const bool exit_observed = service.PollStdioProcessExited(process, nullptr);
 				const std::ptrdiff_t read = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), nullptr);
 				if (read > 0) output.append(bytes.data(), static_cast<std::size_t>(read));
 				(void)service.ReadStdioProcessStderr(process, bytes.data(), bytes.size(), nullptr);
 				if (output.size() > 1024 * 1024) return false;
-				if (read <= 0 && service.PollStdioProcessExited(process, nullptr)) { exited = true; break; }
+				if (read <= 0 && exit_observed) { exited = true; break; }
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			if (!exited || stop_token.stop_requested()) return false;
@@ -451,6 +453,8 @@ namespace uam::provider_native_context
 			    std::array<char, 16384> bytes{};
 			    while (!stop_token.stop_requested() && std::chrono::steady_clock::now() < deadline)
 			    {
+				    // A response written just before exit is still read.
+				    const bool exit_observed = service.PollStdioProcessExited(process, nullptr);
 				    const std::ptrdiff_t read = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), nullptr);
 				    if (read > 0) buffered.append(bytes.data(), static_cast<std::size_t>(read));
 				    if (buffered.size() > 1024 * 1024) return false;
@@ -469,7 +473,7 @@ namespace uam::provider_native_context
 					    }
 					    end = buffered.find('\n');
 				    }
-				    if (service.PollStdioProcessExited(process, nullptr)) return false;
+				    if (exit_observed && read <= 0) return false;
 				    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			    }
 			    return false;

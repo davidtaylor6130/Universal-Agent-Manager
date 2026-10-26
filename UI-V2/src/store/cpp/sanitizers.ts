@@ -1,6 +1,6 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
-import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
@@ -69,11 +69,12 @@ import type { MemoryLevel } from '../../types/memory'
 import type { ResourceCollection, ResourceReferenceType } from '../../types/resourceCollection'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
   normalizeCliProviderIdAlias,
   SUPPORTED_CLI_PROVIDER_IDS,
   providerCapabilities,
 } from '../../utils/providerMetadata'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 // ---------------------------------------------------------------------------
 // Memory settings constants (re-exported so useAppStore.ts and slices can use them)
@@ -86,7 +87,6 @@ export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
 export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
-export const MIN_GOAL_MAX_LOOP_ITERATIONS = 1
 export const MAX_GOAL_MAX_LOOP_ITERATIONS = 200
 export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
 export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
@@ -299,6 +299,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     managedLaunchRunId: value.contentDeferred === true ? sanitizeManagedOriginRunId(value.managedLaunchRunId) : undefined,
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
@@ -401,6 +402,7 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     ...(isString(value.nativeSourceField) ? { nativeSourceField: value.nativeSourceField } : {}),
     ...(isString(value.nativeAssetKey) ? { nativeAssetKey: value.nativeAssetKey } : {}),
     ...(isString(value.contentDigest) ? { contentDigest: value.contentDigest } : {}),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
     ...(legacy ? { path } : {}),
   }
@@ -520,11 +522,11 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
       })
       : undefined,
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
-		interrupted: booleanOr(value.interrupted),
-		acpPromptNotSent: booleanOr(value.acpPromptNotSent),
-		acpPromptDiscarded: value.acpPromptDiscarded === true,
-		prioritySteer: booleanOr(value.prioritySteer),
-		continuesTurn: booleanOr(value.continuesTurn),
+    interrupted: booleanOr(value.interrupted),
+    acpPromptNotSent: booleanOr(value.acpPromptNotSent),
+    acpPromptDiscarded: value.acpPromptDiscarded === true,
+    prioritySteer: booleanOr(value.prioritySteer),
+    continuesTurn: booleanOr(value.continuesTurn),
     stopReason: isString(value.stopReason) && KNOWN_STOP_REASONS.has(value.stopReason) ? value.stopReason : undefined,
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
@@ -1023,7 +1025,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
-		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
+    lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
     pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
@@ -1035,10 +1037,10 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     loopCount: finiteNumberOr(value.loopCount, 0),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
-	executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
-	workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
-	reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
-	providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
+    executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
+    workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
+    reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
+    providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
   }
 }
 
@@ -1077,7 +1079,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     customIcon: sanitizeCustomIcon(value.customIcon),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
-    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    providerId: stringOr(value.providerId, DEFAULT_PROVIDER_ID),
     temporaryParentChatId: isString(value.temporaryParentChatId) ? value.temporaryParentChatId : undefined,
     sideCleanupRequested: booleanOr(value.sideCleanupRequested),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
@@ -1186,7 +1188,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     structuredPermissionControl: value.structuredPermissionControl === 'uam' ? 'uam' : 'provider',
     terminalPermissionControl: 'provider',
     npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
-	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
+    nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
 }
 
@@ -1238,7 +1240,7 @@ export function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | n
   return {
     isGitRepository: booleanOr(value.isGitRepository),
     isSvnWorkspace: booleanOr(value.isSvnWorkspace),
-	managedRepository: booleanOr(value.managedRepository),
+    managedRepository: booleanOr(value.managedRepository),
     isolated: booleanOr(value.isolated),
     sourceDirty: booleanOr(value.sourceDirty),
     worktreeDirty: booleanOr(value.worktreeDirty),
@@ -1328,28 +1330,13 @@ export function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
 // CLI version manager sanitisers
 // ---------------------------------------------------------------------------
 
-export const emptyCliVersionProviderState: CliVersionProviderState = {
-  providerId: GEMINI_CLI_PROVIDER_ID,
-  installedVersion: '',
-  selectedVersion: '',
-  availableVersions: [],
-  preferredVersion: '',
-  status: 'unknown',
-  message: '',
-  running: false,
-  installMethod: 'npm',
-  lastInstallStatus: 'none',
-  lastCommand: '',
-  lastOutput: '',
-}
-
 export const emptyCliVersionManager: CliVersionManager = {
   providers: [],
 }
 
 export function sanitizeCliVersionProviderState(value: unknown): CliVersionProviderState | null {
   if (!isRecord(value)) return null
-  const providerId = stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID).trim()
+  const providerId = stringOr(value.providerId, DEFAULT_PROVIDER_ID).trim()
   if (!providerId) return null
   const status = stringOr(value.status)
   const normalizedStatus: CliVersionProviderState['status'] =
@@ -1429,15 +1416,6 @@ export function sanitizeCliVersionManager(value: unknown): CliVersionManager | u
 
   const legacy = sanitizeCliVersionProviderState(value)
   return { providers: legacy ? [legacy] : [] }
-}
-
-export function upsertCliVersionProviderState(
-  providers: CliVersionProviderState[],
-  next: CliVersionProviderState
-): CliVersionProviderState[] {
-  const found = providers.some((provider) => provider.providerId === next.providerId)
-  if (!found) return [...providers, next]
-  return providers.map((provider) => provider.providerId === next.providerId ? next : provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,6 +1521,10 @@ function normalizeEditorExtension(value: string) {
   const trimmed = value.trim().toLowerCase()
   if (!trimmed) return ''
   return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
+}
+
+export function sanitizeWindowsPowerShell(value: unknown): WindowsPowerShellPreference {
+  return value === 'windows-powershell' || value === 'pwsh' ? value : 'auto'
 }
 
 export function sanitizeEditorPresetId(value: unknown) {
@@ -1652,7 +1634,7 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
     defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
     defaultSkills: Array.isArray(value.defaultSkills) ? value.defaultSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
     defaultAgents: Array.isArray(value.defaultAgents) ? value.defaultAgents.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
-    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled }] : []).slice(0, 4096) : [],
+    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' && (entry.kind === undefined || entry.kind === 'preference') ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled, ...(entry.kind === 'preference' ? { kind: 'preference' as const } : {}) }] : []).slice(0, 4096) : [],
   }
 }
 
@@ -1742,7 +1724,7 @@ function sanitizeCppSettingsPatch(value: Record<string, unknown>): Partial<CppSe
 export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
-      activeProviderId: GEMINI_CLI_PROVIDER_ID,
+      activeProviderId: DEFAULT_PROVIDER_ID,
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
@@ -1763,10 +1745,11 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryWorkerBindings: {},
       permissionReviewerProviderId: '',
       permissionReviewerModelId: '',
-      defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+      defaultNewChatProviderId: DEFAULT_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
       fileExplorerApplication: '',
+      windowsPowerShell: 'auto',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       centralProviderConfiguration: { ...DEFAULT_CENTRAL_PROVIDER_CONFIGURATION },
@@ -1818,7 +1801,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
           executionHostId: stringOr(entry.executionHostId),
           transport,
           command: stringOr(entry.command),
-		  args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
+          args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
           url: stringOr(entry.url),
           environment: references(entry.environment),
           headers: references(entry.headers),
@@ -1845,6 +1828,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         executionHosts[0].customIcon = sanitizeCustomIcon(entry.customIcon)
         continue
       }
+      if (!SSH_ENABLED) continue // Builds without SSH keep only this computer.
       const id = stringOr(entry.id).trim()
       const sshAlias = stringOr(entry.sshAlias).trim()
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
@@ -1888,7 +1872,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     ...sanitizeVoiceInputSettings(value),
     ...sanitizeVcsStorageSettings(value),
     providerAvailability: sanitizeProviderAvailability(value.providerAvailability),
-    activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
+    activeProviderId: stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID),
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
@@ -1909,10 +1893,11 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     memoryWorkerBindings: bindings,
     permissionReviewerProviderId: stringOr(value.permissionReviewerProviderId),
     permissionReviewerModelId: stringOr(value.permissionReviewerModelId),
-    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
+    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
     fileExplorerApplication: stringOr(value.fileExplorerApplication),
+    windowsPowerShell: sanitizeWindowsPowerShell(value.windowsPowerShell),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
@@ -1922,6 +1907,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     favoriteUamAgentIds,
     uamAgentCycleShortcut,
     computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
+    computerUseRevocationPending: typeof value.computerUseRevocationPending === 'boolean' ? value.computerUseRevocationPending : undefined,
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
     branchSwitching: typeof value.branchSwitching === 'boolean' ? value.branchSwitching : undefined,
     hostScopedSettings: typeof value.hostScopedSettings === 'boolean' ? value.hostScopedSettings : undefined,
@@ -1975,7 +1961,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   const resourceCollections = sanitizeResourceCollections(value.resourceCollections)
-	const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
+  const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
 
   const selectedChatId =
     isString(value.selectedChatId)
@@ -2038,19 +2024,19 @@ function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
     return [{
       providerId,
       workspaceDirectory,
-	  executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
+      executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
       availableModels: Array.isArray(entry.availableModels)
         ? entry.availableModels.flatMap((model) => {
             const sanitized = sanitizeAcpModel(model)
             return sanitized ? [sanitized] : []
           })
         : [],
-	  configOptions: Array.isArray(entry.configOptions)
-		? entry.configOptions.flatMap((option) => {
-			const sanitized = sanitizeAcpConfigOption(option)
-			return sanitized ? [sanitized] : []
-		  })
-		: [],
+      configOptions: Array.isArray(entry.configOptions)
+        ? entry.configOptions.flatMap((option) => {
+          const sanitized = sanitizeAcpConfigOption(option)
+          return sanitized ? [sanitized] : []
+        })
+        : [],
       currentModelId: normalizeAcpModelId(entry.currentModelId),
       modelsLoading: booleanOr(entry.modelsLoading),
       modelRefreshError: stringOr(entry.modelRefreshError),

@@ -1,4 +1,4 @@
-// UNRUN isolated controls for the exact R2 optional-onStarted proposal; no native delivery ACK is fabricated.
+// Originally UNRUN R2 controls; task-1217 exercises them through the in-process bridge fixture, without fabricating native delivery ACKs.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
 import { sanitizeCppAcpSession } from '../../store/cpp/sanitizers'
 import type { CppChat, CppMessage } from '../../store/cpp/types'
-import { captureContextReference } from '../../utils/contextReferences'
+import { captureContextReference, formatContextReferences } from '../../utils/contextReferences'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { outgoingScope, readOutgoingAttempts, resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
 
@@ -202,9 +202,13 @@ describe('ChatView exact outgoing action identity', () => {
     expect(sends()).toHaveLength(1); noNativeReplay()
   })
 
-  it.each(['goal', 'claude-plan'] as const)('uses the bridge for exact %s input without borrowing composer references or clearing a newer draft', async route => {
-    const reference = captureContextReference({ id: 'private-independent-reference', kind: 'message', sourceChatId: 'unrelated-chat', sourceMessageIndex: 7,
-      executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: BIRTH, label: 'Unrelated quote', text: 'DO NOT BORROW THIS COMPOSER QUOTE' })!
+  // David's task-1217 decision on 2026-10-23 includes the originally selected references in authored goal/Claude input.
+  // Generated plan commands keep their independent-draft exclusion test below.
+  // Contract: docs/documentation-review.md#referenced-context-action-sends.
+  it.each(['goal', 'claude-plan'] as const)('uses the bridge for frozen %s input with selected references while preserving a newer draft and later references', async route => {
+    const reference = captureContextReference({ id: 'private-selected-reference', kind: 'message', sourceChatId: 'source-chat', sourceMessageIndex: 7,
+      executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: BIRTH, label: 'Selected quote', text: 'SELECTED CONTEXT FOR THIS AUTHORED MESSAGE' })!
+    const later = { ...reference, id: 'later-reference', text: 'CONTEXT FOR THE NEXT MESSAGE' }
     const exact = route === 'goal' ? 'Exact  goal input.' : TEXT
     unmount()
     writeChatComposerDraft(ID, { text: route === 'goal' ? `/goal ${exact}` : exact, attachments: [], references: [reference] })
@@ -219,14 +223,15 @@ describe('ChatView exact outgoing action identity', () => {
       expect(keep).toBeTruthy(); await act(async () => keep.click())
     } else expect(requests.filter(request => request.action === 'setGoal')).toHaveLength(1)
     expect(sends()).toHaveLength(1)
-    expect(sends()[0].payload).toMatchObject({ text: exact, attachments: [], markdownStoreFiles: [], steerNow: false })
-    expect(String(sends()[0].payload.text)).not.toContain(reference.text)
+    expect(sends()[0].payload).toMatchObject({ text: `${exact}\n\n${formatContextReferences([reference])}`, attachments: [], markdownStoreFiles: [], steerNow: false })
+    expect(String(sends()[0].payload.text)).not.toContain(later.text)
     expect(readOutgoingAttempts(scope())[0].actionCorrelationId).toBe(sends()[0].requestId)
     await enter('A newer unrelated draft')
+    act(() => writeChatComposerDraft(ID, { ...readChatComposerDraft(ID), text: 'A newer unrelated draft', references: [reference, later] }))
     await act(async () => callbacks[0].ack())
     expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('A newer unrelated draft')
     act(() => window.dispatchEvent(new Event('pagehide')))
-    expect(readChatComposerDraft(ID)).toMatchObject({ text: 'A newer unrelated draft', references: [reference] })
+    expect(readChatComposerDraft(ID)).toMatchObject({ text: 'A newer unrelated draft', references: [later] })
     expect(sends()).toHaveLength(1); noNativeReplay()
   })
 

@@ -1,11 +1,14 @@
 #include "platform_speech_output.h"
+#include "common/utils/string_utils.h"
 
 #if defined(_WIN32)
+#include <winerror.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Core.h>
 #include <winrt/Windows.Media.Playback.h>
 #include <winrt/Windows.Media.SpeechSynthesis.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #include <cstdint>
 #include <mutex>
@@ -51,7 +54,7 @@ namespace uam
 				std::scoped_lock lock(s_mutex);
 				if (generation != s_generation) return;
 				s_state.speaking = false;
-				s_state.error = error.substr(0, 1024);
+				s_state.error = uam::strings::Utf8Prefix(error, 1024);
 				completed = std::move(s_player);
 			}
 		}

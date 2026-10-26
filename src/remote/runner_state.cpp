@@ -1,4 +1,5 @@
 #include "common/provider/provider_setup.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_state.h"
@@ -27,6 +28,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -69,6 +71,14 @@ namespace uam::remote
 	{
 		inline constexpr std::size_t kMaxSessionIdBytes = 128;
 		inline constexpr std::size_t kMaxWorkingDirectoryBytes = 4096;
+
+		// Bounded paths may exceed Windows MAX_PATH; std::filesystem needs the extended spelling for those.
+		std::filesystem::path FileSystemPath(const std::filesystem::path& path)
+		{
+			std::filesystem::path native;
+			std::string ignored;
+			return uam::io::NativeFilePath(path, native, ignored) ? native : path;
+		}
 		inline constexpr std::size_t kMaxArgumentCount = 256;
 		inline constexpr std::size_t kMaxArgumentBytes = 32 * 1024;
 		inline constexpr std::size_t kMaxEnvironmentEntries = 128;
@@ -531,6 +541,8 @@ namespace uam::remote
 			process.drainer = std::jthread([&process](std::stop_token stop_token)
 			{
 				auto idle_delay = kInitialIdleDrainDelay;
+				std::mutex idle_mutex;
+				std::condition_variable_any idle_wake;
 				bool exit_observed = false;
 				int exit_code = -1;
 				std::ofstream stdout_stream(process.stdout_spool,
@@ -551,6 +563,7 @@ namespace uam::remote
 						    LeaseClockMilliseconds() >= process.lease_deadline_ms.load(
 						        std::memory_order_acquire))
 						{
+							process.lease_terminating.store(true, std::memory_order_release);
 							std::scoped_lock lock(process.mutex);
 							ProcessService().TerminateStdioProcess(process.fields, true);
 							process.exit_code.store(-1, std::memory_order_release);
@@ -597,7 +610,13 @@ namespace uam::remote
 					}
 					if (stdout_bytes.empty() && stderr_bytes.empty())
 					{
-						std::this_thread::sleep_for(idle_delay);
+						// Wake for stop requests and at the lease deadline, so stop and lease cleanup never wait out an idle backoff.
+						auto delay = idle_delay;
+						if (process.transient_lease)
+							delay = std::clamp(std::chrono::milliseconds(process.lease_deadline_ms.load(std::memory_order_acquire) - LeaseClockMilliseconds()),
+							                   std::chrono::milliseconds(0), idle_delay);
+						std::unique_lock wait_lock(idle_mutex);
+						(void)idle_wake.wait_for(wait_lock, stop_token, delay, [] { return false; });
 						idle_delay = std::min(idle_delay * 2, kMaximumIdleDrainDelay);
 					}
 					else
@@ -721,7 +740,8 @@ namespace uam::remote
 				std::atomic<bool>& active;
 				~CleanupClaim() { active.store(false, std::memory_order_release); }
 			} claim{process->retirement_cleanup_active};
-			if (!CleanupProcess(process, true)) continue;
+			// The drainer's own bounded lease kill holds the mutex; wait for it rather than report the dying process as live.
+			if (!CleanupProcess(process, !process->lease_terminating.load(std::memory_order_acquire))) continue;
 			std::scoped_lock lock(m_stateMutex);
 			const auto found = m_retiringProcesses.find(session_id);
 			if (found != m_retiringProcesses.end() && found->second == process)
@@ -777,10 +797,6 @@ namespace uam::remote
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
-#if !UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		if (type == "opencode.native" || type == "opencode.terminal.observe")
-			return ProcessError(request, "unsupported_request", "This request is unavailable in this build.");
-#endif
 		if (type == "path.inspect")
 		{
 			state_lock.unlock();
@@ -804,7 +820,8 @@ namespace uam::remote
 				const std::optional<std::filesystem::path> home = env::GetUserHomePath();
 				if (!home || !home->is_absolute()) return ProcessError(request, "usage_unavailable", "The runner user data directory is unavailable.");
 				// Resolve history on its worker; remote clients cannot supply provider or cache paths.
-				m_usageHistory = std::make_shared<uam::usage::Collector>(*home / ".uam" / "runner-usage", true);
+				// Collection parks after ten minutes without a usage request, so an unattended helper idles near zero CPU.
+				m_usageHistory = std::make_shared<uam::usage::Collector>(*home / ".uam" / "runner-usage", true, std::chrono::minutes(10));
 			}
 			const std::shared_ptr<uam::usage::Collector> history = m_usageHistory;
 			state_lock.unlock();
@@ -952,16 +969,17 @@ namespace uam::remote
 			for (const std::string& category : uam::memory::SupportedCategories())
 			{
 				const std::filesystem::path directory = workspace / ".UAM" / category;
+				const std::filesystem::path native_directory = FileSystemPath(directory);
 				std::error_code error;
-				if (!std::filesystem::exists(directory, error) && !error) continue;
-				if (error || !std::filesystem::is_directory(directory, error))
+				if (!std::filesystem::exists(native_directory, error) && !error) continue;
+				if (error || !std::filesystem::is_directory(native_directory, error))
 					return ProcessError(request, "read_failed", "Remote project memory cannot be opened.");
-				std::filesystem::directory_iterator iterator(directory, error);
+				std::filesystem::directory_iterator iterator(native_directory, error);
 				for (; !error && iterator != std::filesystem::directory_iterator{}; iterator.increment(error))
 				{
 					if (iterator->path().extension() != ".md") continue;
 					if (files.size() == 200) return ProcessError(request, "too_large", "Remote project memory contains more than 200 files.");
-					files.push_back(iterator->path());
+					files.push_back(directory / iterator->path().filename()); // Keep the caller's spelling for references.
 				}
 				if (error) return ProcessError(request, "read_failed", "Remote project memory cannot be listed.");
 			}
@@ -993,6 +1011,7 @@ namespace uam::remote
 			}
 			return ProcessSuccess(request, {{"text", text}});
 		}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (type == "opencode.terminal.observe")
 		{
 			// The random credential is delivered only to this TUI through its private launch channel.
@@ -1021,6 +1040,7 @@ namespace uam::remote
 				return ProcessError(request, "native_observation_unavailable", error);
 			return ProcessSuccess(request, std::move(result));
 		}
+#endif
 		if (type == "workspace.file.read" || type == "workspace.attachment.read")
 		{
 			const bool attachment = type == "workspace.attachment.read";
@@ -1053,8 +1073,9 @@ namespace uam::remote
 			const std::string workspace = native_history::String(request, "workspace");
 			std::string token = native_history::String(request, "snapshotId");
 			const bool existing_snapshot = !token.empty();
-			if ((provider != "claude-cli" && provider != "copilot-cli" && provider != "gemini-cli") ||
-			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != "claude-cli" && provider != "gemini-cli"))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
+			// The excluded-provider placeholder equals every excluded provider's id, so it is never a valid request.
+			if (provider == uam::provider_ids::kExcludedCliProviderId || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kGeminiCli) ||
+			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
 			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace) ||
 			    (!token.empty() && !native_history::SafeId(token)))
 				return ProcessError(request, "invalid_request", "An exact provider, native session and workspace are required.");
@@ -1126,16 +1147,17 @@ namespace uam::remote
 			for (const std::filesystem::path& part : path.relative_path())
 			{
 				ancestor /= part;
-				if (std::filesystem::is_symlink(std::filesystem::symlink_status(ancestor, error)))
+				if (std::filesystem::is_symlink(std::filesystem::symlink_status(FileSystemPath(ancestor), error)))
 					return ProcessError(request, "unsafe_path", "Context files cannot use symbolic links.");
 				if (error) return ProcessError(request, "read_failed", "The remote context file cannot be inspected.");
 			}
-			if (!std::filesystem::is_regular_file(path, error) || error)
+			const std::filesystem::path native_path = FileSystemPath(path);
+			if (!std::filesystem::is_regular_file(native_path, error) || error)
 				return ProcessError(request, "not_found", "The remote context file does not exist or is not a regular file.");
-			const std::uintmax_t size = std::filesystem::file_size(path, error);
+			const std::uintmax_t size = std::filesystem::file_size(native_path, error);
 			if (error || size > 256 * 1024)
 				return ProcessError(request, "too_large", "Context files must be at most 256 KiB.");
-			std::ifstream input(path, std::ios::binary);
+			std::ifstream input(native_path, std::ios::binary);
 			std::string text(static_cast<std::size_t>(size), '\0');
 			if (!input || (size != 0 && !input.read(text.data(), static_cast<std::streamsize>(size))) || input.peek() != std::char_traits<char>::eof())
 				return ProcessError(request, "read_failed", "The remote context file could not be read consistently.");
@@ -1694,6 +1716,8 @@ namespace uam::remote
 				return ProcessError(request, "start_failed",
 				                    error.empty() ? "The remote process could not start." : error);
 			}
+			// Restart the lease once running; a slow spawn must not consume it before the first renewal.
+			RenewLease(*process);
 			StartDrainer(*process);
 			process->ready.store(true, std::memory_order_release);
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", true},
@@ -1720,6 +1744,7 @@ namespace uam::remote
 			return ProcessError(request, "session_starting",
 			                    "The remote process is still starting.");
 		RenewLease(process);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (type == "opencode.native")
 		{
 			if (process.exited.load(std::memory_order_acquire) || !request.contains("operation") || !request["operation"].is_object())
@@ -1751,6 +1776,7 @@ namespace uam::remote
 				return ProcessError(request, "native_control_failed", error);
 			return ProcessSuccess(request, std::move(result));
 		}
+#endif
 		if (type == "process.remove")
 		{
 			if (!process.exited.load(std::memory_order_acquire))

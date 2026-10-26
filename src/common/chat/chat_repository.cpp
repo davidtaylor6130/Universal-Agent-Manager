@@ -23,6 +23,7 @@
 #include "common/platform/platform_services.h"
 #include <stdexcept>
 #include "common/provider/provider_runtime.h"
+#include "common/provider/native_session_storage_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/codex_thread_id.h"
 #include "common/provider/native_agent_history.h"
@@ -124,6 +125,7 @@ namespace
 	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatOpenCodeV2SessionIdField = "opencode_v2_session_id";
 	constexpr std::string_view kChatRemoteClaudeSessionUnstartedField = "remote_claude_session_unstarted";
 	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatRemoteProcessExistsField = "remote_process_exists";
@@ -291,7 +293,7 @@ namespace
 
 	bool HasOwnedClaudeMaintenanceTerminalReceipt(const ChatSession& chat)
 	{
-		if (chat.provider_id != "claude-cli" || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" ||
+		if (chat.provider_id != uam::provider_ids::kClaudeCli || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" ||
 		    !uam::uuid::IsCanonicalUuid(chat.native_session_id) || chat.execution_host_id.size() > 128 ||
 		    chat.remote_process_control_token.empty() || chat.remote_process_control_token.size() > 256 ||
 		    chat.remote_manual_compaction_boundary_json.empty() || chat.remote_manual_compaction_boundary_json.size() > 2048) return false;
@@ -608,6 +610,8 @@ namespace
 			uam::json::SetBool(obj, "include_prior_context", true);
 		if (prompt.direct_admission)
 			uam::json::SetBool(obj, "direct_admission", true);
+		if (prompt.repository_baseline_hold)
+			uam::json::SetBool(obj, "repository_baseline_hold", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -741,6 +745,11 @@ namespace
 		{
 			if (direct_admission->type != JsonValue::Type::Bool) return std::nullopt;
 			prompt.direct_admission = direct_admission->bool_value;
+		}
+		if (const JsonValue* baseline_hold = obj.Find("repository_baseline_hold"); baseline_hold != nullptr)
+		{
+			if (baseline_hold->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.repository_baseline_hold = baseline_hold->bool_value;
 		}
 		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
 		{
@@ -1490,6 +1499,7 @@ namespace
 		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
 		       lhs.include_prior_context == rhs.include_prior_context &&
 		       lhs.direct_admission == rhs.direct_admission &&
+		       lhs.repository_baseline_hold == rhs.repository_baseline_hold &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
@@ -1522,6 +1532,7 @@ namespace
 	{
 		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
 		       lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id &&
+		       lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		       lhs.managed_parent_input_receipts == rhs.managed_parent_input_receipts && lhs.managed_parent_result == rhs.managed_parent_result &&
 		       lhs.managed_followup_incarnation == rhs.managed_followup_incarnation &&
 		       lhs.managed_followup_input_unavailable == rhs.managed_followup_input_unavailable;
@@ -1676,9 +1687,14 @@ namespace
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
+	std::string SummaryDigest(std::string_view updated_at, std::size_t message_count)
+	{
+		return std::string(updated_at) + ":" + std::to_string(message_count);
+	}
+
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
-		return chat.updated_at + ":" + std::to_string(message_count);
+		return SummaryDigest(chat.updated_at, message_count);
 	}
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -1972,6 +1988,11 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		if (root.Find(kChatOpenCodeV2SessionIdField) != nullptr)
+		{
+			const std::string origin = JsonStringOrEmpty(root.Find(kChatOpenCodeV2SessionIdField));
+			chat.opencode_v2_session_id = origin.starts_with("ses_") && origin.size() <= 512 && uam::execution_hosts::IsPortableId(origin) ? origin : "";
+		}
 		if (const JsonValue* quota = root.Find("claude_quota_continuation"); quota != nullptr && quota->type == JsonValue::Type::Object)
 		{
 			ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -1994,7 +2015,7 @@ namespace
 			    index >= 0 && index <= std::numeric_limits<int>::max() && std::floor(index) == index &&
 			    count > index && count <= std::numeric_limits<int>::max() && std::floor(count) == count &&
 			    !owner.id.empty() && owner.id.size() <= 128 && owner.context.size() <= 32768 && owner.accepted_message_digest.size() == 16 &&
-			    owner.chat_id == chat.id && owner.native_session_id == chat.native_session_id && chat.provider_id == "claude-cli")
+			    owner.chat_id == chat.id && owner.native_session_id == chat.native_session_id && chat.provider_id == uam::provider_ids::kClaudeCli)
 			{
 				owner.observed_at_epoch_s = static_cast<int64_t>(observed);
 				owner.resets_at_epoch_s = static_cast<int64_t>(reset);
@@ -2566,7 +2587,7 @@ namespace
 		}
 
 		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
-		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
 			chat.branch_root_chat_id = chat.id;
@@ -2611,7 +2632,11 @@ namespace
 		if (expected_source_size > 0 &&
 		    chat.persisted_messages_digest != SummaryDigest(chat, chat.persisted_message_count))
 		{
-			return {std::nullopt, "contains a stale message digest"};
+			// Saves digest the stored timestamp; the load fallbacks above may fill an empty one.
+			// Report the filled form a primary load derives instead of rejecting and rewriting the cache.
+			if (chat.persisted_messages_digest != SummaryDigest(JsonStringOrEmpty(root.Find(kChatUpdatedAtField)), chat.persisted_message_count))
+				return {std::nullopt, "contains a stale message digest"};
+			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 		}
 
 		if (publish_summary_cache && !include_messages && expected_source_size == 0 && path.extension() == ".json")
@@ -3373,10 +3398,11 @@ namespace
 			JsonStringOrEmpty(document->Find("temporary_storage_owner_token")) == token && StorageRevision(primary) == revision;
 	}
 
-	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs)
+	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs, bool require_same_recency = true)
 	{
-		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
+		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && (!require_same_recency || lhs.updated_at == rhs.updated_at) && lhs.provider_id == rhs.provider_id &&
 		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
+		    lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		    lhs.temporary_storage_owner_token == rhs.temporary_storage_owner_token &&
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
@@ -3458,6 +3484,30 @@ bool ChatRepository::MatchesMessagePage(const ChatSession& current, const ChatMe
 	return !current.messages_loaded && PageOwnerMatches(current, page.chat) &&
 	    current.persisted_message_count == page.total_count &&
 	    current.persisted_messages_digest == page.chat.persisted_messages_digest;
+}
+
+std::optional<ChatMessagePage> ChatRepository::ReadSavedPrimaryMessagePage(const fs::path& data_root,
+    std::string_view chat_id, std::size_t limit, std::optional<std::size_t> before,
+    std::string* warning_out, const std::function<bool()>& cancelled)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || limit == 0 || limit > 200) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	if (uam::paths::IsLinkOrReparsePointNoThrow(primary) || uam::paths::IsLinkOrReparsePointNoThrow(uam::chat_pages::IndexPath(primary))) return std::nullopt;
+	const auto revision = ChatStorageRevision(data_root, chat_id);
+	if (!revision || *revision == "missing" || (cancelled && cancelled())) return std::nullopt;
+	const auto index = EnsureMessageIndex(primary, *revision, chat_id, cancelled);
+	const auto metadata = index ? ReadIndexedMetadata(primary, *index) : std::nullopt;
+	if (!metadata || ChatStorageRevision(data_root, chat_id) != revision) return std::nullopt;
+	// The strict existing page reader verifies this primary's own metadata/count,
+	// each selected span and the physical revision. Only its derived index may change.
+	auto page = ReadMessagePage(data_root, *metadata, limit, before, warning_out, cancelled);
+	if (!page || page->storage_revision != *revision) return std::nullopt;
+	return page;
+}
+
+bool ChatRepository::MatchesSavedPrimaryObservation(const ChatSession& current, const ChatMessagePage& page)
+{
+	return PageOwnerMatches(current, page.chat, false);
 }
 
 namespace
@@ -3949,6 +3999,7 @@ try
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	if (chat.opencode_v2_session_id) uam::json::SetString(root, kChatOpenCodeV2SessionIdField, *chat.opencode_v2_session_id);
 	if (!chat.claude_quota_continuation.id.empty())
 	{
 		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -4697,8 +4748,9 @@ catch (const std::exception& error)
 	return nullptr;
 }
 
-bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned)
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned, ChatPublicationState* primary_publication_state, const std::function<bool(uam::io::AtomicWriteStage)>& primary_stage_hook_for_tests)
 {
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Rejected;
 	if (!prepared) return false;
 	if (!PreparedChatAcknowledgementMatches(*prepared, committed_chat)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
@@ -4709,7 +4761,9 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	if (prepared->primary_temp.empty())
 		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	if (!CanonicalBirthAllowsStage(prepared->primary_path, prepared->primary_temp)) return false;
-	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Uncertain;
+	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, primary_stage_hook_for_tests, sync_directory);
+	if (primary_publication_state && primary.primary_committed) *primary_publication_state = ChatPublicationState::Committed;
 	if (!primary.success) return false;
 	if (!prepared->index_temp.empty()) (void)uam::io::CommitSyncedAtomicTemp(prepared->index_path, prepared->index_temp, false, {}, sync_directory);
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
@@ -5147,32 +5201,44 @@ bool ChatRepository::MatchesTemporaryChatSaveReceipt(const fs::path& data_root, 
 
 namespace
 {
-	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id)
+	const char* RemovalOutcome(bool removed, const std::error_code& error)
+	{
+		return error ? "error" : (removed ? "removed" : "absent");
+	}
+
+	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 	{
 		ChatStorageDeleteResult result;
 		if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
 		{
 			result.unsafe_chat_id = true;
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", unsafe chat id");
 			return result;
 		}
 
 		if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
 		{
 			result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) + ", queue directory is a link");
 			return result;
 		}
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
 		uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
 		const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
-		uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+		const bool primary_removed = uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
-		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
+		const bool backup_removed = uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
 		const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 		uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
 		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
 		    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
+		// Ids and outcomes only: the sole UAM path that removes a chat primary must leave an attributable record.
+		uam::diagnostics::Write("Chat storage delete: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) +
+		    ", primary=" + RemovalOutcome(primary_removed, result.metadata_file_error) +
+		    ", backup=" + RemovalOutcome(backup_removed, result.metadata_backup_file_error) +
+		    ", result=" + (result.Failed() ? "failed" : "ok"));
 		return result;
 	}
 
@@ -5185,13 +5251,13 @@ bool ChatRepository::DeleteTemporaryChatIfRevision(const fs::path& data_root, st
 		!MatchesTemporaryChatSaveReceipt(data_root, chat_id, expected_revision)) return false;
 	const std::optional<ChatSession> child = LoadLocalChat(data_root, std::string(chat_id), false);
 	if (!child || child->temporary_parent_chat_id != parent_id) return false;
-	return !DeleteChatStorageFilesLocked(data_root, chat_id).Failed();
+	return !DeleteChatStorageFilesLocked(data_root, chat_id, "temporary_side_chat").Failed();
 }
 
-ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id)
+ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 {
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
-	return DeleteChatStorageFilesLocked(data_root, chat_id);
+	return DeleteChatStorageFilesLocked(data_root, chat_id, reason);
 }
 
 ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
@@ -5224,7 +5290,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	}
 
 	ApplyChatTimestampFallbacks(chat);
-	ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+	uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
 	{
@@ -5473,7 +5539,7 @@ namespace
 
 		const std::string previous_id = backup_chat.chat->id;
 		recovered.id = recovered_id;
-		ProviderRuntimeRegistry::ResolveById(recovered.provider_id).NormalizeLoadedNativeSessionId(recovered);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(recovered);
 
 		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 		{
@@ -6079,14 +6145,14 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 		if (!primary_confirmed)
 		{
 			result.state = primary.allowed ? ChatPublicationState::Uncertain : ChatPublicationState::Rejected;
-			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : primary.written.error.substr(0, 1024);
+			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 			collect_evidence();
 			return result;
 		}
 		result.state = ChatPublicationState::Committed;
 		result.backup_degraded = primary.written.backup_degraded ||
 		    (!primary.written.success && prepared->m_mode == ChatPublicationMode::UpdateExisting);
-		if (!primary.written.error.empty()) result.error = primary.written.error.substr(0, 1024);
+		if (!primary.written.error.empty()) result.error = std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 		if (committed_chat != nullptr) committed_chat->acp_queue_full_save_revision = legacy.published_queue_full_revision;
 		AcknowledgePreparedHistory(legacy, committed_chat);
 
@@ -6099,7 +6165,7 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 			{
 				result.secondary_degraded = true;
 				if (result.error.empty()) result.error = outcome.written.error.empty() ?
-				    "Chat primary committed; secondary publication degraded." : outcome.written.error.substr(0, 1024);
+				    "Chat primary committed; secondary publication degraded." : std::string(uam::strings::Utf8Prefix(outcome.written.error, 1024));
 			}
 			return !outcome.allowed || outcome.confirmed; // Stop subsequent secondary writes after uncertainty.
 		};
@@ -6410,6 +6476,15 @@ StoppedChatLaunchPublicationResult ChatRepository::PublishStoppedChatLaunchStora
 		auto receipt = std::shared_ptr<StoppedChatLaunchStorageReceipt>(new StoppedChatLaunchStorageReceipt());
 		receipt->m_root = prepared->m_root;
 		receipt->m_graph = std::move(committed);
+		if (prepared->m_own_predecessor)
+		{
+			receipt->m_launch_origin = prepared->m_own_predecessor->m_launch_origin;
+		}
+		else if (prepared->m_stopped_read && receipt->m_graph.remote_process_exists && !receipt->m_graph.remote_structured_protocol.empty())
+		{
+			receipt->m_initial_transport_launch = true;
+			receipt->m_launch_origin = std::make_shared<const std::uint8_t>(0);
+		}
 		receipt->m_queue_path = prepared->m_own_predecessor ? prepared->m_own_predecessor->m_queue_path : prepared->m_stopped_read->m_queue_path;
 		receipt->m_inline_primary = prepared->m_inline_primary;
 		receipt->m_index_path = uam::chat_pages::IndexPath(prepared->m_legacy.primary_path);

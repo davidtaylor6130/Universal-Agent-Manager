@@ -1,5 +1,6 @@
 import type { HostScopedSettingsValues } from '../store/cpp/types'
 import type { ExecutionHost } from '../types/session'
+import { isSshHost } from './remoteWorkspace'
 
 /** Settings scope id meaning "every environment" (the default). */
 export const SETTINGS_ALL_ENVIRONMENTS = '*'
@@ -24,7 +25,7 @@ export function defaultsForExecutionHost(state: {
   hostScopedSettingsValues: Record<string, HostScopedSettingsValues>
   executionHosts: ExecutionHost[]
 }, hostId: string): Pick<HostScopedSettingsValues, 'defaultNewChatProviderId' | 'providerChatDefaults'> {
-  if (!state.executionHosts.some(host => host.id === hostId && host.transport === 'ssh')) return state
+  if (!state.executionHosts.some(host => host.id === hostId && isSshHost(host))) return state
   // ponytail: an SSH host with no scoped settings gets empty defaults, not the controller's
   return state.hostScopedSettingsValues[hostId] ?? { defaultNewChatProviderId: '', providerChatDefaults: {} }
 }

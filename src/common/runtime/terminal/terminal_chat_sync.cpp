@@ -358,9 +358,13 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 	const std::string selected_before_id = NormalizeChatSyncTargetId(selected_before);
 	const std::string previous_composer_text = app.composer_text;
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
-	const std::string previous_selected = uam::strings::NonEmptyOrFallback(selected_before_id, preferred_id);
 
-	if (preserve_selection && ChatExists(app, selected_before_id))
+	if (selected_before_id.empty())
+	{
+		// No open chat (closed, or cleared by deletion): a background sync must not open one.
+		ChatDomainService().SelectChatById(app, "");
+	}
+	else if (preserve_selection && ChatExists(app, selected_before_id))
 	{
 		ChatDomainService().SelectChatById(app, selected_before_id);
 	}
@@ -368,9 +372,9 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 	{
 		ChatDomainService().SelectChatById(app, preferred_id);
 	}
-	else if (ChatExists(app, previous_selected))
+	else if (ChatExists(app, selected_before_id))
 	{
-		ChatDomainService().SelectChatById(app, previous_selected);
+		ChatDomainService().SelectChatById(app, selected_before_id);
 	}
 	else if (!app.chats.empty())
 	{

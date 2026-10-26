@@ -293,6 +293,8 @@ namespace uam
 		bool include_prior_context = false;
 		/// <summary>Direct input awaiting admission, distinct from a follow-up queued behind active work.</summary>
 		bool direct_admission = false;
+		/// <summary>Held because its pre-launch repository baseline failed; explicit receipt Retry re-runs that baseline.</summary>
+		bool repository_baseline_hold = false;
 		bool prepared_for_delivery = false;
 		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
@@ -642,6 +644,8 @@ struct ChatSession
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
+	/// Inert V2 origin/refusal hint, bound to that exact native ID; never resume or input authority.
+	std::optional<std::string> opencode_v2_session_id;
 	std::optional<ManagedParentResultRecord> managed_parent_result;
 	std::vector<ManagedParentInputReceipt> managed_parent_input_receipts;
 	/// Codec presence only; an absent legacy key is distinct from a present empty/invalid collection.
@@ -952,6 +956,10 @@ struct ExecutionHost
 	std::optional<std::string> instruction_text;
 	std::optional<std::string> runner_startup_applied;
 	std::string runner_startup_error;
+	/// Durable installation authority fence; a health handshake cannot clear it.
+	bool runner_install_unresolved = false;
+	std::string runner_install_nonce;
+	std::string runner_install_identity;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -969,6 +977,7 @@ struct ProviderMcpOverride
 	std::string execution_host_id;
 	std::string server_id;
 	bool enabled = true;
+	bool is_preference = false;
 };
 
 /// <summary>Resources UAM installs privately for configured provider launches.</summary>
@@ -1054,6 +1063,9 @@ struct AppSettings
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 	std::string permission_reviewer_provider_id;
+	/// <summary>Settings key to {saved id of a provider this build excludes, included fallback used instead}. Saving writes the
+	/// saved id back while the fallback is still selected, so a build that includes the provider finds the choice again.</summary>
+	std::map<std::string, std::pair<std::string, std::string>> excluded_provider_selections;
 	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
@@ -1062,6 +1074,7 @@ struct AppSettings
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
 	std::string file_explorer_application;
+	std::string windows_powershell = "auto";
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	CentralProviderConfiguration central_provider_configuration;

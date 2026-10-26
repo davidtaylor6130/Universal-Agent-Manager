@@ -4,6 +4,8 @@ Chat services own conversation creation, selection, organisation, branching and 
 
 The explicit Chat Data local discovery action reuses the startup native-import service, all six provider readers and selected-new-chat publication policy. Replacing settled staging creates a new generation without changing saved chats or deletion records; active discovery/import cannot be replaced. Unmatched local native histories remain staged until explicit source-workspace assignment, and the reviewed folder plan uses existing background preparation, catalogue comparison, guarded folder/chat saves and empty-folder cleanup. Antigravity isolates bounded native main/WAL snapshots before SQLite reads and authenticates supported legacy ciphertext before memory-only decoding; selected image originals use the existing worker-owned media preparation and uncertain-publication retention. Discovery and assignment do not publish workspace ownership or acquire SSH execution authority.
 
+Discovery producers own parsed inline media before batch admission through bounded worker cleanup leases carried by every retained payload handle. Their capacity is independent of batch preparation; publication and original-file acknowledgement retain their separate final-owner and storage guards under the [native import agreement](../chat/native-imports.md#discovery-media-lifetime).
+
 [Chat](../chat/chat.md) · [Workspaces](../workspaces/workspaces.md) · [Imports](../chat/imports.md).
 
 [Engineering reference](../reference/architecture/chats-imports-workspaces.md).

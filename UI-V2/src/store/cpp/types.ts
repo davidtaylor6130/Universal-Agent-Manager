@@ -10,6 +10,9 @@ import type { GoalStatus } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+
+/** Which PowerShell hosts UAM's Windows terminal windows; auto prefers built-in Windows PowerShell 5.1. */
+export type WindowsPowerShellPreference = 'auto' | 'windows-powershell' | 'pwsh'
 import type { ComputerUseBackend, ComputerUseEffectiveBackend, ComputerUseState, ExecutionHost } from '../../types/session'
 
 export type CliLifecycleState = 'disabled' | 'starting' | 'stopped' | 'idle' | 'busy' | 'shuttingDown' | 'unknown'
@@ -761,6 +764,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   providerChatDefaults?: Record<string, ProviderChatDefaults>
   markdownStoreDirectory?: string
   fileExplorerApplication?: string
+  windowsPowerShell?: WindowsPowerShellPreference
   defaultEditorPresetId?: string
   editorFileAssociations?: EditorFileAssociation[]
   centralProviderConfiguration?: CentralProviderConfiguration
@@ -769,8 +773,10 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
-  /** Global Computer Use consent (settings.computerUseGloballyEnabled). Off when absent. */
+  /** Saved global Computer Use consent. Unknown when absent; does not grant a target. */
   computerUseGloballyEnabled?: boolean
+  /** Native owned-resource cleanup remains incomplete. Unknown when absent. */
+  computerUseRevocationPending?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
 
@@ -1071,7 +1077,7 @@ export type ParsedPushResult =
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
 
 export interface CentralProviderConfiguration {
-  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean }>
+  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>
   enabled: boolean
   instructions: string
   instructionFiles: string[]

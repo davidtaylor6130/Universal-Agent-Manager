@@ -475,6 +475,7 @@ namespace uam::remote
 				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
 				{ std::cerr << error << '\n'; return 70; }
 			}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 			if (private_launch)
 			{
 #if defined(_WIN32)
@@ -483,6 +484,7 @@ namespace uam::remote
 				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "posix");
 #endif
 			}
+#endif
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
@@ -698,40 +700,6 @@ namespace uam::remote
 			}
 			return 70;
 		}
-		RunnerClient poll_client(process_service,
-		                         SshBridgeArgv(ssh_alias, platform, version,
-		                                       runner_directory, protocol_version), version,
-		                         protocol_version);
-		if (protocol_version >= 3)
-			poll_client.SetProcessControlToken(session_id, spec->delivery_token);
-		if (!poll_client.Connect(&error))
-		{
-			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
-			return 70;
-		}
-		RunnerClient* poll_channel = &poll_client;
-		ProcessPollResult first_poll;
-		if (prefetched_poll.has_value())
-		{
-			// The attach probe already supplied the first durable batch.
-		}
-		else if (poll_client.PollProcess(session_id, first_poll, &error))
-		{
-			prefetched_poll = std::move(first_poll);
-		}
-		else if (error.find("does not exist") != std::string::npos)
-		{
-			// bridge-direct is an isolated test/development transport. Production
-			// bridges share the resident runner service and use the independent
-			// polling channel so an explicit stop can interrupt a blocked poll.
-			poll_channel = &client;
-			error.clear();
-		}
-		else
-		{
-			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
-			return 70;
-		}
 
 		#if defined(_WIN32)
 		WindowsPipeInput windows_input;
@@ -892,6 +860,44 @@ namespace uam::remote
 			}
 			return false;
 		};
+		RunnerClient poll_client(process_service,
+		                         SshBridgeArgv(ssh_alias, platform, version,
+		                                       runner_directory, protocol_version), version,
+		                         protocol_version);
+		if (protocol_version >= 3)
+			poll_client.SetProcessControlToken(session_id, spec->delivery_token);
+		// The poll channel's bridge can take long to start; honor a stop that arrives meanwhile.
+		bool poll_interrupted = false;
+		if (!poll_client.Connect(&error, {}, stop_while_polling))
+		{
+			if (stop_completed) return 0;
+			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
+			return 70;
+		}
+		RunnerClient* poll_channel = &poll_client;
+		ProcessPollResult first_poll;
+		if (prefetched_poll.has_value())
+		{
+			// The attach probe already supplied the first durable batch.
+		}
+		else if (poll_client.PollProcess(session_id, first_poll, &error, stop_while_polling, &poll_interrupted))
+		{
+			prefetched_poll = std::move(first_poll);
+		}
+		else if (poll_interrupted && stop_completed) return 0;
+		else if (error.find("does not exist") != std::string::npos)
+		{
+			// bridge-direct is an isolated test/development transport. Production
+			// bridges share the resident runner service and use the independent
+			// polling channel so an explicit stop can interrupt a blocked poll.
+			poll_channel = &client;
+			error.clear();
+		}
+		else
+		{
+			std::cerr << (error.empty() ? "Remote process polling could not start." : error) << '\n';
+			return 70;
+		}
 		for (;;)
 		{
 			if (!input_closed)

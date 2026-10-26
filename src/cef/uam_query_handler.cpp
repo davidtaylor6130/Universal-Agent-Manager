@@ -5,6 +5,8 @@
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
+#include "app/data_folder_settings_service.h"
+#include "cef/uam_query_handler_async.h"
 
 #include "include/cef_task.h"
 #include "include/views/cef_browser_view.h"
@@ -12,6 +14,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -55,6 +58,12 @@ namespace
 			callback->Failure(503, "The native window is unavailable.");
 			return;
 		}
+		if (action == "quitApplication")
+		{
+			callback->Success("{}");
+			CefPostTask(TID_UI, new CloseWindowTask(window));
+			return;
+		}
 		if (action == "restartApplication")
 		{
 			if (!uam::platform::RequestApplicationRestart())
@@ -93,6 +102,47 @@ namespace
 	}
 }
 
+void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!uam::DataFolderSettingsService::kTransfersValidated)
+	{
+		cb->Failure(409, "Restart to apply a data folder remains disabled until native handoff validation is adequate.");
+		return;
+	}
+	const auto view = browser && !browser->IsPopup() ? CefBrowserView::GetForBrowser(browser) : nullptr;
+	const auto window = view ? view->GetWindow() : nullptr;
+	const auto service = m_app.data_folder_settings;
+	if (!window || !service || service->StartupRoot() != m_app.data_root || !payload.is_object() || payload.size() != 1 || !payload.contains("expectedRevision") || !payload["expectedRevision"].is_string() || payload["expectedRevision"].get_ref<const std::string&>().empty() || payload["expectedRevision"].get_ref<const std::string&>().size() > 300)
+	{
+		cb->Failure(400, "Restart requires the exact observed local folder revision and native window owner.");
+		return;
+	}
+	const auto revision = payload["expectedRevision"].get<std::string>();
+	if (std::any_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) || std::any_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; }))
+	{
+		cb->Failure(409, "Stop active provider sessions before requesting a data-folder transfer. Their teardown has no generic confirmed-stop receipt.");
+		return;
+	}
+	(void)uam::query_handler_async::RunAsyncCefQuery(
+	    m_asyncLifetime, cb,
+	    [service, revision]()
+	    {
+		    const auto armed = service->ArmRestart(revision);
+		    return armed.committed ? uam::query_handler_async::AsyncSuccess(nlohmann::json::object()) : uam::query_handler_async::AsyncFailure(409, armed.error);
+	    },
+	    [window](uam::query_handler_async::AsyncCefResult& result)
+	    {
+		    if (!result.ok)
+			    return;
+		    if (!uam::platform::RequestApplicationRestart(true))
+		    {
+			    result = uam::query_handler_async::AsyncFailure(409, "Supervised restart is unavailable. The folder choice remains pending; no transfer occurred.");
+			    return;
+		    }
+		    CefPostTask(TID_UI, new CloseWindowTask(window));
+	    });
+}
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -117,6 +167,8 @@ UamQueryHandler::~UamQueryHandler()
 	m_asyncLifetime.reset();
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
+	for (const auto& install : m_remoteInstallStops)
+		if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
 #endif
@@ -131,6 +183,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		{ callback->Failure(403, "Native history discovery and assignment require the desktop app."); return; }
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
+		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
+		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
@@ -157,13 +211,6 @@ bool UamQueryHandler::CompanionStartupFailed() const
 
 bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	if ((!UAM_ENABLE_SSH && (action.find("RemoteHost") != std::string_view::npos || action == "listRemoteDirectories")) ||
-	    (!UAM_ENABLE_COMPUTER_USE && action.find("ComputerUse") != std::string_view::npos) ||
-	    (!UAM_ENABLE_MOBILE_COMPANION && action.find("Companion") != std::string_view::npos))
-	{
-		cb->Failure(400, "This feature is disabled in this build.");
-		return true;
-	}
 	const std::string chat_id = payload.value("chatId", "");
 	if (uam::RequiresWorkspaceMutationLease(action))
 	{
@@ -221,7 +268,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
 		{"requestAppPermission", &UamQueryHandler::HandleRequestAppPermission},
 		{"openAppPermissionSettings", &UamQueryHandler::HandleOpenAppPermissionSettings},
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"repairCompanionLanAddress", &UamQueryHandler::HandleRepairCompanionLanAddress},
+#endif
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
 		{"setChatSnoozedUntil", &UamQueryHandler::HandleSetChatSnoozedUntil},
@@ -262,6 +311,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"submitManagedSubagentFollowup", &UamQueryHandler::HandleSubmitManagedSubagentFollowup},
 		{"resumeAgentRun", &UamQueryHandler::HandleResumeAgentRun},
 		{"setChatCommandSafetyTier", &UamQueryHandler::HandleSetChatCommandSafetyTier},
+		// Feature routes exist only in builds that include the feature; excluded actions are unknown.
+#if UAM_ENABLE_COMPUTER_USE
 		{"setChatComputerUseEnabled", &UamQueryHandler::HandleSetChatComputerUseEnabled},
 		{"setChatComputerUseBackend", &UamQueryHandler::HandleSetChatComputerUseBackend},
 		{"setComputerUseControl", &UamQueryHandler::HandleSetComputerUseControl},
@@ -271,13 +322,18 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"checkComputerUsePermissions", &UamQueryHandler::HandleCheckComputerUsePermissions},
 		{"requestComputerUsePermission", &UamQueryHandler::HandleRequestComputerUsePermission},
 		{"openComputerUseSystemSettings", &UamQueryHandler::HandleOpenComputerUseSystemSettings},
+#endif
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
 		{"restartCompanion", &UamQueryHandler::HandleRestartCompanion},
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
+#endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
+#if UAM_ENABLE_SSH
 		{"setChatRemoteRecovery", &UamQueryHandler::HandleSetChatRemoteRecovery},
+#endif
 		{"moveChatWorkspace", &UamQueryHandler::HandleMoveChatWorkspace},
 		{"getMemorySettings", &UamQueryHandler::HandleGetMemorySettings},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
@@ -287,7 +343,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
 		{"getProviderMcpStatus", &UamQueryHandler::HandleGetProviderMcpStatus},
 		{"setProviderMcpConfiguration", &UamQueryHandler::HandleSetProviderMcpConfiguration},
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
+#endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
@@ -296,11 +354,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
+#if UAM_ENABLE_SSH
 		{"setExecutionRoutingSettings", &UamQueryHandler::HandleSetExecutionRoutingSettings},
 		{"listRepositoryMatches", &UamQueryHandler::HandleListRepositoryMatches},
 		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
+#endif
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
 		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
+		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
+		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
@@ -308,12 +370,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
 		{"applyCliProviderVersions", &UamQueryHandler::HandleApplyCliProviderVersions},
 		{"applyCliProviderVersion", &UamQueryHandler::HandleApplyCliProviderVersion},
+#if UAM_ENABLE_SSH
 		{"previewRemoteHost", &UamQueryHandler::HandlePreviewRemoteHost},
 		{"installRemoteHost", &UamQueryHandler::HandleInstallRemoteHost},
 		{"saveRemoteHostOptions", &UamQueryHandler::HandleSaveRemoteHostOptions},
 		{"checkRemoteHostInstruction", &UamQueryHandler::HandleCheckRemoteHostInstruction},
 		{"removeRemoteHost", &UamQueryHandler::HandleRemoveRemoteHost},
 		{"listRemoteDirectories", &UamQueryHandler::HandleListRemoteDirectories},
+#endif
 		{"browseMarkdownStoreDirectory", &UamQueryHandler::HandleBrowseMarkdownStoreDirectory},
 		{"setMarkdownStoreDirectory", &UamQueryHandler::HandleSetMarkdownStoreDirectory},
 		{"listMarkdownStoreEntries", &UamQueryHandler::HandleListMarkdownStoreEntries},
@@ -365,6 +429,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
 		{"getWorkspaceVcsContext", &UamQueryHandler::HandleGetWorkspaceVcsContext},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
+		{"captureChatReferenceContext", &UamQueryHandler::HandleCaptureChatReferenceContext},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
@@ -372,7 +437,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
 		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},
 		{"recordRuntimeActivity", &UamQueryHandler::HandleRuntimeActivity},
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"companionCliTerminal", &UamQueryHandler::HandleCompanionCli},
+#endif
 		{"startCliTerminal", &UamQueryHandler::HandleStartCli},
 		{"stopCliTerminal", &UamQueryHandler::HandleStopCli},
 		{"steerCliTerminal", &UamQueryHandler::HandleSteerCliTerminal},
@@ -439,9 +506,20 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
+	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication" || action == "quitApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
+		return true;
+	}
+	// Local profile selection is desktop-only, outside the companion DispatchAction path.
+	if (action == "restartToApplyDataFolder")
+	{
+		HandleRestartToApplyDataFolder(browser, payload, callback);
+		return true;
+	}
+	if (action == "getDataFolderSettings" || action == "chooseDataFolder" || action == "cancelDataFolderChoice" || action == "rollbackDataFolderTransfer")
+	{
+		HandleDataFolderSettings(action, payload, callback);
 		return true;
 	}
 
@@ -456,6 +534,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		if (action == "setGoal" || action == "updateGoalStatus" || action == "resumeGoal" ||
 		    action == "updateGoalObjective" || action == "setActiveGoal" || action == "removeGoal")
 			m_goalQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
+		if (action == "installRemoteHost")
+			m_remoteInstallQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "setCustomIcon") BeginChatIconQuery(callback.get(),
 		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
@@ -486,6 +566,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 	m_managedFollowupQueryIdentities.erase(callback.get());
 	m_chatIconQueryIdentities.erase(callback.get());
+	m_remoteInstallQueryIdentities.erase(callback.get());
 	m_goalQueryIdentities.erase(callback.get());
 	return true;
 }
@@ -522,6 +603,9 @@ void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<C
 		if (const std::shared_ptr<GoalMutationOperation> operation = goal_operation->second.lock()) operation->cancelled = true;
 		m_goalQueryOperations.erase(goal_operation);
 	}
+	for (const auto& install : m_remoteInstallStops)
+		if (install.first == goal_identity)
+			if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 	CancelChatIconQuery(browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 	if (query_id == m_searchQueryId)
 	{

@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 } from 'lucide-react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import './provider-settings.css'
+import { isSshHost } from '../../utils/remoteWorkspace'
 
 type Reference = McpServerConfiguration['environment'][number]
+
+/** Providers that receive saved MCP servers, named only when this build includes them. */
+const MCP_PROVIDER_NAMES = [GEMINI_ENABLED && 'Gemini', CODEX_ENABLED && 'Codex', CLAUDE_ENABLED && 'Claude Code', OPENCODE_ENABLED && 'OpenCode', COPILOT_ENABLED && 'Copilot'].filter((name): name is string => Boolean(name))
+const MCP_SAVED_MESSAGE = MCP_PROVIDER_NAMES.length === 0 ? 'Saved.'
+  : `Saved. ${MCP_PROVIDER_NAMES.length > 1 ? `${MCP_PROVIDER_NAMES.slice(0, -1).join(', ')} and ${MCP_PROVIDER_NAMES[MCP_PROVIDER_NAMES.length - 1]} get` : `${MCP_PROVIDER_NAMES[0]} gets`} these servers the next time a chat or CLI starts${SSH_ENABLED ? ', locally and over SSH' : ''}.`
 
 /** Grid-rows collapse for a server editor; keeps the last open content mounted while it closes. */
 function ServerEditorCollapse({ open, children }: { open: boolean; children: ReactNode }) {
@@ -145,12 +152,9 @@ export function mergeMcpImport(text: string, previous: McpServerConfiguration[])
 /** One list of MCP servers, edited as a form or as JSON, sent to every provider on launch (local and SSH). */
 export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHostId = SETTINGS_ALL_ENVIRONMENTS }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void; scopeExecutionHostId?: string }) {
   const hosts = useAppStore(state => state.executionHosts)
-  const scoped = scopeExecutionHostId !== SETTINGS_ALL_ENVIRONMENTS && hosts.some(host => host.transport === 'ssh' && host.id === scopeExecutionHostId)
+  const scoped = scopeExecutionHostId !== SETTINGS_ALL_ENVIRONMENTS && hosts.some(host => isSshHost(host) && host.id === scopeExecutionHostId)
   const savedServers = useAppStore(state => (scoped && state.hostScopedSettings && state.hostScopedSettingsValues?.[scopeExecutionHostId]?.mcpServers) || state.mcpServers)
   const savedUam = useAppStore(state => state.centralProviderConfiguration.uamControlEnabled)
-  const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
-  const [computerUseBusy, setComputerUseBusy] = useState(false)
-  const [computerUseError, setComputerUseError] = useState('')
   const [servers, setServers] = useState(savedServers)
   const [uamEnabled, setUamEnabled] = useState(savedUam)
   const [view, setView] = useState<'form' | 'json'>('form')
@@ -224,7 +228,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       }
       setServers(next); setUamEnabled(nextUam)
       if (view === 'json') setJsonText(toJsonText(next, nextUam))
-      setMessage('Saved. Gemini, Codex, Claude Code, OpenCode and Copilot get these servers the next time a chat or CLI starts, locally and over SSH.')
+      setMessage(MCP_SAVED_MESSAGE)
     } catch { if (ownsSave()) setMessage('Could not save MCP servers. Try again.') }
     finally { if (ownsSave()) { setBusy(false); onBusyChange(false) } }
   }
@@ -237,13 +241,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <Switch label={label} hideLabel checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
   const cancelSetup = () => { setSetup(null); setMessage(''); setImportWarnings([]) }
-  const setComputerUseEnabled = async (enabled: boolean) => {
-    setComputerUseBusy(true); setComputerUseError('')
-    try {
-      const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: enabled } })
-      if (!response.ok) setComputerUseError(response.error || "Could not change Computer Use. Try again.")
-    } finally { setComputerUseBusy(false) }
-  }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
   const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <button type="button" className="uam-prov-option" aria-label={label} title={detail} onClick={onClick}>
     <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
@@ -251,14 +248,16 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
   </button>
   const setupBody = setup === 'choose' ? <div className="grid gap-2">
-    {option(<Download size={16} />, 'Import configuration', 'Bring servers over from OpenCode or pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') })}
+    {option(<Download size={16} />, 'Import configuration', OPENCODE_ENABLED ? 'Bring servers over from OpenCode or pasted JSON.' : 'Bring servers over from pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') })}
     {option(<Wand2 size={16} />, 'Step by step', 'Answer two short questions. Best for a single new server.', () => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') })}
     {option(<ListPlus size={16} />, 'Manual form', 'Fill in every field yourself.', () => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setSetup(null) })}
     {option(<Braces size={16} />, 'Edit JSON', 'Edit the full server list as JSON.', () => { switchView('json'); setSetup(null) })}
   </div> : setup === 'import' ? <>
-    <p className="text-sm" style={{ color: 'var(--text-2)' }}>Read OpenCode's config or paste its MCP section.</p>
-    {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
-    <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
+    {OPENCODE_ENABLED && <>
+      <p className="text-sm" style={{ color: 'var(--text-2)' }}>Read OpenCode's config or paste its MCP section.</p>
+      {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
+      <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
+    </>}
     <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
     {importSources.length > 0 && <div className="text-xs break-all" style={{ color: 'var(--text-3)' }}>{importSources.map(source => <div key={source}>{source}</div>)}</div>}
     {warningNotice}
@@ -287,20 +286,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         control={uamEnabled
           ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
           : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
-      {COMPUTER_USE_ENABLED && typeof computerUseEnabled === 'boolean'
-        ? <SettingRow title="UAM Computer Use"
-            description={computerUseEnabled ? "Chats can control this computer's screen, mouse and keyboard." : "Chats can't control the screen, mouse or keyboard."}
-            status={computerUseEnabled ? undefined : 'Off'}
-            control={<Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={computerUseEnabled} disabled={busy || computerUseBusy}
-              onChange={event => void setComputerUseEnabled(event.currentTarget.checked)} />}>
-            {computerUseError && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{computerUseError}</p>}
-          </SettingRow>
-        : <SettingRow title="UAM Computer Use" description="Built in. Can't be deleted."
-            control={<span className="uam-prov-status" data-tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'}><StatusDot tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'} />{COMPUTER_USE_ENABLED ? 'Available in this build' : 'Unavailable in this build'}</span>} />}
+      {COMPUTER_USE_ENABLED && <ComputerUseSettingRow disabled={busy} />}
     </SettingsSection>}
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
-      description={view === 'json' ? undefined : 'Shared by every provider, locally and over SSH.'}
+      description={view === 'json' ? undefined : SSH_ENABLED ? 'Shared by every provider, locally and over SSH.' : 'Shared by every provider.'}
       actions={<>
         <div role="tablist" aria-label="Editor view" className="uam-prov-seg">
           <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'form'} disabled={busy} onClick={() => switchView('form')}>Form</button>
@@ -336,7 +326,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                 </select>
               </label>
               {server.transport === 'stdio' ? <>
-                {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', 'Full path. Over SSH, the path on the remote machine.')}
+                {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', SSH_ENABLED ? 'Full path. Over SSH, the path on the remote machine.' : 'Full path.')}
                 <div className="uam-set-field"><span className="uam-set-field__label">Arguments</span>
                   {server.args.map((arg, index) => <div key={index} className="flex gap-2">
                     <input aria-label={`Argument ${index + 1}`} className="uam-field flex-1" value={arg} disabled={busy} onChange={event => { const value = event.currentTarget.value; update(server.id, { args: server.args.map((item, i) => i === index ? value : item) }) }} />
@@ -345,7 +335,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                   <Button size="sm" className="self-start" disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>+ Add argument</Button>
                   <span className="uam-set-field__hint">One value per box, no quotes.</span>
                 </div>
-              </> : text('URL', server.url, url => update(server.id, { url }), 'http://mcp.example.com:9001/mcp', 'http:// or https://. Over SSH, localhost is the remote machine.')}
+              </> : text('URL', server.url, url => update(server.id, { url }), 'http://mcp.example.com:9001/mcp', SSH_ENABLED ? 'http:// or https://. Over SSH, localhost is the remote machine.' : 'http:// or https://.')}
               <div className="uam-set-field"><span className="uam-set-field__label">{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
                 {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
                   <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
@@ -365,7 +355,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                   {text('Only in this workspace', server.workspaceDirectory, workspaceDirectory => update(server.id, { workspaceDirectory }), 'Empty = every workspace')}
                   <label className="uam-set-field"><span className="uam-set-field__label">Only on this machine</span>
                     <select className="uam-field w-full" value={server.executionHostId} disabled={busy} onChange={event => update(server.id, { executionHostId: event.currentTarget.value })}>
-                      <option value="">Every machine, including SSH</option>
+                      <option value="">{SSH_ENABLED ? 'Every machine, including SSH' : 'Every machine'}</option>
                       {hosts.map(host => <option key={host.id} value={host.id}>{host.label}</option>)}
                       {server.executionHostId && !hosts.some(host => host.id === server.executionHostId) && <option value={server.executionHostId}>{server.executionHostId} (unavailable)</option>}
                     </select>

@@ -125,7 +125,7 @@ namespace
 		{
 			return Denied(error);
 		}
-		bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error) const override
+		bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error, std::string_view) const override
 		{
 			return Denied(error);
 		}

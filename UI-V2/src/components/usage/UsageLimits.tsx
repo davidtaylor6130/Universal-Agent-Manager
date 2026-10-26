@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, type UsageProviderId } from '../../services/usageHistory'
 import type { AcpContextUsage, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
-import { providerShortName } from '../../utils/providerMetadata'
+import { CODEX_ENABLED } from '../../config/buildFeatures'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import type { ProviderAllowance } from '../../services/providerAllowances'
@@ -70,7 +71,7 @@ function windowRows(provider: UsageProviderId, name: string, allowance: Provider
   const modelWindows = allowance?.windows ?? []
   if (modelWindows.length) return modelWindows.map(window => ({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
   // ponytail: plan-name match is an inference; drop it once Codex reports a real secondary window for Pro.
-  const noFiveHourCap = provider === 'codex-cli' && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
+  const noFiveHourCap = CODEX_ENABLED && provider === CODEX_CLI_PROVIDER_ID && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
   return (['primary', 'secondary'] as const).map(key => noFiveHourCap && key === 'secondary'
     ? { id: key, label: '5-hour', meterLabel: '', window: null, unlimited: true }
     : { id: key, label: (key === 'primary' ? allowance?.primaryLabel : allowance?.secondaryLabel) || windowLabel(limits?.[key]?.windowDurationMinutes, key), meterLabel: `${name} ${key} usage`, window: limits?.[key] ?? null, missingLabel: allowance?.status === 'ready' ? 'Not reported by provider' : undefined })
@@ -214,7 +215,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
             {consumption.usage.total.reasoningOutputTokens > 0 && <><dt>Reasoning</dt><dd>{consumption.usage.total.reasoningOutputTokens.toLocaleString()}</dd></>}
             <dt>Last turn</dt><dd>{consumption.usage.last ? consumption.usage.last.totalTokens.toLocaleString() : 'Unavailable'}</dd>
           </dl>
-          <p className="uam-usage-muted">{(provider === 'gemini-cli' || provider === 'opencode-cli' || provider === 'antigravity-cli') ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+          <p className="uam-usage-muted">{(provider === GEMINI_CLI_PROVIDER_ID || provider === OPENCODE_CLI_PROVIDER_ID || provider === ANTIGRAVITY_CLI_PROVIDER_ID) ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
         </>}
       </div>
     </details>}

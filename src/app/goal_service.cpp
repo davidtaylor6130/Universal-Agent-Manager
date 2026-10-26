@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
 
@@ -41,6 +42,41 @@ namespace
 	void MarkDirty(AppState& app, const std::string& chat_id)
 	{
 		app.chats_with_unseen_updates.insert(chat_id);
+	}
+
+	/// A failed direct-control save restores goal intent without copying transcript or runtime state.
+	struct GoalControlSnapshot
+	{
+		std::vector<Goal> goals;
+		std::string active, revision, pending, iteration_goal, iteration_kind;
+		int iteration_attempts;
+		explicit GoalControlSnapshot(const ChatSession& chat) : goals(chat.goals), active(chat.active_goal_id),
+		    revision(chat.goal_command_revision), pending(chat.goal_pending_continuation_id),
+		    iteration_goal(chat.goal_iteration_goal_id), iteration_kind(chat.goal_iteration_turn_kind),
+		    iteration_attempts(chat.goal_iteration_repair_attempts) {}
+		void Restore(ChatSession& chat) const
+		{
+			chat.goals = goals;
+			chat.active_goal_id = active;
+			chat.goal_command_revision = revision;
+			chat.goal_pending_continuation_id = pending;
+			chat.goal_iteration_goal_id = iteration_goal;
+			chat.goal_iteration_turn_kind = iteration_kind;
+			chat.goal_iteration_repair_attempts = iteration_attempts;
+		}
+	};
+
+	bool PersistProviderGoalControl(AppState& app, AcpSessionState& session, ChatSession& chat,
+	    const std::string& goal_id, const GoalControlSnapshot& previous, std::string* error_out = nullptr)
+	{
+		std::string error;
+		if (ProviderRuntimeRegistry::ResolveById(chat.provider_id).OnAcpPersistGoalControl(app, session, chat, goal_id, error))
+			return true;
+		previous.Restore(chat);
+		app.status_line = uam::strings::NonEmptyOrFallback(error, "The goal control could not be saved.");
+		if (error_out)
+			*error_out = app.status_line;
+		return false;
 	}
 
 	std::string NormalizeBlocker(const std::string& blocker)
@@ -331,6 +367,7 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr) return false;
+	const GoalControlSnapshot previous(*chat);
 	chat->goal_command_revision = GenerateGoalId();
 	chat->goal_pending_continuation_id.clear();
 	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && !defer_native_stop)
@@ -364,6 +401,20 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 
 	MarkDirty(app, chat->id);
 
+	if (!defer_native_stop)
+	{
+		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id))
+		{
+			if (!PersistProviderGoalControl(app, *session, *chat, goal_id, previous))
+				return false;
+			std::string stop_error;
+			if (!ProviderRuntimeRegistry::ResolveById(chat->provider_id).OnAcpGoalControlCommitted(app, *session, *chat, goal_id, stop_error))
+			{
+				app.status_line = stop_error;
+				return false;
+			}
+		}
+	}
 	return true;
 }
 
@@ -430,6 +481,8 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		if (error_out != nullptr) *error_out = "Completed goals cannot be reactivated.";
 		return false;
 	}
+	const GoalControlSnapshot previous(*chat);
+	const std::string stopped_goal_id = chat->active_goal_id;
 	if (chat->active_goal_id != goal_id && !defer_native_stop)
 	{
 		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && session->codex_goal_owner.goal_id != goal_id)
@@ -481,6 +534,22 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 	chat->active_goal_id = goal_id;
 	chat->updated_at = updated_at;
 	MarkDirty(app, chat_id);
+	if (!defer_native_stop && !stopped_goal_id.empty() && stopped_goal_id != goal_id)
+	{
+		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id))
+		{
+			if (!PersistProviderGoalControl(app, *session, *chat, stopped_goal_id, previous, error_out))
+				return false;
+			std::string stop_error;
+			if (!ProviderRuntimeRegistry::ResolveById(chat->provider_id).OnAcpGoalControlCommitted(app, *session, *chat, stopped_goal_id, stop_error))
+			{
+				if (error_out)
+					*error_out = stop_error;
+				app.status_line = stop_error;
+				return false;
+			}
+		}
+	}
 	return true;
 }
 
@@ -491,9 +560,11 @@ bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id, boo
 	{
 		return false;
 	}
+	const GoalControlSnapshot previous(*chat);
 	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && !defer_native_stop)
 		(void)uam::acp_detail::StopCodexNativeGoal(*session, *chat, user_action);
 
+	const std::string stopped_goal_id = chat->active_goal_id;
 	const std::string updated_at = uam::time::TimestampNow();
 	if (!chat->active_goal_id.empty())
 	{
@@ -510,6 +581,20 @@ bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id, boo
 	chat->active_goal_id.clear();
 	chat->updated_at = updated_at;
 	MarkDirty(app, chat_id);
+	if (!defer_native_stop && !stopped_goal_id.empty())
+	{
+		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id))
+		{
+			if (!PersistProviderGoalControl(app, *session, *chat, stopped_goal_id, previous))
+				return false;
+			std::string stop_error;
+			if (!ProviderRuntimeRegistry::ResolveById(chat->provider_id).OnAcpGoalControlCommitted(app, *session, *chat, stopped_goal_id, stop_error))
+			{
+				app.status_line = stop_error;
+				return false;
+			}
+		}
+	}
 	return true;
 }
 
@@ -733,7 +818,9 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 		return;
 	}
 
-	goal->tokens_used += tokens_used;
+	const std::int64_t added = std::max<std::int64_t>(0, tokens_used);
+	goal->tokens_used = added > std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, goal->tokens_used)
+	    ? std::numeric_limits<std::int64_t>::max() : std::max<std::int64_t>(0, goal->tokens_used) + added;
 	goal->updated_at = uam::time::TimestampNow();
 
 	// Check if token budget is exceeded

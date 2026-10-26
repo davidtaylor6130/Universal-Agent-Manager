@@ -20,6 +20,7 @@
 #include "common/chat/native_media_chat_save.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include <type_traits>
+#include <utility>
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
@@ -29,6 +30,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/state/app_state.h"
@@ -199,7 +201,19 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
-	cb->Success(state.dump());
+	std::string body;
+	try
+	{
+		body = state.dump();
+	}
+	catch (const nlohmann::json::type_error&)
+	{
+		// Clipped native text must not stop the UI or phone companion loading. Log once per run: companion reloads repeat it.
+		static bool logged = false;
+		if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
+		body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+	cb->Success(body);
 }
 
 // Elapsed time stays outside state fingerprints so a phone timer does not
@@ -388,6 +402,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	{
 		return;
 	}
+	if (!refresh_native && HandleReadUnconfirmedNativeMediaHistory(chat_id, known_digest, page, defer_tool_call_content, search_target, cb)) return;
 	if (!chat->messages_loaded && chat->persisted_message_count > 0 && !refresh_native)
 	{
 		const auto data_root = m_app.data_root;
@@ -822,11 +837,12 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	}
 }
 
-bool UamQueryHandler::DispatchNativeMediaRefresh(CefRefPtr<Callback> cb, ManagedSubagentWorker worker, ManagedSubagentCompletion completion)
+bool UamQueryHandler::DispatchNativeMediaRefresh(CefRefPtr<Callback> cb, ManagedSubagentWorker worker, ManagedSubagentCompletion completion, CefThreadId thread_id)
 {
+	if (m_nativeMediaDispatchThreadObserverForTests) m_nativeMediaDispatchThreadObserverForTests(thread_id);
 	if (m_nativeMediaRefreshDispatcherForTests)
 		return m_nativeMediaRefreshDispatcherForTests(cb, std::move(worker), std::move(completion));
-	return CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(
+	return CefPostTask(thread_id, new uam::query_handler_async::CefQueryWorkerTask(
 	    m_asyncLifetime, cb, std::move(worker), std::move(completion)));
 }
 
@@ -1010,6 +1026,16 @@ namespace
 		return metadata.dump();
 	}
 
+	std::string RemoteNativeMediaObservationMetadata(const std::filesystem::path& root, const ChatSession& chat)
+	{
+		auto metadata = nlohmann::json::parse(RemoteNativeMediaMetadata(root, chat), nullptr, false);
+		if (!metadata.is_object()) return {};
+		// Reopening changes recency; normal eviction changes only loaded/cache
+		// fields. Neither grants publication authority. History is checked separately.
+		for (const auto* field : {"last_opened_at", "validationMessagesLoaded", "validationPersistedCount", "validationPersistedDigest"}) metadata.erase(field);
+		return metadata.dump();
+	}
+
 	bool SameRemoteNativeMediaProfile(const ProviderProfile& left, const ProviderProfile& right)
 	{
 		return std::tie(left.id, left.title, left.execution_mode, left.output_mode, left.interactive_command,
@@ -1023,6 +1049,127 @@ namespace
 		    right.prompt_bootstrap, right.prompt_bootstrap_path, right.user_message_types, right.assistant_message_types,
 		    right.native_goal_command);
 	}
+}
+
+std::function<ChatSession*()> UamQueryHandler::CaptureUnconfirmedNativeMediaOwner(const std::string& chat_id)
+{
+	const auto pending = m_unconfirmedNativeMediaHistory.find(chat_id);
+	if (pending == m_unconfirmedNativeMediaHistory.end()) return {};
+	const auto* live = ChatDomainService().FindChatById(m_app, chat_id);
+	if (!live || pending->second.data_root != m_app.data_root || pending->second.incarnation != live->metadata_incarnation)
+	{ m_unconfirmedNativeMediaHistory.erase(pending); return {}; }
+	const auto same_owner = pending->second.owner;
+	const auto root = m_app.data_root;
+	const auto observation = pending->second.observation;
+	const auto metadata = RemoteNativeMediaMetadata(root, *live);
+	const auto digest = uam::StateSerializer::MessageDigest(*live, false);
+	// Rebind a fresh exact witness for this read, after validating the retained
+	// ownership/history witness. Changes during a read still refuse its completion.
+	return [this, same_owner, root, chat_id, observation, metadata, digest]() -> ChatSession*
+	{
+		const auto pending = m_unconfirmedNativeMediaHistory.find(chat_id);
+		auto* current = same_owner();
+		if (pending == m_unconfirmedNativeMediaHistory.end() || pending->second.observation != observation || !current ||
+		    RemoteNativeMediaMetadata(root, *current) != metadata || uam::StateSerializer::MessageDigest(*current, false) != digest ||
+		    m_workspaceDeletionPending || m_app.deletion_progress || m_nativeHistoryRequests.contains(chat_id) ||
+		    m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.pending_chat_save_tasks.contains(chat_id) ||
+		    m_app.worktree_operation_chat_ids.contains(chat_id) || uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(m_app, *current)) return nullptr;
+		return current;
+	};
+}
+
+bool UamQueryHandler::HandleReadUnconfirmedNativeMediaHistory(const std::string& chat_id, const std::string& known_digest,
+    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
+    bool defer_tool_call_content, const std::optional<std::pair<std::string, std::size_t>>& search_target, CefRefPtr<Callback> cb)
+{
+	using namespace uam::query_handler_async;
+	const auto admitted = CaptureUnconfirmedNativeMediaOwner(chat_id);
+	if (!admitted) return false;
+	if (!admitted()) { cb->Failure(409, "Chat is busy. Reopen its saved history when current work has finished."); return true; }
+	const auto root = m_app.data_root;
+	const auto lifetime = std::weak_ptr<void>(m_asyncLifetime);
+	auto observed = uam::native_history::TryCreateWorkerOwnedNativeRefresh<std::optional<ChatMessagePage>>();
+	if (!observed) { cb->Failure(503, "Saved history checking is busy. Retry shortly."); return true; }
+	const auto bounds = page.value_or(std::make_pair(std::size_t{50}, std::optional<std::size_t>{}));
+	const bool queued = DispatchNativeMediaRefresh(cb,
+	    [root, chat_id, bounds, known_digest, defer_tool_call_content, search_target, observed, lifetime]()
+	    {
+		    std::string error;
+		    *observed = ChatRepository::ReadSavedPrimaryMessagePage(root, chat_id, bounds.first, bounds.second, &error, [lifetime]() { return lifetime.expired(); });
+		    if (!*observed) return AsyncFailure(500, "Saved chat history could not be checked. Reopen the chat before retrying.");
+		    if (search_target && (search_target->first != (*observed)->messages_digest || search_target->second < (*observed)->start_index ||
+		        search_target->second >= (*observed)->start_index + (*observed)->chat.messages.size()))
+			    return AsyncFailure(409, "Chat history changed. Search again to select this message.");
+		    // Even identical messages must carry their passive detail binding: the
+		    // renderer may still hold the old live descriptors without that binding.
+		    auto body = uam::StateSerializer::SerializeDetachedMessagePage(**observed, defer_tool_call_content, known_digest, false);
+		    if (body.contains("messages"))
+			    for (auto& message : body["messages"])
+				    for (const auto* field : {"attachments", "toolCalls"})
+					    if (message.contains(field)) for (auto& detail : message[field]) detail["historyDigest"] = (*observed)->messages_digest;
+		    return AsyncSuccess(std::move(body));
+	    },
+	    [this, root, chat_id, admitted, observed](AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    auto* current = admitted();
+		    if (!current || !*observed || m_app.data_root != root ||
+		        !ChatRepository::MatchesSavedPrimaryObservation(*current, **observed) ||
+		        ChatRepository::ChatStorageRevision(root, chat_id) != (*observed)->storage_revision)
+			    response = AsyncFailure(409, "Chat history changed while checking its saved history. Reopen the chat before retrying.");
+		    else
+		    {
+			    auto& pending = m_unconfirmedNativeMediaHistory.at(chat_id);
+			    pending.displayed_revision = (*observed)->storage_revision;
+			    pending.displayed_digest = (*observed)->messages_digest;
+		    }
+		    // Passive display only: no live adoption, primary save, original ACK, or warning mutation.
+		    // Keep the marker so a subsequent ordinary read cannot return the old live graph.
+	    }, TID_FILE_USER_BLOCKING);
+	if (!queued) cb->Failure(503, "The background task queue is unavailable.");
+	return true;
+}
+
+bool UamQueryHandler::HandleReadUnconfirmedNativeMediaDetail(const std::string& chat_id, const nlohmann::json& payload,
+    std::optional<std::size_t> message_index, CefRefPtr<Callback> cb,
+    std::function<uam::query_handler_async::AsyncCefResult(const ChatMessagePage&)> resolve)
+{
+	using namespace uam::query_handler_async;
+	const auto admitted = CaptureUnconfirmedNativeMediaOwner(chat_id);
+	if (!admitted && !payload.contains("historyDigest")) return false;
+	const auto pending = m_unconfirmedNativeMediaHistory.find(chat_id);
+	const auto digest = payload.find("historyDigest");
+	if (!admitted || !admitted() || !message_index || *message_index == std::numeric_limits<std::size_t>::max() ||
+	    pending == m_unconfirmedNativeMediaHistory.end() || digest == payload.end() || !digest->is_string() ||
+	    digest->get_ref<const std::string&>().size() != 16 || *digest != pending->second.displayed_digest || pending->second.displayed_revision.empty())
+	{ cb->Failure(409, "Saved history changed. Reload history before opening its details."); return true; }
+	const auto root = m_app.data_root;
+	const auto revision = pending->second.displayed_revision, expected_digest = pending->second.displayed_digest;
+	const auto lifetime = std::weak_ptr<void>(m_asyncLifetime);
+	auto observed = uam::native_history::TryCreateWorkerOwnedNativeRefresh<std::optional<ChatMessagePage>>();
+	if (!observed) { cb->Failure(503, "Saved history checking is busy. Retry shortly."); return true; }
+	const bool queued = DispatchNativeMediaRefresh(cb,
+	    [root, chat_id, index = *message_index, revision, expected_digest, observed, lifetime, resolve = std::move(resolve)]()
+	    {
+		    if (ChatRepository::ChatStorageRevision(root, chat_id) != revision) return AsyncFailure(409, "Saved history changed. Reload history before opening its details.");
+		    *observed = ChatRepository::ReadSavedPrimaryMessagePage(root, chat_id, 1, index + 1, nullptr, [lifetime]() { return lifetime.expired(); });
+		    if (!*observed || (*observed)->storage_revision != revision || (*observed)->messages_digest != expected_digest ||
+		        (*observed)->start_index != index || (*observed)->chat.messages.size() != 1)
+			    return AsyncFailure(409, "Saved history changed. Reload history before opening its details.");
+		    return resolve(**observed);
+	    },
+	    [this, root, chat_id, revision, expected_digest, admitted, observed](AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    const auto* current = admitted();
+		    const auto pending = m_unconfirmedNativeMediaHistory.find(chat_id);
+		    if (!current || !*observed || pending == m_unconfirmedNativeMediaHistory.end() ||
+		        pending->second.displayed_digest != expected_digest || pending->second.displayed_revision != revision ||
+		        !ChatRepository::MatchesSavedPrimaryObservation(*current, **observed) || ChatRepository::ChatStorageRevision(root, chat_id) != revision)
+			    response = AsyncFailure(409, "Saved history changed while its details were loading. Reload history before retrying.");
+	    }, TID_FILE_USER_BLOCKING);
+	if (!queued) cb->Failure(503, "The background task queue is unavailable.");
+	return true;
 }
 
 void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
@@ -1109,12 +1256,12 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	};
 	// This identity-only check also serves postcommit response admission. New
 	// authored content is serialized from current live state, never an old page.
-	const auto same_owner = [this, root, id, incarnation, birth, native_key, resolved_session, host, profile]() -> ChatSession*
+	const auto same_owner = [this, root, id, incarnation, birth, native_key, resolved_session, host, profile](bool require_loaded = true) -> ChatSession*
 	{
 		auto* current = ChatDomainService().FindChatById(m_app, id);
 		const auto* now_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host.id);
 		if (m_app.data_root != root || !current || current->metadata_incarnation != incarnation || current->created_at != birth ||
-		    !current->messages_loaded || current->imported_read_only || current->native_session_id.empty() ||
+		    (require_loaded && !current->messages_loaded) || current->imported_read_only || current->native_session_id.empty() ||
 		    uam::chat_identity::NativeIdentityKeyForHistoryImport(*current) != native_key || !now_host ||
 		    !uam::execution_hosts::SameConnection(*now_host, host) || now_host->runner_status != "ready" ||
 		    !SameRemoteNativeMediaProfile(ProviderResolutionService().ProviderForChatOrDefault(m_app, *current), profile)) return nullptr;
@@ -1148,7 +1295,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	try
 	{
 		queued = DispatchNativeMediaRefresh(cb,
-		    [work, root, id, revision, summary_revision, metadata, original_digest, incarnation, parse_identity, host, request]()
+		    [work, root, id, revision, summary_revision, metadata, original_digest, incarnation, parse_identity, host, request, reader = m_remoteNativeHistoryReaderForTests]()
 		    {
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
 			    if (ChatRepository::ChatStorageRevision(root, id) != revision || ChatRepository::ChatSummaryStorageRevision(root, id) != summary_revision)
@@ -1160,7 +1307,8 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 			        ChatRepository::ChatStorageRevision(root, id) != revision || ChatRepository::ChatSummaryStorageRevision(root, id) != summary_revision)
 				    return AsyncFailure(409, "The saved remote conversation differs from its current view. Save or reload it before refreshing.");
 			    work->candidate->metadata_incarnation = incarnation;
-			    auto loaded = ChatHistorySyncService().LoadRemoteNativeTranscript(host, parse_identity, &work->error, request->get_token());
+			    auto loaded = reader ? reader(host, parse_identity, &work->error, request->get_token())
+			        : ChatHistorySyncService().LoadRemoteNativeTranscript(host, parse_identity, &work->error, request->get_token());
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Remote native history is unavailable."));
 			    work->messages = std::move(loaded->messages);
@@ -1196,13 +1344,33 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 				        auto* target = admitted();
 				        if (!target) { result = AsyncFailure(409, "Remote chat changed while its originals were prepared. Retry to refresh it."); return; }
 				        if (!result.ok) return;
-				        if (!work->prepared || !work->prepared->Publish(work->error, [&]() { return admitted() == target; }, false))
-				        { result = AsyncFailure(500, "Remote history publication could not be confirmed. Reopen the chat before retrying."); return; }
+				        if (!work->prepared || !work->prepared->Publish(work->error, [&]() { return admitted() == target; }, false, m_nativeMediaPublicationStageGateForTests))
+				        {
+					        if (work->prepared && work->prepared->PrimaryPublicationState() == ChatPublicationState::Rejected)
+						        result = AsyncFailure(409, "The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.");
+					        else
+					        {
+						        const auto metadata = RemoteNativeMediaObservationMetadata(root, *target);
+						        const auto digest = uam::StateSerializer::MessageDigest(*target, false);
+						        const auto count = target->messages.size();
+						        const auto persisted_digest = target->persisted_messages_digest;
+						        m_unconfirmedNativeMediaHistory[id] = {root, target->metadata_incarnation, [same_owner, root, metadata, digest, count, persisted_digest]() -> ChatSession*
+						        {
+							        auto* current = same_owner(false); // Passive display alone tolerates normal eviction.
+							        return current && RemoteNativeMediaObservationMetadata(root, *current) == metadata &&
+							            (current->messages_loaded ? uam::StateSerializer::MessageDigest(*current, false) == digest :
+							                current->persisted_message_count == count && current->persisted_messages_digest == persisted_digest) ? current : nullptr;
+						        }};
+						        result = AsyncFailure(500, "UAM could not confirm that the refreshed history was saved. Reopen the chat before retrying.");
+					        }
+					        return;
+				        }
 				        work->retired = work->prepared->TakeCommittedChat();
 				        if (!work->retired) { result = AsyncFailure(500, "Remote history was saved but could not be adopted. Reload this chat."); return; }
 				        static_assert(std::is_nothrow_swappable_v<ChatSession>);
 				        work->retired->managed_subagent_revision = target->managed_subagent_revision;
 				        std::swap(*target, *work->retired); // The old live graph retires on the prearmed worker.
+				        m_unconfirmedNativeMediaHistory.erase(id);
 				        const auto complete_ack = [this, browser, work, root, id, request, same_owner, finish, known_digest, page, defer_tool_call_content](AsyncCefResult& ack)
 				        {
 					        RequestExit ack_exit{finish};
@@ -1309,6 +1477,20 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		}
 		return;
 	}
+	if (HandleReadUnconfirmedNativeMediaDetail(chat_id, payload,
+	    message_index ? std::optional<std::size_t>(static_cast<std::size_t>(*message_index)) : std::nullopt, cb,
+	    [tool_call_id, offset](const ChatMessagePage& page)
+	    {
+		    const ToolCall* match = nullptr;
+		    for (const auto& tool : page.chat.messages.front().tool_calls)
+			    if (tool.id == tool_call_id)
+			    {
+				    if (match) return uam::query_handler_async::AsyncFailure(409, "Tool call identity is ambiguous in this transcript.");
+				    match = &tool;
+			    }
+		    return match ? uam::query_handler_async::AsyncSuccess(uam::StateSerializer::ToolCallContentPageForFrontend(*match, offset))
+			    : uam::query_handler_async::AsyncFailure(404, "Tool call is unavailable in this saved history.");
+	    })) return;
 
 	if (const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && !message_index.has_value())
 	{
@@ -2397,8 +2579,7 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 	    [observed_host, destination]()
 	    {
 		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		        uam::remote::SshBridgeArgv(observed_host.ssh_alias, observed_host.platform, observed_host.runner_version,
-		            observed_host.runner_directory, observed_host.runner_protocol_version), observed_host.runner_version, observed_host.runner_protocol_version);
+		        observed_host);
 		    uam::remote::DirectoryListing listing;
 		    std::string error;
 		    return client.ListDirectories(uam::paths::PathFromUtf8(destination), listing, &error)

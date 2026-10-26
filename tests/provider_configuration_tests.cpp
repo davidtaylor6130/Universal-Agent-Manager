@@ -52,6 +52,11 @@ namespace
 			app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
 			app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
 			app.runtime_cli_version_provider_id = "codex-cli";
+			// A new chat on a ready protocol-3 host captures its repository baseline before launch;
+			// settle it here (the fake SSH has no runner, so the workspace has no baseline).
+			std::string baseline_error;
+			if (uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &baseline_error) == uam::ChatBaselineReadiness::Pending)
+				UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &baseline_error) == uam::ChatBaselineReadiness::Unavailable);
 		}
 		~RemoteOpenCodeVersionLaunchFixture()
 		{
@@ -140,11 +145,38 @@ UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
 #endif
 }
 
+UAM_TEST(RemoteOpenCodeV2VersionRefusesFreshLegacyAcpWithoutBorrowingLocalVersion)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked("2.1.2");
+	// Installation minimums still pass V2; the executing host's protocol policy must refuse it.
+	auto& local = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
+	local.execution_host = uam::execution_hosts::LocalHost();
+	local.checked = true; local.supported = true; local.installed_version = "1.19.4";
+	fixture.Session().queued_prompt = "retain remote authored input";
+	fixture.app.chats.front().native_session_id = "ses_remote_retained";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("V2") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.Session().last_error, error);
+	UAM_ASSERT(!fixture.Session().running && !fixture.Session().opencode_native_companion);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, std::string("retain remote authored input"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().native_session_id, std::string("ses_remote_retained"));
+	UAM_ASSERT(fixture.app.runtime_cli_install_tasks.empty());
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeMatchingVersionCacheLaunchesWithoutWaitingForUnrelatedCheck)
 {
 #if defined(__APPLE__)
 	RemoteOpenCodeVersionLaunchFixture fixture;
 	fixture.Checked();
+	auto& local = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
+	local.checked = true; local.supported = true; local.installed_version = "2.1.2";
 	UAM_ASSERT(fixture.Start());
 	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
 	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
@@ -193,6 +225,21 @@ UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
 	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeVersionWaitCapturesProgressiveMcpChoice)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	fixture.app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", fixture.host.id, "opencode-progressive-mcp", false, true});
+	fixture.Checked();
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 #endif
 }
 
@@ -316,6 +363,7 @@ UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
 	for (const bool recovery : {false, true})
 	{
 		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Checked("2.1.2"); // A later installation change cannot revoke an already-owned process.
 		fixture.Session().running = !recovery;
 		fixture.Session().recovering_remote_process = recovery;
 		UAM_ASSERT(fixture.Start());
@@ -325,6 +373,76 @@ UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
 		if (!recovery) fixture.Session().running = false; // No OS process belongs to the warm-state fixture.
 	}
 #endif
+}
+
+UAM_TEST(RemoteOpenCodeProgressiveMcpChangePreservesWarmAndRecoveryProcesses)
+{
+#if defined(__APPLE__)
+	for (const bool recovery : {false, true})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Checked();
+		uam::ProviderConfigurationBundle captured;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(fixture.app.data_root, fixture.app.settings,
+		    fixture.app.chats.front(), fixture.host, fixture.temp.root, captured, error, nullptr, "1.17.20"));
+		UAM_ASSERT(captured.manifest.value("openCodeCodeMode", false));
+		UAM_ASSERT(!captured.local_directory.empty());
+		const std::string captured_manifest = ReadFile(captured.local_directory / "owner.json");
+		fixture.Session().provider_configuration_directory = captured.local_directory;
+		fixture.app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", fixture.host.id, "opencode-progressive-mcp", false, true});
+		fixture.Session().running = !recovery;
+		fixture.Session().recovering_remote_process = recovery;
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+		UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+		UAM_ASSERT_EQ(fixture.Session().provider_configuration_directory, captured.local_directory);
+		UAM_ASSERT_EQ(ReadFile(captured.local_directory / "owner.json"), captured_manifest);
+		if (!recovery) fixture.Session().running = false;
+	}
+#endif
+}
+
+UAM_TEST(OpenCodeProgressiveMcpChoiceIsHostScopedAndKeepsVersionAdmission)
+{
+	TempDir temp("uam-progressive-mcp-choice");
+	AppSettings settings;
+	settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", "local", "opencode-progressive-mcp", false, true});
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	std::string error;
+	for (const std::string host_id : {"local", "ssh-fixture"})
+	{
+		host.id = chat.execution_host_id = host_id;
+		host.transport = host_id == "local" ? "local" : "ssh";
+		for (const std::string version : {"", "1.17.20", "1.18.35", "1.19.4", "2.1.2"})
+		{
+			uam::ProviderConfigurationBundle bundle;
+			UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root, settings, chat, host, temp.root, bundle, error, nullptr, version));
+			const bool discovery = host_id != "local" && (version == "1.17.20" || version == "1.18.35");
+			UAM_ASSERT_EQ(!bundle.local_directory.empty(), discovery);
+			if (discovery) UAM_ASSERT(bundle.manifest.value("openCodeCodeMode", false));
+		}
+	}
+	settings.central_provider_configuration.mcp_overrides.front().enabled = true;
+	host = ExecutionHost{};
+	chat.execution_host_id = "local";
+	uam::ProviderConfigurationBundle enabled;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root, settings, chat, host, temp.root, enabled, error, nullptr, "1.18.35"));
+	UAM_ASSERT(enabled.manifest.value("openCodeCodeMode", false));
+	settings.central_provider_configuration.mcp_overrides.front().enabled = false;
+	settings.central_provider_configuration.enabled = true;
+	uam::ProviderConfigurationBundle disabled;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root, settings, chat, host, temp.root, disabled, error, nullptr, "1.18.35"));
+	UAM_ASSERT(!disabled.local_directory.empty());
+	UAM_ASSERT(!disabled.manifest.contains("openCodeCodeMode"));
+	UAM_ASSERT(disabled.files.contains("AGENTS.md"));
+	// Disabling UAM's automatic opt-in does not override an explicit native environment choice.
+	std::vector<std::string> argv{"opencode", "acp"};
+	uam::provider_setup::Environment environment{{"OPENCODE_EXPERIMENTAL_CODE_MODE", "true"}};
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, disabled.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_EXPERIMENTAL_CODE_MODE"), std::string("true"));
 }
 
 UAM_TEST(OpenCodeDiscoveryUsesOnlyCheckedVersionsOnTheSelectedHost)
@@ -347,6 +465,83 @@ UAM_TEST(OpenCodeDiscoveryUsesOnlyCheckedVersionsOnTheSelectedHost)
 	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "codex-cli", remote).empty());
 	remote.ssh_alias = "different-target";
 	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+}
+
+UAM_TEST(OpenCodeTerminalControlOnlySetupRetainsProgressiveMcpChoice)
+{
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	for (const bool enabled : {false, true})
+	{
+		TempDir temp("uam-opencode-terminal-progressive");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.central_provider_configuration.instructions = "Disabled shared resources must stay out";
+		app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", "local", "opencode-progressive-mcp", enabled, true});
+		ChatSession chat;
+		chat.id = "terminal-progressive"; chat.provider_id = "opencode-cli";
+		chat.workspace_directory = temp.root.string(); chat.uam_control_enabled = true;
+		app.chats.push_back(chat);
+		const ExecutionHost host;
+		auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(chat.provider_id, host.id)];
+		version.execution_host = host; version.checked = version.supported = true; version.installed_version = "1.18.35";
+		std::string channel, error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"opencode"};
+		uam::provider_setup::Environment environment{{"OPENCODE_CONFIG_CONTENT", "{}"}};
+		UAM_ASSERT(!uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT(terminal.context_preparation != nullptr);
+		app.cli_context_preparation_tasks.back().worker->join();
+		UAM_ASSERT(uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), enabled ? std::string("true") : std::string{});
+		UAM_ASSERT(terminal.uam_control_session != nullptr);
+		const auto directory = terminal.uam_control_session->provider_configuration_directory;
+		UAM_ASSERT(!directory.empty());
+		UAM_ASSERT(ReadFile(directory / "AGENTS.md").find("Disabled shared resources must stay out") == std::string::npos);
+		UAM_ASSERT(!app.settings.central_provider_configuration.enabled);
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
+UAM_TEST(OpenCodeTerminalProgressiveMcpChoiceDoesNotNeedOtherSetup)
+{
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	for (const bool enabled : {false, true})
+	{
+		TempDir temp("uam-opencode-terminal-mcp-only");
+		uam::AppState app; app.data_root = temp.root / "data";
+		app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", "local", "opencode-progressive-mcp", enabled, true});
+		ChatSession chat; chat.id = "terminal-mcp-only"; chat.provider_id = "opencode-cli";
+		chat.workspace_directory = temp.root.string(); chat.uam_control_enabled = false;
+		const ExecutionHost host;
+		auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(chat.provider_id, host.id)];
+		version.execution_host = host; version.checked = version.supported = true; version.installed_version = "1.18.35";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"opencode"};
+		uam::provider_setup::Environment environment{{"OPENCODE_CONFIG_CONTENT", "{}"}};
+		std::string channel, error;
+		const bool prepared = uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error);
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT_EQ(prepared, !enabled);
+		if (enabled)
+		{
+			UAM_ASSERT(terminal.context_preparation != nullptr);
+			app.cli_context_preparation_tasks.back().worker->join();
+			UAM_ASSERT(uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+			UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), std::string("true"));
+		}
+		else UAM_ASSERT(terminal.context_preparation == nullptr);
+	}
 }
 
 UAM_TEST(OpenCodeDiscoverySupportsInheritedMcpWithoutChangingOtherProviderBundles)
@@ -517,7 +712,8 @@ UAM_TEST(CentralMemoryDetailsRemainReadableThroughTheOwnedIndex)
 	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
 	const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
 	const fs::path instructions = uam::paths::PathFromUtf8(config["instructions"][0].get<std::string>());
-	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory / "memory/index.md")) != std::string::npos);
+	// __UAM_RESOURCE_ROOT__ is replaced textually, so the suffix keeps the instruction's '/' on every host.
+	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory) + "/memory/index.md") != std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "memory/global/Lessons/AI_Lessons/example.md"), detail);
 	UAM_ASSERT_EQ(ReadFile(memory / "example.md"), detail);
 }

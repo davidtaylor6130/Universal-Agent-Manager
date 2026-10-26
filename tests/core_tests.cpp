@@ -5,6 +5,8 @@
 #include "common/platform/platform_speech_output.h"
 #include "test_harness.h"
 #include "common/platform/file_explorer_application.h"
+#include "common/platform/powershell_selection.h"
+#include "remote/remote_workspace_terminal.h"
 #include "common/config/custom_icon.h"
 #include "common/config/companion_network.h"
 #include "app/chat_lifecycle_service.h"
@@ -35,6 +37,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
+#include <versionhelpers.h>
 #endif
 
 #if defined(__APPLE__)
@@ -5051,6 +5054,12 @@ UAM_TEST(IoUtilsCommitsFirstWriteAndCleansReplacementTemps)
 }
 
 #if defined(_WIN32)
+UAM_TEST(WindowsManifestDeclaresWindows10SoCefSeesTheRealVersion)
+{
+	// The app embeds this same manifest; without its Windows 10 entry Chromium reads 6.2 and crashes on start-up.
+	UAM_ASSERT(IsWindows10OrGreater());
+}
+
 /// <summary>Remove only this test's fresh temporary tree through an extended path, including on assertion failure.</summary>
 class ScopedNativeTempCleanup
 {
@@ -5371,7 +5380,7 @@ UAM_TEST(ChatRenameDoesNotRollBackAfterCommittedPrimaryWithDegradedBackup)
 UAM_TEST(PerformanceScriptTargetsRuntimeChatDataDirectory)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
-	const std::string script = uam::io::ReadTextFile(source_root / "run_performance_test.ps1");
+	const std::string script = uam::io::ReadTextFile(source_root / "docs/reference/history/run_performance_test.ps1");
 	const std::string runtime_directory = AppPaths::ChatsRootPath("data").filename().string();
 
 	UAM_ASSERT(script.find("$chatsDir = Join-Path $testDataRoot \"" + runtime_directory + "\"") != std::string::npos);
@@ -5530,16 +5539,18 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 	const std::string settings = ReadFile(source_root / "src/cef/settings_handlers.cpp");
 	const std::string markdown = ReadFile(source_root / "src/cef/markdown_handlers.cpp");
 	const auto assert_rollback = [](const std::string& source, std::string_view start_text, std::string_view end_text,
-	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text)
+	                                std::string_view snapshot_text, std::string_view mutation_text, std::string_view restore_text,
+	                                std::string_view save_text = "if (!PersistenceCoordinator().SaveSettings(m_app))")
 	{
 		const std::size_t start = source.find(start_text);
 		const std::size_t end = source.find(end_text, start);
 		UAM_ASSERT(start != std::string::npos);
 		UAM_ASSERT(end != std::string::npos);
-		const std::string handler = source.substr(start, end - start);
+		std::string handler = source.substr(start, end - start);
+		std::erase(handler, '\r'); // Windows checkouts use CRLF; restore_text spans a line break.
 		const std::size_t snapshot = handler.find(snapshot_text);
 		const std::size_t mutation = handler.find(mutation_text);
-		const std::size_t save = handler.find("if (!PersistenceCoordinator().SaveSettings(m_app))");
+		const std::size_t save = handler.find(save_text);
 		const std::size_t restore = handler.find(restore_text, save);
 		const std::size_t failure = handler.find("cb->Failure(500", restore);
 		UAM_ASSERT(snapshot != std::string::npos);
@@ -5553,8 +5564,11 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 		UAM_ASSERT(restore < failure);
 	};
 
+	// Memory settings restore only on a receipt-proven pre-replace rejection; an unknown outcome stays latched.
 	assert_rollback(settings, "void UamQueryHandler::HandleSetMemorySettings", "void UamQueryHandler::HandleSetMcpServers",
-	                "const AppSettings previous = m_app.settings;", "m_app.settings.memory_enabled_default =", "m_app.settings = previous;");
+	                "SettingsMemoryCanonicalValues previous = CaptureMemorySettings(m_app.settings);", "ApplyMemorySettings(m_app.settings, CaptureMemorySettings(candidate));",
+	                "else if (receipt.outcome == SettingsMemoryWriteOutcome::RejectedBeforeReplace)\n\t\tApplyMemorySettings(m_app.settings, std::move(previous));",
+	                "PersistenceCoordinator().SaveSettings(m_app, &receipt");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetProviderChatDefaults", "void UamQueryHandler::HandleSetSidebarSettings",
 	                "const AppSettings previous = m_app.settings;", "m_app.settings.default_new_chat_provider_id =", "m_app.settings = previous;");
 	assert_rollback(settings, "void UamQueryHandler::HandleSetEditorSettings", "void UamQueryHandler::HandleRefreshCliProviderVersion",
@@ -5808,6 +5822,17 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 4), std::string_view("ab"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 4), std::string_view("cd"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 5), std::string_view("€cd"));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xxxx€€", 8), std::string("xxxx..."));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xx€", 3), std::string("xx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab", 0), std::string_view());
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a😀", 4), std::string_view("a"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("😀b", 4), std::string_view("b"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a\x80\x80\x80\x80\x80", 5).size(), std::size_t{2}); // Non-UTF-8 input never collapses to empty.
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));
@@ -5882,7 +5907,10 @@ UAM_TEST(ShellEscapedArgumentJoiningPreservesEmptyArguments)
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[0]), uam::shell::EscapeArg(args[0]).size());
 	UAM_ASSERT_EQ(uam::shell::EscapedArgSize(args[2]), uam::shell::EscapeArg(args[2]).size());
 #if defined(_WIN32)
-	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b%%c  d\""));
+	// cmd.exe command-line mode keeps %% literally, so % is caret-escaped outside the quotes.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("a\"b%c\r\nd"), std::string("\"a\"\"b\"^%\"c  d\""));
+	// A trailing separator must not escape the closing quote for the CRT argv parser.
+	UAM_ASSERT_EQ(uam::shell::EscapeArg("C:\\dir\\"), std::string("\"C:\\dir\\\\\""));
 #else
 	UAM_ASSERT_EQ(uam::shell::EscapeArg("quote's"), std::string("'quote'\\''s'"));
 #endif
@@ -6547,6 +6575,46 @@ UAM_TEST(FileExplorerApplicationsRejectCommandsAndWrongNativeTypes)
 	UAM_ASSERT(!uam::platform::IsFileExplorerApplication((root / "missing.exe").string(), true));
 }
 
+UAM_TEST(WindowsPowerShellSelectionNeverAssumesPwsh)
+{
+	std::string error;
+	UAM_ASSERT_EQ(AppSettings{}.windows_powershell, std::string("auto"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, false, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", false, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("windows-powershell", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("pwsh", true, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(uam::powershell::Select("pwsh", true, false, &error).empty());
+	UAM_ASSERT(error.find("PowerShell 7 (pwsh.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("windows-powershell", false, true, &error).empty());
+	UAM_ASSERT(error.find("Windows PowerShell (powershell.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("auto", false, false, &error).empty());
+	UAM_ASSERT(error.find("No PowerShell was found") != std::string::npos);
+
+	TempDir temp("uam-powershell-setting");
+	const fs::path settings_file = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, "windows_powershell=bash\n"));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("auto"));
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsTerminalScriptRunsOnWindowsPowerShell51)
+{
+	// The SSH terminal window script must run on built-in Windows PowerShell 5.1, not only PowerShell 7.
+	const std::string command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " +
+	    uam::remote::WindowsTerminalEncodedCommand({"cmd.exe", "/d", "/c", "echo", "uam-ps51-terminal-ok"}) +
+	    " & powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"'uam-ps-major=' + $PSVersionTable.PSVersion.Major\"";
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 30000);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT(result.output.find("uam-ps51-terminal-ok") != std::string::npos);
+	// Merged stderr can carry CLIXML progress records, so look for an explicit marker.
+	UAM_ASSERT(result.output.find("uam-ps-major=5") != std::string::npos);
+}
+#endif
+
 UAM_TEST(SettingsStorePersistsEditorSettings)
 {
 	TempDir temp("uam-editor-settings");
@@ -6555,6 +6623,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 	AppSettings settings;
 	settings.default_editor_preset_id = "clion";
 	settings.file_explorer_application = "/Applications/Explorer = Custom.app";
+	settings.windows_powershell = "pwsh";
 	settings.editor_default_groups_version = 1;
 	settings.editor_file_associations = {
 	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
@@ -6568,6 +6637,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 
 	UAM_ASSERT_EQ(loaded.default_editor_preset_id, std::string("clion"));
 	UAM_ASSERT_EQ(loaded.file_explorer_application, settings.file_explorer_application);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("pwsh"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].name, std::string("C++"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions.size(), static_cast<std::size_t>(2));
@@ -8835,6 +8905,42 @@ UAM_TEST(ChatRepositoryDeletesStorageFilesWithSafeIdsOnly)
 	UAM_ASSERT(fs::exists(escaped_file));
 }
 
+UAM_TEST(ChatRepositoryLogsAttributablePrimaryDeletion)
+{
+	TempDir temp("uam-chat-delete-attribution");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+
+	ChatSession chat;
+	chat.id = "chat-delete-attribution";
+	chat.provider_id = "codex-cli";
+	chat.title = "Private title";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-01 00:00:01";
+	ChatDomainService().AddMessage(chat, MessageRole::User, "private prompt body");
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(fs::exists(uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, chat.id))));
+
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "user_deletion").Failed());
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "create_rollback").Failed());
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, "../escaped-attribution", "user_deletion").unsafe_chat_id);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("Chat storage delete: reason=user_deletion, chat_id=chat-delete-attribution, primary=removed, backup=removed, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete: reason=create_rollback, chat_id=chat-delete-attribution, primary=absent, backup=absent, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete refused: reason=user_deletion, unsafe chat id") != std::string::npos);
+	UAM_ASSERT(text.find("escaped-attribution") == std::string::npos);
+	UAM_ASSERT(text.find("private prompt body") == std::string::npos);
+	UAM_ASSERT(text.find("Private title") == std::string::npos);
+	UAM_ASSERT(text.find(temp.root.string()) == std::string::npos);
+}
+
 UAM_TEST(ChatRepositoryReportsSummaryDeleteFailures)
 {
 	TempDir temp("uam-chat-summary-delete-failure");
@@ -10679,6 +10785,39 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(FinalizeChatSyncSelectionKeepsClosedSelectionEmpty)
+{
+	TempDir temp("uam-sync-selection-closed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.remember_last_chat = true;
+	for (const char* id : {"chat-first", "chat-terminal"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+	}
+
+	// Closing or deleting the open chat leaves no selection. A later terminal
+	// history sync (its own chat, another native ID, or a removed chat) must not
+	// reopen anything.
+	for (const char* preferred : {"chat-terminal", "native-session-id", "chat-deleted", ""})
+	{
+		ChatDomainService().SelectChatById(app, "");
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, false));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, true));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string());
+	}
+
+	// An open chat still follows its terminal's import target as before.
+	ChatDomainService().SelectChatById(app, "chat-first");
+	UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "chat-first", "chat-terminal", false));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("chat-terminal"));
+}
+
 UAM_TEST(FinalizeChatSyncSelectionPrunesReferencesAndReportsHydrationFailure)
 {
 	TempDir temp("uam-sync-selection-hydration");
@@ -10741,11 +10880,15 @@ UAM_TEST(SyncChatsFromLoadedNativeTrimsPreferredNativeSessionId)
 	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved.front().id, std::string("target-chat"));
 	UAM_ASSERT_EQ(saved.front().native_session_id, std::string("target-native"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	// No chat was open, so the background import must not open one.
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
 	app.chats.clear();
 	app.selected_chat_index = -1;
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, "missing-chat"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, std::string("target-chat"));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Target history"));
 }
 
@@ -11464,7 +11607,16 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
 	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
 	UAM_ASSERT(RunGitForTest(repo, "commit --allow-empty -m initial"));
-	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo)));
+	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
+		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
+		return uam::strings::Trim(result.output);
+	};
+	// The service keys worktrees by Git's verified top level, which Git for Windows reports in
+	// long-name form even when the runner's TEMP uses an 8.3 alias such as RUNNER~1.
+	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(git_output("rev-parse --show-toplevel")))));
 	uam::AppState app;
 	app.data_root = temp.root / "data";
 	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(app.data_root / "worktrees" / repo_key / "review")).size();
@@ -11474,13 +11626,6 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	const std::string logical_name = "review/" + std::string(80, 'a');
 	const fs::path original = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(logical_name);
 	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original) / ".git").size(), static_cast<std::size_t>(268));
-	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
-	{
-		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
-		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
-		return uam::strings::Trim(result.output);
-	};
 	std::vector<ChatSession> chats(4);
 	for (std::size_t index = 0; index < chats.size(); ++index)
 	{
@@ -11509,7 +11654,8 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	for (const ChatSession& chat : chats)
 	{
 		std::string error;
-		UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		if (!service.RemoveUnusedBranchWorktree(app, chat, &error))
+			uam_test::Fail(("RemoveUnusedBranchWorktree(" + chat.id + ") refused: " + error + " worktree=" + chat.workspace_worktree_directory + " source=" + chat.workspace_source_directory).c_str(), __FILE__, __LINE__);
 		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
 	}
 	UAM_ASSERT(git_output("worktree list --porcelain").find("refs/heads/" + logical_name) == std::string::npos);
@@ -12335,6 +12481,7 @@ UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First original prompt", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(!app.acp_sessions.empty());
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12377,17 +12524,68 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "repository-review", "storage unavailable"));
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatSession chat;
-	chat.id = "failed-baseline-retry";
+	chat.id = "chat-failed-baseline-retry"; // A new-chat id, so restore does not adopt it as a native session id.
 	chat.provider_id = uam::provider_ids::kGeminiCli;
 	chat.workspace_directory = repo.string();
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Keep this prompt once", {}, {}, false, &error));
+	uam::FlushPendingChatSaves(app, true); // Idle admission saves are deferred to the app tick.
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	// The app tick holds the input and stops reconnecting instead of silently retrying the failed baseline.
+	const auto settle_hold = [&]()
+	{
+		(void)uam::PollAllAcpSessions(app);
+		uam::FlushPendingChatSaves(app, true);
+	};
+	const auto retry_allowed = [](const uam::AppState& state)
+	{
+		const nlohmann::json projected = uam::StateSerializer::Serialize(state).at("chats").at(0).at("acpSession");
+		UAM_ASSERT(projected.at("pendingDirectPrompts").empty() && projected.at("unsentDirectPrompts").size() == 1);
+		return projected.at("unsentDirectPrompts").at(0).value("retryAllowed", false);
+	};
+	settle_hold();
+	const uam::AcpSessionState& held = *app.acp_sessions.front();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.running);
+	UAM_ASSERT(!held.last_error.empty());
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
+	// The hold reason is saved, so a restart keeps the exact receipt retryable.
+	const fs::path restart_root = temp.root / "restart-data";
+	fs::copy(app.data_root, restart_root, fs::copy_options::recursive);
+	UAM_ASSERT(fs::remove(restart_root / "repository-review"));
+	const auto restored = ChatRepository::LoadLocalChat(restart_root, chat.id, true, &error);
+	UAM_ASSERT(restored && restored->acp_queue_held && restored->acp_queued_prompts.size() == 1 &&
+	           restored->acp_queued_prompts.front().repository_baseline_hold);
+	const uam::AcpQueuedUserPromptState receipt = app.chats.front().acp_queued_prompts.front();
+	// A stale identity is refused without touching the hold.
+	const std::string held_error = held.last_error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
+	UAM_ASSERT_EQ(error, std::string("The retained message changed or its delivery is unresolved. Your input is kept."));
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && held.last_error == held_error);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front() == receipt);
+	// Retrying while storage still fails re-holds the same input with a fresh marker once the baseline fails again.
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error)); // Fresh capture is pending.
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending && !app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Failed);
+	settle_hold();
+	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && !held.last_error.empty());
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(retry_allowed(app));
 	UAM_ASSERT(fs::remove(app.data_root / "repository-review"));
-	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, chat.id, 0, &error));
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(held.queue_held && !held.reconnect_pending);
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Failed);
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !held.queue_held && held.reconnect_pending);
+	UAM_ASSERT(!app.chats.front().acp_queued_prompts.front().repository_baseline_hold);
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(!held.queue_held && held.reconnect_pending);
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
 	UAM_ASSERT(!app.acp_sessions.front()->running);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
@@ -12395,6 +12593,57 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Keep this prompt once"));
+	// Restored state: no session yet; the saved hold alone authorizes the same exact Retry.
+	uam::AppState restarted;
+	restarted.data_root = restart_root;
+	restarted.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	restarted.chats.push_back(*restored);
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	UAM_ASSERT(retry_allowed(restarted));
+	error.clear();
+	UAM_ASSERT(uam::RetryQueuedAcpPrompt(restarted, chat.id, {receipt.id, receipt.revision}, &error));
+	UAM_ASSERT(error.empty() && !restarted.acp_sessions.front()->queue_held && restarted.acp_sessions.front()->reconnect_pending);
+	UAM_ASSERT_EQ(restarted.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(restarted.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
+	UAM_ASSERT(!restarted.acp_sessions.front()->running);
+}
+
+UAM_TEST(AcpRepositoryBaselineHoldRetryIsOfferedOnlyForTheLoneMarkedReceipt)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "baseline-hold-projection";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.acp_queue_held = true;
+	uam::AcpQueuedUserPromptState marked;
+	marked.id = "marked";
+	marked.revision = 1;
+	marked.text = "Held by a failed baseline";
+	marked.direct_admission = true;
+	marked.repository_baseline_hold = true;
+	uam::AcpQueuedUserPromptState unrelated = marked;
+	unrelated.id = "unrelated";
+	unrelated.repository_baseline_hold = false;
+	const auto retry_flags = [&](std::vector<uam::AcpQueuedUserPromptState> outbox)
+	{
+		app.chats = {chat};
+		app.chats.front().acp_queued_prompts = std::move(outbox);
+		std::vector<bool> flags;
+		const nlohmann::json state = uam::StateSerializer::Serialize(app);
+		for (const auto& receipt : state.at("chats").at(0).at("acpSession").at("unsentDirectPrompts"))
+			flags.push_back(receipt.value("retryAllowed", false));
+		return flags;
+	};
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{true});
+	UAM_ASSERT(uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	UAM_ASSERT(retry_flags({unrelated}) == std::vector<bool>{false});
+	UAM_ASSERT(retry_flags({marked, unrelated}) == (std::vector<bool>{false, false}));
+	UAM_ASSERT(!uam::AcpBaselineHoldRetryAllowed(app, app.chats.front(), nullptr));
+	std::string error;
+	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {marked.id, marked.revision}, &error));
+	UAM_ASSERT(app.acp_sessions.empty() || app.acp_sessions.front()->queue_held);
+	chat.acp_queue_held = false;
+	UAM_ASSERT(retry_flags({marked}) == std::vector<bool>{false});
 }
 
 UAM_TEST(VcsChatComparisonExcludesUnchangedPreexistingIndexAndWorkingChanges)
@@ -15237,6 +15486,11 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 	uam::CliProviderVersionState& copilot_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
 	copilot_version.checked = true;
 	copilot_version.supported = true;
+	uam::CliProviderVersionState& opencode_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+	opencode_version.execution_host = uam::execution_hosts::LocalHost();
+	opencode_version.checked = true;
+	opencode_version.supported = true;
+	opencode_version.installed_version = "1.19.4";
 	AppSettings settings;
 	settings.provider_extra_flags = "--dangerously-skip-permissions --yolo --allow-all --ask-for-approval never --agent unsafe --plugin-dir injected";
 
@@ -18276,8 +18530,7 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	                               "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
 	                               "--disable-builtin-mcps",
 	                               "--no-custom-instructions",
-	                               "--no-remote",
-	                               "--no-remote-export",
+	                               "--sync-session=off",
 	                               "--disallow-temp-dir",
 	                               "--silent",
 	                           }));
@@ -18293,6 +18546,30 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "COPILOT_HOME="));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--agent"));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--plugin-dir"));
+
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export; older CLIs reject --sync-session.
+	const auto worker_flags = [&](std::string_view host_id)
+	{
+		return uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, nullptr, host_id).argv;
+	};
+	const auto uses_legacy_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--no-remote")) && uam::ranges::Contains(argv, std::string("--no-remote-export")) &&
+		       !uam::ranges::Contains(argv, std::string("--sync-session=off"));
+	};
+	const auto uses_current_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--sync-session=off")) && !uam::ranges::Contains(argv, std::string("--no-remote")) &&
+		       !uam::ranges::Contains(argv, std::string("--no-remote-export"));
+	};
+	UAM_ASSERT(uses_current_flags(worker_invocation.argv));
+	worker_version.installed_version = "1.0.102";
+	UAM_ASSERT(uses_legacy_flags(worker_flags({})));
+	worker_version.installed_version = "1.0.103-0";
+	UAM_ASSERT(uses_current_flags(worker_flags({})));
+	worker_app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, "ssh-old")].installed_version = "1.0.98";
+	UAM_ASSERT(uses_legacy_flags(worker_flags("ssh-old")));
+	UAM_ASSERT(uses_current_flags(worker_flags("ssh-unchecked")));
 
 	const std::string long_prompt(12000, 'x');
 	const uam::ProviderWorkerInvocation long_worker = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, long_prompt, "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);
@@ -25708,6 +25985,33 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	UAM_ASSERT_EQ(state.install_method, std::string("winget"));
 }
 
+UAM_TEST(WindowsLaunchesAppendRegistryPathMissingFromStaleProcessPath)
+{
+	// A helper started before a CLI install keeps its old PATH; System32 stands in for the newly added registry entry.
+	TempDir temp("uam-win-stale-path");
+	const auto expect_registry_path_child = [&](const ProcessExecutionResult& result)
+	{
+		UAM_ASSERT(result.ok);
+		UAM_ASSERT_EQ(result.exit_code, 0);
+		UAM_ASSERT(uam::strings::ContainsCaseInsensitive(result.output, "\\cmd.exe"));
+		std::wstring path(32767, L'\0');
+		path.resize(GetEnvironmentVariableW(L"PATH", path.data(), static_cast<DWORD>(path.size())));
+		UAM_ASSERT(path.starts_with(temp.root.wstring() + L";"));
+	};
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		expect_registry_path_child(PlatformServicesFactory::Instance().process_service.ExecuteCommand("where.exe cmd", 10000));
+	}
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		uam::ProviderWorkerInvocation invocation;
+		invocation.direct_process = true;
+		invocation.argv = {"where.exe", "cmd"};
+		invocation.command_preview = "where.exe cmd";
+		expect_registry_path_child(uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 10000));
+	}
+}
+
 #endif
 
 #if defined(__APPLE__)
@@ -25781,6 +26085,21 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+	if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--uam-test-stdio-cat")
+	{
+		// Paired with uam_test::StdioCatArgv: copy stdin unchanged until EOF.
+		const HANDLE output = argc == 3
+		    ? CreateFileW(std::filesystem::path(argv[2]).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+		    : GetStdHandle(STD_OUTPUT_HANDLE);
+		if (output == INVALID_HANDLE_VALUE) return 1;
+		char buffer[8192];
+		DWORD count = 0, written = 0;
+		while (::ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, sizeof(buffer), &count, nullptr) && count > 0)
+			if (!::WriteFile(output, buffer, count, &written, nullptr) || written != count) return 1;
+		return 0;
+	}
+#endif
 	// Every ordinary test starts outside the developer's native Antigravity store.
 	// Individual fixtures may override these only with their own synthetic roots.
 	uam_test::ScopedNativeHistoryHome native_history_home;
@@ -25873,6 +26192,10 @@ int main(int argc, char** argv)
 		return *fixture_result;
 	}
 #endif
+	// Fixture repositories must check out the bytes they commit. Git for Windows ships a system
+	// core.autocrlf=true, which turns committed "x\n" into "x\r\n" and adds LF/CRLF warnings to
+	// captured output; product-owned repositories already pin this per command.
+	const ScopedEnvVar git_line_endings("GIT_CONFIG_PARAMETERS", "'core.autocrlf=false'");
 	int failures = 0;
 	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
 	{

@@ -1,6 +1,9 @@
 import type { CliVersionManager } from '../store/cpp/types'
 import type { Provider } from '../types/provider'
 import type { ExecutionHost } from '../types/session'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../config/buildFeatures'
+import { CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID } from '../utils/providerMetadata'
+import { isSshHost } from '../utils/remoteWorkspace'
 
 const CACHE_KEY = 'uam-update-catalog-v1'
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -13,11 +16,11 @@ const providerPackages: Record<string, {
   releaseRepository: string
   releaseTagPrefix: string
 }> = {
-  'gemini-cli': { npmPackage: '@google/gemini-cli', homebrew: { kind: 'formula', name: 'gemini-cli' }, releaseRepository: 'google-gemini/gemini-cli', releaseTagPrefix: 'v' },
-  'codex-cli': { npmPackage: '@openai/codex', homebrew: { kind: 'cask', name: 'codex' }, releaseRepository: 'openai/codex', releaseTagPrefix: 'rust-v' },
-  'claude-cli': { npmPackage: '@anthropic-ai/claude-code', homebrew: { kind: 'cask', name: 'claude-code' }, releaseRepository: 'anthropics/claude-code', releaseTagPrefix: 'v' },
-  'opencode-cli': { npmPackage: 'opencode-ai', homebrew: { kind: 'formula', name: 'opencode' }, releaseRepository: 'anomalyco/opencode', releaseTagPrefix: 'v' },
-  'copilot-cli': { npmPackage: '@github/copilot', homebrew: { kind: 'cask', name: 'copilot-cli' }, releaseRepository: 'github/copilot-cli', releaseTagPrefix: 'v' },
+  ...(GEMINI_ENABLED ? { [GEMINI_CLI_PROVIDER_ID]: { npmPackage: '@google/gemini-cli', homebrew: { kind: 'formula' as const, name: 'gemini-cli' }, releaseRepository: 'google-gemini/gemini-cli', releaseTagPrefix: 'v' } } : {}),
+  ...(CODEX_ENABLED ? { [CODEX_CLI_PROVIDER_ID]: { npmPackage: '@openai/codex', homebrew: { kind: 'cask' as const, name: 'codex' }, releaseRepository: 'openai/codex', releaseTagPrefix: 'rust-v' } } : {}),
+  ...(CLAUDE_ENABLED ? { [CLAUDE_CLI_PROVIDER_ID]: { npmPackage: '@anthropic-ai/claude-code', homebrew: { kind: 'cask' as const, name: 'claude-code' }, releaseRepository: 'anthropics/claude-code', releaseTagPrefix: 'v' } } : {}),
+  ...(OPENCODE_ENABLED ? { [OPENCODE_CLI_PROVIDER_ID]: { npmPackage: 'opencode-ai', homebrew: { kind: 'formula' as const, name: 'opencode' }, releaseRepository: 'anomalyco/opencode', releaseTagPrefix: 'v' } } : {}),
+  ...(COPILOT_ENABLED ? { [COPILOT_CLI_PROVIDER_ID]: { npmPackage: '@github/copilot', homebrew: { kind: 'cask' as const, name: 'copilot-cli' }, releaseRepository: 'github/copilot-cli', releaseTagPrefix: 'v' } } : {}),
 }
 
 export interface LatestUpdateCatalog {
@@ -107,7 +110,7 @@ export function availableRemoteHelperUpdates(
     const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}`
     const versionOutdated = !currentVersion || compareVersions(latestVersion, currentVersion) > 0
     const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
-    if (host.transport !== 'ssh' || (!versionOutdated && !protocolOutdated) || dismissedVersions[id] === updateVersion) return []
+    if (!isSshHost(host) || (!versionOutdated && !protocolOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
       remoteHostId: host.id,
@@ -327,7 +330,7 @@ export function availableUpdates(
       url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId]?.npmPackage ?? ''}`,
       ...(latest?.releaseNotesExcerpt ? { releaseNotesExcerpt: latest.releaseNotesExcerpt } : {}),
       installable: state.preferredVersion === 'latest' ||
-        state.providerId === 'gemini-cli' ||
+        state.providerId === GEMINI_CLI_PROVIDER_ID ||
         state.availableVersions.some((option) => cleanVersion(option.version) === latestVersion),
     })
   }

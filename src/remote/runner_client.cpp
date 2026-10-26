@@ -146,10 +146,24 @@ namespace uam::remote
 
 	bool CanAttemptRunnerConnection(const ExecutionHost& host)
 	{
-		return UAM_ENABLE_SSH && host.transport == "ssh" &&
-		       (host.runner_status == "ready" || host.runner_status == "error" || host.runner_status == "offline") &&
+		return UAM_ENABLE_SSH && uam::execution_hosts::CanConnectRunner(host) &&
 		       !SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
 		                      host.runner_directory, host.runner_protocol_version).empty();
+	}
+
+	bool ValidateRemoteWorkspaceDirectory(IPlatformProcessService& service, const ExecutionHost& host,
+	    const std::filesystem::path& directory, std::string* error_out)
+	{
+		RunnerClient client(service, host);
+		DirectoryListing listing;
+		return client.ListDirectories(directory, listing, error_out);
+	}
+
+	RunnerClient::RunnerClient(IPlatformProcessService& process_service, const ExecutionHost& host)
+	    : RunnerClient(process_service, SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+	          host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version)
+	{
+		m_connectionAllowed = CanAttemptRunnerConnection(host);
 	}
 
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
@@ -167,11 +181,12 @@ namespace uam::remote
 		Disconnect();
 	}
 
-	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token)
+	bool RunnerClient::Connect(std::string* error_out, std::stop_token stop_token, const std::function<bool()>& interrupt)
 	try
 	{
 		if (stop_token.stop_requested()) return false;
-		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "SSH remote execution is disabled in this build."; return false; }
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
+		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())
 		{
@@ -199,7 +214,7 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
 		              {"nonce", nonce}},
-		             response, &error, [stop_token] { return stop_token.stop_requested(); }) || response.value("nonce", "") != nonce ||
+		             response, &error, [&] { return stop_token.stop_requested() || (interrupt && interrupt()); }) || response.value("nonce", "") != nonce ||
 		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
 		    (!m_expectedVersion.empty() &&
 		     response.value("runnerVersion", "") != m_expectedVersion) ||

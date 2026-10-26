@@ -1,8 +1,9 @@
-import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID } from '../utils/providerMetadata'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS } from '../utils/providerMetadata'
 
-export const USAGE_PROVIDERS = [CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, ANTIGRAVITY_CLI_PROVIDER_ID] as const
+// Excluded providers carry a placeholder id; usage lists only the providers this build includes.
+export const USAGE_PROVIDERS = [CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, ANTIGRAVITY_CLI_PROVIDER_ID].filter((id) => SUPPORTED_CLI_PROVIDER_IDS.includes(id))
 export const ALL_MACHINES_HOST_ID = '*'
-export type UsageProviderId = typeof USAGE_PROVIDERS[number]
+export type UsageProviderId = string
 export type UsageSpeed = 'standard' | 'fast' | 'ultrafast'
 export type UsageMetric = 'cost' | 'tokens' | 'limits'
 export type UsageWindowDays = 0 | 1 | 7 | 30 | 90

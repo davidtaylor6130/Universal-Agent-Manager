@@ -5,12 +5,14 @@
 #include "cef_handler_fixture.h"
 #include "remote/native_history_snapshot.h"
 #include "cef/uam_query_handler_async.h"
+#include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 #include "app/agent_definition_service.h"
 #include "app/storage_retention_service.h"
 #include "app/computer_use_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/provider/native_agent_history.h"
 #include "common/chat/chat_branching.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -23,6 +25,11 @@
 #include "include/cef_load_handler.h"
 #include <future>
 #include "common/runtime/acp/acp_session_internal.h"
+#include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
+#if !defined(_WIN32)
+#include <csignal>
+#endif
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
@@ -56,6 +63,10 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleSetComputerUseSettings(nullptr, {{"computerUseGloballyEnabled", enabled}}, callback);
 	}
+	static void GetComputerUseSettings(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleGetComputerUseSettings(nullptr, {}, callback);
+	}
 	static void ImportAgent(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
@@ -76,6 +87,13 @@ struct ChatIconHandlerTestAccess
 		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
 
+	static void InstallRemoteHost(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, int64_t query)
+	{
+		handler.m_remoteInstallQueryIdentities[callback.get()] = {-1, "", query};
+		handler.HandleInstallRemoteHost(nullptr, payload, callback);
+		handler.m_remoteInstallQueryIdentities.erase(callback.get());
+	}
+
 	static void Cancel(UamQueryHandler& handler, int browser, const std::string& frame, int64_t query)
 	{
 		handler.CancelChatIconQuery(browser, frame, query);
@@ -89,7 +107,8 @@ namespace
 	  public:
 		int successes = 0, failures = 0, last_failure = 0;
 		std::string failure_message;
-		void Success(const CefString&) override { ++successes; }
+		std::string success_message;
+		void Success(const CefString& value) override { ++successes; success_message = value.ToString(); }
 		void Success(const void*, size_t) override { ++successes; }
 		void Failure(int code, const CefString& message) override { ++failures; last_failure = code; failure_message = message.ToString(); }
 	  private:
@@ -696,6 +715,152 @@ UAM_TEST(CentralInstructionHandlersIgnoreBlockedSharedFileQueue)
 	UAM_ASSERT_EQ(state->load(), 1);
 }
 
+UAM_TEST(RemoteHelperInstallLeavesSharedQueueFreeAndStopsOnCancelOrShutdown)
+{
+#if !defined(_WIN32)
+	// ponytail: POSIX shell stand-in for ssh; the stop path under test is platform-neutral.
+	TempDir temp("uam-remote-install-thread");
+	const fs::path bin = temp.root / "bin";
+	const fs::path pids = temp.root / "ssh.pids";
+	fs::create_directories(bin);
+	UAM_ASSERT(uam::io::WriteTextFile(bin / "ssh", "#!/bin/sh\necho $$ >> \"$UAM_FAKE_SSH_PIDS\"\nexec sleep 600\n"));
+	fs::permissions(bin / "ssh", fs::perms::owner_all, fs::perm_options::replace);
+	const char* inherited_path = std::getenv("PATH");
+	ScopedEnvVar path("PATH", bin.string() + ":" + (inherited_path ? inherited_path : ""));
+	ScopedEnvVar pid_file("UAM_FAKE_SSH_PIDS", pids.string());
+	// Planning reads runner artifacts beside this executable; borrow a fixture set only when none exist.
+	struct BorrowedArtifacts
+	{
+		fs::path directory;
+		bool owned;
+		~BorrowedArtifacts() { std::error_code error; if (owned) fs::remove_all(directory, error); }
+	} artifacts{uam::remote::PackagedRunnerPath().parent_path() / "linux-x86_64", false};
+	// A marker lets a later run remove a fixture set left behind by a killed run.
+	artifacts.owned = !fs::exists(artifacts.directory) || fs::exists(artifacts.directory / "uam-test-fixture");
+	if (artifacts.owned)
+	{
+		fs::create_directories(artifacts.directory);
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-test-fixture", ""));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner", "fixture runner"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.sha256", std::string(64, 'a') + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", std::string(64, 'b')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump()));
+	}
+	const auto started = [&pids](std::size_t count)
+	{
+		std::vector<pid_t> found;
+		RunCreationLoopUntil([&]()
+		{
+			found.clear();
+			std::istringstream lines(fs::exists(pids) ? ReadFile(pids) : std::string());
+			for (pid_t pid = 0; lines >> pid;) found.push_back(pid);
+			return found.size() >= count;
+		}, std::chrono::seconds(10));
+		UAM_ASSERT_EQ(found.size(), count);
+		return found.back();
+	};
+	const auto gone = [](pid_t pid)
+	{
+		RunCreationLoopUntil([pid]() { return ::kill(pid, 0) != 0 && errno == ESRCH; }, std::chrono::seconds(5));
+		return ::kill(pid, 0) != 0 && errno == ESRCH;
+	};
+	const nlohmann::json payload = {{"id", "install-thread"}, {"label", "Install thread"}, {"sshAlias", "uam-install-thread"}, {"runnerDirectory", ""}};
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	std::unique_ptr<UamQueryHandler> handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+
+	const CefRefPtr<RecordingInstructionCallback> cancelled = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, payload, cancelled, 41);
+	const pid_t first = started(1);
+	// Other async queries keep the shared user-blocking queue while SSH setup is in flight.
+	const std::shared_ptr<std::atomic<int>> observed = std::make_shared<std::atomic<int>>(0);
+	UAM_ASSERT(CefPostTask(TID_FILE_USER_BLOCKING, new CreationQueueWitness(observed, 1)));
+	RunCreationLoopUntil([observed]() { return observed->load() == 1; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(observed->load(), 1);
+	UAM_ASSERT_EQ(cancelled->successes + cancelled->failures, 0);
+	handler->OnQueryCanceled(nullptr, nullptr, 41);
+	RunCreationLoopUntil([cancelled]() { return cancelled->successes + cancelled->failures != 0; }, std::chrono::seconds(5));
+	UAM_ASSERT_EQ(cancelled->failures, 1);
+	UAM_ASSERT(cancelled->body.find("canceled") != std::string::npos);
+	UAM_ASSERT(gone(first));
+	UAM_ASSERT(uam::execution_hosts::Find(app.settings.execution_hosts, "install-thread") == nullptr);
+
+	const CefRefPtr<RecordingInstructionCallback> shutdown = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, payload, shutdown, 42);
+	const pid_t second = started(2);
+	const std::chrono::steady_clock::time_point closing = std::chrono::steady_clock::now();
+	handler.reset();
+	UAM_ASSERT(gone(second));
+	UAM_ASSERT(std::chrono::steady_clock::now() - closing < std::chrono::seconds(5));
+	UAM_ASSERT_EQ(shutdown->successes + shutdown->failures, 0);
+#endif
+}
+
+UAM_TEST(ComputerUseSettingsExposePendingRevocationWithoutChangingConsent)
+{
+	TempDir temp("uam-cu-global-status");
+	uam::AppState app;
+	app.data_root = temp.root;
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	for (bool enabled : {false, true})
+	{
+		app.settings.computer_use_globally_enabled = enabled;
+		for (bool pending : {false, true, false})
+		{
+			app.computer_use_revocation_pending_chat_ids.clear();
+			if (pending) app.computer_use_revocation_pending_chat_ids.insert("deleted-owned-chat");
+			const nlohmann::json state = uam::StateSerializer::Serialize(app, true);
+			const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
+			const nlohmann::json settings_patch = nlohmann::json::parse(uam::SettingsPatchForTests(app));
+			uam::AppState before;
+			before.data_root = temp.root;
+			before.settings.computer_use_globally_enabled = enabled;
+			if (!pending) before.computer_use_revocation_pending_chat_ids.insert("deleted-owned-chat");
+			const nlohmann::json changed_patch = nlohmann::json::parse(uam::StatePatchForTests(before, app)).at("data").at("settings");
+			UAM_ASSERT(!nlohmann::json::parse(uam::StatePatchForTests(app, app)).at("data").contains("settings"));
+			CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+			ChatIconHandlerTestAccess::GetComputerUseSettings(*handler, callback);
+			UAM_ASSERT_EQ(callback->successes, 1);
+			const nlohmann::json readback = nlohmann::json::parse(callback->success_message);
+			for (const nlohmann::json* settings : {&state.at("settings"), &fingerprint.at("settings"), &settings_patch, &changed_patch, &readback})
+			{
+				UAM_ASSERT_EQ(settings->at("computerUseGloballyEnabled").get<bool>(), enabled);
+				UAM_ASSERT_EQ(settings->at("computerUseRevocationPending").get<bool>(), pending);
+				UAM_ASSERT(settings->dump().find("deleted-owned-chat") == std::string::npos);
+			}
+			UAM_ASSERT_EQ(app.computer_use_revocation_pending_chat_ids.contains("deleted-owned-chat"), pending);
+		}
+	}
+	UAM_ASSERT(!uam::settings_frontend_json::SerializeCommonSettingsFields(app.settings).contains("computerUseRevocationPending"));
+}
+
+UAM_TEST(ComputerUseGlobalSettingsSaveFailurePreservesCapturedAuthority)
+{
+	TempDir temp("uam-cu-global-persistence-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession controlled = HandlerChat("cu-owned");
+	controlled.computer_use_enabled = true;
+	app.chats.push_back(controlled);
+	ComputerUseTerminalRuntimeFixture runtime;
+	runtime.AddTerminal(app, controlled.id);
+	fs::create_directories(AppPaths::SettingsFilePath(temp.root));
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> failed = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseSettings(*handler, false, failed);
+	UAM_ASSERT_EQ(failed->failures, 1);
+	UAM_ASSERT_EQ(failed->successes, 0);
+	UAM_ASSERT(app.settings.computer_use_globally_enabled);
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.empty());
+	UAM_ASSERT_EQ(runtime.StopCount(controlled.id), 0);
+	CefRefPtr<RecordingIconCallback> read = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::GetComputerUseSettings(*handler, read);
+	const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
+	UAM_ASSERT(receipt.at("computerUseGloballyEnabled").get<bool>());
+	UAM_ASSERT(!receipt.at("computerUseRevocationPending").get<bool>());
+}
+
 UAM_TEST(ComputerUseHandlerOffWriteFailureCannotRestoreConsent)
 {
 	TempDir temp("uam-cu-handler-revoke-write");
@@ -787,6 +952,14 @@ UAM_TEST(ComputerUseHandlerGlobalOffRetriesOwnedTerminal)
 		UAM_ASSERT(!app.settings.computer_use_globally_enabled);
 		UAM_ASSERT(!app.chats.empty());
 		UAM_ASSERT(!app.chats.front().computer_use_enabled);
+		CefRefPtr<RecordingIconCallback> read = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::GetComputerUseSettings(handler, read);
+		const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
+		UAM_ASSERT(!receipt.at("computerUseGloballyEnabled").get<bool>());
+		UAM_ASSERT(receipt.at("computerUseRevocationPending").get<bool>());
+		AppSettings saved;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(temp.root), saved).loaded);
+		UAM_ASSERT(!saved.computer_use_globally_enabled);
 	}
 	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
 	ChatIconHandlerTestAccess::ComputerUseSettings(handler, true, blocked);
@@ -801,6 +974,9 @@ UAM_TEST(ComputerUseHandlerGlobalOffRetriesOwnedTerminal)
 	UAM_ASSERT_EQ(runtime.StopCount("ordinary"), 0);
 	UAM_ASSERT_EQ(app.cli_terminals.size(), std::size_t{1});
 	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.empty());
+	const nlohmann::json stopped = nlohmann::json::parse(callback->success_message);
+	UAM_ASSERT(!stopped.at("computerUseGloballyEnabled").get<bool>());
+	UAM_ASSERT(!stopped.at("computerUseRevocationPending").get<bool>());
 	CefRefPtr<RecordingIconCallback> enabled = new RecordingIconCallback;
 	ChatIconHandlerTestAccess::ComputerUseSettings(handler, true, enabled);
 	UAM_ASSERT_EQ(enabled->successes, 1); UAM_ASSERT_EQ(enabled->failures, 0);
@@ -839,7 +1015,7 @@ int main(int argc, char** argv)
 		const bool window_chrome = test.name.rfind("WindowChrome", 0) == 0;
 		const bool companion_live = test.name.rfind("CompanionLive", 0) == 0;
 		const bool native_lineage = test.name.rfind("NativeChildLineageHandler", 0) == 0;
-		const bool remote_history = test.name.rfind("RemoteNativeHistoryHandler", 0) == 0;
+		const bool remote_history = test.name.rfind("RemoteNativeHistoryHandler", 0) == 0 || test.name.rfind("RemoteHelperInstall", 0) == 0;
 		if (icon) ++icon_selected;
 		if (creation) ++create_selected;
 		if (retry) ++retry_selected;
@@ -963,6 +1139,59 @@ UAM_TEST(ProviderMcpOverrideHandlerUsesEffectiveHostScopedServerMembership)
 	const CefRefPtr<RecordingInstructionCallback> local_result = invoke("local", global.id);
 	UAM_ASSERT_EQ(local_result->successes, 1);
 	UAM_ASSERT_EQ(local_result->failures, 0);
+}
+
+UAM_TEST(OpenCodeProgressiveMcpHandlerPersistsScopeAndRollsBackFailedSave)
+{
+	TempDir temp("uam-opencode-progressive-handler");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost remote;
+	remote.id = "ssh-lab"; remote.transport = "ssh"; remote.ssh_alias = "private-fixture";
+	app.settings.execution_hosts = {ExecutionHost{}, remote};
+	app.settings.central_provider_configuration.instructions = "Keep instructions";
+	app.settings.central_provider_configuration.mcp_overrides.push_back({"codex-cli", "local", "docs", false});
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const auto invoke = [&](const std::string& provider, const std::string& host, bool enabled)
+	{
+		CefRefPtr<RecordingInstructionCallback> callback = new RecordingInstructionCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, "setProviderMcpConfiguration",
+		    {{"providerId", provider}, {"executionHostId", host}, {"serverId", "opencode-progressive-mcp"}, {"enabled", enabled}, {"kind", "preference"}}, callback));
+		return callback;
+	};
+	for (const bool enabled : {false, true})
+	{
+		const CefRefPtr<RecordingInstructionCallback> callback = invoke("opencode-cli", remote.id, enabled);
+		UAM_ASSERT_EQ(callback->successes, 1);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		const nlohmann::json status = nlohmann::json::parse(callback->body);
+		UAM_ASSERT_EQ(status.at("executionHostId"), nlohmann::json(remote.id));
+		const auto row = std::ranges::find_if(status.at("providers"), [](const nlohmann::json& item) { return item.at("providerId") == "opencode-cli"; });
+		UAM_ASSERT(row != status.at("providers").end());
+		UAM_ASSERT_EQ(row->at("progressiveMcpDiscoveryEnabled").get<bool>(), enabled);
+		AppSettings persisted;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), persisted).loaded);
+		UAM_ASSERT_EQ(persisted.central_provider_configuration.mcp_overrides.size(), std::size_t{2});
+		UAM_ASSERT_EQ(persisted.central_provider_configuration.instructions, std::string("Keep instructions"));
+		UAM_ASSERT_EQ(uam::central_configuration::OpenCodeProgressiveMcpEnabled(persisted.central_provider_configuration, remote.id), enabled);
+		UAM_ASSERT(uam::central_configuration::OpenCodeProgressiveMcpEnabled(persisted.central_provider_configuration, "local"));
+	}
+	const nlohmann::json previous = uam::central_configuration::Serialize(app.settings.central_provider_configuration);
+	for (const std::string provider : {"gemini-cli", "codex-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		const CefRefPtr<RecordingInstructionCallback> callback = invoke(provider, remote.id, false);
+		UAM_ASSERT_EQ(callback->failures, 1);
+		UAM_ASSERT_EQ(callback->status, 400);
+	}
+	const CefRefPtr<RecordingInstructionCallback> missing_host = invoke("opencode-cli", "unknown-host", false);
+	UAM_ASSERT_EQ(missing_host->status, 404);
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "blocked", "File prevents a settings directory"));
+	app.data_root = temp.root / "blocked";
+	const CefRefPtr<RecordingInstructionCallback> failed_save = invoke("opencode-cli", remote.id, false);
+	UAM_ASSERT_EQ(failed_save->failures, 1);
+	UAM_ASSERT_EQ(failed_save->successes, 0);
+	UAM_ASSERT_EQ(failed_save->status, 500);
+	UAM_ASSERT_EQ(uam::central_configuration::Serialize(app.settings.central_provider_configuration), previous);
 }
 
 
@@ -3676,7 +3905,8 @@ UAM_TEST(NativeChildLineageHandlerGeminiShortReadableRefreshPreservesSavedOrigin
 	UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 	UAM_ASSERT_EQ(callback->successes, 0); // Intended actual R9 RED after all genuine reader/import prerequisites.
 	UAM_ASSERT_EQ(callback->failures, 1);
-	UAM_ASSERT(!callback->body.empty());
+	const std::string expected_refusal = "Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it.";
+	UAM_ASSERT_EQ(callback->body, expected_refusal);
 	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
 	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.reference), primary_revision);
 	UAM_ASSERT_EQ(ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, fixture.reference), summary_revision);
@@ -3689,6 +3919,22 @@ UAM_TEST(NativeChildLineageHandlerGeminiShortReadableRefreshPreservesSavedOrigin
 	UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 	UAM_ASSERT(fixture.app.branch_preparations.empty());
 	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
+	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
+
+	// Repeating refresh cannot repair the source or discard saved originals.
+	const auto repeated = fixture.Open(*handler_owner, true);
+	UAM_ASSERT_EQ(repeated->successes, 0); UAM_ASSERT_EQ(repeated->failures, 1);
+	UAM_ASSERT_EQ(repeated->body, expected_refusal);
+	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.reference), primary_revision);
+	UAM_ASSERT_EQ(ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, fixture.reference), summary_revision);
+	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
+
+	// A normal reopen still reads saved history while the genuine source remains
+	// short. The ordinary reopen may save metadata; refusal checks above compare
+	// the original bytes and revisions before that separate successful operation.
+	const auto reopened = fixture.Open(*handler_owner, false);
+	UAM_ASSERT_EQ(reopened->successes, 1); UAM_ASSERT_EQ(reopened->failures, 0);
 	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
 
 	// Restore the exact original journal, then issue a NEW public refresh. A

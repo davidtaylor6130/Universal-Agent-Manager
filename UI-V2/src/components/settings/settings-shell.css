@@ -100,6 +100,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-settings-progress::after { animation: none; width: 100%; opacity: 0.5; }
 }
+:root[data-motion="off"] .uam-settings-progress::after { width: 100%; opacity: 0.5; }
 
 /* Menu triggers in memory worker rows and similar pickers. */
 .uam-settings-trigger {
@@ -189,6 +190,7 @@
 .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave 120ms var(--ease) forwards; }
 @keyframes uam-settings-leave { to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
+:root[data-motion="off"] .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; }
 
 /* Appearance: theme swatch grid. Tiles preview each theme's background, surface, text and accent. */
 .uam-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--sp-2); width: 100%; padding-block: var(--sp-1); }

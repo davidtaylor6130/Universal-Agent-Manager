@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VcsSettingsSection, type VcsSettingsSectionHandle } from './VcsSettingsSection'
 import { useAppStore } from '../../store/useAppStore'
 
@@ -35,21 +37,114 @@ describe('VCS defaults controls', () => {
       expect(useAppStore.getState().gitDefaultBaseBranch).toBe(branch)
     } finally { act(() => root.unmount()) }
   })
-  it('retains a failed-save draft and requires explicit discard before leaving', async () => {
-    window.cefQuery = ({ onFailure }) => onFailure(500, 'Disk full')
+  it('clears an open leave prompt after save succeeds and allows a fresh navigation request', async () => {
+    let finish: ((response: string) => void) | undefined
+    window.cefQuery = ({ onSuccess }) => { finish = onSuccess }
     const { host, root, ref } = mount()
+    const pendingLeave = vi.fn()
+    const nextLeave = vi.fn(() => root.render(<p>Destination settings</p>))
     try {
       act(() => toggle(host, 'Enable Git').click())
+      act(() => ref.current!.requestLeave(pendingLeave))
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(pendingLeave).not.toHaveBeenCalled()
       await act(async () => button(host, 'Save VCS settings').click())
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(button(host, 'Saving…').disabled).toBe(true)
+      expect(button(host, 'Discard and leave').disabled).toBe(true)
+      act(() => button(host, 'Discard and leave').click())
+      expect(toggle(host, 'Enable Git').checked).toBe(false)
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(pendingLeave).not.toHaveBeenCalled()
+      await act(async () => finish!('{}'))
+      expect(useAppStore.getState().gitEnabled).toBe(false)
+      expect(toggle(host, 'Enable Git').checked).toBe(false)
+      expect(button(host, 'Save VCS settings').disabled).toBe(true)
+      expect(button(host, 'Discard').disabled).toBe(true)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(pendingLeave).not.toHaveBeenCalled()
+      act(() => ref.current!.requestLeave(nextLeave))
+      expect(nextLeave).toHaveBeenCalledTimes(1)
+      expect(pendingLeave).not.toHaveBeenCalled()
+      expect(host.textContent).toBe('Destination settings')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('retains an open leave prompt and failed-save draft until explicit discard navigates', async () => {
+    let fail: (() => void) | undefined
+    window.cefQuery = ({ onFailure }) => { fail = () => onFailure(500, 'Disk full') }
+    const { host, root, ref } = mount()
+    const leave = vi.fn()
+    try {
+      act(() => toggle(host, 'Enable Git').click())
+      act(() => ref.current!.requestLeave(leave))
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(leave).not.toHaveBeenCalled()
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(button(host, 'Discard and leave').disabled).toBe(true)
+      act(() => button(host, 'Discard and leave').click())
+      expect(toggle(host, 'Enable Git').checked).toBe(false)
+      expect(leave).not.toHaveBeenCalled()
+      await act(async () => fail!())
       expect(useAppStore.getState().gitEnabled).toBe(true)
       expect(toggle(host, 'Enable Git').checked).toBe(false)
       expect(host.textContent).toContain('Your changes are retained')
-      let left = false
-      act(() => ref.current!.requestLeave(() => { left = true }))
-      expect(left).toBe(false)
+      expect(button(host, 'Save VCS settings').disabled).toBe(false)
       expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(leave).not.toHaveBeenCalled()
+      expect(button(host, 'Discard and leave').disabled).toBe(false)
       act(() => button(host, 'Discard and leave').click())
-      expect(left).toBe(true)
+      expect(leave).toHaveBeenCalledTimes(1)
+      expect(toggle(host, 'Enable Git').checked).toBe(true)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('clears leave prompts across failed retries and repeated saves without replaying navigation', async () => {
+    const replies: { succeed: (response: string) => void; fail: (code: number, message: string) => void }[] = []
+    window.cefQuery = ({ onSuccess, onFailure }) => { replies.push({ succeed: onSuccess, fail: onFailure }) }
+    const { host, root, ref } = mount()
+    const firstLeave = vi.fn()
+    const secondLeave = vi.fn()
+    const navigate = vi.fn()
+    const branch = () => host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!
+    try {
+      act(() => input(branch(), 'feature/retry'))
+      act(() => ref.current!.requestLeave(firstLeave))
+      act(() => {
+        const save = button(host, 'Save VCS settings')
+        save.click(); save.click()
+      })
+      expect(replies).toHaveLength(1)
+      await act(async () => replies[0].fail(500, 'Disk full'))
+      expect(branch().value).toBe('feature/retry')
+      expect(host.textContent).toContain('Your changes are retained')
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      expect(firstLeave).not.toHaveBeenCalled()
+
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(replies).toHaveLength(2)
+      await act(async () => replies[1].succeed('{}'))
+      expect(useAppStore.getState().gitDefaultBaseBranch).toBe('feature/retry')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      act(() => button(host, 'Save VCS settings').click())
+      expect(replies).toHaveLength(2)
+
+      act(() => input(branch(), 'feature/second-save'))
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      act(() => ref.current!.requestLeave(secondLeave))
+      expect(host.textContent).toContain('Discard unsaved VCS changes?')
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(replies).toHaveLength(3)
+      await act(async () => replies[2].succeed('{}'))
+      expect(useAppStore.getState().gitDefaultBaseBranch).toBe('feature/second-save')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      expect(button(host, 'Save VCS settings').disabled).toBe(true)
+      act(() => ref.current!.requestLeave(navigate))
+      expect(navigate).toHaveBeenCalledTimes(1)
+      expect(firstLeave).not.toHaveBeenCalled()
+      expect(secondLeave).not.toHaveBeenCalled()
     } finally { act(() => root.unmount()) }
   })
 })
@@ -80,7 +175,8 @@ describe('separate Git and SVN sections', () => {
   it('disables only dependent controls and restores them when the parent switch returns', () => {
     const { host, root } = mount()
     try {
-      const gitDependents = () => [toggle(host, 'Local snapshot Git for SVN'), toggle(host, 'Enable local Git files'), toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, ...Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Port method"] button'))]
+      const gitDependents = () => [toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, ...Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Port method"] button'))]
+      const snapshots = () => [toggle(host, 'Local snapshot Git for SVN'), toggle(host, 'Enable local Git files')]
       expect(gitDependents().every((control) => !control.disabled)).toBe(true)
       act(() => toggle(host, 'Automatic isolation').click())
       expect(toggle(host, 'Pull before first chat').disabled).toBe(true)
@@ -88,10 +184,12 @@ describe('separate Git and SVN sections', () => {
       act(() => toggle(host, 'Automatic isolation').click())
       act(() => toggle(host, 'Enable Git').click())
       expect(gitDependents().every((control) => control.disabled)).toBe(true)
+      expect(snapshots().every((control) => !control.disabled && control.checked)).toBe(true)
       expect(toggle(host, 'Enable SVN').disabled).toBe(false)
       expect(toggle(host, 'Update before new chat').disabled).toBe(false)
       act(() => toggle(host, 'Enable SVN').click())
       expect(toggle(host, 'Update before new chat').disabled).toBe(true)
+      expect(snapshots().every((control) => !control.disabled && control.checked)).toBe(true)
       act(() => toggle(host, 'Enable Git').click())
       expect(gitDependents().every((control) => !control.disabled)).toBe(true)
       expect(useAppStore.getState().gitEnabled).toBe(true)
@@ -196,19 +294,79 @@ describe('local snapshot Git settings', () => {
     } finally { act(() => root.unmount()) }
   })
 
-  it('retains independent snapshot drafts after native rejection', async () => {
-    window.cefQuery = ({ onFailure }) => onFailure(500, 'Disk full')
+  it.each([true, false])('saves and discards independent snapshot policies with Git disabled and SVN enabled=%s', async (svnEnabled) => {
+    useAppStore.setState({ gitEnabled: false, svnEnabled, gitAutoWorktree: false })
+    const requests: { action: string; payload: unknown }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+    const { host, root } = mount()
+    try {
+      expect(toggle(host, 'Local snapshot Git for SVN').disabled).toBe(false)
+      expect(toggle(host, 'Enable local Git files').disabled).toBe(false)
+      act(() => toggle(host, 'Local snapshot Git for SVN').click())
+      expect(requests).toHaveLength(0)
+      expect(useAppStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled, gitSnapshotSvn: true, gitSnapshotPlainFolders: true })
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toMatchObject({ action: 'setVcsSettings', payload: { gitEnabled: false, svnEnabled, gitAutoWorktree: false, gitSnapshotSvn: false, gitSnapshotPlainFolders: true } })
+      expect(useAppStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled, gitSnapshotSvn: false, gitSnapshotPlainFolders: true })
+
+      act(() => toggle(host, 'Enable local Git files').click())
+      act(() => button(host, 'Discard').click())
+      expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(false)
+      expect(toggle(host, 'Enable local Git files').checked).toBe(true)
+      expect(requests).toHaveLength(1)
+      act(() => toggle(host, 'Enable local Git files').click())
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toMatchObject({ action: 'setVcsSettings', payload: { gitEnabled: false, svnEnabled, gitAutoWorktree: false, gitSnapshotSvn: false, gitSnapshotPlainFolders: false } })
+      expect(useAppStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled, gitSnapshotSvn: false, gitSnapshotPlainFolders: false })
+
+      act(() => { toggle(host, 'Local snapshot Git for SVN').click(); toggle(host, 'Enable local Git files').click() })
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(requests).toHaveLength(3)
+      expect(requests[2]).toMatchObject({ action: 'setVcsSettings', payload: { gitEnabled: false, svnEnabled, gitAutoWorktree: false, gitSnapshotSvn: true, gitSnapshotPlainFolders: true } })
+      expect(useAppStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled, gitSnapshotSvn: true, gitSnapshotPlainFolders: true })
+      expect(button(host, 'Save VCS settings').disabled).toBe(true)
+      expect(toggle(host, 'Automatic isolation').disabled).toBe(true)
+      expect(toggle(host, 'Enable Git').checked).toBe(false)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it.each([true, false])('retains independent snapshot drafts after native rejection with Git enabled=%s', async (gitEnabled) => {
+    useAppStore.setState({ gitEnabled })
+    let fail: (() => void) | undefined
+    window.cefQuery = ({ onFailure }) => { fail = () => onFailure(500, 'Disk full') }
     const { host, root } = mount()
     try {
       act(() => { toggle(host, 'Local snapshot Git for SVN').click(); toggle(host, 'Enable local Git files').click() })
       await act(async () => button(host, 'Save VCS settings').click())
-      expect(useAppStore.getState()).toMatchObject({ gitSnapshotSvn: true, gitSnapshotPlainFolders: true })
+      expect(toggle(host, 'Local snapshot Git for SVN').disabled).toBe(true)
+      expect(toggle(host, 'Enable local Git files').disabled).toBe(true)
+      expect(fail).toBeTypeOf('function')
+      await act(async () => fail!())
+      expect(useAppStore.getState()).toMatchObject({ gitEnabled, gitSnapshotSvn: true, gitSnapshotPlainFolders: true })
+      expect(toggle(host, 'Local snapshot Git for SVN').disabled).toBe(false)
+      expect(toggle(host, 'Enable local Git files').disabled).toBe(false)
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(false)
       expect(toggle(host, 'Enable local Git files').checked).toBe(false)
       expect(host.textContent).toContain('Your changes are retained')
       act(() => button(host, 'Discard').click())
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(true)
       expect(toggle(host, 'Enable local Git files').checked).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+  it('styles the base-branch input with theme tokens and a visible disabled state', () => {
+    useAppStore.setState({ gitEnabled: false })
+    const { host, root } = mount()
+    try {
+      const field = host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!
+      expect(field.classList.contains('uam-field')).toBe(true)
+      expect(field.disabled).toBe(true)
+      const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
+      const base = css.slice(css.indexOf('.uam-field {'), css.indexOf('}', css.indexOf('.uam-field {')))
+      expect(base).toContain('background: var(--bg)')
+      expect(base).toContain('color: var(--text)')
+      expect(css).toMatch(/\.uam-field:disabled \{[^}]*opacity: 0\.5;[^}]*cursor: not-allowed;/)
     } finally { act(() => root.unmount()) }
   })
 })

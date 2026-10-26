@@ -50,6 +50,8 @@ namespace uam
 		{
 		  public:
 			virtual ~DataRootLock() = default;
+			// Legacy implementations cannot establish current transition ownership.
+			virtual bool Current() const { return false; }
 		};
 	} // namespace platform
 } // namespace uam
@@ -99,6 +101,15 @@ class IPlatformProcessService
 	{
 		return {};
 	}
+	/// Opt-in finite worker input: the sole consumer may read bounded preloaded regular-file stdin.
+	/// Pipes retain ReadStandardInput's nonblocking behavior; never owns/closes stdin or reads a console.
+	/// Callers also enforce their aggregate byte/deadline limits across reads.
+	virtual uam::platform::StandardInputReadResult ReadFiniteStandardInput(char* buffer,
+	    std::size_t capacity, std::size_t maximum_input_bytes) const
+	{
+		(void)maximum_input_bytes;
+		return ReadStandardInput(buffer, capacity);
+	}
 	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
 	// blocking the caller while a child delays or refuses to consume stdin.
@@ -130,7 +141,8 @@ class IPlatformProcessService
 	virtual std::string GenerateUuid() const = 0;
 	virtual bool LaunchShellAt(const std::filesystem::path& working_directory, std::string* error_out = nullptr) const = 0;
 	/// <summary>Open a real terminal with typed argv; never interpolate credentials or remote paths into a controller shell.</summary>
-	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr) const
+	/// <remarks>Windows hosts the terminal in the PowerShell chosen by <paramref name="powershell_preference"/> (see powershell_selection.h).</remarks>
+	virtual bool LaunchTerminalCommand(const std::vector<std::string>&, std::string* error_out = nullptr, std::string_view /*powershell_preference*/ = "auto") const
 	{
 		if (error_out != nullptr) *error_out = "Opening a command terminal is unavailable on this platform.";
 		return false;

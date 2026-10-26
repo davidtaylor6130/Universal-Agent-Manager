@@ -119,3 +119,119 @@ UAM_TEST(DeletionProgressDoesNotCountFailedStorageCleanup)
 	UAM_ASSERT(fs::exists(app.data_root / "deletion-transaction.json"));
 	UAM_ASSERT_EQ(ReadFile(collision / "keep.txt"), "private storage failure");
 }
+
+namespace
+{
+	ChatSession BatchDeletionChat(uam::AppState& app, const std::string& id, const std::string& root, const std::string& folder_id, const std::string& workspace)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.title = "Title " + id;
+		chat.branch_root_chat_id = root;
+		chat.parent_chat_id = id == root ? "" : root;
+		chat.folder_id = folder_id;
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.workspace_directory = workspace;
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		return chat;
+	}
+
+	std::vector<std::string> RemainingChatIds(const uam::AppState& app)
+	{
+		std::vector<std::string> ids;
+		for (const ChatSession& chat : app.chats) ids.push_back(chat.id);
+		std::ranges::sort(ids);
+		return ids;
+	}
+}
+
+UAM_TEST(DeletionBatchDeletesEveryUnblockedFamilyAndReportsEachBlockedOne)
+{
+	TempDir temp("uam-deletion-batch-partial");
+	ScopedEnvVar provider_home("GEMINI_CLI_HOME", (temp.root / "provider-home").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::string workspace = (temp.root / "workspace").string();
+	fs::create_directories(workspace);
+	BatchDeletionChat(app, "first", "first", "", workspace);
+	BatchDeletionChat(app, "first-branch", "first", "", workspace);
+	BatchDeletionChat(app, "blocked", "blocked", "", workspace);
+	BatchDeletionChat(app, "third", "third", "", workspace);
+	BatchDeletionChat(app, "survivor", "survivor", "", workspace);
+	app.pending_chat_save_at_by_chat_id["blocked"] = 1.0;
+
+	app.status_line = "Ready.";
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletionBatch(app, {"first", "first-branch", "blocked", "third"}, task));
+	UAM_ASSERT_EQ(app.status_line, std::string("Ready."));
+	UAM_ASSERT(task.deleted_ids == std::unordered_set<std::string>({"first", "first-branch", "third"}));
+	UAM_ASSERT_EQ(task.rejected.size(), std::size_t(1));
+	UAM_ASSERT_EQ(task.rejected[0].id, std::string("blocked"));
+	UAM_ASSERT_EQ(task.rejected[0].error, std::string("Wait for chat history to finish saving."));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT(!task.commit_rejected);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+	UAM_ASSERT(RemainingChatIds(app) == std::vector<std::string>({"blocked", "survivor"}));
+	UAM_ASSERT(fs::exists(AppPaths::UamChatFilePath(app.data_root, "blocked")));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "third")));
+}
+
+UAM_TEST(DeletionBatchKeepsBranchFamilyWholeWhenOneBranchIsBlocked)
+{
+	TempDir temp("uam-deletion-batch-family");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::string workspace = (temp.root / "workspace").string();
+	fs::create_directories(workspace);
+	BatchDeletionChat(app, "first", "first", "", workspace);
+	BatchDeletionChat(app, "first-branch", "first", "", workspace);
+	BatchDeletionChat(app, "third", "third", "", workspace);
+	app.pending_chat_save_at_by_chat_id["first-branch"] = 1.0;
+
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletionBatch(app, {"first-branch", "first", "third"}, task));
+	UAM_ASSERT(task.deleted_ids == std::unordered_set<std::string>({"third"}));
+	UAM_ASSERT_EQ(task.rejected.size(), std::size_t(1));
+	UAM_ASSERT_EQ(task.rejected[0].id, std::string("first"));
+
+	app.pending_chat_save_at_by_chat_id["third"] = 1.0;
+	uam::WorkspaceDeletionTask refused;
+	UAM_ASSERT(!uam::PrepareChatDeletionBatch(app, {"first", "first-branch", "third"}, refused));
+	UAM_ASSERT(app.status_line.starts_with("None of the selected items could be deleted."));
+	UAM_ASSERT(app.status_line.find("\"Title first\": Wait for chat history to finish saving.") != std::string::npos);
+	UAM_ASSERT(app.status_line.find("\"Title third\": Wait for chat history to finish saving.") != std::string::npos);
+	UAM_ASSERT(refused.deleted_ids.empty());
+}
+
+UAM_TEST(DeletionBatchDeletesUnblockedWorkspacesAndReportsBlockedOnes)
+{
+	TempDir temp("uam-deletion-batch-workspaces");
+	ScopedEnvVar provider_home("GEMINI_CLI_HOME", (temp.root / "provider-home").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const std::string workspace = (temp.root / "workspace").string();
+	fs::create_directories(workspace);
+	app.folders = {{"delete", "Delete", workspace, false}, {"blocked", "Blocked", workspace, false}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	BatchDeletionChat(app, "gone", "gone", "delete", workspace);
+	BatchDeletionChat(app, "saving", "saving", "blocked", workspace);
+	app.pending_chat_save_at_by_chat_id["saving"] = 1.0;
+
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletionBatch(app, {"delete", "blocked"}, task));
+	UAM_ASSERT(task.folder_ids == std::vector<std::string>({"delete"}));
+	UAM_ASSERT_EQ(task.rejected.size(), std::size_t(1));
+	UAM_ASSERT_EQ(task.rejected[0].id, std::string("blocked"));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT(!task.commit_rejected);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+	UAM_ASSERT(RemainingChatIds(app) == std::vector<std::string>({"saving"}));
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t(1));
+	UAM_ASSERT_EQ(app.folders[0].id, std::string("blocked"));
+}

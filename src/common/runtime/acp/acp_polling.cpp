@@ -85,7 +85,8 @@ namespace uam::acp_detail
 		    AcpSessionState& session,
 		    ChatSession& chat,
 		    std::string message,
-		    bool recover_remote_disconnect = false)
+		    bool recover_remote_disconnect = false,
+		    bool hold_for_explicit_recovery = false)
 		{
 			// One rejected failure owns this transport until explicit Stop or owned replacement.
 			if (!session.transport_ownership_error.empty())
@@ -97,6 +98,12 @@ namespace uam::acp_detail
 				session.last_error = std::move(message);
 				session.lifecycle_state = kAcpLifecycleError;
 				return;
+			}
+			if (hold_for_explicit_recovery)
+			{
+				session.queue_held = chat.acp_queue_held = true;
+				session.reconnect_pending = false;
+				session.reconnect_not_before_time_s = 0.0;
 			}
 			const bool remote_helper_owned =
 			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
@@ -165,7 +172,7 @@ namespace uam::acp_detail
 			}
 			session.last_error = message;
 			session.lifecycle_state = kAcpLifecycleError;
-			if ((undelivered_prompt || !session.queued_user_prompts.empty()) && session.managed_agent_run_id.empty() &&
+			if (!hold_for_explicit_recovery && (undelivered_prompt || !session.queued_user_prompts.empty()) && session.managed_agent_run_id.empty() &&
 			    restart_safe)
 			{
 				session.reconnect_pending = true;
@@ -174,7 +181,7 @@ namespace uam::acp_detail
 				                    "Queued prompts will resume on a fresh structured transport.");
 			}
 			MarkAcpChatUnseenIfBackground(app, chat);
-			SaveChatQuietly(app, chat);
+			SaveChatQuietly(app, chat, hold_for_explicit_recovery ? AcpChatSavePurpose::PreserveQueuedIntent : AcpChatSavePurpose::SettleFailedDirect);
 		}
 
 		bool StopForAcpOutputSafety(
@@ -187,7 +194,7 @@ namespace uam::acp_detail
 			if (!session.transport_ownership_error.empty())
 				return false;
 			AppendAcpDiagnostic(session, "read", reason, "", "", false, 0, message);
-			InvalidateAcpTransportImpl(app, session, chat, message);
+			InvalidateAcpTransport(app, session, chat, message);
 			return true;
 		}
 
@@ -405,6 +412,8 @@ namespace uam::acp_detail
 	    ChatSession& chat,
 	    const std::string& message)
 	{
+		if ((AcpSessionHasActiveTurn(session) || AcpSessionHasPendingCancel(session)) &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat, message)) return;
 		InvalidateAcpTransportImpl(app, session, chat, message);
 	}
 
@@ -414,7 +423,24 @@ namespace uam::acp_detail
 	    ChatSession& chat,
 	    const std::string& message)
 	{
+		if ((AcpSessionHasActiveTurn(session) || AcpSessionHasPendingCancel(session)) &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat, message)) return;
 		InvalidateAcpTransportImpl(app, session, chat, message, true);
+	}
+
+	void HoldAcpTransportForExplicitRecovery(AppState& app, AcpSessionState& session,
+	    ChatSession& chat, const std::string& message)
+	{
+		InvalidateAcpTransportImpl(app, session, chat, message, false, true);
+	}
+
+	bool HoldAcpUnconfirmedCancellationIfTimedOut(AppState& app, AcpSessionState& session,
+	    ChatSession& chat, double now_seconds)
+	{
+		return AcpSessionHasPendingCancel(session) && session.cancel_requested_time_s > 0.0 &&
+		    now_seconds - session.cancel_requested_time_s >= kAcpCancelTimeoutSeconds &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
+		        "Cancellation was not confirmed by the owned provider before its deadline.");
 	}
 
 std::size_t ProcessBufferedAcpStdoutForTests(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines)

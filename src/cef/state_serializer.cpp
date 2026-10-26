@@ -30,6 +30,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_attention_kind.h"
@@ -246,7 +247,7 @@ namespace uam
 			}
 			for (const nlohmann::json& scope : app.provider_model_catalog->GetCatalogScopes())
 			{
-				if (!scope.is_object()) continue;
+				if (!scope.is_object() || uam::excluded_provider_data::IsExcluded(scope.value("providerId", ""))) continue;
 				const std::string host = scope.value("executionHostId", "local");
 				append_catalog(scope.value("providerId", ""),
 				    scope.value("workspaceDirectory", ""), host);
@@ -687,7 +688,11 @@ namespace uam
 						result["unsentDirectPrompts"].push_back(std::move(receipt));
 						continue;
 					}
-					result["unsentDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					auto receipt = SerializeQueuedAcpUserPrompt(*prompt);
+					// Only the exact receipt held by a failed repository baseline gains row-less Retry.
+					if (prompt->repository_baseline_hold && AcpBaselineHoldRetryAllowed(app, chat, session))
+						receipt["retryAllowed"] = true;
+					result["unsentDirectPrompts"].push_back(std::move(receipt));
 					continue;
 				}
 				if (IsVisibleAcpQueuedPrompt(*prompt))
@@ -720,7 +725,8 @@ namespace uam
 			}
 			if (!message.checkpoint_sha.empty()) message_json["checkpointSha"] = message.checkpoint_sha;
 			if (!message.checkpoint_parent_sha.empty()) message_json["checkpointParentSha"] = message.checkpoint_parent_sha;
-			if (!message.provider.empty())
+			// A turn an excluded provider answered before a handoff shows no provider rather than another provider's name.
+			if (!message.provider.empty() && !uam::excluded_provider_data::IsExcluded(message.provider))
 			{
 				message_json["providerId"] = message.provider;
 			}
@@ -1445,7 +1451,7 @@ namespace uam
 					goal_json["workerModelId"] = goal.worker_model_id;
 					goal_json["reviewerModelId"] = goal.reviewer_model_id;
 					goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-					goal_json["creatorProviderId"] = goal.creator_provider_id;
+					goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
 					goal_json["creatorAgentId"] = goal.creator_agent_id;
 					goal_json["creatorRunId"] = goal.creator_run_id;
 					goals_arr.push_back(std::move(goal_json));
@@ -1728,6 +1734,8 @@ namespace uam
 			nlohmann::json result = JsonArrayWithCapacity(actions.size());
 			for (const ShellAction& action : actions)
 			{
+				// An excluded provider's actions stay saved but do not exist in this build's interface.
+				if (uam::excluded_provider_data::IsExcluded(action.provider_id)) continue;
 				result.push_back({
 				    {"id", action.id},
 				    {"label", action.label},
@@ -1868,6 +1876,7 @@ namespace uam
 		// Settings slice that the UI cares about
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+			j["settings"]["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
 			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{
@@ -1950,6 +1959,7 @@ namespace uam
 
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeFingerprintSettingsFields(app.settings);
+			j["settings"]["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
 			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{
@@ -2004,7 +2014,7 @@ namespace uam
 				goal_json["workerModelId"] = goal.worker_model_id;
 				goal_json["reviewerModelId"] = goal.reviewer_model_id;
 				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-				goal_json["creatorProviderId"] = goal.creator_provider_id;
+				goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
 				goal_json["creatorAgentId"] = goal.creator_agent_id;
 				goal_json["creatorRunId"] = goal.creator_run_id;
 				goals_arr.push_back(std::move(goal_json));

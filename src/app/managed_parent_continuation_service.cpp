@@ -1,4 +1,5 @@
 #include "common/chat/managed_parent_input_history.h"
+#include "common/provider/provider_ids.h"
 #include "app/managed_parent_continuation_service.h"
 #include "app/chat_domain_service.h"
 #include "app/uam_control_service.h"
@@ -6,6 +7,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/provider/provider_runtime.h"
 #include "common/platform/platform_incremental_sha256.h"
+#include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/config/provider_availability.h"
 #include <algorithm>
@@ -141,7 +143,7 @@ namespace
 	    const ManagedParentContinuationLease& lease)
 	{
 		return app.data_root == lease.data_root && chat.metadata_incarnation == lease.chat_birth &&
-		    chat.id == lease.chat_id && chat.provider_id == "codex-cli" && chat.execution_host_id == "local" &&
+		    chat.id == lease.chat_id && chat.provider_id == uam::provider_ids::kCodexCli && chat.execution_host_id == "local" &&
 		    chat.native_session_id == lease.native_thread && chat.messages_loaded &&
 		    managed_parent_history::ValidCollection(chat.managed_parent_input_receipts);
 	}
@@ -454,8 +456,8 @@ bool ManagedParentContinuationService::Poll(AppState& app)
 		const auto found = std::ranges::find(app.agent_runs, id, &AgentRun::id);
 		if (found == app.agent_runs.end() || RunBinding(*found) != binding) { Revoke(app, chat->id, "child_binding_changed"); return false; }
 		if (found->status != "completed" && found->status != "failed" && found->status != "cancelled" && found->status != "interrupted") continue;
-		results.push_back({{"runId", id}, {"status", found->status}, {"result", found->result_excerpt.substr(0, 16384)},
-		    {"resultTruncated", found->result_excerpt.size() > 16384}, {"diagnosticCode", found->diagnostic_code.substr(0, 256)}});
+		results.push_back({{"runId", id}, {"status", found->status}, {"result", std::string(uam::strings::Utf8Prefix(found->result_excerpt, 16384))},
+		    {"resultTruncated", found->result_excerpt.size() > 16384}, {"diagnosticCode", std::string(uam::strings::Utf8Prefix(found->diagnostic_code, 256))}});
 		batch.push_back(id);
 	}
 	if (batch.empty()) return false;

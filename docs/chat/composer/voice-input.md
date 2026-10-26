@@ -4,4 +4,6 @@ Voice input turns speech into editable composer text using the selected system d
 
 [Voice settings](../../settings/voice-input.md).
 
-The desktop also offers an explicit voice mode and native speech playback. Voice mode retains owned recording/playback IDs, pauses input during playback and stops when its selected chat or runtime changes. Ordinary spoken text remains an editable draft; in voice mode, the explicit commands “send message”, “stop response”, “next chat”, “previous chat” and “stop voice mode” invoke the corresponding existing actions. Playback can read a completed response without starting a provider turn; unsupported native services and failures remain visible. The companion uses its keyboard microphone rather than desktop audio capture. Consolidated macOS/Windows operation and user acceptance remain unverified.
+The companion uses its keyboard microphone rather than desktop audio capture; its composer placeholder and microphone tooltip say so. Consolidated macOS/Windows dictation operation, the companion route and user acceptance remain unverified.
+
+The composer does not offer voice mode or read-aloud playback: David removed them on 2026-10-26 ([decision](../../documentation-review.md#composer-actions-voice-mode-and-terminology)). Dictation through the composer microphone is the voice feature. The unused native speech-output services remain to be deleted in a backend follow-up tracked in the [V5 log](<../../../V5 Improvement Change log.md>).

@@ -38,7 +38,7 @@ namespace uam::usage
 				if (host.runner_version.empty() || host.runner_protocol_version < 2)
 				{ error = "Install this machine's UAM runner to collect usage."; return std::nullopt; }
 				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				    host);
 				nlohmann::json snapshot;
 				const std::filesystem::path path = data_root / "usage" / "remote" / Scope(host) / "snapshot-v3.jsonl";
 				if (!client.ReadUsageAccountingFile(path, snapshot, &error, stop)) return std::nullopt;
@@ -72,16 +72,18 @@ namespace uam::usage
 			if (!data.metadata.contains("complete") || !data.metadata["complete"].is_boolean() || !data.metadata.contains("listingLimited") || !data.metadata["listingLimited"].is_boolean()) return std::nullopt;
 			for (const char* key : {"filesChecked", "filesTotal", "bytesRead"})
 				if (!data.metadata.contains(key) || !data.metadata[key].is_number_integer() || data.metadata[key] < 0 || data.metadata[key] > kMaxExactTokenCount) return std::nullopt;
-			if (data.metadata["filesChecked"] > data.metadata["filesTotal"] || !data.metadata.contains("providers") || !data.metadata["providers"].is_array() || data.metadata["providers"].size() != provider_ids::kAllCliProviderIds.size()) return std::nullopt;
+			if (data.metadata["filesChecked"] > data.metadata["filesTotal"] || !data.metadata.contains("providers") || !data.metadata["providers"].is_array() || IncludedProviderRows(data.metadata["providers"]) != provider_ids::kAllCliProviderIds.size()) return std::nullopt;
 			std::unordered_set<std::string> providers, identities;
 			for (const nlohmann::json& row : data.metadata["providers"])
 			{
+				if (row.is_object() && row.contains("providerId") && SkipsExcludedProvider(row["providerId"])) continue;
 				if (!row.is_object() || !row.contains("providerId") || !row["providerId"].is_string() || !provider_ids::IsKnownCliProviderId(row["providerId"].get_ref<const std::string&>()) || !providers.insert(row["providerId"].get<std::string>()).second || !row.contains("available") || !row["available"].is_boolean()) return std::nullopt;
 				for (const char* key : {"files", "errors", "invalidLines", "oversizedLines", "suppressedForkRecords", "pendingLines"})
 					if (!row.contains(key) || !row[key].is_number_integer() || row[key] < 0 || row[key] > kMaxExactTokenCount) return std::nullopt;
 			}
 			for (const nlohmann::json& row : document["facts"])
 			{
+				if (SkipsExcludedProviderRecord(row)) continue;
 				std::optional<AccountingRecord> fact = DecodeAccountingRecord(row);
 				if (!fact || ((fact->record.timestamp_ms < start || fact->record.timestamp_ms >= data.as_of) && !DecodeAntigravityAccountingRecord(fact->record)) || !identities.insert(fact->identity).second) return std::nullopt;
 				data.records.push_back(std::move(*fact));
