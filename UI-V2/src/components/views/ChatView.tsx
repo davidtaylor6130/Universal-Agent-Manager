@@ -48,6 +48,7 @@ import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, Compose
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
+import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
@@ -369,6 +370,8 @@ type ParentViewportDetails = {
   sectionChoices?: { sessionId: string; expanded: Record<string, boolean> }
 }
 const parentViewportVisits = new Map<string, ParentViewportDetails & { top: number; nearBottom: boolean; renderedCount: number }>()
+
+const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
 
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
   const sessionBirth = session.createdAt.getTime()
@@ -839,13 +842,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
   // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
-  const [composerVcsBranch, setComposerVcsBranch] = useState({ scope: '', branch: '' })
+  const [composerVcsBranch, setComposerVcsBranch] = useState<{
+    scope: string
+    status: Pick<VcsCommitStatus, 'available' | 'activeVcsType' | 'branchOrRevision'> | null
+  }>({ scope: '', status: null })
   const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
   // The composer's own read (refreshed after a branch switch) wins over the last completed-turn snapshot.
-  const composerBranch = (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
-    || (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
-    || session.workspaceBranchName
+  const composerRepository = composerVcsBranch.scope === composerBranchScope && composerVcsBranch.status
+    ? composerVcsBranch.status
+    : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
+  const composerBranch = composerRepository
+    ? composerRepository.available ? composerRepository.branchOrRevision : ''
+    : session.workspaceBranchName
+  const composerVcsType = composerRepository?.activeVcsType ?? 'git'
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
+  // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
+  const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
+    && !session.importedReadOnly && !session.temporaryParentChatId
+    && (composerVcsType === 'git' ? session.workspaceIsolationKind === 'gitWorktree' : !session.workspaceIsolationKind && !session.workspaceWorktreeDirectory)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const retryUnsentAcpPrompt = useAppStore((s) => s.retryUnsentAcpPrompt)
@@ -887,6 +901,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const workspaceFolders = useAppStore((s) => s.folders)
+  const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
   const remoteContextKey = JSON.stringify([session.id, session.createdAt.getTime(), session.executionHostId, workspaceDirectory, recoveryHost?.sshAlias, recoveryHost?.platform, recoveryHost?.runnerDirectory, recoveryHost?.runnerVersion, recoveryHost?.runnerProtocolVersion])
   useEffect(() => { setRemoteMoveFolderId(''); setRemoteBrowseKey('') }, [remoteContextKey])
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
@@ -1716,14 +1731,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // One light read per chat/workspace open (no polling): feeds the composer's repository branch.
     void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
       if (cancelled) return
-      setComposerVcsBranch({ scope: composerBranchScope, branch: status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision : '' })
+      setComposerVcsBranch({ scope: composerBranchScope, status })
     })
     return () => { cancelled = true }
   }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
-  const handleBranchSwitched = (branch: string) => {
-    setComposerVcsBranch({ scope: composerBranchScope, branch })
-    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
-      if (status?.available && status.activeVcsType !== 'svn') setComposerVcsBranch({ scope: composerBranchScope, branch: status.branchOrRevision })
+  const handleBranchSwitched = (branch: string, vcsType: 'git' | 'svn' = 'git') => {
+    setComposerVcsBranch({ scope: composerBranchScope, status: { available: true, activeVcsType: vcsType, branchOrRevision: branch } })
+    void getVcsCommitStatus(session.id, vcsType, { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (status?.available && status.activeVcsType === vcsType) setComposerVcsBranch({ scope: composerBranchScope, status })
     })
   }
   const sideBusyRef = useRef(false)
@@ -1977,7 +1992,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     return retryUnsentAcpPrompt(session.id, receipt)
   }
-  const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     const generation = ++messageBranchGenerationRef.current
@@ -2908,6 +2922,277 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }
 
+  // Draft keystrokes re-render ChatView; the transcript only depends on conversation state, so keep its rows.
+  // Unsent actions run at click time and read the latest render through this ref.
+  const unsentActionsRef = useRef({ removeUnsent, retryUnsent, retryUnsentReceipt })
+  useLayoutEffect(() => { unsentActionsRef.current = { removeUnsent, retryUnsent, retryUnsentReceipt } })
+  // Today/Yesterday dividers read the clock, so a new local day rebuilds the rows on the next render.
+  const transcriptDay = new Date().toDateString()
+  // Turn times format in local time, so a timezone change also rebuilds the rows.
+  const transcriptTimezoneOffset = new Date().getTimezoneOffset()
+  // formatWorkedDuration rounds to whole seconds, so rounding here keeps the label identical.
+  const turnWorkedDisplaySeconds = turnWorkedSeconds === undefined ? undefined : Math.round(turnWorkedSeconds)
+  const transcriptRows = useMemo(() => {
+                // One keyed list: messages, unmaterialized receipts and display-only attempts share the same row shape,
+                // so an attempt's alias key keeps the same outer row and article from click through ACK and native push.
+                const outgoingSlot = (key: string, message: Message, delivery: ConversationDelivery, actions?: ReactNode, receiptId?: string) => (
+                  <WorkSectionContext.Provider key={key} value={ALWAYS_OPEN_WORK_SECTION}>
+                  <div className="space-y-1" data-outgoing-message="" data-unsent-receipt-id={receiptId}>
+                    {null}{null}{null}
+                    <PersistedConversationMessage message={message} hasDeliveredResponse={false} hasStoppedResponse={false} pendingDirectAdmission={false}
+                      delivery={delivery} deliveryActions={actions} disclosureState={liveWorkDisclosure} index={-1}
+                      assistantLabel="" sessionId={session.id} branchSessions={[]} actionsDisabled planActions={undefined}
+                      workingMode={workingDisplayMode} retryInPlace={false} onBeginEdit={beginEditingMessage}
+                      onCreateBranch={createMessageBranch} onSelectBranch={selectMessageBranch} onSelectTool={selectPersistedTool} />
+                    {null}{null}{null}
+                  </div>
+                  </WorkSectionContext.Provider>
+                )
+                const outgoingMessage = (id: string, text: string, attachments: readonly Attachment[], createdAt = new Date(0)): Message =>
+                  ({ id, sessionId: session.id, role: 'user', content: text, attachments: [...attachments], createdAt })
+                const nativeRows = visibleMessages.map((message, visibleIndex) => {
+                const index = earliestRenderedMessageIndex + visibleIndex
+                if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
+                const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
+                const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
+                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
+                const messageProviderName = providerShortName(
+                  providers.find((candidate) => candidate.id === messageProviderId),
+                  messageProviderId
+                )
+
+                if (shouldSkipAssistantMessage) return null
+                let disclosureState = savedWorkDisclosures.get(message.id)
+                if (!disclosureState) {
+                  disclosureState = {}
+                  savedWorkDisclosures.set(message.id, disclosureState)
+                }
+
+                const outgoingAlias = message.role === 'user' ? outgoingPresentation.byLoadedIndex.get(index) : undefined
+                // Admission/materialization/output are not write witnesses. Only this exact input's positive native
+                // OS-sink write fact can settle its presentation; explicit queue/recovery authority remains above.
+                const outgoingUnresolved = Boolean(outgoingAlias && !outgoingPresentation.writeCompletedKeys.has(outgoingAlias.key))
+                const nativeDirectReceipt = outgoingPresentation.directReceiptByLoadedIndex.get(index)
+                const section = workSections.get(index)!
+                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
+                const containsSearchTarget = searchNavigation && workSections.get(searchNavigation.messageIndex - historyStartIndex)?.firstIndex === section.firstIndex
+                const sectionControl = sectionActive || containsSearchTarget || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
+                const sectionCollapsed = !sectionActive && !sectionControl.expanded
+                const hideCollapsedMessage = sectionCollapsed && (
+                  (message.role === 'user' && message.continuesTurn) ||
+                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
+                )
+                if (hideCollapsedMessage) return message.role === 'assistant' && message.toolCalls?.some(isInlineSubagentLaunch) ? (
+                  <div key={message.id} data-message-index={index + historyStartIndex}>
+                    <PersistedMessageContent message={message} disclosureState={disclosureState} sourceChatId={session.id}
+                      workingMode={workingDisplayMode} onSelectTool={selectPersistedTool} launchesOnly />
+                  </div>
+                ) : null
+                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
+                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
+                const sectionStart = messages[section.firstIndex]
+                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
+                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
+                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
+                // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
+                const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
+                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
+                  onSelectTool={selectLiveTool}
+                /></div> : null
+                const turnStart = firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) ? sectionStart : undefined
+                const turnModelId = sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '') || ''
+                const turnIdentity = [sectionProviderName, turnModelId].filter(Boolean).join(' · ')
+                const previousAssistant = turnStart ? previousAssistantMessage(messages, section.firstIndex) : undefined
+                const previousProviderId = previousAssistant ? previousAssistant.providerId?.trim() || currentProviderId : ''
+                const previousIdentity = previousAssistant
+                  ? [providerShortName(providers.find((candidate) => candidate.id === previousProviderId), previousProviderId), previousAssistant.modelId?.trim()].filter(Boolean).join(' · ')
+                  : ''
+                const showTurnIdentity = Boolean(turnStart && turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))
+                const priorMessage = section.firstIndex > 0 ? messages[section.firstIndex - 1] : undefined
+                const dayChanged = Boolean(turnStart) && (!priorMessage || priorMessage.createdAt.toDateString() !== sectionStart.createdAt.toDateString())
+                return (
+                  <WorkSectionContext.Provider key={outgoingAlias?.key ?? message.id} value={sectionControl}>
+                  <div className="space-y-1" data-message-index={index + historyStartIndex} data-unsent-message-index={unsentByLoadedIndex.has(index) ? index + historyStartIndex : undefined} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
+                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt, new Date(transcriptDay))}</span></div>}
+                    {turnStart && <TurnStartTime
+                      timestamp={turnStart.createdAt.getTime()}
+                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
+                      identity={turnIdentity}
+                      showIdentity={showTurnIdentity}
+                    />}
+                    {message.role !== 'user' && heading}
+                    {shouldRenderTimelineAtAssistant ? (
+                      <MessageFrame
+                        role={message.role}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
+                        goalReview={Boolean(goalReviewForMessage(message))}
+                        streaming={Boolean(acp?.processing)}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
+                      >
+                        <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
+                          key={`turn-${turnSerial}-assistant`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
+                          events={turnEvents}
+                            tools={liveTools}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={livePlanEntries}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedDisplaySeconds}
+                        />
+                      </MessageFrame>
+                    ) : (
+                      <PersistedConversationMessage
+                        message={message}
+                        hasDeliveredResponse={hasDeliveredResponse}
+                        hasStoppedResponse={hasStoppedResponse}
+                        pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
+                        delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
+                          : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
+                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
+                        deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
+                          onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
+                          onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
+                          onRemove={() => unsentActionsRef.current.removeUnsent(index + historyStartIndex)}
+                          editDisabled={unsentActionsDisabled} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
+                          : nativeDirectReceipt && !nativeDirectReceipt.sending && !isCompanionContext() ? <OutgoingRecoveryActions
+                            retryUnavailable={!receiptRetryAvailable(nativeDirectReceipt.prompt)}
+                            onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => unsentActionsRef.current.retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
+                            retryDisabled={unsentReceiptDeleteDisabled}
+                            onRemove={() => unsentActionsRef.current.removeUnsent(-1, { id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! })}
+                            removeDisabled={unsentReceiptDeleteDisabled} /> : undefined}
+                        disclosureState={disclosureState}
+                        index={index + historyStartIndex}
+                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
+                        sessionId={session.id}
+                        sessionParentChatId={session.parentChatId}
+                        sessionBranchFromMessageIndex={session.branchFromMessageIndex}
+                        sessionBranchMessageEdited={session.branchMessageEdited}
+                        branchSessions={branchSessions}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || unsentProjection.pendingIndices.has(index) || Boolean(nativeDirectReceipt)}
+                        planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
+                        workingMode={workingDisplayMode}
+                        retryInPlace={index === retryInPlaceMessageIndex}
+                        onBeginEdit={beginEditingMessage}
+                        onCreateBranch={createMessageBranch}
+                        onSelectBranch={selectMessageBranch}
+                        onSelectTool={selectPersistedTool}
+                      />
+                    )}
+                    {message.role === 'user' && message.managedOriginRunId && <InitialManagedSubagentGroup runId={message.managedOriginRunId} sourceChatId={session.id} />}
+                    {message.role === 'user' && heading}
+                    {renderTimelineAfterUser && index === turnUserMessageIndex && (
+                      <div data-message-index={turnAssistantMessageMatches ? turnAssistantMessageIndex + historyStartIndex : undefined}>
+                      <MessageFrame
+                        key={`turn-${turnSerial}-after-user`}
+                        role="assistant"
+                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
+                        streaming={Boolean(acp?.processing)}
+                      >
+                        <TurnTimelineContent
+                          disclosureState={liveWorkDisclosure}
+                          key={`turn-${turnSerial}-after-user-content`}
+                          startedAt={turnClockStart}
+                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
+                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
+                          events={turnEvents}
+                            tools={liveTools}
+                            planSummary={acp?.planSummary ?? ''}
+                            planEntries={livePlanEntries}
+                            planActions={activePlanActions}
+                            pendingPermission={pendingPermission ?? null}
+                            pendingUserInput={pendingUserInput ?? null}
+                            waitIsStale={acp?.waitIsStale}
+                            waitStaleReason={acp?.waitStaleReason}
+                            waitSeconds={acp?.waitSeconds}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
+                          sourceChatId={session.id}
+                          active={Boolean(acp?.processing)}
+                          workingMode={workingDisplayMode}
+                          workedSeconds={turnWorkedDisplaySeconds}
+                        />
+                      </MessageFrame>
+                      </div>
+                    )}
+                  </div>
+                  </WorkSectionContext.Provider>
+                )
+              })
+                const outgoingRows = [...outgoingReceipts.filter((prompt) => {
+                  const index = prompt.receipt ? outgoingPresentation.receiptNativeIndexByKey.get(JSON.stringify([prompt.receipt.id, prompt.receipt.revision])) : undefined
+                  // A bound but hidden/off-page native row cannot stand in for the direct receipt's bytes/actions.
+                  return index === undefined || nativeRows[index - earliestRenderedMessageIndex] == null
+                }).map((prompt) => {
+                  const alias = prompt.receipt ? outgoingPresentation.byReceiptId.get(prompt.receipt.id) : undefined
+                  const nativeReceipt = (acp?.unsentDirectPrompts ?? []).find(entry => entry.id === prompt.receipt?.id && entry.revision === prompt.receipt?.revision)
+                  // Explicit Retry prepares the exact native receipt; nothing here infers delivery or replays on mount.
+                  return { attempt: alias, node: outgoingSlot(alias?.key ?? prompt.receipt?.id ?? String(prompt.messageIndex),
+                    outgoingMessage(prompt.receipt?.id ?? String(prompt.messageIndex), prompt.text, prompt.attachments, alias?.createdAt),
+                    prompt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY,
+                    !prompt.sending && prompt.receipt && !isCompanionContext() ? <OutgoingRecoveryActions
+                      retryUnavailable={!nativeReceipt || !receiptRetryAvailable(nativeReceipt)}
+                      onRetry={nativeReceipt && receiptRetryAvailable(nativeReceipt) ? () => unsentActionsRef.current.retryUnsentReceipt(prompt.receipt!) : undefined}
+                      retryDisabled={unsentReceiptDeleteDisabled}
+                      onRemove={() => unsentActionsRef.current.removeUnsent(prompt.messageIndex, prompt.receipt)} removeDisabled={unsentReceiptDeleteDisabled} /> : undefined,
+                    prompt.receipt?.id) }
+                }), ...outgoingPresentation.tail.map((attempt) => ({ attempt,
+                  node: outgoingSlot(attempt.key, outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt),
+                    outgoingPresentation.retainedUnknownKeys.has(attempt.key) ? LOCAL_UNCONFIRMED_DELIVERY : attemptDelivery(attempt)),
+                }))]
+                // A discarded native row may be hidden before an action can safely retire its display alias.
+                // Keep that unresolved alias rendered now, rather than unmounting it and reviving it after trim.
+                // Exact receipts already rendered above keep their own precedence; this adds no recovery authority.
+                const outgoingKeys = new Set(outgoingRows.flatMap(({ attempt }) => attempt ? [attempt.key] : []))
+                for (const [index, attempt] of outgoingPresentation.byLoadedIndex) {
+                  if (messages[index]?.acpPromptDiscarded !== true || nativeRows[index - earliestRenderedMessageIndex] != null || outgoingKeys.has(attempt.key)) continue
+                  outgoingKeys.add(attempt.key)
+                  outgoingRows.push({ attempt, node: outgoingSlot(attempt.key,
+                    outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt), LOCAL_UNCONFIRMED_DELIVERY) })
+                }
+                // Captured indices place display rows only; they never identify or confirm a native message.
+                // Keep one flat keyed list so a receipt/native alias retains the same outer row and article.
+                const attemptOrder = new Map(outgoingAttempts.map((attempt, ordinal) => [attempt.key, ordinal]))
+                const anchoredRows = outgoingRows.flatMap(({ attempt, node }, sourceIndex) => attempt ? [{
+                  boundary: attempt.nativeIndex, ordinal: attemptOrder.get(attempt.key)!, sourceIndex, node,
+                }] : []).sort((left, right) => left.boundary - right.boundary || left.ordinal - right.ordinal)
+                const rows: ReactNode[] = []
+                const placed = new Set<number>()
+                let nextAnchor = 0
+                nativeRows.forEach((row, visibleIndex) => {
+                  const boundary = historyStartIndex + earliestRenderedMessageIndex + visibleIndex
+                  while (nextAnchor < anchoredRows.length && anchoredRows[nextAnchor].boundary <= boundary) {
+                    const anchored = anchoredRows[nextAnchor++]
+                    rows.push(anchored.node)
+                    placed.add(anchored.sourceIndex)
+                  }
+                  // Hidden/null native slots still preserve their original raw-index boundary.
+                  rows.push(row)
+                })
+                // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
+                const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
+                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
+  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+
   return (
     <FileInspectionProvider chatId={session.id}>
     <div className="relative h-full flex overflow-hidden"
@@ -3031,266 +3316,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   </Button>
                 </div>
               )}
-              {(() => {
-                // One keyed list: messages, unmaterialized receipts and display-only attempts share the same row shape,
-                // so an attempt's alias key keeps the same outer row and article from click through ACK and native push.
-                const outgoingSlot = (key: string, message: Message, delivery: ConversationDelivery, actions?: ReactNode, receiptId?: string) => (
-                  <WorkSectionContext.Provider key={key} value={ALWAYS_OPEN_WORK_SECTION}>
-                  <div className="space-y-1" data-outgoing-message="" data-unsent-receipt-id={receiptId}>
-                    {null}{null}{null}
-                    <PersistedConversationMessage message={message} hasDeliveredResponse={false} hasStoppedResponse={false} pendingDirectAdmission={false}
-                      delivery={delivery} deliveryActions={actions} disclosureState={liveWorkDisclosure} index={-1}
-                      assistantLabel="" sessionId={session.id} branchSessions={[]} actionsDisabled planActions={undefined}
-                      workingMode={workingDisplayMode} retryInPlace={false} onBeginEdit={beginEditingMessage}
-                      onCreateBranch={createMessageBranch} onSelectBranch={selectMessageBranch} onSelectTool={selectPersistedTool} />
-                    {null}{null}{null}
-                  </div>
-                  </WorkSectionContext.Provider>
-                )
-                const outgoingMessage = (id: string, text: string, attachments: readonly Attachment[], createdAt = new Date(0)): Message =>
-                  ({ id, sessionId: session.id, role: 'user', content: text, attachments: [...attachments], createdAt })
-                const nativeRows = visibleMessages.map((message, visibleIndex) => {
-                const index = earliestRenderedMessageIndex + visibleIndex
-                if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
-                const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
-                const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
-                const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
-                const messageProviderName = providerShortName(
-                  providers.find((candidate) => candidate.id === messageProviderId),
-                  messageProviderId
-                )
-
-                if (shouldSkipAssistantMessage) return null
-                let disclosureState = savedWorkDisclosures.get(message.id)
-                if (!disclosureState) {
-                  disclosureState = {}
-                  savedWorkDisclosures.set(message.id, disclosureState)
-                }
-
-                const outgoingAlias = message.role === 'user' ? outgoingPresentation.byLoadedIndex.get(index) : undefined
-                // Admission/materialization/output are not write witnesses. Only this exact input's positive native
-                // OS-sink write fact can settle its presentation; explicit queue/recovery authority remains above.
-                const outgoingUnresolved = Boolean(outgoingAlias && !outgoingPresentation.writeCompletedKeys.has(outgoingAlias.key))
-                const nativeDirectReceipt = outgoingPresentation.directReceiptByLoadedIndex.get(index)
-                const section = workSections.get(index)!
-                const sectionActive = Boolean(acp?.processing && section.firstIndex === activeWorkSectionFirstIndex)
-                const containsSearchTarget = searchNavigation && workSections.get(searchNavigation.messageIndex - historyStartIndex)?.firstIndex === section.firstIndex
-                const sectionControl = sectionActive || containsSearchTarget || !collapsibleWorkSections ? ALWAYS_OPEN_WORK_SECTION : sectionControls(section.id)
-                const sectionCollapsed = !sectionActive && !sectionControl.expanded
-                const hideCollapsedMessage = sectionCollapsed && (
-                  (message.role === 'user' && message.continuesTurn) ||
-                  (message.role === 'assistant' && index !== section.lastAssistantIndex)
-                )
-                if (hideCollapsedMessage) return message.role === 'assistant' && message.toolCalls?.some(isInlineSubagentLaunch) ? (
-                  <div key={message.id} data-message-index={index + historyStartIndex}>
-                    <PersistedMessageContent message={message} disclosureState={disclosureState} sourceChatId={session.id}
-                      workingMode={workingDisplayMode} onSelectTool={selectPersistedTool} launchesOnly />
-                  </div>
-                ) : null
-                const firstVisibleInSection = index === Math.max(section.firstIndex, earliestRenderedMessageIndex) ||
-                  (sectionCollapsed && section.firstIndex < earliestRenderedMessageIndex && index === section.lastAssistantIndex)
-                const sectionStart = messages[section.firstIndex]
-                const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
-                const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
-                const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
-                // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
-                const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
-                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
-                  sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
-                  duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
-                  onSelectTool={selectLiveTool}
-                /></div> : null
-                const turnStart = firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) ? sectionStart : undefined
-                const turnModelId = sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '') || ''
-                const turnIdentity = [sectionProviderName, turnModelId].filter(Boolean).join(' · ')
-                const previousAssistant = turnStart ? previousAssistantMessage(messages, section.firstIndex) : undefined
-                const previousProviderId = previousAssistant ? previousAssistant.providerId?.trim() || currentProviderId : ''
-                const previousIdentity = previousAssistant
-                  ? [providerShortName(providers.find((candidate) => candidate.id === previousProviderId), previousProviderId), previousAssistant.modelId?.trim()].filter(Boolean).join(' · ')
-                  : ''
-                const showTurnIdentity = Boolean(turnStart && turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))
-                const priorMessage = section.firstIndex > 0 ? messages[section.firstIndex - 1] : undefined
-                const dayChanged = Boolean(turnStart) && (!priorMessage || priorMessage.createdAt.toDateString() !== sectionStart.createdAt.toDateString())
-                return (
-                  <WorkSectionContext.Provider key={outgoingAlias?.key ?? message.id} value={sectionControl}>
-                  <div className="space-y-1" data-message-index={index + historyStartIndex} data-unsent-message-index={unsentByLoadedIndex.has(index) ? index + historyStartIndex : undefined} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
-                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
-                    {turnStart && <TurnStartTime
-                      timestamp={turnStart.createdAt.getTime()}
-                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
-                      identity={turnIdentity}
-                      showIdentity={showTurnIdentity}
-                    />}
-                    {message.role !== 'user' && heading}
-                    {shouldRenderTimelineAtAssistant ? (
-                      <MessageFrame
-                        role={message.role}
-                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
-                        goalReview={Boolean(goalReviewForMessage(message))}
-                        streaming={Boolean(acp?.processing)}
-                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
-                      >
-                        <TurnTimelineContent
-                          disclosureState={liveWorkDisclosure}
-                          key={`turn-${turnSerial}-assistant`}
-                          startedAt={turnClockStart}
-                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
-                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
-                          events={turnEvents}
-                            tools={liveTools}
-                            planSummary={acp?.planSummary ?? ''}
-                            planEntries={livePlanEntries}
-                            planActions={activePlanActions}
-                            pendingPermission={pendingPermission ?? null}
-                            pendingUserInput={pendingUserInput ?? null}
-                            waitIsStale={acp?.waitIsStale}
-                            waitStaleReason={acp?.waitStaleReason}
-                            waitSeconds={acp?.waitSeconds}
-                            onSelectTool={selectLiveTool}
-                            onResolvePermission={resolveLivePermission}
-                          onCancelTurn={cancelLiveTurn}
-                          onStopRuntime={stopLiveRuntime}
-                          sourceChatId={session.id}
-                          active={Boolean(acp?.processing)}
-                          workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
-                        />
-                      </MessageFrame>
-                    ) : (
-                      <PersistedConversationMessage
-                        message={message}
-                        hasDeliveredResponse={hasDeliveredResponse}
-                        hasStoppedResponse={hasStoppedResponse}
-                        pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
-                        delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
-                          : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
-                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
-                        deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
-                          onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
-                          onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => retryUnsent(index + historyStartIndex) : undefined}
-                          onRemove={() => removeUnsent(index + historyStartIndex)}
-                          editDisabled={unsentActionsDisabled} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
-                          : nativeDirectReceipt && !nativeDirectReceipt.sending && !isCompanionContext() ? <OutgoingRecoveryActions
-                            retryUnavailable={!receiptRetryAvailable(nativeDirectReceipt.prompt)}
-                            onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
-                            retryDisabled={unsentReceiptDeleteDisabled}
-                            onRemove={() => removeUnsent(-1, { id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! })}
-                            removeDisabled={unsentReceiptDeleteDisabled} /> : undefined}
-                        disclosureState={disclosureState}
-                        index={index + historyStartIndex}
-                        assistantLabel={reviewAssistantLabel(messageProviderName, message)}
-                        sessionId={session.id}
-                        sessionParentChatId={session.parentChatId}
-                        sessionBranchFromMessageIndex={session.branchFromMessageIndex}
-                        sessionBranchMessageEdited={session.branchMessageEdited}
-                        branchSessions={branchSessions}
-                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || unsentProjection.pendingIndices.has(index) || Boolean(nativeDirectReceipt)}
-                        planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
-                        workingMode={workingDisplayMode}
-                        retryInPlace={index === retryInPlaceMessageIndex}
-                        onBeginEdit={beginEditingMessage}
-                        onCreateBranch={createMessageBranch}
-                        onSelectBranch={selectMessageBranch}
-                        onSelectTool={selectPersistedTool}
-                      />
-                    )}
-                    {message.role === 'user' && message.managedOriginRunId && <InitialManagedSubagentGroup runId={message.managedOriginRunId} sourceChatId={session.id} />}
-                    {message.role === 'user' && heading}
-                    {renderTimelineAfterUser && index === turnUserMessageIndex && (
-                      <div data-message-index={turnAssistantMessageMatches ? turnAssistantMessageIndex + historyStartIndex : undefined}>
-                      <MessageFrame
-                        key={`turn-${turnSerial}-after-user`}
-                        role="assistant"
-                        assistantLabel={reviewAssistantLabel(currentProviderName, messages[turnAssistantMessageIndex] ?? messages[turnUserMessageIndex])}
-                        streaming={Boolean(acp?.processing)}
-                      >
-                        <TurnTimelineContent
-                          disclosureState={liveWorkDisclosure}
-                          key={`turn-${turnSerial}-after-user-content`}
-                          startedAt={turnClockStart}
-                          interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
-                          stopReason={messages[turnAssistantMessageIndex]?.stopReason}
-                          events={turnEvents}
-                            tools={liveTools}
-                            planSummary={acp?.planSummary ?? ''}
-                            planEntries={livePlanEntries}
-                            planActions={activePlanActions}
-                            pendingPermission={pendingPermission ?? null}
-                            pendingUserInput={pendingUserInput ?? null}
-                            waitIsStale={acp?.waitIsStale}
-                            waitStaleReason={acp?.waitStaleReason}
-                            waitSeconds={acp?.waitSeconds}
-                            onSelectTool={selectLiveTool}
-                            onResolvePermission={resolveLivePermission}
-                          onCancelTurn={cancelLiveTurn}
-                          onStopRuntime={stopLiveRuntime}
-                          sourceChatId={session.id}
-                          active={Boolean(acp?.processing)}
-                          workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
-                        />
-                      </MessageFrame>
-                      </div>
-                    )}
-                  </div>
-                  </WorkSectionContext.Provider>
-                )
-              })
-                const outgoingRows = [...outgoingReceipts.filter((prompt) => {
-                  const index = prompt.receipt ? outgoingPresentation.receiptNativeIndexByKey.get(JSON.stringify([prompt.receipt.id, prompt.receipt.revision])) : undefined
-                  // A bound but hidden/off-page native row cannot stand in for the direct receipt's bytes/actions.
-                  return index === undefined || nativeRows[index - earliestRenderedMessageIndex] == null
-                }).map((prompt) => {
-                  const alias = prompt.receipt ? outgoingPresentation.byReceiptId.get(prompt.receipt.id) : undefined
-                  const nativeReceipt = (acp?.unsentDirectPrompts ?? []).find(entry => entry.id === prompt.receipt?.id && entry.revision === prompt.receipt?.revision)
-                  // Explicit Retry prepares the exact native receipt; nothing here infers delivery or replays on mount.
-                  return { attempt: alias, node: outgoingSlot(alias?.key ?? prompt.receipt?.id ?? String(prompt.messageIndex),
-                    outgoingMessage(prompt.receipt?.id ?? String(prompt.messageIndex), prompt.text, prompt.attachments, alias?.createdAt),
-                    prompt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY,
-                    !prompt.sending && prompt.receipt && !isCompanionContext() ? <OutgoingRecoveryActions
-                      retryUnavailable={!nativeReceipt || !receiptRetryAvailable(nativeReceipt)}
-                      onRetry={nativeReceipt && receiptRetryAvailable(nativeReceipt) ? () => retryUnsentReceipt(prompt.receipt!) : undefined}
-                      retryDisabled={unsentReceiptDeleteDisabled}
-                      onRemove={() => removeUnsent(prompt.messageIndex, prompt.receipt)} removeDisabled={unsentReceiptDeleteDisabled} /> : undefined,
-                    prompt.receipt?.id) }
-                }), ...outgoingPresentation.tail.map((attempt) => ({ attempt,
-                  node: outgoingSlot(attempt.key, outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt),
-                    outgoingPresentation.retainedUnknownKeys.has(attempt.key) ? LOCAL_UNCONFIRMED_DELIVERY : attemptDelivery(attempt)),
-                }))]
-                // A discarded native row may be hidden before an action can safely retire its display alias.
-                // Keep that unresolved alias rendered now, rather than unmounting it and reviving it after trim.
-                // Exact receipts already rendered above keep their own precedence; this adds no recovery authority.
-                const outgoingKeys = new Set(outgoingRows.flatMap(({ attempt }) => attempt ? [attempt.key] : []))
-                for (const [index, attempt] of outgoingPresentation.byLoadedIndex) {
-                  if (messages[index]?.acpPromptDiscarded !== true || nativeRows[index - earliestRenderedMessageIndex] != null || outgoingKeys.has(attempt.key)) continue
-                  outgoingKeys.add(attempt.key)
-                  outgoingRows.push({ attempt, node: outgoingSlot(attempt.key,
-                    outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt), LOCAL_UNCONFIRMED_DELIVERY) })
-                }
-                // Captured indices place display rows only; they never identify or confirm a native message.
-                // Keep one flat keyed list so a receipt/native alias retains the same outer row and article.
-                const attemptOrder = new Map(outgoingAttempts.map((attempt, ordinal) => [attempt.key, ordinal]))
-                const anchoredRows = outgoingRows.flatMap(({ attempt, node }, sourceIndex) => attempt ? [{
-                  boundary: attempt.nativeIndex, ordinal: attemptOrder.get(attempt.key)!, sourceIndex, node,
-                }] : []).sort((left, right) => left.boundary - right.boundary || left.ordinal - right.ordinal)
-                const rows: ReactNode[] = []
-                const placed = new Set<number>()
-                let nextAnchor = 0
-                nativeRows.forEach((row, visibleIndex) => {
-                  const boundary = historyStartIndex + earliestRenderedMessageIndex + visibleIndex
-                  while (nextAnchor < anchoredRows.length && anchoredRows[nextAnchor].boundary <= boundary) {
-                    const anchored = anchoredRows[nextAnchor++]
-                    rows.push(anchored.node)
-                    placed.add(anchored.sourceIndex)
-                  }
-                  // Hidden/null native slots still preserve their original raw-index boundary.
-                  rows.push(row)
-                })
-                // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
-                const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
-                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
-              })()}
+              {transcriptRows}
               {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
@@ -3683,10 +3709,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   )}
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {composerBranch && (branchSwitching
-                    ? <ChatBranchPicker chatId={session.id} branch={composerBranch} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>)}
+                  <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
+                  {composerBranch && (canSwitchComposerBranch
+                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                      </span>
+                    </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>

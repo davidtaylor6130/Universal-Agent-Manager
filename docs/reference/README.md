@@ -6,6 +6,7 @@ These pages preserve useful source-level details from the trial base, outside th
 |---|---|
 | [Previous agent code map](agent-code-map.md) | Retained bridge/actions and source detail, not current instructions |
 | [Source map](source-map.md) | Entry points for checking implementation routes |
+| [Queue setting admission audit](nongeneric-queue-setting-admission.md) | Per-adapter mode, model and reasoning routes with isolated corrections, scoped fixtures and remaining verification |
 | [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
 | [Antigravity runtime and goals](antigravity-runtime-goals.md) | CLI-conversation UAM goal lifecycle and all 26 capability source boundaries |
 | [OpenCode V2 protocol assessment](opencode-v2-protocol-assessment.md) | Pinned V2.1.2 native adapter contracts, session/history differences, permission guard and verification limits |

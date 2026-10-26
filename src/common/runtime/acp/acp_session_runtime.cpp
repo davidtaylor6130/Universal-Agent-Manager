@@ -1274,6 +1274,7 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
+			if (session.goal_review_turn) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
 			{
@@ -2090,6 +2091,39 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		// Only this admission stack may disregard its own raw FIFO when preparing native settings.
+		// Public setting changes continue to treat queued input as busy.
+		bool CanPrepareNongenericPromptSettings(const AppState& app, const AcpSessionState& session,
+		    const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, bool queued_dispatch)
+		{
+			if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
+			    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat ||
+			    !ValidateAcpRestartOwnership(app, session, chat, nullptr) ||
+			    (session.session_id.empty() && !ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpCanSendPromptWithoutSessionId()) ||
+			    session.processing || AcpSessionIsWaitingForInput(session) || !session.queued_prompt.empty() ||
+			    AcpSessionHasPendingRuntimeRequest(session) || AcpSessionHasPendingCancel(session) ||
+			    !session.pending_permission.request_id_json.empty() || !session.queued_permissions.empty() ||
+			    !session.pending_user_input.request_id_json.empty() || session.pending_prompt_delivery ||
+			    session.manual_compaction_pending || session.pending_compaction || session.local_stop_pending ||
+			    session.remote_stop_pending || session.remote_stop_unconfirmed || session.recovering_remote_turn || session.recovering_remote_process ||
+			    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0 ||
+			    (session.turn_serial > session.last_settled_turn_serial &&
+			     !ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session).empty())) return false;
+			if (!queued_dispatch && session.queued_user_prompts.empty() && chat.acp_queued_prompts.empty()) return true;
+			// A claimed quota instruction is a separate control, never a replacement for future user input.
+			// Its invocation-only dispatch scope already validated the accepted native turn and policy.
+			const bool quota_control = !queued_dispatch && batch.size() == 1 &&
+			    IsCurrentClaudeQuotaContinuationInput(app, session, chat, batch.front()) &&
+			    std::ranges::none_of(session.queued_user_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; });
+			if (!queued_dispatch && !quota_control) return false;
+			return !batch.empty() && batch.size() <= session.queued_user_prompts.size() &&
+			    chat.acp_dispatched_queued_prompt_count == 0 &&
+			    chat.acp_queued_prompts.size() == session.queued_user_prompts.size() &&
+			    std::equal(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end(), session.queued_user_prompts.begin()) &&
+			    (quota_control || std::equal(batch.begin(), batch.end(), session.queued_user_prompts.begin())) &&
+			    std::ranges::none_of(batch, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; });
+		}
+
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false, bool queued_dispatch = false, const AcpQueuedUserPromptState* original_queued_prompt = nullptr, AcpPromptFailurePurpose* failure_purpose_out = nullptr, AcpInputAdmission* admission_out = nullptr)
 		{
 			if (failure_purpose_out)
@@ -2385,11 +2419,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+			if (!runtime.IsGenericAcpSession() && session.running && session.session_ready &&
+			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch))
+			{
+				if (error_out) *error_out = "Native session settings are waiting for the owning input and idle runtime.";
+				return false;
+			}
 			// A fresh stream can receive its first model report only after input. Its captured launch
 			// option is sufficient for restart selection, never native execution/model attestation.
 			const std::string& restart_model_id = session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
+			// An empty selection removes an explicit launch model; a reported default model alone
+			// must not restart every later turn of an already default-configured stream.
+			// An unknown reattached launch establishes Default by owned idle restart.
+			const bool model_requires_restart = runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession &&
+			    (turn_model_id.empty() ? !session.launch_model_options_captured || !session.launch_model_options_id.empty() : restart_model_id != turn_model_id);
 			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
-			const bool settings_require_restart = session.running && session.session_ready && ((!turn_model_id.empty() && restart_model_id != turn_model_id && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession) || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
+			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "uam-central-native-setup" ||
@@ -2465,14 +2510,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			else if (native_adapter_changed || settings_require_restart)
 			{
-				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
-				if (!StopAcpSession(app, chat.id))
+				// Teardown saves chat state: retain the owned FIFO in both carriers throughout
+				// the stop, including a failed stop/preparation and a crash before admission.
+				const bool preserve_queue = !session.queued_user_prompts.empty();
+				const bool previous_runtime_held = session.queue_held;
+				const bool previous_outbox_held = chat.acp_queue_held;
+				if (preserve_queue) session.queue_held = chat.acp_queue_held = true;
+				if (!StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, preserve_queue))
 				{
-					session.queued_user_prompts = std::move(pending);
-					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected agent or session settings.";
+					if (queued_dispatch && original_queued_prompt &&
+					    RestoreRejectedQueuedAdmission(session, chat, *original_queued_prompt, first))
+						(void)PublishRestoredQueuedAdmission(app, session, chat);
+					session.last_error = "Could not restart the provider for the selected agent or session settings.";
+					if (error_out != nullptr) *error_out = session.last_error;
 					return false;
 				}
-				session.queued_user_prompts = std::move(pending);
+				session.queue_held = previous_runtime_held;
+				chat.acp_queue_held = previous_outbox_held;
 			}
 			BindQueuedAgentForLaunch(session, first);
 			const std::string previous_turn_model = session.goal_turn_model_id;
@@ -2518,16 +2572,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			if (!runtime.IsGenericAcpSession() && session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
-			    session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
-			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) &&
-			    !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
+			    session.session_ready && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier))
 			{
-				return false;
+				if (runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::ApplyLocally)
+					session.current_mode_id = desired_mode;
+				else if (!SetAcpSessionMode(app, chat.id, desired_mode, error_out)) return false;
 			}
 			const std::string& configured_model_id = session.current_model_id.empty() && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
-			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id && !SetAcpSessionModel(app, chat.id, session.goal_turn_model_id, error_out))
+			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id)
 			{
-				return false;
+				if (runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::ApplyLocally)
+					session.current_model_id = session.goal_turn_model_id;
+				else if (!SetAcpSessionModel(app, chat.id, session.goal_turn_model_id, error_out)) return false;
 			}
 
 			session.memory_recall_preparation.reset();
@@ -4488,6 +4545,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
+		if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
+		    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat) return false;
 		if (!session.transport_ownership_error.empty())
 			return false;
 		if (session.queued_rollback_save_pending || HasPendingQueuedAdmissionSave(app, chat.id) || RemotePromptDeliveryUnconfirmed(session, chat))
@@ -4498,6 +4557,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return false;
 		}
+		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready &&
+		    !CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
 		if (chat.routing_mode == "automatic")
 		{
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
@@ -6192,6 +6253,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.goal_turn_kind.clear();
 		session.goal_turn_model_id.clear();
 		session.launch_model_options_id.clear();
+		session.launch_model_options_captured = false;
 		session.goal_internal_session = false;
 		ClearGoalReviewState(session);
 		session.reconnect_pending = false;
@@ -7581,6 +7643,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_goal_id = goal_review_goal_id;
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
+					// A replacement process can resume native history; do not infer a zero cumulative baseline.
+					if (session.goal_review_turn) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
 					AppendGoalLoopDiagnostic(session, "auto_restart_after_startup_crash", goal_review_goal_id, pending_prompt);
 				}
