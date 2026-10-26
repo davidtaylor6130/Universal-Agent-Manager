@@ -1763,6 +1763,20 @@ describe('ChatView', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
 
+    // Motion Off jumps to the bottom instantly.
+    document.documentElement.setAttribute('data-motion', 'off')
+    try {
+      await act(async () => {
+        transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await new Promise(window.requestAnimationFrame)
+      })
+      act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'end', behavior: 'auto' })
+    } finally {
+      document.documentElement.removeAttribute('data-motion')
+    }
+
     act(() => root.unmount())
     host.remove()
   })

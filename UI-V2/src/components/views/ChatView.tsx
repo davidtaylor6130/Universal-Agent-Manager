@@ -1233,7 +1233,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       isNearBottomRef.current = true
       showScrollToBottomRef.current = false
       setShowScrollToBottom(false)
-      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: motionScrollBehavior() })
     }
     if (searchNavigationRef.current) {
       void useAppStore.getState().clearChatSearchNavigation().then(() => {
