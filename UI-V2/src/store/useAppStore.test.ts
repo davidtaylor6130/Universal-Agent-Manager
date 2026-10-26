@@ -6550,6 +6550,28 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
   })
 
+  it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.settings.computerUseGloballyEnabled = false
+    initial.settings.computerUseRevocationPending = true
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(cefStore.getState()).toMatchObject({ computerUseEnabled: false, computerUseRevocationPending: true })
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(1)
+    testWindow.uamPush!({ type: 'statePatch', data: sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })! })
+    expect(cefStore.getState().computerUseRevocationPending).toBe(true)
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(1)
+    testWindow.uamPush!({ type: 'statePatch', data: sanitizeCppStatePatch({ stateRevision: 3, settings: { computerUseRevocationPending: false } })! })
+    expect(cefStore.getState()).toMatchObject({ computerUseEnabled: false, computerUseRevocationPending: false })
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(3)
+    cefStore.getState().loadFromCef(makeCppState(4))
+    expect(cefStore.getState().computerUseRevocationPending).toBeUndefined()
+  })
+
   it('hydrates persisted VCS switches and enables them for older settings files', () => {
     const cpp = makeCppState(1)
     cpp.settings.gitEnabled = false

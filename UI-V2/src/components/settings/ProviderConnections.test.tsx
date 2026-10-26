@@ -14,6 +14,7 @@ const server = { id: 'docs', name: 'Docs', executionHostId: '', workspaceDirecto
 const status = (hostId = 'local') => ({ executionHostId: hostId, connectedProofAvailable: false, handshakeProofAvailable: false, computerUseBuiltInAvailable: hostId === 'local', providers: SUPPORTED_CLI_PROVIDER_IDS.map(providerId => ({ providerId, status: 'configured-unverified', detail: '', activeSessionCount: 0, configuredSessionCount: 0, uamControlEnabled: true, sharedSetupEnabled: true, progressiveMcpDiscoveryEnabled: providerId === 'opencode-cli' ? true : undefined, mcpServers: [{ id: 'docs', name: 'Docs', enabled: true }] })) })
 beforeEach(() => {
   vi.mocked(sendToCEF).mockReset().mockImplementation(async request => ({ ok: true, data: status(request.payload?.executionHostId as string) }))
+  useAppStore.setState({ computerUseEnabled: true, computerUseRevocationPending: false })
   useAppStore.setState(state => ({ settingsScopeHostId: '*', hostScopedSettings: true, hostScopedSettingsValues: {}, sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
 })
@@ -205,6 +206,28 @@ it('reads Off in the Computer Use column when the built-in setting is disabled',
   expect(cell?.getAttribute('aria-checked')).toBe('false')
   expect(cell?.getAttribute('title')).toContain('Off')
   useAppStore.setState({ computerUseEnabled: undefined })
+})
+
+it.each([true, undefined])('shows unresolved Computer Use cleanup %s without advertising re-enable', async pending => {
+  useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: pending })
+  await render('codex-cli')
+  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
+  expect(cell.getAttribute('aria-checked')).toBe('mixed')
+  expect(cell.disabled).toBe(true)
+  expect(cell.title).toContain(pending ? 'Cleanup pending' : 'Global status not confirmed')
+  expect(cell.title).not.toContain('Turn Computer Use on')
+})
+
+it('distinguishes On with per-chat cleanup from a retry of global disable', async () => {
+  useAppStore.setState({ computerUseEnabled: true, computerUseRevocationPending: true })
+  await render('codex-cli')
+  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
+  expect(cell.title).toContain("On. A chat's controls are still stopping.")
+  expect(cell.title).toContain('Turn off for all chats in Computer Use settings to retry cleanup.')
+  expect(cell.title).not.toContain('in that chat')
+  expect(cell.title).not.toContain('Retry disabling')
+  expect(cell.getAttribute('aria-checked')).toBe('mixed')
+  expect(cell.disabled).toBe(true)
 })
 
 it('updates a provider server override only after successful verified backend reply', async () => {

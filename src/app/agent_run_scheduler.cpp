@@ -223,7 +223,7 @@ namespace uam
 		std::string settings, child_policy, root_policy, root_settings, process, native_observed, saved_native, wire_policy;
 		std::string desired_status, diagnostic_code, diagnostic, output, pending_parent_metadata;
 		std::optional<ManagedRunExecutionBinding> dispatch_configuration;
-		std::string dispatch_settings, observed_native, observed_model, observed_mode, observed_workspace;
+		std::string dispatch_settings, observed_native, observed_model, observed_mode, observed_workspace, observed_provider_version;
 		bool setup_execution_observed = false;
 		std::string completed_primary_revision, completed_primary_digest;
 		std::uint64_t observation_generation = 0, saved_observation_generation = 0, saved_observation_revision = 0;
@@ -1518,6 +1518,49 @@ namespace uam
 		// No generation/save/configuration proof is minted before the real final input boundary.
 	}
 
+	void AgentRunScheduler::InitialGeminiExecutionObserved(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string_view request_id, std::string_view native, std::string_view model, std::string_view mode)
+	{
+		const auto owner = session.managed_initial_owner;
+		if (!owner || owner->session != &session || owner->expected.provider_id != "gemini-cli" || owner->resume_only || owner->binding_withheld) return;
+		const auto& run = owner->expected;
+		const auto& managed = run.managed_continuation;
+		const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const bool owned = InitialOwner(app, chat) == owner && FindAcpSessionForChat(app, chat.id) == &session && InitialRuntimeOwned(app, *owner) && session.provider_id == run.provider_id && session.protocol_kind == "gemini-acp" && session.running && session.initialized && session.managed_launch_attempted && session.managed_agent_run_id == run.id && session.process_execution_host_id == "local" && host && host->id == "local" && host->transport == "local" && !owner->process.empty() && session.last_process_id == owner->process && session.session_id.empty() && chat.native_session_id.empty() && session.session_setup_request_id > 0 && request_id == std::to_string(session.session_setup_request_id) && owner->completion_acked && !owner->input_attempted && !owner->input_written && !owner->input_forbidden && !owner->settled && run.status == "running";
+		const bool shape = managed && !managed->execution && !managed->owner.delegation_grant && managed->turns.size() == 1 && managed->current_turn_id == run.id && managed->current_turn_number == 1 && managed->turns.front().dispatch_attempted && managed->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot && managed->turns.front().principal.root_chat_id == owner->root_id && managed->turns.front().principal.root_birth_id == owner->root_birth && managed->turns.front().principal.parent_run_id.empty() && managed->turns.front().principal.parent_transcript_birth_id.empty() && run.depth == 1 && run.parent_run_id.empty() && run.resumed_from_run_id.empty() && run.goal_id.empty() && run.effective_workspace_access == "read";
+		const bool exact = uuid::IsCanonicalUuid(native) && !model.empty() && model.size() <= 160 && strings::TrimAsciiView(model) == model && std::ranges::none_of(model, [](unsigned char ch) { return ch < 32 || ch == 127; }) && strings::ToLowerAscii(std::string(model)) != "auto" && strings::ToLowerAscii(std::string(model)) != "default" && model == run.model_id && model == chat.model_id && mode == approval_modes::kPlanApprovalMode && chat.approval_mode == approval_modes::kPlanApprovalMode && chat.routing_mode == "explicit" && !chat.small_model_mode && paths::IsControllerLocalWorkspace(chat) && !chat.workspace_directory.empty() && chat.workspace_directory.size() <= 4096 && chat.workspace_directory.find('\0') == std::string::npos && std::filesystem::path(chat.workspace_directory).is_absolute();
+		if (!owned || !shape || !exact || owner->setup_execution_observed)
+		{
+			// Unsupported or contradictory native proof only withholds the binding;
+			// the existing truthful initial one-shot retains its own input policy.
+			owner->binding_withheld = true;
+			return;
+		}
+		owner->setup_execution_observed = true;
+		owner->observed_native = native;
+		owner->observed_model = model;
+		owner->observed_mode = mode;
+		owner->observed_workspace = chat.workspace_directory; // Exact owned launch/setup scope, not a native cwd claim.
+		owner->observed_provider_version = session.agent_version; // Adapter qualified this owned initialize observation.
+		// Actual input, completed-model telemetry, a later save and completed/reaped publication remain required.
+	}
+
+	void AgentRunScheduler::InitialGeminiResultObserved(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string_view request_id, std::string_view model)
+	{
+		const auto owner = session.managed_initial_owner;
+		if (!owner || owner->session != &session || owner->expected.provider_id != "gemini-cli" || owner->resume_only || owner->binding_withheld) return;
+		const bool owned = InitialOwner(app, chat) == owner && FindAcpSessionForChat(app, chat.id) == &session && InitialRuntimeOwned(app, *owner) && owner->completion_acked && owner->input_attempted && owner->input_written && !owner->input_forbidden && !owner->settled && owner->expected.status == "running" && session.running && session.processing && session.provider_id == "gemini-cli" && session.protocol_kind == "gemini-acp" && session.agent_name == "gemini-cli" && !owner->observed_provider_version.empty() && session.agent_version == owner->observed_provider_version && session.process_execution_host_id == "local" && !owner->process.empty() && session.last_process_id == owner->process && owner->serial > 0 && session.turn_serial == owner->serial && session.turn_user_message_index == owner->row && session.turn_first_user_message_index == owner->row && session.prompt_request_id > 0 && request_id == std::to_string(session.prompt_request_id);
+		const bool row = owner->row >= 0 && static_cast<std::size_t>(owner->row) < chat.messages.size() && chat.messages[owner->row].role == MessageRole::User && chat.messages[owner->row].content == InitialTask(*owner) && chat.messages[owner->row].created_at == owner->row_created && !chat.messages[owner->row].acp_prompt_discarded;
+		const bool exact = owner->setup_execution_observed && owner->configuration_captured && owner->dispatch_configuration && owner->native_response_seen && owner->native_observed == owner->observed_native && session.session_id == owner->observed_native && chat.native_session_id == owner->observed_native && !model.empty() && model == owner->observed_model && model == owner->dispatch_configuration->effective_model_id && model == session.current_model_id && owner->observed_mode == approval_modes::kPlanApprovalMode && session.current_mode_id == owner->observed_mode && InitialConfiguration(app, chat) == owner->dispatch_settings && InitialChildPolicy(chat) == owner->child_policy;
+		if (!owned || !row || !exact || owner->observation_generation)
+		{
+			owner->binding_withheld = true;
+			return;
+		}
+		// This is post-input native model telemetry, not the setup's configured-model echo.
+		// An ordinary subsequent save must still persist this observed generation.
+		owner->observation_generation = 1;
+	}
+
 	bool AgentRunScheduler::InitialResumeSetupExecutionObserved(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string_view request_id, std::string_view native, std::string_view model, std::string_view workspace, bool read_only_openai_policy_confirmed, std::string_view effective_mode, std::string_view collaboration_model, bool collaboration_supplied)
 	{
 		const auto owner = session.managed_initial_owner;
@@ -1680,7 +1723,8 @@ namespace uam
 				const bool claude = provider && provider->id == "claude-cli" && session.protocol_kind == "claude-code-stream-json";
 				const bool codex = provider && provider->id == "codex-cli" && session.protocol_kind == "codex-app-server" && owner->setup_execution_observed && !owner->binding_withheld && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_workspace == chat.workspace_directory && owner->expected.effective_workspace_access == "read" && chat.approval_mode == approval_modes::kPlanApprovalMode;
 				const bool copilot = ManagedReadOnlyNativeScope(app, session, chat).has_value();
-				if (host && provider && host->id == "local" && host->transport == "local" && chat.routing_mode == "explicit" && (claude || codex || copilot) && !chat.model_id.empty() && chat.model_id == owner->expected.model_id && owner->expected.depth == 1 && owner->expected.parent_run_id.empty() && owner->expected.managed_continuation->turns.size() == 1 && !owner->expected.managed_continuation->owner.delegation_grant && owner->expected.managed_continuation->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot)
+				const bool gemini = provider && provider->id == "gemini-cli" && session.protocol_kind == "gemini-acp" && owner->setup_execution_observed && !owner->binding_withheld && session.agent_name == "gemini-cli" && !owner->observed_provider_version.empty() && session.agent_version == owner->observed_provider_version && owner->observed_native == session.session_id && owner->observed_native == chat.native_session_id && owner->observed_model == chat.model_id && owner->observed_model == session.current_model_id && owner->observed_workspace == chat.workspace_directory && owner->observed_mode == approval_modes::kPlanApprovalMode && session.current_mode_id == owner->observed_mode && owner->expected.effective_workspace_access == "read" && chat.approval_mode == approval_modes::kPlanApprovalMode;
+				if (host && provider && host->id == "local" && host->transport == "local" && chat.routing_mode == "explicit" && (claude || codex || copilot || gemini) && !chat.model_id.empty() && chat.model_id == owner->expected.model_id && owner->expected.depth == 1 && owner->expected.parent_run_id.empty() && owner->expected.managed_continuation->turns.size() == 1 && !owner->expected.managed_continuation->owner.delegation_grant && owner->expected.managed_continuation->turns.front().principal.kind == ManagedRunPrincipalKind::UserRoot)
 				{
 					ManagedRunExecutionBinding value;
 					value.connection_configuration_json = ExecutionRoutingConnectionConfiguration(*host);
@@ -1703,7 +1747,7 @@ namespace uam
 					{
 						owner->dispatch_settings = InitialConfiguration(app, chat);
 						owner->dispatch_configuration = std::move(value);
-						if (codex) owner->observation_generation = 1; // Provisional native evidence now matches actual before-write configuration.
+						if (codex) owner->observation_generation = 1; // Gemini still requires its completed prompt's native model telemetry.
 					}
 				}
 			}
@@ -1837,6 +1881,11 @@ namespace uam
 		}
 		bool InitialBindingEligible(const AppState& app, const ManagedInitialRuntimeOwner& owner)
 		{
+			if (owner.expected.provider_id == "gemini-cli")
+			{
+				const auto* session = FindAcpSessionForChat(app, owner.transcript_id);
+				if (!session || session != owner.session || session->managed_initial_owner.get() != &owner || session->provider_id != "gemini-cli" || session->protocol_kind != "gemini-acp" || session->agent_name != "gemini-cli" || owner.observed_provider_version.empty() || session->agent_version != owner.observed_provider_version || session->process_execution_host_id != "local" || session->last_process_id != owner.process || session->session_id != owner.observed_native || session->current_model_id != owner.observed_model || session->current_mode_id != owner.observed_mode) return false;
+			}
 			const auto* chat = ChatDomainService().FindChatById(app, owner.transcript_id);
 			return chat && chat->messages_loaded && !owner.binding_withheld && owner.dispatch_configuration && owner.observation_generation && owner.saved_observation_generation == owner.observation_generation && owner.input_written && owner.input_attempted && owner.settled && owner.desired_status == "completed" && owner.stop_finished && owner.stop_finished->load(std::memory_order_acquire) && owner.stop_result && owner.stop_result->exit_confirmed && InitialStopped(app, owner) && InitialRuntimeOwned(app, owner, false) && chat && InitialChildPolicy(*chat) == owner.child_policy && InitialConfiguration(app, *chat) == owner.dispatch_settings && chat->native_session_id == owner.observed_native && owner.saved_native == owner.observed_native && owner.saved_serial == owner.serial && owner.saved_row == owner.row && owner.saved_row_created == owner.row_created && !app.pending_chat_save_at_by_chat_id.contains(chat->id) && !acp_detail::HasActiveChatSaveWorker(app, chat->id) && !app.worktree_operation_chat_ids.contains(chat->id) && !app.worktree_launch_preparations.contains(chat->id) && !app.execution_routing_restored_unresolved_chat_ids.contains(chat->id);
 		}

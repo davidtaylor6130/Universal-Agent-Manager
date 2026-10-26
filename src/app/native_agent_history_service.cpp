@@ -208,8 +208,7 @@ std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_vi
 	if (host->id != source.execution_host_id || host->transport != "ssh" || host->runner_status != "ready")
 	{ if (error) *error = "The exact remote native parent helper is unavailable."; return std::nullopt; }
 	remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version),
-		host->runner_version, host->runner_protocol_version);
+		*host);
 	nlohmann::json snapshot;
 	if (!client.ReadNativeHistory(decoded->provider_id, decoded->parent_session_id, source.workspace_directory, snapshot, error, stop_token, decoded->agent_id)) return std::nullopt;
 	return ParseHistorySnapshot(*host, source, reference, snapshot, error, stop_token);
