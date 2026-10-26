@@ -1232,7 +1232,8 @@ namespace uam
 	    const std::filesystem::path& legacy_root)
 	{
 		const std::string source_key = uam::paths::NormalizedNativePathString(legacy_root);
-		if (source_key == uam::paths::NormalizedNativePathString(data_root) ||
+		std::error_code same_error; // equivalent() also catches a differently cased or 8.3-named current root.
+		if (source_key == uam::paths::NormalizedNativePathString(data_root) || fs::equivalent(legacy_root, data_root, same_error) ||
 		    !uam::paths::IsDirectoryNoThrow(AppPaths::UamChatsRootPath(legacy_root))) return false;
 		nlohmann::json ledger;
 		// An unreadable ledger cannot record any answer, so asking would only trap the user in the prompt.
