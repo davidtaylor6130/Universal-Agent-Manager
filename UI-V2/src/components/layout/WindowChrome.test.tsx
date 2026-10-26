@@ -33,7 +33,7 @@ describe('native window controls', () => {
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request)
       requests.push(parsed)
-      if (parsed.action === 'getWindowChrome' && chromeFailure !== null) { onFailure(chromeFailure, 'Window chrome unavailable.'); return }
+      if (parsed.action === 'getWindowChrome' && chromeFailure !== null) { onFailure(chromeFailure, chromeFailure === 404 ? 'Unknown action: getWindowChrome' : 'The native window is unavailable.'); return }
       if (parsed.action === 'windowCommand') {
         if (failCommand) { onFailure(503, 'Window unavailable.'); return }
         if (parsed.payload.command === 'toggleMaximize') maximized = !maximized
@@ -95,6 +95,8 @@ describe('native window controls', () => {
     await mount()
     expect(host.querySelector('[data-testid="window-chrome"]')).toBeNull()
     expect(host.querySelector('[data-platform]')).toBeNull()
+    await act(async () => { window.dispatchEvent(new Event('resize')); window.dispatchEvent(new Event('focus')) })
+    expect(requests.filter(r => r.action === 'getWindowChrome')).toHaveLength(1)
   })
 
   it('keeps the strip while the native window is briefly unavailable', async () => {
