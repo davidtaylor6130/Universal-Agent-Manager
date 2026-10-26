@@ -45,7 +45,12 @@ SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader',
 # Packaged copies of binaries that are scanned once in their own scope.
 SKIP_FILES = {'uam-runner', 'uam-runner.exe'}
 SKIP_SUFFIXES = {'.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
+# A pattern entry is tested against the token around a match (up to whitespace, quotes, commas, semicolons or
+# brackets), so text from a neighbouring statement in a minified bundle cannot excuse it.
+TOKEN_BREAKS = set(' \t\r\n"\'`,;()[]')
 PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
+# Windows wide string literals (L"...") are UTF-16LE: printable characters each followed by a zero byte.
+PRINTABLE_UTF16 = re.compile(rb'(?:[\x20-\x7e]\x00){4,}')
 
 
 def cmake_bool(value):
@@ -76,7 +81,8 @@ def file_strings(path):
     data = path.read_bytes()
     if path.suffix.lower() in TEXT_SUFFIXES:
         return data.decode('utf-8', errors='replace').splitlines()
-    return [chunk.decode('ascii') for chunk in PRINTABLE.findall(data)]
+    return [chunk.decode('ascii') for chunk in PRINTABLE.findall(data)] + \
+        [chunk.decode('utf-16-le') for chunk in PRINTABLE_UTF16.findall(data)]
 
 
 def walk(root):
@@ -108,7 +114,13 @@ def find_leaks(disabled, artifacts):
         for name, pattern in patterns.items():
             for match in pattern.finditer(text):
                 start = max(0, match.start() - 60)
-                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'text': text[start:match.end() + 60]})
+                token_start, token_end = match.start(), match.end()
+                while token_start > 0 and text[token_start - 1] not in TOKEN_BREAKS:
+                    token_start -= 1
+                while token_end < len(text) and text[token_end] not in TOKEN_BREAKS:
+                    token_end += 1
+                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': text[token_start:token_end],
+                              'text': text[start:match.end() + 60]})
     return leaks
 
 
@@ -119,7 +131,7 @@ def entry_flags(entry):
 
 def apply_allowlist(leaks, entries, disabled):
     """Return (failures, unused budget notes). An entry excuses a match by artifact path glob ('path'), a
-    case-insensitive regex over the surrounding text ('pattern') and/or a case-sensitive full match of the
+    case-insensitive regex over the token around the match ('pattern') and/or a case-sensitive full match of the
     matched identifier ('match'); 'max' caps how many matches it may excuse."""
     used = [0] * len(entries)
     failures = []
@@ -129,7 +141,7 @@ def apply_allowlist(leaks, entries, disabled):
                 continue
             if 'path' in entry and not fnmatch.fnmatch(leak['path'], entry['path']):
                 continue
-            if 'pattern' in entry and not re.search(entry['pattern'], leak['text'], re.IGNORECASE):
+            if 'pattern' in entry and not re.search(entry['pattern'], leak['token'], re.IGNORECASE):
                 continue
             if 'match' in entry and not re.fullmatch(entry['match'], leak['match']):
                 continue
@@ -261,6 +273,11 @@ def main(argv=None):
         expected = 'runner' if cmake_bool(values.get('UAM_RUNNER_ONLY', 'OFF')) else 'native'
         if not any(scope == expected for scope, _ in native):
             failures.append(f'No {"runner" if expected == "runner" else "application"} executable found in {args.build_dir}.')
+        if expected == 'native':
+            if cmake_bool(values.get('UAM_ENABLE_SSH', 'ON')) and not any(scope == 'runner' for scope, _ in native):
+                failures.append(f'SSH is on but no runner executable was found in {args.build_dir}.')
+            if not dist.is_dir():
+                failures.append(f'No interface bundle found at {dist}.')
         artifacts.extend(native)
         failures.extend(structural_failures(args.build_dir, values))
     if not artifacts and not failures:
@@ -280,6 +297,8 @@ def main(argv=None):
     for entry in entries:
         if not entry.get('reason', '').strip():
             failures.append(f'Allowlist entry without a justification: {entry}')
+        if 'max' not in entry and 'path' not in entry:
+            failures.append(f'Allowlist entry without a budget: {entry}')
     residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
     leaks = find_leaks(disabled, artifacts)
     leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)

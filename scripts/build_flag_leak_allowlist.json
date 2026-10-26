@@ -1,11 +1,12 @@
 {
-  "description": "Reviewed exceptions for scripts/check_build_flag_leaks.py. Every entry needs a reason. 'path' is a glob over the artifact-relative path, 'pattern' a case-insensitive regex over the surrounding text, 'match' a case-sensitive full match of the matched identifier and 'max' caps how many matches the entry may excuse. Budgets only shrink: the gate notes when one can be lowered. Native executables are not excused here: scripts/build_flag_native_residue.json lists their exact reviewed strings.",
+  "description": "Reviewed exceptions for scripts/check_build_flag_leaks.py. Every entry needs a reason. 'path' is a glob over the artifact-relative path, 'pattern' a case-insensitive regex over the surrounding text, 'match' a case-sensitive full match of the matched identifier and 'max' caps how many matches the entry may excuse and is required unless the entry excuses whole files by 'path'. Budgets only shrink: the gate notes when one can be lowered. Native executables are not excused here: scripts/build_flag_native_residue.json lists their exact reviewed strings.",
   "entries": [
     {
       "flag": "GEMINI",
       "scope": "ui",
       "pattern": "zodiac-gemini",
-      "reason": "lucide-react's astrological 'zodiac-gemini' icon in the custom chat icon picker; it names the star sign, not the Gemini provider."
+      "reason": "lucide-react's astrological 'zodiac-gemini' icon in the custom chat icon picker; it names the star sign, not the Gemini provider.",
+      "max": 9
     },
     {
       "flag": "CODEX",

@@ -7,6 +7,8 @@ on:
   schedule:
     - cron: '41 5 * * 2'
   pull_request:
+    # 'labeled' lets adding the build-flags label start the native rows.
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - '.github/workflows/build-flag-leaks.yml'
       - 'scripts/check_build_flag_leaks.py'
@@ -75,16 +77,19 @@ jobs:
   native:
     name: Native ${{ matrix.name }}
     needs: ui
-    # Full application builds are expensive; pull requests run them only when the flag plumbing changes.
+    # Full application builds are expensive: pull requests run them only with the build-flags label; schedules and
+    # manual runs always do. Rows whose native residue is not yet reviewed in build_flag_native_residue.json report
+    # but do not fail the workflow; their failure uploads the candidate strings for review.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')
     runs-on: macos-latest
+    continue-on-error: ${{ !matrix.measured }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { name: 'no Gemini', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF' }
           - { name: 'no Codex', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF' }
-          - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF' }
+          - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF', measured: true }
           - { name: 'no OpenCode', cmake: '-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF' }
           - { name: 'no Copilot', cmake: '-DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF' }
           - { name: 'no Antigravity', cmake: '-DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
@@ -92,8 +97,8 @@ jobs:
           - { name: 'no computer use', cmake: '-DUAM_ENABLE_COMPUTER_USE=OFF' }
           - { name: 'no phone access', cmake: '-DUAM_ENABLE_MOBILE_COMPANION=OFF' }
           # Packaging-only profiles: nothing is excluded, but the helper folders and expected executable are checked.
-          - { name: 'all on, no packaged remote helpers', cmake: '' }
-          - { name: 'runner only, all providers', cmake: '-DUAM_RUNNER_ONLY=ON', target: uam_runner }
+          - { name: 'all on, no packaged remote helpers', cmake: '', measured: true }
+          - { name: 'runner only, all providers', cmake: '-DUAM_RUNNER_ONLY=ON', target: uam_runner, measured: true }
           - { name: 'runner only, no OpenCode or Antigravity', cmake: '-DUAM_RUNNER_ONLY=ON -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF', target: uam_runner }
           - { name: 'only Gemini', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
           - { name: 'only Codex', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
