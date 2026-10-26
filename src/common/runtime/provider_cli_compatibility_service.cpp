@@ -1,4 +1,5 @@
 #include "provider_cli_compatibility_service.h"
+#include "common/runtime/cli_version_parser.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -294,47 +295,7 @@ namespace
 		return true;
 	}
 
-	bool ConsumeDigits(std::string_view text, std::size_t& offset)
-	{
-		const std::size_t start = offset;
-		while (offset < text.size() && uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[offset])))
-		{
-			++offset;
-		}
-
-		return offset > start;
-	}
-
-	bool ConsumeDot(std::string_view text, std::size_t& offset)
-	{
-		if (offset >= text.size() || text[offset] != '.')
-		{
-			return false;
-		}
-
-		++offset;
-		return true;
-	}
-
-	std::optional<std::string> ExtractSemverVersion(std::string_view text)
-	{
-		for (std::size_t start = 0; start < text.size(); ++start)
-		{
-			if (!uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[start])))
-			{
-				continue;
-			}
-
-			std::size_t end = start;
-			const bool has_semver = ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end);
-			if (has_semver)
-			{
-				return std::string(text.substr(start, end - start));
-			}
-		}
-
-		return std::nullopt;
-	}
+	using uam::cli_versions::ExtractSemverVersion;
 
 	int CompareSemverComponent(std::string_view lhs, std::string_view rhs)
 	{

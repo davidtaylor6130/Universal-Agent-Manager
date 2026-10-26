@@ -113,6 +113,7 @@ inline constexpr const char* kAcpLifecycleError = "error";
 inline constexpr std::size_t kMaxRecentStderrBytes = 16 * 1024;
 inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
 inline constexpr double kAcpStaleWaitSeconds = 120.0;
+inline constexpr double kAcpCancelTimeoutSeconds = 5.0;
 inline constexpr double kGoalLoopResumeIdleSeconds = 5.0;
 
 // Goal turn kind labels
@@ -342,7 +343,8 @@ void RestoreRemoteAcpRequests(AcpSessionState& session, const ChatSession& chat)
 void RetireRemoteAcpRequests(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool WriteRemoteAcpRequest(AcpSessionState& session, const AcpRemotePendingRequestState& request);
 /// <summary>Validate captured transport ownership before restart admission or process control.</summary>
-bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
+/// Observed-exit callers have already reaped the owned handle; all chat/provider/host/native/routing checks still apply.
+bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr, bool process_exit_observed = false);
 bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
@@ -462,6 +464,11 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat);
 void InvalidateAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat,
                            const std::string& message);
+/// <summary>Preserves queued intent durably and retires owned transport without reconnect or automatic FIFO admission.</summary>
+void HoldAcpTransportForExplicitRecovery(AppState& app, AcpSessionState& session, ChatSession& chat,
+                                       const std::string& message);
+bool HoldAcpUnconfirmedCancellationIfTimedOut(AppState& app, AcpSessionState& session, ChatSession& chat,
+                                            double now_seconds);
 void RecoverDisconnectedRemoteAcpTransport(AppState& app, AcpSessionState& session,
                                            ChatSession& chat, const std::string& message);
 

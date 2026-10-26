@@ -2,7 +2,7 @@ import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
-import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
+import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
 import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
@@ -137,7 +137,7 @@ export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAg
   const selected = agents.find((agent) => agent.id === agentId)
   const name = selected?.name ?? agentId
   const hue = Array.from(agentId).reduce((hash, character) => (hash * 31 + character.codePointAt(0)!) % 360, 0)
-  return <div ref={agentRef} className="uam-composer-agent" style={{ color: `hsl(${hue} 70% 72%)` }}>
+  return <div ref={agentRef} className="uam-composer-agent" style={{ '--agent-hue': hue } as CSSProperties}>
     <MenuSelect
       label={`${nextTurn ? 'Next turn agent' : 'UAM agent'}: ${name}`}
       value={agentId}
