@@ -1,3 +1,20 @@
+/* Stable composer presentation belongs in CSS; mounting only publishes dynamic values. */
+.uam-composer-surface {
+  border: none;
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--elev-1);
+  overflow: visible;
+}
+
+.uam-composer-textarea {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 12px;
+  outline: none;
+}
+
 /* Keep the existing toolbar and native textarea; only compact their own controls. */
 .uam-composer-input-row {
   position: relative;
@@ -14,6 +31,7 @@
 }
 
 .uam-composer-agent {
+  color: hsl(var(--agent-hue) 70% 72%);
   display: flex;
   align-items: center;
   gap: 8px;
