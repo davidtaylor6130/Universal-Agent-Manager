@@ -6436,6 +6436,15 @@ StoppedChatLaunchPublicationResult ChatRepository::PublishStoppedChatLaunchStora
 		auto receipt = std::shared_ptr<StoppedChatLaunchStorageReceipt>(new StoppedChatLaunchStorageReceipt());
 		receipt->m_root = prepared->m_root;
 		receipt->m_graph = std::move(committed);
+		if (prepared->m_own_predecessor)
+		{
+			receipt->m_launch_origin = prepared->m_own_predecessor->m_launch_origin;
+		}
+		else if (prepared->m_stopped_read && receipt->m_graph.remote_process_exists && !receipt->m_graph.remote_structured_protocol.empty())
+		{
+			receipt->m_initial_transport_launch = true;
+			receipt->m_launch_origin = std::make_shared<const std::uint8_t>(0);
+		}
 		receipt->m_queue_path = prepared->m_own_predecessor ? prepared->m_own_predecessor->m_queue_path : prepared->m_stopped_read->m_queue_path;
 		receipt->m_inline_primary = prepared->m_inline_primary;
 		receipt->m_index_path = uam::chat_pages::IndexPath(prepared->m_legacy.primary_path);
