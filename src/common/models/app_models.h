@@ -1071,6 +1071,7 @@ struct AppSettings
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
 	std::string file_explorer_application;
+	std::string windows_powershell = "auto";
 	int editor_default_groups_version = 0;
 	std::vector<EditorFileAssociation> editor_file_associations;
 	CentralProviderConfiguration central_provider_configuration;

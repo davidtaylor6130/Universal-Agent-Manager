@@ -405,6 +405,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
 		{"getWorkspaceVcsContext", &UamQueryHandler::HandleGetWorkspaceVcsContext},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
+		{"captureChatReferenceContext", &UamQueryHandler::HandleCaptureChatReferenceContext},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},

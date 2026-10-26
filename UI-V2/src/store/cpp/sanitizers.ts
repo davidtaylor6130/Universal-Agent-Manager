@@ -1,6 +1,6 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
-import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
+import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
@@ -1547,6 +1547,10 @@ function normalizeEditorExtension(value: string) {
   return trimmed.startsWith('.') ? trimmed : `.${trimmed}`
 }
 
+export function sanitizeWindowsPowerShell(value: unknown): WindowsPowerShellPreference {
+  return value === 'windows-powershell' || value === 'pwsh' ? value : 'auto'
+}
+
 export function sanitizeEditorPresetId(value: unknown) {
   const preset = stringOr(value, 'vscode').trim()
   return EDITOR_PRESET_IDS.includes(preset) ? preset : 'vscode'
@@ -1769,6 +1773,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       providerChatDefaults: {},
       markdownStoreDirectory: '',
       fileExplorerApplication: '',
+      windowsPowerShell: 'auto',
       defaultEditorPresetId: 'vscode',
       editorFileAssociations: defaultEditorFileAssociations(),
       centralProviderConfiguration: { ...DEFAULT_CENTRAL_PROVIDER_CONFIGURATION },
@@ -1915,6 +1920,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
     fileExplorerApplication: stringOr(value.fileExplorerApplication),
+    windowsPowerShell: sanitizeWindowsPowerShell(value.windowsPowerShell),
     defaultEditorPresetId: sanitizeEditorPresetId(value.defaultEditorPresetId),
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),

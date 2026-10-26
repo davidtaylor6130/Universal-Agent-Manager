@@ -122,6 +122,7 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpS
 	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
 	usage.total.total_tokens += last.total_tokens;
 	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	uam::acp_detail::RecordGoalReviewTurnUsage(session, last.total_tokens);
 	return false;
 }
 

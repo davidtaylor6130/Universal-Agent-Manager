@@ -2,12 +2,14 @@
 .uam-managed-conversation { display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; color: var(--text); background: var(--bg); }
 .uam-subagent-header__title { margin: 0; }
 .uam-subagent-header__title:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: var(--r-sm); }
+.uam-managed-conversation .uam-subagent-header__title { margin-block-end: 4px; }
 /* The transcript window anchors prepended history itself; browser scroll anchoring would apply it twice. */
 .uam-subagent-transcript { overflow-anchor: none; }
 .uam-subagent-transcript:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .uam-subagent-transcript__meta { color: var(--text-3); font-size: var(--fs-xs); text-align: center; margin-block: 4px 8px; }
 .uam-subagent-transcript__empty { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; }
 .uam-managed-conversation__meta { color: var(--text-3); font-size: 11px; }
+.uam-managed-conversation > .uam-managed-conversation__meta:not(.sr-only) { padding-inline: 16px; }
 .uam-managed-conversation__error { color: var(--red); font-size: 12px; overflow-wrap: anywhere; padding-inline: 16px; }
 
 /* Shown only while a follow-up request or draft is unresolved; never a standing composer. */

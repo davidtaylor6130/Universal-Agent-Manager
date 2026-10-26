@@ -111,7 +111,7 @@ class GoalService
 
 	/// <summary>
 	/// Record that the provider completed a turn while working on this goal.
-	/// Updates token usage and checks if goal should be auto-completed.
+	/// Adds nonnegative usage without overflow and holds the goal at its token budget.
 	/// </summary>
 	static void RecordTurnCompletion(AppState& app, const std::string& chat_id,
 	                                 const std::string& goal_id, int64_t tokens_used);

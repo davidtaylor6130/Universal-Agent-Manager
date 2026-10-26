@@ -526,7 +526,7 @@ class MacProcessService final : public IPlatformProcessService
 #endif
 	}
 
-	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out, std::string_view) const override
 	{
 #if defined(UAM_HEADLESS_RUNNER)
 		(void)argv;

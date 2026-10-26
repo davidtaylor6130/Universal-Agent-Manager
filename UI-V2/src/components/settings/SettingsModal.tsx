@@ -33,6 +33,7 @@ import {
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
+  type WindowsPowerShellPreference,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
 import { sendToCEF } from '../../ipc/cefBridge'
@@ -481,10 +482,21 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   'central-configuration': 'central provider setup instructions agents.md skills files defaults ssh',
   'mcp-servers': 'mcp computer browser control setup server config json',
   'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
-  editors: 'editors extensions associations groups default vscode clion file types file explorer finder open',
+  editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
   'chat-data': 'chat data history storage import export backup',
   about: 'version build release updates app information',
+}
+
+const WINDOWS_POWERSHELL_OPTIONS: { value: WindowsPowerShellPreference; label: string }[] = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'windows-powershell', label: 'Windows PowerShell 5.1' },
+  { value: 'pwsh', label: 'PowerShell 7' },
+]
+const WINDOWS_POWERSHELL_DESCRIPTIONS: Record<WindowsPowerShellPreference, string> = {
+  auto: "Uses Windows PowerShell 5.1, or PowerShell 7 if it's missing.",
+  'windows-powershell': 'Uses built-in Windows PowerShell 5.1.',
+  pwsh: "Uses PowerShell 7; terminals won't open if it isn't installed.",
 }
 
 const EDITOR_PRESETS = [
@@ -745,6 +757,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const defaultNewChatProviderId = useAppStore((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.defaultNewChatProviderId) || s.defaultNewChatProviderId)
   const providerChatDefaults = useAppStore(useShallow((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.providerChatDefaults) || s.providerChatDefaults))
   const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
+  const windowsPowerShell = useAppStore((s) => s.windowsPowerShell)
+  const isWindows = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent)
   const [explorerDraft, setExplorerDraft] = useState('')
   const [customExplorer, setCustomExplorer] = useState(false)
   useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
@@ -873,6 +887,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
   const [editorError, setEditorError] = useState('')
+  const [openWithError, setOpenWithError] = useState('')
   const editorSavePending = useRef(false)
   const [editorSaving, setEditorSaving] = useState(false)
   const [themeStep, setThemeStep] = useState(0)
@@ -1219,10 +1234,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const saveExplorer = async (path: string) => {
     if (editorSavePending.current) return
     editorSavePending.current = true
-    setEditorSaving(true); setEditorError('')
+    setEditorSaving(true); setOpenWithError('')
     try {
-      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setEditorError('File explorer could not be saved.')
-    } catch { setEditorError('File explorer could not be saved.') }
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setOpenWithError('File explorer could not be saved.')
+    } catch { setOpenWithError('File explorer could not be saved.') }
+    finally { editorSavePending.current = false; setEditorSaving(false) }
+  }
+  const saveWindowsPowerShell = async (value: WindowsPowerShellPreference) => {
+    if (editorSavePending.current) return
+    editorSavePending.current = true
+    setEditorSaving(true); setOpenWithError('')
+    try {
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setOpenWithError('Terminal shell could not be saved.')
+    } catch { setOpenWithError('Terminal shell could not be saved.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
@@ -3145,10 +3169,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             >
               {customExplorer && <div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
-                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setOpenWithError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
               </div>}
             </SettingRow>
+            {isWindows && <SettingRow
+              title="Terminal shell"
+              description={WINDOWS_POWERSHELL_DESCRIPTIONS[windowsPowerShell]}
+              control={<MenuSelect label="Terminal shell" disabled={editorSaving} value={windowsPowerShell} options={WINDOWS_POWERSHELL_OPTIONS} onChange={(value) => void saveWindowsPowerShell(value as WindowsPowerShellPreference)} />}
+            />}
+            {openWithError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{openWithError}</p>}
           </SettingsSection>
         </div>
       )

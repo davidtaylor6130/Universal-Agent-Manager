@@ -2,12 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 4.11.0 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 5.0.0 LANGUAGES C CXX)
 if(MSVC)
   # Sources and narrow literals are UTF-8; without this MSVC encodes "\u00e9" in the ANSI code page.
   add_compile_options(/utf-8)
 endif()
-set(UAM_PRODUCT_VERSION "4.11.0")
+set(UAM_PRODUCT_VERSION "5.0.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
 set(UAM_LOCAL_BUILD_VERSION "" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
@@ -120,6 +120,15 @@ endif()
 # ---------------------------------------------------------------------------
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+option(UAM_SVN_BRANCH_TESTS_ONLY "Configure only the isolated SVN branch service tests, without CEF or provider processes." OFF)
+if(UAM_SVN_BRANCH_TESTS_ONLY)
+  if(NOT UAM_BUILD_TESTS)
+    message(FATAL_ERROR "UAM_SVN_BRANCH_TESTS_ONLY requires UAM_BUILD_TESTS=ON.")
+  endif()
+  enable_testing()
+  add_subdirectory(tests/svn-branch)
+  return()
+endif()
 option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable Gemini CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable Claude Code CLI runtime backend." ON)
@@ -565,6 +574,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/vcs_commit_service.cpp
   src/common/discovery/management_discovery.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
@@ -1361,6 +1372,7 @@ if(UAM_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
@@ -1594,6 +1606,8 @@ if(UAM_BUILD_TESTS)
     src/app/theme_service.cpp
     src/app/vcs_commit_service.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
     src/cef/cef_push.cpp

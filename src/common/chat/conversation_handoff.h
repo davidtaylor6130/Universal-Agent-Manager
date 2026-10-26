@@ -7,6 +7,16 @@
 
 namespace uam::chat
 {
+	inline constexpr const char* kAmbiguousCompactionHistory = "The interrupted compaction history cannot be safely reconstructed. The saved summary and input are retained.";
+
+	inline bool HandoffHasQuarantinedSummary(const Message& message)
+	{
+		if (message.role != MessageRole::Assistant) return false;
+		for (const MessageBlock& block : message.blocks)
+			if (block.type == "context_compaction_summary") return true;
+		return false;
+	}
+
 	/// <summary>Uses native block order only when every saved content byte is represented.</summary>
 	inline bool HandoffUsesBlockOrder(const Message& message)
 	{
@@ -15,7 +25,8 @@ namespace uam::chat
 		bool ordinary_matches = true, complete_matches = true, has_compaction = false;
 		for (const MessageBlock& block : message.blocks)
 		{
-			const bool compaction = block.type == "context_compaction" || block.type == "context_compaction_interrupted";
+			// Quarantined summary bytes prove ordering but never become ordinary reply context.
+			const bool compaction = block.type == "context_compaction" || block.type == "context_compaction_interrupted" || block.type == "context_compaction_summary";
 			if (block.type != "assistant_text" && !compaction) continue;
 			has_compaction = has_compaction || compaction;
 			if (complete_matches)
@@ -40,7 +51,13 @@ namespace uam::chat
 		for (const Message& message : source.messages)
 		{
 			if (message.acp_prompt_discarded) continue;
-			if (HandoffUsesBlockOrder(message))
+			const bool ordered = HandoffUsesBlockOrder(message);
+			if (!ordered && HandoffHasQuarantinedSummary(message))
+			{
+				if (error != nullptr) *error = kAmbiguousCompactionHistory;
+				return false;
+			}
+			if (ordered)
 			{
 				for (const MessageBlock& block : message.blocks)
 				{

@@ -12,6 +12,7 @@
 #include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/memory/memory_levels.h"
+#include "common/platform/powershell_selection.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -92,6 +93,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
 	constexpr std::string_view kFileExplorerApplicationKey = "file_explorer_application";
+	constexpr std::string_view kWindowsPowerShellKey = "windows_powershell";
 	constexpr std::string_view kDefaultEditorPresetIdKey = "default_editor_preset_id";
 	constexpr std::string_view kEditorDefaultGroupsVersionKey = "editor_default_groups_version";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
@@ -692,6 +694,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, "host_scoped_settings", host_settings.dump());
 		WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
 		WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
+		WriteEncodedSetting(lines, kWindowsPowerShellKey, normalized.windows_powershell);
 		WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
 		WriteSettingValue(lines, kEditorDefaultGroupsVersionKey, normalized.editor_default_groups_version);
 		WriteRawSetting(lines, kEditorFileAssociationsKey, EncodeEditorFileAssociations(normalized.editor_file_associations));
@@ -1081,6 +1084,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kFileExplorerApplicationKey)
 		{
 			settings.file_explorer_application = decoded_value;
+		}
+		else if (key == kWindowsPowerShellKey)
+		{
+			if (uam::powershell::IsPreference(decoded_value)) settings.windows_powershell = decoded_value;
 		}
 		else if (key == kDefaultEditorPresetIdKey)
 		{
