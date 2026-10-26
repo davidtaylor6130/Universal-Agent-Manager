@@ -39,6 +39,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const versions = useAppStore(state => state.cliVersionManager)
   const central = useAppStore(state => state.centralProviderConfiguration)
   const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
+  const computerUseRevocationPending = useAppStore(state => state.computerUseRevocationPending)
   const hostId = selectedHostId ?? 'local'
   const [busy, setBusy] = useState(false)
   /** The one switch whose save is in flight; only it shows the pending state. */
@@ -200,12 +201,20 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const cli = version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
           const uamOn = health?.uamControlEnabled === undefined ? undefined : !terminalOnly && health.uamControlEnabled
           const computerUse = status?.executionHostId === activeHostId && typeof status.computerUseBuiltInAvailable === 'boolean' ? !terminalOnly && status.computerUseBuiltInAvailable : undefined
+          const computerUseKnown = typeof computerUseEnabled === 'boolean' && computerUseRevocationPending === false
+          const computerUseState = computerUse === false ? false : computerUse && computerUseKnown ? computerUseEnabled : undefined
+          const computerUseDetail = computerUse === false ? 'Not available for this provider'
+            : computerUse === undefined ? 'Not known yet'
+            : computerUseRevocationPending && computerUseEnabled === true ? "On. A chat's controls are still stopping. Turn off for all chats in Computer Use settings to retry cleanup."
+            : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
+            : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
+            : computerUseEnabled ? 'Available. Each chat needs an approved target.' : 'Off. Turn Computer Use on in Computer Use settings.'
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span><span className="uam-prov-detail whitespace-nowrap">{cli}</span></span></button></td>
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUse === undefined ? undefined : computerUse && computerUseEnabled !== false, computerUseEnabled === false && computerUse ? 'Off. Turn Computer Use on in the Built in section.' : computerUse ? 'Available. Chat permissions are set in the composer.' : computerUse === false ? 'Not available for this provider' : 'Not known yet')}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>

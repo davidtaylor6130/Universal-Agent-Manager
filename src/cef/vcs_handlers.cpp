@@ -759,8 +759,7 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 		    else
 		    {
 			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			        uam::remote::SshBridgeArgv(expected_host->ssh_alias, expected_host->platform, expected_host->runner_version,
-			            expected_host->runner_directory, expected_host->runner_protocol_version), expected_host->runner_version, expected_host->runner_protocol_version);
+			        *expected_host);
 			    std::string error;
 			    if (!client.ReadWorkspaceFile(workspace, path, preview, &error)) return AsyncFailure(503, error);
 		    }

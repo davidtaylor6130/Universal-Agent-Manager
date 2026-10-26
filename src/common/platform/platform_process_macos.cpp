@@ -1,3 +1,4 @@
+#include "common/platform/data_root_lock.h"
 #include "platform_services_macos_impl_internal.h"
 #include "common/platform/platform_application_macos.h"
 
@@ -454,41 +455,7 @@ class MacProcessService final : public IPlatformProcessService
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 	{
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create data root lock directory: " + ec.message();
-			}
-			return nullptr;
-		}
-
-		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-		if (fd < 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to open data root lock file: " + std::string(std::strerror(errno));
-			}
-			return nullptr;
-		}
-
-		if (flock(fd, LOCK_EX | LOCK_NB) != 0)
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Another Universal Agent Manager instance is already using this data root.";
-			}
-			(void)close(fd);
-			return nullptr;
-		}
-
-		const std::string pid_text = std::to_string(static_cast<long long>(getpid())) + "\n";
-		(void)ftruncate(fd, 0);
-		(void)write(fd, pid_text.data(), pid_text.size());
-		return std::make_unique<MacDataRootLock>(fd);
+		return uam::platform::AnchoredDataRootLock::TryAcquire(data_root, error_out);
 	}
 
 	uintmax_t NativeGeminiSessionMaxFileBytes() const override

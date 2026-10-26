@@ -908,8 +908,11 @@ export function AppShell() {
         const next = nextAttentionSession(store.sessions, store.acpBindingBySessionId, store.activeSessionId, rows)
         if (next) store.setActiveSession(next)
       } else if (shortcut === 'search') {
+        if (state.isSettingsOpen) {
+          settingsRef.current?.requestClose()
+          if (useAppStore.getState().isSettingsOpen) return
+        }
         setUsageOpen(false)
-        if (state.isSettingsOpen) setSettingsOpen(false)
         if (state.sidebarCollapsed) store.setSidebarCollapsed(false)
         if (state.sidebarWouldStarveChat) {
           store.setCommitPanelOpen(false)
