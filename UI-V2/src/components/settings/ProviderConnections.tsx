@@ -5,7 +5,8 @@ import { SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/p
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Check, Minus, RefreshCw } from 'lucide-react'
-import { Button, IconButton, Notice, StatusDot, ViewportMenu, usePresence, type StatusTone } from '../ui'
+import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
+import { SettingRow } from './SettingsPrimitives'
 import './provider-settings.css'
 
 interface McpStatus {
@@ -13,8 +14,11 @@ interface McpStatus {
   connectedProofAvailable: boolean
   handshakeProofAvailable?: boolean
   computerUseBuiltInAvailable?: boolean
-  providers: Array<{ providerId: string; status: 'disabled' | 'missing' | 'configured-unverified' | 'failed' | 'handshake-confirmed' | 'connected'; detail: string; activeSessionCount: number; configuredSessionCount: number; uamControlEnabled?: boolean; sharedSetupEnabled?: boolean; mcpServers?: Array<{ id: string; name: string; enabled: boolean }> }>
+  providers: Array<{ providerId: string; status: 'disabled' | 'missing' | 'configured-unverified' | 'failed' | 'handshake-confirmed' | 'connected'; detail: string; activeSessionCount: number; configuredSessionCount: number; uamControlEnabled?: boolean; sharedSetupEnabled?: boolean; progressiveMcpDiscoveryEnabled?: boolean; mcpServers?: Array<{ id: string; name: string; enabled: boolean }> }>
 }
+
+const PROGRESSIVE_MCP_SETTING = 'opencode-progressive-mcp'
+const configurationKey = (hostId: string, providerId: string, kind: 'server' | 'preference', serverId: string) => JSON.stringify([hostId, providerId, kind, serverId])
 
 /** More server columns than this collapse into one "MCP servers" column with a popover. */
 const MAX_SERVER_COLUMNS = 3
@@ -45,6 +49,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const [statusError, setStatusError] = useState('')
   const [refresh, setRefresh] = useState(0)
   const requestGeneration = useRef(0)
+  const latestSave = useRef(0)
   const busyRef = useRef(false)
   const ids = providerId ? [providerId] : SUPPORTED_CLI_PROVIDER_IDS
   const activeHostId = hosts.some(host => host.id === hostId) || hostId === 'local' ? hostId : 'local'
@@ -79,6 +84,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     return () => window.clearInterval(timer)
   }, [])
   const enable = async () => {
+    const save = ++latestSave.current
     setBusy(true); busyRef.current = true; setError('')
     try {
       const store = useAppStore.getState()
@@ -86,21 +92,30 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       if (result.ok) setRefresh(value => value + 1)
       if (!result.ok) setError(result.error || 'Could not enable UAM MCP.')
     } catch { setError('Could not enable UAM MCP. Try again.') }
-    finally { setBusy(false); busyRef.current = false }
+    finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false } }
   }
-  const setConfiguration = async (id: string, serverId: string, enabled: boolean) => {
+  const [discoveryDraft, setDiscoveryDraft] = useState<{ host: string, value: boolean, error: string, saving: boolean } | null>(null)
+  useEffect(() => setDiscoveryDraft(null), [activeHostId])
+  const setConfiguration = async (id: string, serverId: string, enabled: boolean, preference = false): Promise<string | null> => {
+    const save = ++latestSave.current
     const generation = ++requestGeneration.current
     const selectedHost = activeHostId
-    setBusy(true); busyRef.current = true; setError(''); setPendingKey(`${id}:${serverId}`)
+    setBusy(true); busyRef.current = true; setError(''); setPendingKey(configurationKey(selectedHost, id, preference ? 'preference' : 'server', serverId))
     try {
-      const result = await sendToCEF<McpStatus>({ action: 'setProviderMcpConfiguration', payload: { executionHostId: selectedHost, providerId: id, serverId, enabled } })
-      if (generation !== requestGeneration.current || currentHost.current !== selectedHost) return
+      const result = await sendToCEF<McpStatus>({ action: 'setProviderMcpConfiguration', payload: { executionHostId: selectedHost, providerId: id, serverId, enabled, ...(preference ? { kind: 'preference' } : {}) } })
+      if (generation !== requestGeneration.current || currentHost.current !== selectedHost) return null
       const row = result.data?.providers?.find(provider => provider.providerId === id)
-      const actual = serverId === 'uam-mcp' ? row?.uamControlEnabled : serverId === 'shared-setup' ? row?.sharedSetupEnabled : row?.mcpServers?.find(server => server.id === serverId)?.enabled
-      if (result.ok && validStatus(result.data, selectedHost) && actual === enabled) setStatus(result.data)
-      else setError(result.error || 'The provider MCP change could not be verified. Refresh and try again.')
-    } catch { if (generation === requestGeneration.current) setError('Could not save provider MCP configuration. Try again.') }
-    finally { setBusy(false); busyRef.current = false; setPendingKey('') }
+      const actual = preference ? row?.progressiveMcpDiscoveryEnabled : serverId === 'uam-mcp' ? row?.uamControlEnabled : serverId === 'shared-setup' ? row?.sharedSetupEnabled : row?.mcpServers?.find(server => server.id === serverId)?.enabled
+      if (result.ok && validStatus(result.data, selectedHost) && actual === enabled) { setStatus(result.data); return '' }
+      const failure = result.error || 'The provider MCP change could not be verified. Refresh and try again.'
+      if (!preference) setError(failure)
+      return failure
+    } catch {
+      const failure = 'Could not save provider MCP configuration. Try again.'
+      if (generation === requestGeneration.current && !preference) setError(failure)
+      return generation === requestGeneration.current ? failure : null
+    }
+    finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false; setPendingKey('') } }
   }
   /** Configuration switch. Unknown (undefined) renders as a dashed, disabled switch. Only the saving switch is pending; the rest stay steady. */
   const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => <button type="button" role="checkbox" className="uam-prov-switch" aria-label={checked === undefined ? `${label} (unknown)` : label} aria-checked={checked === undefined ? 'mixed' : checked} data-pending={pendingId !== '' && pendingKey === pendingId || undefined} disabled={(pendingId !== '' && pendingKey === pendingId) || checked === undefined || !onChange} title={checked === undefined ? 'Not known yet' : checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onClick={onChange}/>
@@ -143,6 +158,21 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     </button>
   }
   const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
+  const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === 'opencode-cli')?.progressiveMcpDiscoveryEnabled : undefined
+  const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
+  /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
+  const saveDiscovery = async (value: boolean) => {
+    const host = activeHostId
+    setDiscoveryDraft(previous => ({ host, value, error: previous?.host === host ? previous.error : '', saving: true }))
+    const failure = await setConfiguration('opencode-cli', PROGRESSIVE_MCP_SETTING, value, true)
+    // null = reply superseded by another save on this panel; outcome unknown, so keep the draft.
+    if (currentHost.current === host) setDiscoveryDraft(failure === '' ? null : { host, value, error: failure ?? 'Result not confirmed. Retry or refresh connections.', saving: false })
+  }
+  const draft = discoveryDraft?.host === activeHostId ? discoveryDraft : null
+  const hostLabel = activeHostId === 'local' ? 'this computer' : hosts.find(item => item.id === activeHostId)?.label || activeHostId
+  const progressiveSaving = draft?.saving === true
+  // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
+  useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
   return <div className="space-y-3">
     <div className="flex items-center gap-2 flex-wrap">
       <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
@@ -185,17 +215,26 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), `${id}:shared-setup`)}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
               : servers.map(server => {
                 const enabled = serverEnabled(health, server.id)
-                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), `${id}:${server.id}`)}</td>
+                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}</td>
               })}
           </tr>
         })}</tbody>
       </table>
     </div>
+    {providerId === 'opencode-cli' && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
+      status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
+      control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
+        disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
+      {draft?.error && <div className="flex gap-1">
+        <Button size="sm" disabled={progressiveSaving} onClick={() => void saveDiscovery(draft.value)}>Retry</Button>
+        <Button size="sm" variant="ghost" disabled={progressiveSaving} onClick={() => { setDiscoveryDraft(null); document.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.focus() }}>Discard</Button>
+      </div>}
+    </SettingRow>}
     {menuPresence.mounted && shownMenuId && (() => {
       const id = shownMenuId
       const metadata = providerMetadataForId(id)
@@ -209,7 +248,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">
             <span className="min-w-0 grid"><span className="truncate text-sm" style={{ color: 'var(--text)' }}>{server.name}</span></span>
-            {checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), `${id}:${server.id}`)}
+            {checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}
           </div>
         })}
       </ViewportMenu>

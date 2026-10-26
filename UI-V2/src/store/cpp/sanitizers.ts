@@ -299,6 +299,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     managedLaunchRunId: value.contentDeferred === true ? sanitizeManagedOriginRunId(value.managedLaunchRunId) : undefined,
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
@@ -401,6 +402,7 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     ...(isString(value.nativeSourceField) ? { nativeSourceField: value.nativeSourceField } : {}),
     ...(isString(value.nativeAssetKey) ? { nativeAssetKey: value.nativeAssetKey } : {}),
     ...(isString(value.contentDigest) ? { contentDigest: value.contentDigest } : {}),
+    ...(isString(value.historyDigest) && /^[a-f0-9]{16}$/.test(value.historyDigest) ? { historyDigest: value.historyDigest } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
     ...(legacy ? { path } : {}),
   }
@@ -1652,7 +1654,7 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
     defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
     defaultSkills: Array.isArray(value.defaultSkills) ? value.defaultSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
     defaultAgents: Array.isArray(value.defaultAgents) ? value.defaultAgents.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
-    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled }] : []).slice(0, 4096) : [],
+    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' && (entry.kind === undefined || entry.kind === 'preference') ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled, ...(entry.kind === 'preference' ? { kind: 'preference' as const } : {}) }] : []).slice(0, 4096) : [],
   }
 }
 

@@ -11,7 +11,9 @@
 #include <string_view>
 
 struct PreparedChatSave;
+enum class ChatPublicationState;
 namespace uam::native_assets { class PreparedBatch; }
+namespace uam::io { enum class AtomicWriteStage; }
 
 namespace uam
 {
@@ -66,8 +68,11 @@ namespace uam
 		PreparedNativeMediaChatSave& operator=(const PreparedNativeMediaChatSave&) = delete;
 		const ChatSession& Candidate() const { return m_chat; }
 		/// Exactly one publication attempt, through existing repository guards.
-		bool Publish(std::string& error, const std::function<bool()>& still_owned = {}, bool sync_directory = true);
+		bool Publish(std::string& error, const std::function<bool()>& still_owned = {}, bool sync_directory = true, const std::function<bool(io::AtomicWriteStage)>& primary_stage_hook_for_tests = {});
 		bool PrimaryAcknowledged() const { return m_primary_acknowledged; }
+		/// Last native primary observation for feedback, absent before an attempt;
+		/// this does not grant acknowledgement, adoption or retry authority.
+		std::optional<ChatPublicationState> PrimaryPublicationState() const { return m_primary_publication_state; }
 		/// Worker only, after actual primary acknowledgement. A failed receipt does
 		/// not roll back an acknowledged chat or authorize deleting its originals.
 		bool AcknowledgeOriginals(std::string& error);
@@ -81,6 +86,7 @@ namespace uam
 		std::shared_ptr<PreparedChatSave> m_prepared;
 		std::unique_ptr<native_assets::PreparedBatch> m_originals;
 		bool m_publish_attempted = false;
+		std::optional<ChatPublicationState> m_primary_publication_state;
 		bool m_primary_acknowledged = false;
 		bool m_chat_taken = false;
 	};

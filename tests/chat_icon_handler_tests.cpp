@@ -12,6 +12,7 @@
 #include "app/computer_use_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/provider/native_agent_history.h"
 #include "common/chat/chat_branching.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -1045,6 +1046,59 @@ UAM_TEST(ProviderMcpOverrideHandlerUsesEffectiveHostScopedServerMembership)
 	const CefRefPtr<RecordingInstructionCallback> local_result = invoke("local", global.id);
 	UAM_ASSERT_EQ(local_result->successes, 1);
 	UAM_ASSERT_EQ(local_result->failures, 0);
+}
+
+UAM_TEST(OpenCodeProgressiveMcpHandlerPersistsScopeAndRollsBackFailedSave)
+{
+	TempDir temp("uam-opencode-progressive-handler");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost remote;
+	remote.id = "ssh-lab"; remote.transport = "ssh"; remote.ssh_alias = "private-fixture";
+	app.settings.execution_hosts = {ExecutionHost{}, remote};
+	app.settings.central_provider_configuration.instructions = "Keep instructions";
+	app.settings.central_provider_configuration.mcp_overrides.push_back({"codex-cli", "local", "docs", false});
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const auto invoke = [&](const std::string& provider, const std::string& host, bool enabled)
+	{
+		CefRefPtr<RecordingInstructionCallback> callback = new RecordingInstructionCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, "setProviderMcpConfiguration",
+		    {{"providerId", provider}, {"executionHostId", host}, {"serverId", "opencode-progressive-mcp"}, {"enabled", enabled}, {"kind", "preference"}}, callback));
+		return callback;
+	};
+	for (const bool enabled : {false, true})
+	{
+		const CefRefPtr<RecordingInstructionCallback> callback = invoke("opencode-cli", remote.id, enabled);
+		UAM_ASSERT_EQ(callback->successes, 1);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		const nlohmann::json status = nlohmann::json::parse(callback->body);
+		UAM_ASSERT_EQ(status.at("executionHostId"), nlohmann::json(remote.id));
+		const auto row = std::ranges::find_if(status.at("providers"), [](const nlohmann::json& item) { return item.at("providerId") == "opencode-cli"; });
+		UAM_ASSERT(row != status.at("providers").end());
+		UAM_ASSERT_EQ(row->at("progressiveMcpDiscoveryEnabled").get<bool>(), enabled);
+		AppSettings persisted;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), persisted).loaded);
+		UAM_ASSERT_EQ(persisted.central_provider_configuration.mcp_overrides.size(), std::size_t{2});
+		UAM_ASSERT_EQ(persisted.central_provider_configuration.instructions, std::string("Keep instructions"));
+		UAM_ASSERT_EQ(uam::central_configuration::OpenCodeProgressiveMcpEnabled(persisted.central_provider_configuration, remote.id), enabled);
+		UAM_ASSERT(uam::central_configuration::OpenCodeProgressiveMcpEnabled(persisted.central_provider_configuration, "local"));
+	}
+	const nlohmann::json previous = uam::central_configuration::Serialize(app.settings.central_provider_configuration);
+	for (const std::string provider : {"gemini-cli", "codex-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		const CefRefPtr<RecordingInstructionCallback> callback = invoke(provider, remote.id, false);
+		UAM_ASSERT_EQ(callback->failures, 1);
+		UAM_ASSERT_EQ(callback->status, 400);
+	}
+	const CefRefPtr<RecordingInstructionCallback> missing_host = invoke("opencode-cli", "unknown-host", false);
+	UAM_ASSERT_EQ(missing_host->status, 404);
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "blocked", "File prevents a settings directory"));
+	app.data_root = temp.root / "blocked";
+	const CefRefPtr<RecordingInstructionCallback> failed_save = invoke("opencode-cli", remote.id, false);
+	UAM_ASSERT_EQ(failed_save->failures, 1);
+	UAM_ASSERT_EQ(failed_save->successes, 0);
+	UAM_ASSERT_EQ(failed_save->status, 500);
+	UAM_ASSERT_EQ(uam::central_configuration::Serialize(app.settings.central_provider_configuration), previous);
 }
 
 
