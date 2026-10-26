@@ -522,6 +522,14 @@ namespace
 			}
 		}
 
+		for (const ChatSession& chat : app.excluded_provider_chats)
+		{
+			import_index.existing_ids.insert(chat.id);
+			if (uam::strings::IsBlank(chat.native_session_id)) continue;
+			import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			const std::string remote_key = RemoteImportOwnershipKey(app, chat);
+			if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
+		}
 		if (app.hidden_agent_chat_ownership.data_root == data_root)
 		{
 			for (const ChatSession& chat : app.hidden_agent_chat_ownership.chats)
@@ -5763,6 +5771,7 @@ void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
 	RetainHiddenAgentChats(app, chats);
 	NormalizeLegacyOpenCodeChatsForSidebar(app, chats);
+	app.excluded_provider_chats.clear(); // A full reload, possibly of another data folder.
 	ReplaceAppChatsWithNormalized(app, std::move(chats));
 	uam::ManagedSubagentControlService::LoadRestartInspection(app);
 	if (!warning.empty())

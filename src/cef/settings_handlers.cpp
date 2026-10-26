@@ -32,6 +32,7 @@
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -210,7 +211,7 @@ namespace
 	{
 		nlohmann::json bindings = nlohmann::json::object();
 		for (const auto& [id, binding] : value.memory_worker_bindings)
-			bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
+			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
 		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},

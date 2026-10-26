@@ -4,6 +4,7 @@
 #include "common/config/central_provider_configuration.h"
 #include "common/config/provider_availability.h"
 #include "common/config/settings_store.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/usage/usage_ledger.h"
 
@@ -13,6 +14,7 @@
 #include <iterator>
 #include <random>
 #include <string>
+#include <vector>
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI || UAM_ENABLE_RUNTIME_CODEX_CLI || !UAM_ENABLE_RUNTIME_CLAUDE_CLI || UAM_ENABLE_SSH
 #error "build_flag_profile_tests expects the Claude-only, features-off profile."
@@ -125,6 +127,47 @@ int main()
 	Check(uam::usage::SkipsExcludedProviderRecord(nlohmann::json::array({"[\"native\",\"codex-cli\",\"x\"]", 1, nlohmann::json::array({"codex-cli"})})), "an excluded provider's saved record is skipped");
 	Check(!uam::usage::SkipsExcludedProviderRecord(nlohmann::json::array({"[\"native\",\"claude-cli\",\"x\"]", 1, nlohmann::json::array({"claude-cli"})})), "an included provider's record is read");
 	Check(!uam::usage::SkipsExcludedProvider(""), "an empty provider stays invalid rather than skipped");
+
+	// Chats a full build saved: an excluded provider's chats and every chat under them are set aside; included ones stay.
+	const auto chat = [](const char* id, const char* provider, std::string ChatSession::*link = nullptr, const char* parent = "")
+	{
+		ChatSession value;
+		value.id = id;
+		value.provider_id = provider;
+		if (link != nullptr) value.*link = parent;
+		return value;
+	};
+	ChatSession legacy_opencode = chat("legacy-opencode", "");
+	legacy_opencode.native_session_id = "ses_saved";
+	std::vector<ChatSession> chats = {chat("codex-root", "codex-cli"), chat("codex-alias", "codex"), chat("claude-branch", "claude-cli", &ChatSession::parent_chat_id, "codex-root"),
+	    chat("grandchild", "claude-cli", &ChatSession::subagent_parent_chat_id, "claude-branch"), chat("side", "claude-cli", &ChatSession::temporary_parent_chat_id, "codex-alias"),
+	    chat("goal-worker", "claude-cli", &ChatSession::goal_owner_chat_id, "codex-root"), legacy_opencode, chat("claude", "claude-cli"), chat("claude-alias", "Claude"),
+	    chat("legacy", ""), chat("claude-branch-of-claude", "claude-cli", &ChatSession::parent_chat_id, "claude")};
+	const std::vector<ChatSession> hidden = uam::excluded_provider_data::TakeChats(chats);
+	std::vector<std::string> kept, set_aside;
+	for (const ChatSession& value : chats) kept.push_back(value.id);
+	for (const ChatSession& value : hidden) set_aside.push_back(value.id);
+	Check(kept == std::vector<std::string>({"claude", "claude-alias", "legacy", "claude-branch-of-claude"}),
+	    "only included, alias and provider-less local chats stay visible, in their original order");
+	Check(set_aside == std::vector<std::string>({"codex-root", "codex-alias", "claude-branch", "grandchild", "side", "goal-worker", "legacy-opencode"}),
+	    "excluded providers' chats, legacy OpenCode chats and their branch, sub-agent, temporary and goal chats are set aside whole");
+	const auto run = [](const char* id, const char* provider, const char* parent = "")
+	{
+		AgentRun value;
+		value.id = id;
+		value.provider_id = provider;
+		value.parent_run_id = parent;
+		value.root_chat_id = "claude";
+		return value;
+	};
+	std::vector<AgentRun> runs = {run("codex-run", "codex-cli"), run("claude-under-codex", "claude-cli", "codex-run"), run("claude-run", "claude-cli"), run("claude-child-run", "claude-cli", "claude-run")};
+	uam::excluded_provider_data::RemoveRuns(runs);
+	Check(runs.size() == 2 && runs[0].id == "claude-run" && runs[1].id == "claude-child-run", "an included chat's sub-agent runs for excluded providers, and runs under them, are absent");
+	runs.push_back(run("under-hidden-root", "claude-cli"));
+	runs.back().root_chat_id = "codex-root";
+	runs.push_back(run("under-that", "claude-cli", "under-hidden-root"));
+	uam::excluded_provider_data::RemoveRunsOfHiddenChats(runs, hidden);
+	Check(runs.size() == 2, "an included provider's runs under a hidden chat, and runs under them, are absent");
 
 	if (failures == 0) std::puts("build flag profile checks passed");
 	return failures == 0 ? 0 : 1;

@@ -40,6 +40,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
@@ -793,6 +794,13 @@ bool Application::InitializeState()
 		return false;
 	}
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
+#if !UAM_ALL_PROVIDERS_INCLUDED
+	{
+		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
+		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+	}
+#endif
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
 	m_app.agent_runs = std::move(agent_runs.runs);

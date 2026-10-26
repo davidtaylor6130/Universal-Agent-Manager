@@ -13,11 +13,16 @@ import './usage.css'
 const PRICE_KEY = 'uam-usage-prices-v1'
 const priceFields = [ ['inputPerMillion', 'Input'], ['cachedInputPerMillion', 'Cached input'], ['cacheWritePerMillion', 'Cache writes'], ['outputPerMillion', 'Output'] ] as const
 
+const ALL_PROVIDERS_INCLUDED = GEMINI_ENABLED && CODEX_ENABLED && CLAUDE_ENABLED && OPENCODE_ENABLED && COPILOT_ENABLED && ANTIGRAVITY_ENABLED
+// A build that excludes providers keeps their saved prices unchanged on this device but never shows or uses them.
+const savedProvider = (id: unknown) => USAGE_PROVIDERS.includes(id as UsageProviderId) || !ALL_PROVIDERS_INCLUDED && typeof id === 'string' && /^[a-z0-9_-]{1,128}$/.test(id)
+const includedUsagePrices = (prices: UsagePriceOverride[]) => prices.filter(price => USAGE_PROVIDERS.includes(price.providerId))
+
 export function parseUsagePrices(value: unknown): UsagePriceOverride[] {
   if (!Array.isArray(value) || value.length > 200) return []
   const keys = new Set<string>()
   const valid = value.every(row => {
-    if (!row || typeof row !== 'object' || Array.isArray(row) || !USAGE_PROVIDERS.includes(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !['standard', 'fast', 'ultrafast'].includes(row.speed)
+    if (!row || typeof row !== 'object' || Array.isArray(row) || !savedProvider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !['standard', 'fast', 'ultrafast'].includes(row.speed)
       || !priceFields.every(([key]) => row[key] === null || typeof row[key] === 'number' && Number.isFinite(row[key]) && row[key] >= 0)) return false
     const key = JSON.stringify([row.providerId, row.modelId, row.speed])
     if (keys.has(key)) return false
@@ -133,7 +138,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const [editingPrice, setEditingPrice] = useState(false)
   const [modelLimit, setModelLimit] = useState(100)
   const [hiddenProviders, setHiddenProviders] = useState<ReadonlySet<UsageProviderId>>(() => new Set())
-  const history = useUsageHistory(hostId, range, prices, metric !== 'limits')
+  const includedPrices = useMemo(() => includedUsagePrices(prices), [prices])
+  const history = useUsageHistory(hostId, range, includedPrices, metric !== 'limits')
   const headingRef = useRef<HTMLHeadingElement>(null)
   useEffect(() => { headingRef.current?.focus() }, [])
   useEffect(() => {

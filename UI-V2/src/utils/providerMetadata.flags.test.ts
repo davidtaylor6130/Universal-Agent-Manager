@@ -14,8 +14,8 @@ it('builds provider registries only from the providers this build includes', asy
   for (const id of [metadata.GEMINI_CLI_PROVIDER_ID, metadata.CODEX_CLI_PROVIDER_ID]) expect(id).not.toMatch(/gemini|codex/)
   expect(metadata.normalizeCliProviderIdAlias('codex')).toBe('codex')
   expect(metadata.normalizeCliProviderIdAlias('gemini')).toBe('gemini')
-  // Saved chats from an excluded provider never show its name and gain no capabilities. Which label they show instead
-  // (today the default provider's) is an open interface decision, so it is not fixed here.
+  // Native state never carries an excluded provider's chats, runs or settings, so nothing is shown for one. A stray id
+  // still resolves to no excluded name and no capabilities.
   expect(metadata.providerMetadataForId('codex-cli').name).not.toMatch(/codex|gemini/i)
   expect(metadata.isCodexProvider(undefined, 'codex-cli')).toBe(false)
   expect(metadata.isCodexProvider({ id: 'x', name: '', shortName: '', color: '', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' })).toBe(false)
