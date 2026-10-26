@@ -96,6 +96,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   consumeChatSearchJump: (chatId: string, generation: number) => boolean
   clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
+  // Failed request context changes notice wording only, never native save authority.
+  chatHistoryErrorWasRefreshBySessionId: Record<string, boolean>
   chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
   chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
