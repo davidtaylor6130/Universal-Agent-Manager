@@ -337,6 +337,8 @@ set(UAM_PLATFORM_IMPL_SOURCES
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
+  # Ninja only tracks #include in .rc files, so name the ICON file or incremental builds keep the old icon.
+  set_source_files_properties(src/uam.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.ico")
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_pty_windows.cpp
@@ -1153,11 +1155,8 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
-if(APPLE)
-  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon_macos.png")
-else()
-  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
-endif()
+# The approved icon tile; assets/app_icon.ico is generated from it, so the window and taskbar match the executable.
+set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon_macos.png")
 set(UAM_BUNDLE_ICON_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.icns")
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
@@ -1359,6 +1358,12 @@ if(UAM_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/macos_helper_signing_test.py"
         --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}")
     set_tests_properties(uam_macos_helper_signing PROPERTIES TIMEOUT 120)
+  endif()
+  if(WIN32)
+    add_test(NAME uam_app_icon_resource
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py" "$<TARGET_FILE:universal_agent_manager>")
+  else()
+    add_test(NAME uam_app_icon_resource COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py")
   endif()
   add_test(NAME uam_native_test_runner
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/native_test_runner_test.py")
