@@ -19,7 +19,7 @@ UAM_TEST(ClaudeDiscoveryPreservesOnlyReportedModelTokenCapacities)
 }
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-#include "common/provider/claude/cli/claude_preinput_identity.h"
+#include "common/provider/claude_preinput_observation.h"
 
 namespace
 {

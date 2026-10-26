@@ -1,5 +1,5 @@
 #include "common/provider/claude/cli/claude_cli_provider_runtime.h"
-#include "common/provider/claude/cli/claude_preinput_identity.h"
+#include "common/provider/claude_preinput_observation.h"
 #include "common/config/execution_host_config.h"
 #include "common/utils/uuid.h"
 
