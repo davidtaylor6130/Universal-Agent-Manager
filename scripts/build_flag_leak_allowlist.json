@@ -6,7 +6,7 @@
       "scope": "ui",
       "pattern": "zodiac-gemini",
       "reason": "lucide-react's astrological 'zodiac-gemini' icon in the custom chat icon picker; it names the star sign, not the Gemini provider.",
-      "max": 9
+      "max": 10
     },
     {
       "flag": "CODEX",

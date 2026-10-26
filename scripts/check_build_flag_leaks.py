@@ -107,10 +107,27 @@ def collect(artifacts):
                     yield scope, relative, text
 
 
-def find_leaks(disabled, artifacts):
+def local_path_pattern(folders):
+    """Source and build folders embedded by __FILE__ belong to the machine, not the product: a build folder named
+    after a provider must not count as a leak, and recorded residue must not depend on where it was built."""
+    spellings = set()
+    for folder in folders:
+        for form in {str(folder), folder.as_posix()}:
+            spellings.update({form, form.replace('\\', '/'), form.replace('/', '\\')})
+    spellings = sorted((form for form in spellings if len(form) > 3), key=len, reverse=True)
+    return re.compile('|'.join(map(re.escape, spellings)), re.IGNORECASE) if spellings else None
+
+
+def find_leaks(disabled, artifacts, local_folders=()):
     patterns = {name: re.compile('|'.join(FLAGS[name][1]), re.IGNORECASE) for name in disabled}
+    local = local_path_pattern([form for folder in local_folders for form in (Path(folder).absolute(), Path(folder).resolve())])
     leaks = []
+    any_flag = re.compile('|'.join(pattern.pattern for pattern in patterns.values()), re.IGNORECASE) if patterns else None
     for scope, path, text in collect(artifacts):
+        if any_flag is None or not any_flag.search(text):
+            continue
+        if local is not None:
+            text = local.sub('<local>', text)
         for name, pattern in patterns.items():
             for match in pattern.finditer(text):
                 start = max(0, match.start() - 60)
@@ -300,7 +317,7 @@ def main(argv=None):
         if 'max' not in entry and 'path' not in entry:
             failures.append(f'Allowlist entry without a budget: {entry}')
     residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
-    leaks = find_leaks(disabled, artifacts)
+    leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []))
     leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)
     if args.record_residue:
         record_residue(args.residue, residue, leak_failures)

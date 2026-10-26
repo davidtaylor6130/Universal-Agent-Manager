@@ -73,7 +73,7 @@ class BuildFlagLeakGateTests(unittest.TestCase):
 
     def test_native_residue_is_excused_string_by_string(self):
         with tempfile.TemporaryDirectory() as temporary:
-            build = Path(temporary) / 'build'
+            build = Path(temporary) / 'gemini-off'
             exe = build / 'universal_agent_manager.app/Contents/MacOS/universal_agent_manager'
             exe.parent.mkdir(parents=True)
             (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\nUAM_ENABLE_SSH:BOOL=OFF\n')
@@ -84,9 +84,9 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             residue.write_text(json.dumps({'reasons': {'GEMINI': 'shared settings key'},
                                            'artifacts': {'universal_agent_manager': {'GEMINI': {'geminiThinkingLevel': 1}}}}))
             gate = ('--build-dir', build, '--allowlist', empty, '--residue', residue)
-            exe.write_bytes(b'\x00geminiThinkingLevel\x00')
+            exe.write_bytes(b'\x00geminiThinkingLevel\x00' + str(build / '_deps' / 'cef.h').encode() + b'\x00')
             code, output = run(*gate)
-            self.assertEqual(code, 0, output)
+            self.assertEqual(code, 0, f'Build-folder paths are not product text: {output}')
             exe.write_bytes(b'\x00geminiThinkingLevel\x00geminiThinkingLevel\x00')
             self.assertEqual(run(*gate)[0], 1, 'A recorded string may not occur more often than reviewed')
             exe.write_bytes('\x00Sign in to Gemini\x00'.encode('utf-16-le'))
