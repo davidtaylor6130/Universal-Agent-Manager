@@ -28,6 +28,7 @@
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
+#include "common/platform/powershell_selection.h"
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
@@ -664,6 +665,15 @@ void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, con
 			return;
 		}
 		m_app.settings.file_explorer_application = application;
+	}
+	if (payload.contains("windowsPowerShell"))
+	{
+		if (!payload["windowsPowerShell"].is_string() || !uam::powershell::IsPreference(payload["windowsPowerShell"].get_ref<const std::string&>()))
+		{
+			cb->Failure(400, "PowerShell must be auto, windows-powershell or pwsh.");
+			return;
+		}
+		m_app.settings.windows_powershell = payload["windowsPowerShell"].get<std::string>();
 	}
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
 	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);

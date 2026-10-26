@@ -165,6 +165,7 @@ namespace uam::settings_frontend_json
 		}
 		settings_json["providerAvailability"] = provider_availability::Serialize(settings.provider_availability);
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
+		settings_json["windowsPowerShell"] = settings.windows_powershell;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
