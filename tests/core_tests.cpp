@@ -10737,6 +10737,39 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(FinalizeChatSyncSelectionKeepsClosedSelectionEmpty)
+{
+	TempDir temp("uam-sync-selection-closed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.remember_last_chat = true;
+	for (const char* id : {"chat-first", "chat-terminal"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+	}
+
+	// Closing or deleting the open chat leaves no selection. A later terminal
+	// history sync (its own chat, another native ID, or a removed chat) must not
+	// reopen anything.
+	for (const char* preferred : {"chat-terminal", "native-session-id", "chat-deleted", ""})
+	{
+		ChatDomainService().SelectChatById(app, "");
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, false));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, true));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string());
+	}
+
+	// An open chat still follows its terminal's import target as before.
+	ChatDomainService().SelectChatById(app, "chat-first");
+	UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "chat-first", "chat-terminal", false));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("chat-terminal"));
+}
+
 UAM_TEST(FinalizeChatSyncSelectionPrunesReferencesAndReportsHydrationFailure)
 {
 	TempDir temp("uam-sync-selection-hydration");
@@ -10799,11 +10832,15 @@ UAM_TEST(SyncChatsFromLoadedNativeTrimsPreferredNativeSessionId)
 	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved.front().id, std::string("target-chat"));
 	UAM_ASSERT_EQ(saved.front().native_session_id, std::string("target-native"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	// No chat was open, so the background import must not open one.
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
 	app.chats.clear();
 	app.selected_chat_index = -1;
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, "missing-chat"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, std::string("target-chat"));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Target history"));
 }
 
