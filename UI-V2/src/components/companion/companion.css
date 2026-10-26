@@ -128,7 +128,7 @@
 .uam-companion-nav button[aria-current="page"] { color: var(--accent); }
 .uam-companion-nav-indicator { position: absolute; bottom: 4px; left: calc(16.6667% - 12px); width: 24px; height: 2px; background: var(--accent); transition: left 180ms ease; }
 .uam-companion-nav-indicator--chats { left: calc(83.3333% - 12px); }
-.uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--bg); }
+.uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--on-accent); }
 .uam-companion-new-chat:hover,
 .uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: 3px solid var(--accent-dim); outline-offset: 2px; }
 .uam-companion-settings { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 16px; }

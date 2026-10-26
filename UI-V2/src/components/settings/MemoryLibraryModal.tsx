@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { SettingsLoading } from './SettingsPrimitives'
+import { SaveButton, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -704,15 +704,15 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 </div>
 
                 {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError || memoryLibraryError}</div>}
-                <Button
-                  variant="primary"
+                <SaveButton
+                  saving={submitting}
+                  pendingLabel="Saving..."
                   block
-                  size="sm"
                   disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
                   onClick={() => void submitDraft()}
                 >
-                  {submitting ? 'Saving...' : 'Save memory'}
-                </Button>
+                  Save memory
+                </SaveButton>
         </div>
       </div>}
       {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">

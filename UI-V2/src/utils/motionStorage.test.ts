@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { motionAllowed } from '../components/ui/Overlay'
 import { alignRowStart, applyMotionSpeed, readStoredMotion, writeStoredMotion } from './motionStorage'
+
+const styles = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
+const settleRule = (selector: string) => new RegExp(`${selector}[^{]*\\{[^}]*animation-duration:\\s*\\.01ms !important;[^}]*animation-iteration-count:\\s*1 !important;[^}]*transition-duration:\\s*\\.01ms !important`, 's')
 
 describe('motionStorage', () => {
   beforeEach(() => {
@@ -59,5 +65,26 @@ describe('motionStorage', () => {
     expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'auto' })
     flush(); flush()
     expect(onEnd).toHaveBeenCalledTimes(2)
+  })
+
+  it('Motion Off stops fixed-duration animations through one shared rule, matching OS reduced motion', () => {
+    expect(styles).toMatch(settleRule('\\[data-motion="off"\\] \\*'))
+    const reduced = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce) {\n  *, *::before'))
+    expect(reduced).toMatch(settleRule('\\*, \\*::before, \\*::after'))
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ :root \{ --motion-scale: 0; \} \}/)
+    expect(styles.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before/g)).toHaveLength(1)
+    // Fallbacks that keep working state visible without movement apply to Motion Off too.
+    const conversation = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
+    expect(conversation).toContain(':root[data-motion="off"] .status-scene__box { opacity: .85; }')
+    const sidebar = readFileSync(resolve(process.cwd(), 'src/components/sidebar/sidebar.css'), 'utf8')
+    expect(sidebar).toContain(':root[data-motion="off"] .uam-sb-progress > span { animation: none; transform: translateX(40%); }')
+  })
+
+  it('stops JS-driven exit motion when Appearance Motion is Off', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    expect(motionAllowed()).toBe(true)
+    applyMotionSpeed('off')
+    expect(document.documentElement.getAttribute('data-motion')).toBe('off')
+    expect(motionAllowed()).toBe(false)
   })
 })

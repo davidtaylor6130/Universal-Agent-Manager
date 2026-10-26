@@ -3694,7 +3694,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           <button type="button" role="menuitem" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} className="uam-menu-select__option flex w-full items-center gap-2 px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }}><ComposerIcon name="folder" size={14} /><span>Attach remote directory</span></button>
                           <label className="mt-2 grid gap-1">
                             Move this chat to
-                            <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: '#000', color: '#fff', border: '1px solid var(--border)' }}>
+                            <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
                               <option value="">Select workspace on {recoveryHost?.label || 'this host'}</option>
                               {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                             </select>
