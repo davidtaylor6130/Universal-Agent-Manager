@@ -28,6 +28,14 @@ jobs:
           path: UAM-frontend.cdx.json
           if-no-files-found: error
 
+  docs:
+    name: Documentation and script checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check_docs.py
+      - run: python3 Mobile/Checks/start_desktop_cleanup.py
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

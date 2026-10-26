@@ -1418,6 +1418,13 @@ if(UAM_BUILD_TESTS)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
+  if(NOT WIN32)
+    # Each compiles extracted Computer Use source with clang++/c++ in a few seconds; nlohmann comes from Builds/*/_deps.
+    foreach(computer_use_check capture_recovery global_permission scope)
+      add_test(NAME uam_computer_use_${computer_use_check}_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/computer_use_${computer_use_check}_check.py")
+    endforeach()
+  endif()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
   add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
