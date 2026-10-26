@@ -9,7 +9,7 @@ namespace
 	void VerifyMalformedControlReplyRecovery(const nlohmann::json& malformed)
 	{
 		TempDir temp("uam-control-malformed-reply");
-		const fs::path capability = temp.root / "capability";
+		const fs::path capability = temp.root / "uam-control" / "manager" / "capability"; // Canonical data-root layout.
 		fs::create_directories(capability / "requests");
 		fs::create_directories(capability / "responses");
 		uam::platform::StdioProcessPlatformFields process;
@@ -292,7 +292,7 @@ namespace
 	struct WaitProxyFixture
 	{
 		TempDir temp{"uam-wait-proxy-input"};
-		fs::path capability = temp.root / "capability";
+		fs::path capability = temp.root / "uam-control" / "manager" / "capability"; // Canonical data-root layout.
 		uam::platform::StdioProcessPlatformFields process;
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 		std::string error;

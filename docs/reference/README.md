@@ -12,6 +12,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
 | [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
 | [Persistence](architecture/app-state-persistence.md) | Storage/cache relationships |
+| [Data-folder transition](data-folder-transition.md) | Preference and stopped handoff/rollback implemented in source; live activation gated |
 | [React/CEF](architecture/react-cef-transport.md) | Bridge and history transport |
 | [Companion protocol](companion-protocol.md) | Restricted shared HTTP API for browser and native phone clients |
 | [Execution hosts](architecture/execution-hosts.md) | Helper and routing details |

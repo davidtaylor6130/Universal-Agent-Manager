@@ -4,6 +4,8 @@
 #include <condition_variable>
 #include <mutex>
 #include "app/uam_control_service.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
@@ -1513,6 +1515,16 @@ namespace uam
 			};
 			if (!uam::paths::IsDirectoryNoThrow(capability) || uam::paths::IsLinkOrReparsePointNoThrow(capability))
 				return std::nullopt;
+			// Independent stdio clients must finish their file IO before a stopped transfer.
+			std::error_code path_error;
+			const auto absolute_capability = std::filesystem::absolute(capability, path_error);
+			if (path_error || absolute_capability.parent_path().parent_path().filename() != "uam-control")
+				return std::nullopt;
+			const auto root = absolute_capability.parent_path().parent_path().parent_path();
+			std::string ownership_error;
+			const auto writer = platform::DataFolderWriterLease::TryAcquire(root, platform::DataFolderWriterLease::Access::Shared, ownership_error);
+			if (!writer || !DataFolderTransition::CheckExternalSourceFence(root, ownership_error, true))
+				return std::nullopt;
 			const std::string id = RandomRequestId();
 			if (request_id_out != nullptr) *request_id_out = id;
 			if (aborted()) return std::nullopt;
@@ -1566,7 +1578,7 @@ namespace uam
 			// A timed-out receipt is NOT proof of retirement. Never print/adopt the abandoned payload.
 			(void)SubmitToManager(capability, "_mcp_cancel_request",
 			    {{"connectionId", connection}, {"requestId", original_request}});
-			(void)uam::paths::RemoveFileNoThrow(capability / "responses" / (original_request + ".json"));
+			// The manager retires the response; do not perform unleased cleanup after SubmitToManager.
 		}
 
 	} // namespace

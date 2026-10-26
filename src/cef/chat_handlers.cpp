@@ -2565,8 +2565,7 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 	    [observed_host, destination]()
 	    {
 		    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		        uam::remote::SshBridgeArgv(observed_host.ssh_alias, observed_host.platform, observed_host.runner_version,
-		            observed_host.runner_directory, observed_host.runner_protocol_version), observed_host.runner_version, observed_host.runner_protocol_version);
+		        observed_host);
 		    uam::remote::DirectoryListing listing;
 		    std::string error;
 		    return client.ListDirectories(uam::paths::PathFromUtf8(destination), listing, &error)

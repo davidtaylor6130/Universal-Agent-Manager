@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 } from 'lucide-react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import './provider-settings.css'
 
@@ -148,9 +148,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const scoped = scopeExecutionHostId !== SETTINGS_ALL_ENVIRONMENTS && hosts.some(host => host.transport === 'ssh' && host.id === scopeExecutionHostId)
   const savedServers = useAppStore(state => (scoped && state.hostScopedSettings && state.hostScopedSettingsValues?.[scopeExecutionHostId]?.mcpServers) || state.mcpServers)
   const savedUam = useAppStore(state => state.centralProviderConfiguration.uamControlEnabled)
-  const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
-  const [computerUseBusy, setComputerUseBusy] = useState(false)
-  const [computerUseError, setComputerUseError] = useState('')
   const [servers, setServers] = useState(savedServers)
   const [uamEnabled, setUamEnabled] = useState(savedUam)
   const [view, setView] = useState<'form' | 'json'>('form')
@@ -237,13 +234,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <Switch label={label} hideLabel checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
   const cancelSetup = () => { setSetup(null); setMessage(''); setImportWarnings([]) }
-  const setComputerUseEnabled = async (enabled: boolean) => {
-    setComputerUseBusy(true); setComputerUseError('')
-    try {
-      const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: enabled } })
-      if (!response.ok) setComputerUseError(response.error || "Could not change Computer Use. Try again.")
-    } finally { setComputerUseBusy(false) }
-  }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
   const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <button type="button" className="uam-prov-option" aria-label={label} title={detail} onClick={onClick}>
     <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
@@ -287,16 +277,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         control={uamEnabled
           ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
           : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
-      {COMPUTER_USE_ENABLED && typeof computerUseEnabled === 'boolean'
-        ? <SettingRow title="UAM Computer Use"
-            description={computerUseEnabled ? "Chats can control this computer's screen, mouse and keyboard." : "Chats can't control the screen, mouse or keyboard."}
-            status={computerUseEnabled ? undefined : 'Off'}
-            control={<Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={computerUseEnabled} disabled={busy || computerUseBusy}
-              onChange={event => void setComputerUseEnabled(event.currentTarget.checked)} />}>
-            {computerUseError && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{computerUseError}</p>}
-          </SettingRow>
-        : <SettingRow title="UAM Computer Use" description="Built in. Can't be deleted."
-            control={<span className="uam-prov-status" data-tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'}><StatusDot tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'} />{COMPUTER_USE_ENABLED ? 'Available in this build' : 'Unavailable in this build'}</span>} />}
+      <ComputerUseSettingRow disabled={busy} />
     </SettingsSection>}
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}

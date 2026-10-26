@@ -201,6 +201,16 @@ set(JSON_Install OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 set(CMAKE_FOLDER "")
 
+option(UAM_DATA_FOLDER_TESTS_ONLY "Build only isolated disposable data-folder and supervisor tests, without CEF or helpers." OFF)
+if(UAM_DATA_FOLDER_TESTS_ONLY)
+  if(UAM_PACKAGE_REMOTE_RUNNERS)
+    message(FATAL_ERROR "Focused data-folder tests require UAM_PACKAGE_REMOTE_RUNNERS=OFF.")
+  endif()
+  enable_testing()
+  include("${CMAKE_SOURCE_DIR}/cmake/data_folder_tests.cmake")
+  return()
+endif()
+
 # ---------------------------------------------------------------------------
 # CEF (Chromium Embedded Framework) — platform-aware prebuilt download
 # ---------------------------------------------------------------------------
@@ -522,6 +532,10 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/git_worktree_service.cpp
   src/app/worktree_retention_service.cpp
   src/app/storage_retention_service.cpp
+  src/app/data_folder_preflight.cpp
+  src/app/data_folder_settings_service.cpp
+  src/app/data_folder_transition.cpp
+  src/common/platform/data_folder_tree.cpp
   src/app/worktree_launch_preparation_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
@@ -598,6 +612,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
   src/common/chat/chat_message_page_index.cpp
@@ -624,6 +639,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/chat_import_utils.cpp
   src/app/opencode_import_stream.cpp
   src/common/config/settings_store.cpp
+  src/common/config/settings_store_data_folder.cpp
+  src/common/chat/chat_folder_data_folder.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
@@ -1277,6 +1294,7 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_subdirectory(tests/bootstrap_metadata)
   add_executable(uam_opencode_progressive_mcp_checks
     tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
   target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -1324,7 +1342,7 @@ if(UAM_BUILD_TESTS)
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)
   target_include_directories(uam_crash_supervisor_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
-  foreach(crash_case normal once loop term nonzero bypass restart restart_many)
+  foreach(crash_case normal once loop term nonzero bypass restart restart_many folder_restart folder_unconfirmed)
     add_test(NAME uam_crash_supervisor_${crash_case} COMMAND uam_crash_supervisor_tests ${crash_case})
   endforeach()
 
@@ -1468,6 +1486,9 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/data_folder_preflight_tests.cpp
+    tests/data_folder_settings_tests.cpp
+    tests/data_folder_transition_tests.cpp
     tests/worktree_launch_preparation_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
@@ -1541,6 +1562,10 @@ if(UAM_BUILD_TESTS)
     src/app/git_worktree_service.cpp
     src/app/worktree_retention_service.cpp
     src/app/storage_retention_service.cpp
+    src/app/data_folder_preflight.cpp
+    src/app/data_folder_settings_service.cpp
+    src/app/data_folder_transition.cpp
+    src/common/platform/data_folder_tree.cpp
     src/app/worktree_launch_preparation_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
@@ -1588,6 +1613,7 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
+    src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
     src/common/chat/chat_message_page_index.cpp
@@ -1655,6 +1681,8 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
+    src/common/config/settings_store_data_folder.cpp
+    src/common/chat/chat_folder_data_folder.cpp
     src/remote/runner_protocol.cpp
     src/remote/runner_bootstrap.cpp
     src/remote/runner_client.cpp

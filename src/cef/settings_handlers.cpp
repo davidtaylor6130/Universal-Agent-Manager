@@ -1,4 +1,5 @@
 #include "app/storage_retention_service.h"
+#include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
@@ -1273,6 +1274,59 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 	{
 		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
 	}
+}
+
+namespace
+{
+	nlohmann::json DataFolderSnapshot(const uam::DataFolderSettingsService::Snapshot& value)
+	{
+		return {{"currentFolder", uam::paths::Utf8PathString(value.current_folder)}, {"pendingFolder", uam::paths::Utf8PathString(value.pending_folder)}, {"revision", value.revision}, {"lastOperationId", value.last_operation_id}, {"transitionState", value.state}, {"externalOverride", value.external_override}, {"canChange", value.can_change}, {"restartReady", value.restart_ready}, {"message", value.message}};
+	}
+} // namespace
+
+void UamQueryHandler::HandleDataFolderSettings(std::string_view action, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	// Called only from trusted-main-frame OnQuery, never from the companion dispatcher.
+	const auto service = m_app.data_folder_settings;
+	if (!service || service->StartupRoot() != m_app.data_root)
+	{
+		cb->Failure(409, "The data-folder owner is unavailable or changed. Restart UAM before changing its profile.");
+		return;
+	}
+	const bool read = action == "getDataFolderSettings";
+	const bool choose = action == "chooseDataFolder";
+	const bool rollback = action == "rollbackDataFolderTransfer";
+	if (rollback && !uam::DataFolderSettingsService::kTransfersValidated)
+	{
+		cb->Failure(409, "Data-folder recovery controls remain disabled pending native transaction validation.");
+		return;
+	}
+	if (!payload.is_object() || (read ? !payload.empty() : payload.size() != (choose ? 3 : 2) || !payload.contains("expectedRevision") || !payload["expectedRevision"].is_string() || payload["expectedRevision"].get_ref<const std::string&>().size() > 300 || !payload.contains("operationId") || !payload["operationId"].is_string() || payload["operationId"].get_ref<const std::string&>().empty() || payload["operationId"].get_ref<const std::string&>().size() > 128 || (choose && (!payload.contains("folder") || !payload["folder"].is_string() || payload["folder"].get_ref<const std::string&>().size() > 32768))))
+	{
+		cb->Failure(400, "Folder changes require the observed revision and an action identity; selection also requires a folder string.");
+		return;
+	}
+	const std::string revision = read ? std::string{} : payload["expectedRevision"].get<std::string>();
+	const std::string folder = choose ? payload["folder"].get<std::string>() : std::string{};
+	const std::string operation_id = read ? std::string{} : payload["operationId"].get<std::string>();
+	// Read mutable runtime state only on the UI thread. Readiness is an observation;
+	// the restart action and final shutdown barrier independently recheck it.
+	const bool runtime_dormant = std::none_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) &&
+	    std::none_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; });
+	(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	                                                 [service, read, choose, rollback, revision, folder, operation_id, runtime_dormant]()
+	                                                 {
+		                                                 const auto snapshot = [runtime_dormant](uam::DataFolderSettingsService::Snapshot value)
+		                                                 {
+			                                                 value.restart_ready = value.restart_ready && runtime_dormant;
+			                                                 return DataFolderSnapshot(value);
+		                                                 };
+		                                                 if (read)
+			                                                 return uam::query_handler_async::AsyncSuccess(snapshot(service->Read()));
+		                                                 const auto result = choose ? service->Choose(uam::paths::PathFromUtf8(folder), revision, operation_id) : rollback ? service->RollbackPendingTransfer(revision) : service->Cancel(revision, operation_id);
+		                                                 // Persistence rejection and uncertainty carry authoritative state, never an empty success body.
+		                                                 return uam::query_handler_async::AsyncSuccess(nlohmann::json{{"committed", result.committed}, {"settings", snapshot(result.settings)}, {"error", result.error}});
+	                                                 });
 }
 
 void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

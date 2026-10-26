@@ -176,7 +176,7 @@ namespace uam
 			{
 				if (host->transport != "ssh" || host->runner_status != "ready" || host->runner_protocol_version != remote::kRunnerProtocolVersion ||
 				    !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace.directory)) continue;
-				runner = std::make_unique<remote::RunnerClient>(process, remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+				runner = std::make_unique<remote::RunnerClient>(process, *host);
 			}
 			else if (!paths::PathFromUtf8(workspace.directory).is_absolute()) continue;
 			workspace.repository = ReadRepositoryRouteIdentity([&](const std::vector<std::string>& argv, std::string& output)

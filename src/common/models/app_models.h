@@ -956,6 +956,10 @@ struct ExecutionHost
 	std::optional<std::string> instruction_text;
 	std::optional<std::string> runner_startup_applied;
 	std::string runner_startup_error;
+	/// Durable installation authority fence; a health handshake cannot clear it.
+	bool runner_install_unresolved = false;
+	std::string runner_install_nonce;
+	std::string runner_install_identity;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
