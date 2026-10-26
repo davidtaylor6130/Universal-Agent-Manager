@@ -2,8 +2,10 @@
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "test_harness.h"
+#include "bootstrap_metadata/windows_command_assertions.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
+#include "common/platform/platform_incremental_sha256.h"
 #include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
@@ -24,6 +26,23 @@ using namespace uam_test;
 namespace
 {
 	constexpr std::string_view kProcessControlToken = "test-process-control-token";
+	const std::string kBootstrapSourceFingerprint(64, 'b');
+
+	// A deterministic test settings owner acknowledges the acquired nonce/identity.
+	uam::remote::BootstrapResult ExecuteTestBootstrapPlan(const uam::remote::BootstrapPlan& plan, std::stop_token stop = {})
+	{
+		auto acquired = uam::remote::AcquireBootstrapPlan(plan, stop);
+		if (!acquired.ok) return acquired;
+		const auto identity = uam::remote::BootstrapInstallIdentity(plan, acquired);
+		return uam::remote::ExecuteBootstrapPlan(plan, std::move(acquired), plan.nonce, identity, stop);
+	}
+
+	bool WriteBootstrapManifest(const fs::path& runner)
+	{
+		return uam::io::WriteTextFile(runner.parent_path() / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint},
+		        {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump());
+	}
 }
 
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv)
@@ -575,6 +594,7 @@ UAM_TEST(RemoteNativeHistoryCancellationInterruptsStalledPollAndCleansUp)
 	ExecutionHost host;
 	host.id = "history-lab";
 	host.ssh_alias = "history-lab";
+	host.transport = "ssh";
 	host.platform = "windows";
 	host.runner_status = "ready";
 	host.runner_version = "test";
@@ -1422,6 +1442,7 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	TempDir temp("uam-runner-bootstrap-artifact");
 	const fs::path runner = temp.root / "uam-runner";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	uam::remote::BootstrapPlan plan;
 	std::string error;
 	const std::string checksum(64, 'a');
@@ -1435,6 +1456,7 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	UAM_ASSERT(plan.runner_directory.empty());
 	UAM_ASSERT_EQ(plan.artifacts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(plan.artifacts.front().sha256, checksum);
+	UAM_ASSERT_EQ(plan.artifacts.front().source_fingerprint, kBootstrapSourceFingerprint);
 	const std::string preview = uam::remote::BootstrapPlanPreview(plan);
 	UAM_ASSERT(preview.find("password") == std::string::npos);
 	UAM_ASSERT(preview.find("identity_file") == std::string::npos);
@@ -1465,6 +1487,34 @@ UAM_TEST(RemoteRunnerBootstrapUsesOnlyAValidatedSshAliasAndVerifiedUserInstall)
 	    "tools/uam/uam-4.5.7-p" +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ".sock") !=
 	    std::string::npos);
+}
+
+UAM_TEST(RemoteRunnerBootstrapRejectsMissingMalformedAndIncompatibleSourceManifests)
+{
+	TempDir temp("uam-runner-manifest-validation");
+	const fs::path runner = temp.root / "uam-runner";
+	const fs::path manifest = temp.root / "uam-runner.manifest.json";
+	UAM_ASSERT(uam::io::WriteTextFile(runner, "runner"));
+	uam::remote::BootstrapPlan plan;
+	std::string error;
+	const auto build = [&]()
+	{
+		return uam::remote::BuildBootstrapPlan("fixture", "4.5.7", "manifest",
+		    {{"linux", "x86_64", runner, std::string(64, 'a'), kBootstrapSourceFingerprint}}, plan, &error);
+	};
+	UAM_ASSERT(!build());
+	for (const std::string& bytes : std::vector<std::string>{"{", "[]",
+	    nlohmann::json{{"sourceFingerprint", std::string(64, 'B')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump(),
+	    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint}, {"protocolVersion", 0}}.dump(),
+	    nlohmann::json{{"sourceFingerprint", kBootstrapSourceFingerprint}, {"protocolVersion", "3"}}.dump(),
+	    std::string(4097, ' ')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(manifest, bytes));
+		UAM_ASSERT(!build());
+	}
+	UAM_ASSERT(WriteBootstrapManifest(runner));
+	UAM_ASSERT(build());
+	UAM_ASSERT_EQ(plan.artifacts.front().source_fingerprint, kBootstrapSourceFingerprint);
 }
 
 #if defined(__APPLE__)
@@ -1503,7 +1553,7 @@ UAM_TEST(RemoteRunnerPathsFailRecoverablyWhenProcessWorkingDirectoryDisappears)
 	artifact.architecture = "x86_64";
 	artifact.sha256 = std::string(64, 'a');
 	plan.artifacts.push_back(std::move(artifact));
-	const uam::remote::BootstrapResult bootstrap = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult bootstrap = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!bootstrap.ok);
 	UAM_ASSERT_EQ(bootstrap.error,
 	              std::string("The remote setup working directory is unavailable."));
@@ -1516,6 +1566,7 @@ UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path log = temp.root / "ssh.log";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "unused-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh,
 	    "#!/bin/sh\nprintf launched >> \"$UAM_TEST_BOOTSTRAP_LOG\"\nexit 1\n"));
 	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
@@ -1530,7 +1581,7 @@ UAM_TEST(RemoteRunnerBootstrapCancellationPreventsSshLaunch)
 	std::stop_source canceled;
 	canceled.request_stop();
 	const uam::remote::BootstrapResult result =
-	    uam::remote::ExecuteBootstrapPlan(plan, canceled.get_token());
+	    ExecuteTestBootstrapPlan(plan, canceled.get_token());
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT_EQ(result.error, std::string("Remote setup was canceled."));
 	uam::remote::BootstrapResult installed;
@@ -1549,6 +1600,7 @@ UAM_TEST(RemoteRunnerBootstrapRollbackNeverStopsThePreviousLinuxService)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "linux-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1564,21 +1616,24 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
 lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
 if [ "$lines" -eq 1 ]; then printf 'Linux\nx86_64\n'; fi
-if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
-if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
-	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"("; fi
+case "$last" in *" --version") printf '4.5.7\n';; esac
+case "$last" in *" --protocol-version") printf '%s\n' ")" +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"(";; esac
 )"));
 	UAM_ASSERT(uam::io::WriteTextFile(scp, "#!/bin/sh\nexit 0\n"));
 	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
@@ -1599,7 +1654,7 @@ if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
 	plan.previous_version = "4.4.0";
 	plan.previous_runner_directory = "old-tools/uam";
 	plan.previous_protocol_version = uam::remote::kRunnerProtocolVersion;
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, false, &error));
 
@@ -1634,12 +1689,17 @@ UAM_TEST(RemoteRunnerBootstrapRollsBackWhenSshLosesActivationAcknowledgement)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	const fs::path sha256sum = temp.root / "sha256sum";
-	const std::string new_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.5.7;; --protocol-version) echo " +
+	const std::string new_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --source-fingerprint) echo " + kBootstrapSourceFingerprint + ";; --version) echo 4.5.7;; --protocol-version) echo " +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
 	const std::string old_runner = "#!/bin/sh\ncase \"$1\" in stop|start) exit 0;; --version) echo 4.4.0;; --protocol-version) echo " +
 	    std::to_string(uam::remote::kRunnerProtocolVersion) + ";; esac\n";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, new_runner));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(installed, old_runner));
+	const fs::path manifest = installed.parent_path() / "uam-runner.manifest.json";
+	const fs::path checksum = installed.parent_path() / "uam-runner.sha256";
+	UAM_ASSERT(uam::io::WriteTextFile(manifest, "historical manifest bytes\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(checksum, "historical checksum bytes\n"));
 	fs::permissions(installed, fs::perms::owner_read | fs::perms::owner_write |
 	                            fs::perms::owner_exec);
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
@@ -1657,12 +1717,15 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
@@ -1698,10 +1761,12 @@ cp "$previous" "$HOME/$destination"
 	    "linux-lab", "4.5.7", "nonce-transport",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT(result.error.find("Verify and activate runner") != std::string::npos);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old_runner);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), std::string("historical manifest bytes\n"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(checksum), std::string("historical checksum bytes\n"));
 	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.rollback-nonce-transport"));
 	UAM_ASSERT(!fs::exists(remote_home / "tools/uam/4.5.7/uam-runner.activation-nonce-transport"));
 	const std::string commands = uam::io::ReadTextFile(log);
@@ -1719,6 +1784,7 @@ UAM_TEST(RemoteRunnerBootstrapRejectsAnOversizedLinuxSocketBeforeCopy)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "linux-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1734,18 +1800,22 @@ match=re.search(r"UAM_INSTALL_LOCK_READY:[A-Za-z0-9_.-]+",value)
 print(match.group(0).split(":")[1] if match else "")' "$last")
 if [ -n "$lock_token" ]; then
   printf 'UAM_INSTALL_LOCK_READY:%s\n' "$lock_token"
+  IFS= read -r authorization
+  test "$authorization" = "UAM_INSTALL_AUTHORIZE:$lock_token" || exit 2
   while IFS= read -r request; do
+    request_id=${request%%:*}; request=${request#*:}
     command=$(python3 -c 'import base64,sys; print(base64.b64decode(sys.argv[1]).decode())' "$request")
     case "$last" in *-EncodedCommand*|*FromBase64String*) command="powershell.exe -EncodedCommand $(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode("utf-16-le")).decode())' "$command") ";; esac
     output=$("$0" "$command" 2>&1); status=$?
     encoded=$(python3 -c 'import base64,sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$output")
-    printf 'UAM_INSTALL_RESULT:%s:%s\n' "$status" "$encoded"
+    printf 'UAM_INSTALL_RESULT:%s:%s:%s\n' "$request_id" "$status" "$encoded"
   done
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
 case "$last" in
   "uname -s && uname -m") printf 'Linux\nx86_64\n' ;;
+  *'root="$HOME/'*) HOME="$UAM_TEST_RECOVERY_HOME" /bin/sh -c "$last" ;;
   *'socket="$HOME/'*) HOME="$UAM_TEST_LONG_HOME" /bin/sh -c "$last" ;;
   *) exit 9 ;;
 esac
@@ -1762,13 +1832,16 @@ esac
 	ScopedEnvVar scoped_command_log("UAM_TEST_BOOTSTRAP_LOG", command_log.string());
 	ScopedEnvVar scoped_copy_log("UAM_TEST_COPY_LOG", copy_log.string());
 	ScopedEnvVar scoped_long_home("UAM_TEST_LONG_HOME", "/" + std::string(128, 'a'));
+	const fs::path recovery_home = temp.root / "recovery-home";
+	fs::create_directories(recovery_home);
+	ScopedEnvVar scoped_recovery_home("UAM_TEST_RECOVERY_HOME", recovery_home.string());
 	uam::remote::BootstrapPlan plan;
 	std::string error;
 	UAM_ASSERT(uam::remote::BuildBootstrapPlan(
 	    "linux-lab", "4.9.0-alpha-8", "nonce-1",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
-	const uam::remote::BootstrapResult result = uam::remote::ExecuteBootstrapPlan(plan);
+	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
 	UAM_ASSERT(result.error.find("runner socket path too long") != std::string::npos);
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(copy_log));
@@ -1785,24 +1858,7 @@ UAM_TEST(WindowsBootstrapLockFitsOpenSshCommandLimit)
 	plan.nonce = std::string(64, 'n');
 	plan.runner_directory = std::string(240, 'd');
 	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "windows");
-	UAM_ASSERT(!argv.empty());
-	UAM_ASSERT(argv.back().size() < 8000);
-	const std::string marker = "FromBase64String('";
-	const std::size_t start = argv.back().find(marker) + marker.size();
-	const std::size_t end = argv.back().find("'", start);
-	std::string script;
-	UAM_ASSERT(uam::base64::Decode(argv.back().substr(start, end - start), script));
-	UAM_ASSERT(script.find("UAM_INSTALL_LOCK_READY:" + plan.nonce) != std::string::npos);
-	UAM_ASSERT(script.find("install.release-" + plan.nonce) != std::string::npos);
-	UAM_ASSERT(script.find("[Console]::WriteLine('UAM_INSTALL_LOCK_READY:") != std::string::npos);
-	UAM_ASSERT(script.find("finally { try { $installed=Join-Path") != std::string::npos);
-	UAM_ASSERT(script.find("powershell.exe") == std::string::npos);
-	UAM_ASSERT(script.find("Restore-UamRunnerFile $backup $installed; & $installed start") != std::string::npos);
-	UAM_ASSERT(script.find("Runner service is busy; recovery was not performed.") != std::string::npos);
-	UAM_ASSERT(script.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
-	const std::size_t helper = script.find("function Set-UamRunnerFile");
-	UAM_ASSERT(helper != std::string::npos);
-	UAM_ASSERT(script.find("function Set-UamRunnerFile", helper + 1) == std::string::npos);
+	uam_test::bootstrap_command_checks::WindowsLock(plan, argv);
 }
 
 UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
@@ -1813,6 +1869,7 @@ UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
 	const fs::path ssh = temp.root / "ssh";
 	const fs::path scp = temp.root / "scp";
 	UAM_ASSERT(uam::io::WriteTextFile(runner, "windows-runner"));
+	UAM_ASSERT(WriteBootstrapManifest(runner));
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, R"(#!/bin/sh
 last=
 for arg in "$@"; do last=$arg; done
@@ -1833,14 +1890,18 @@ if [ -n "$lock_token" ]; then
   exit 0
 fi
 printf '%s\n' "$last" >> "$UAM_TEST_BOOTSTRAP_LOG"
+python3 -c 'import base64,re,sys
+match=re.search(r"FromBase64String\(\x27([A-Za-z0-9+/=]+)\x27[)]",sys.argv[1])
+if match:
+ value=base64.b64decode(match.group(1)).decode()
+ receipt=re.search(r"UAM_INSTALL_COMMITTED:[A-Za-z0-9_.-]+",value)
+ if receipt: print(receipt.group(0))' "$last"
 case "$last" in
   "uname -s && uname -m") exit 1 ;;
   *-EncodedCommand*)
-    lines=$(wc -l < "$UAM_TEST_BOOTSTRAP_LOG")
-    if [ "$lines" -eq 2 ]; then printf 'Windows\nAMD64\n'; fi
-    if [ "$lines" -eq 5 ]; then printf '4.5.7\n'; fi
-    if [ "$lines" -eq 6 ]; then printf '%s\n' ")" +
-	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"("; fi
+    decoded=$(python3 -c 'import base64,sys;print(base64.b64decode(sys.argv[1]).decode("utf-16-le"))' "${last##* }")
+    case "$decoded" in *PROCESSOR_ARCHITECTURE*) printf 'Windows\nAMD64\n';; *--version*) printf '4.5.7\n';; *--protocol-version*) printf '%s\n' ")" +
+	    std::to_string(uam::remote::kRunnerProtocolVersion) + R"(";; esac
     ;;
 esac
 )"));
@@ -1864,7 +1925,7 @@ esac
 	plan.previous_runner_directory = "old-tools/uam";
 	plan.previous_protocol_version = uam::remote::kRunnerProtocolVersion;
 	const uam::remote::BootstrapResult result =
-	    uam::remote::ExecuteBootstrapPlan(plan);
+	    ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT_EQ(result.platform, std::string("windows"));
 	UAM_ASSERT_EQ(result.architecture, std::string("x86_64"));
@@ -1898,39 +1959,7 @@ esac
 		}
 		decoded_commands.push_back('\n');
 	}
-	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("foreach ($optional in @($backup,$marker))") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $optional) { Remove-Item -LiteralPath $optional -Force -ErrorAction Stop }") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $backup,$marker -Force -ErrorAction SilentlyContinue") == std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $installed -Destination $backup") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("New-Item -ItemType File -Path $marker") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $marker)") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $marker -Force -ErrorAction Stop") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
-	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,$save)") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,[NullString]::Value)") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $restore -Force -ErrorAction Stop") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Restore-UamRunnerFile $backup $installed") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("$failed.Exception.Message+' Rollback failed: '+$_.Exception.Message") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Runner service is busy; rollback was not performed.") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("$ProgressPreference='SilentlyContinue'") != std::string::npos);
-	const std::size_t stop_guard = decoded_commands.find("Runner service is busy with active chats.");
-	UAM_ASSERT(stop_guard < decoded_commands.find("Set-UamRunnerFile $file $installed $backup"));
-	UAM_ASSERT(decoded_commands.find("Runner protocol verification failed") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("old-tools/uam/4.4.0/uam-runner.exe") ==
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("& $installed stop") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Previous runner") == std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Start-Sleep -Milliseconds 100") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $file)") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("tools/uam/4.5.7/uam-runner.exe") != std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Join-Path $HOME 'tools/uam/4.5.7/uam-runner.exe'") !=
-	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("'$HOME") == std::string::npos);
+	uam_test::bootstrap_command_checks::WindowsArtifact(plan, decoded_commands);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif
@@ -3595,12 +3624,25 @@ UAM_TEST(RemoteWorkspaceWindowsTerminalEncodesUnicodeDriveAndUncPaths)
 #if defined(__APPLE__)
 namespace
 {
+	std::shared_ptr<uam::remote::BootstrapInstallLease> AcquireAcknowledgedTestLease(uam::remote::BootstrapPlan plan, std::string& error)
+	{
+		plan.steps = {{"probe", {"ssh", plan.ssh_alias, "uname -s && uname -m"}, ""}, {"fallback", {"ssh", plan.ssh_alias, "unused"}, ""}};
+		plan.artifacts = {{"linux", "x86_64", {}, std::string(64,'a'), kBootstrapSourceFingerprint}};
+		auto acquired = uam::remote::AcquireBootstrapPlan(plan);
+		if (!acquired.ok) { error = acquired.error; return {}; }
+		const auto identity = uam::remote::BootstrapInstallIdentity(plan, acquired);
+		if (!uam::remote::RecoverBootstrapInstallation(plan, acquired, plan.nonce, identity)) { error = acquired.error; return {}; }
+		return acquired.install_lease;
+	}
+
 	void WriteBootstrapLockTransport(const fs::path& root)
 	{
 		const std::string python = "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3";
 		const std::string interpreter = fs::exists(python) ? python : "/usr/bin/python3";
 		UAM_ASSERT(uam::io::WriteTextFile(root / "ssh", "#!" + interpreter + R"(
 import os,sys
+if sys.argv[-1]=='uname -s && uname -m':
+ print('Linux\nx86_64'); sys.exit(0)
 with open(os.environ['UAM_TEST_LOCK_PID'],'w') as output: output.write(str(os.getpid()))
 os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
 )"));
@@ -3627,6 +3669,126 @@ sys.stdout.buffer.write(base64.b64decode(value) if '-d' in sys.argv else base64.
 		}
 		return false;
 	}
+
+	void CheckBootstrapMetadataTransaction(std::string_view mode)
+	{
+		TempDir temp("uam-bootstrap-metadata");
+		const fs::path home = fs::path("/tmp") / ("uam-md-" + uam::time::SteadyEpochNanosecondsTokenNow());
+		struct HomeCleanup
+		{
+			fs::path path;
+			~HomeCleanup() { std::error_code error; fs::remove_all(path, error); }
+		} cleanup{home};
+		WriteBootstrapLockTransport(temp.root);
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "scp", R"(#!/bin/sh
+previous=
+last=
+for arg in "$@"; do previous=$last; last=$arg; done
+cp "$previous" "$HOME/${last#*:}"
+)"));
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sha256sum", "#!/bin/sh\nexec /usr/bin/shasum -a 256 \"$@\"\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "mv", R"(#!/bin/sh
+if [ "$UAM_TEST_METADATA_MODE" = publication-failure ]; then
+  for arg in "$@"; do case "$arg" in */uam-runner.sha256.new) exit 27;; esac; done
+fi
+exec /bin/mv "$@"
+)"));
+		for (const std::string& name : {"scp", "sha256sum", "mv"}) fs::permissions(temp.root / name, fs::perms::owner_all);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar scoped_home("HOME", home.string());
+		ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+		ScopedEnvVar scoped_mode("UAM_TEST_METADATA_MODE", std::string(mode));
+		const fs::path runner = temp.root / "uam-runner";
+		const std::string bytes = "#!/bin/sh\ncase \"$1\" in\n"
+		    "stop) echo stop >> \"$HOME/stops\"; test \"$UAM_TEST_METADATA_MODE\" != busy;;\n"
+		    "start) exit 0;;\n--version) echo 4.5.7;;\n--protocol-version) echo " +
+		    std::to_string(uam::remote::kRunnerProtocolVersion) + ";;\n--source-fingerprint) "
+		    "if test \"$UAM_TEST_METADATA_MODE\" = source-mismatch; then echo wrong; else echo " +
+		    kBootstrapSourceFingerprint + "; fi;;\nesac\n";
+		UAM_ASSERT(uam::io::WriteTextFile(runner, bytes));
+		UAM_ASSERT(WriteBootstrapManifest(runner));
+		uam::platform::IncrementalSha256 hash;
+		UAM_ASSERT(hash.Add(bytes));
+		const std::string digest = hash.Finish();
+		UAM_ASSERT_EQ(digest.size(), static_cast<std::size_t>(64));
+		const fs::path directory = home / "r/4.5.7";
+		fs::create_directories(directory);
+		const fs::path installed = directory / "uam-runner";
+		const fs::path manifest = directory / "uam-runner.manifest.json";
+		const fs::path checksum = directory / "uam-runner.sha256";
+		const bool first_install = mode == "rollback-first";
+		const std::string old_runner = "#!/bin/sh\n# prior installed bytes\nexit 0\n";
+		const std::string old_manifest = "historical manifest bytes retained verbatim\n";
+		if (!first_install)
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(installed, old_runner));
+			fs::permissions(installed, fs::perms::owner_all);
+			UAM_ASSERT(uam::io::WriteTextFile(manifest, old_manifest));
+			// A missing prior checksum must stay absent on rollback, not be inferred.
+		}
+		uam::remote::BootstrapPlan plan;
+		std::string error;
+		UAM_ASSERT(uam::remote::BuildBootstrapPlan("fixture", "4.5.7", "metadata",
+		    {{"linux", "x86_64", runner, digest}}, plan, &error, "r"));
+		uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
+		const bool rejected = mode == "source-mismatch" || mode == "busy" || mode == "publication-failure";
+		UAM_ASSERT_EQ(result.ok, !rejected);
+		if (result.ok)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), bytes);
+			const nlohmann::json published = nlohmann::json::parse(uam::io::ReadTextFile(manifest));
+			UAM_ASSERT_EQ(published["sourceFingerprint"].get<std::string>(), kBootstrapSourceFingerprint);
+			UAM_ASSERT_EQ(published["protocolVersion"].get<int>(), uam::remote::kRunnerProtocolVersion);
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(checksum), digest + "\n");
+			UAM_ASSERT(fs::exists(directory / "uam-runner.activation-metadata"));
+			if (mode == "abandoned")
+			{
+				result.install_lease.reset();
+				UAM_ASSERT(WaitForLockFixture([&]() { return !fs::exists(directory / "uam-runner.activation-metadata") && !fs::exists(directory / "uam-runner.metadata-metadata"); }));
+			}
+			else UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, mode == "commit", &error));
+		}
+		if (mode != "commit")
+		{
+			if (first_install) { UAM_ASSERT(!fs::exists(installed)); UAM_ASSERT(!fs::exists(manifest)); }
+			else
+			{
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old_runner);
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), old_manifest);
+			}
+			UAM_ASSERT(!fs::exists(checksum));
+		}
+		UAM_ASSERT(!fs::exists(directory / "uam-runner.activation-metadata"));
+		UAM_ASSERT(!fs::exists(directory / "uam-runner.metadata-metadata"));
+		if (mode == "source-mismatch") UAM_ASSERT(!fs::exists(home / "stops"));
+	}
+}
+
+UAM_TEST(RemoteBootstrapPublishesVerifiedLinuxMetadataUnderInstallLease)
+{
+	CheckBootstrapMetadataTransaction("commit");
+}
+
+UAM_TEST(RemoteBootstrapRollsBackLinuxMetadataIncludingPriorAbsence)
+{
+	CheckBootstrapMetadataTransaction("rollback");
+	CheckBootstrapMetadataTransaction("rollback-first");
+}
+
+UAM_TEST(RemoteBootstrapRestoresLinuxMetadataAfterPartialPublication)
+{
+	CheckBootstrapMetadataTransaction("publication-failure");
+}
+
+UAM_TEST(RemoteBootstrapRefusesSourceMismatchAndBusyHelperBeforePublication)
+{
+	CheckBootstrapMetadataTransaction("source-mismatch");
+	CheckBootstrapMetadataTransaction("busy");
+}
+
+UAM_TEST(RemoteBootstrapAbandonedLeaseRestoresLinuxMetadata)
+{
+	CheckBootstrapMetadataTransaction("abandoned");
 }
 
 UAM_TEST(RemoteBootstrapGuardDoesNotLeakInstallLockIntoChildCommands)
@@ -3656,10 +3818,10 @@ UAM_TEST(RemoteBootstrapGuardDoesNotLeakInstallLockIntoChildCommands)
 		});
 	};
 	UAM_ASSERT(read_until("UAM_INSTALL_LOCK_READY:noinherit"));
-	const std::string command = uam::base64::Encode("test ! -e /dev/fd/9") + "\n";
+	const std::string command = "UAM_INSTALL_AUTHORIZE:noinherit\n1:" + uam::base64::Encode("test ! -e /dev/fd/9") + "\n";
 	UAM_ASSERT(service.WriteToStdioProcess(process, command.data(), command.size(), &error));
 	UAM_ASSERT(read_until("UAM_INSTALL_RESULT:"));
-	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:0:") != std::string::npos);
+	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:1:0:") != std::string::npos);
 }
 
 UAM_TEST(RemoteBootstrapLockCompetingAliasesShareTargetRootAndRecoverAfterRelease)
@@ -3703,18 +3865,32 @@ UAM_TEST(RemoteBootstrapLockRecoversKilledGuardReceiptWithoutTouchingCommittedVe
 	const fs::path installed = root / "4.9.0/uam-runner";
 	const fs::path backup = root / "4.9.0/uam-runner.rollback-crashed";
 	const fs::path marker = root / "4.9.0/uam-runner.activation-crashed";
+	const fs::path metadata = root / "4.9.0/uam-runner.metadata-crashed";
+	const fs::path manifest = installed.parent_path() / "uam-runner.manifest.json";
+	const fs::path checksum = installed.parent_path() / "uam-runner.sha256";
 	const std::string old = "#!/bin/sh\n# old runner\nexit 0\n";
 	UAM_ASSERT(uam::io::WriteTextFile(installed, "#!/bin/sh\n# new runner\nexit 0\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(backup, old));
 	fs::permissions(installed, fs::perms::owner_all); fs::permissions(backup, fs::perms::owner_all);
 	UAM_ASSERT(uam::io::WriteTextFile(marker, ""));
+	fs::create_directory(metadata);
+	UAM_ASSERT(uam::io::WriteTextFile(metadata / "uam-runner.manifest.json", "previous manifest\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(metadata / "ready", ""));
+	UAM_ASSERT(uam::io::WriteTextFile(manifest, "candidate manifest\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(checksum, "candidate checksum\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(root / "install.transaction", "4.9.0\ncrashed\n3\n"));
 	const pid_t guard_pid = static_cast<pid_t>(std::stoi(uam::io::ReadTextFile(temp.root / "pid")));
 	UAM_ASSERT_EQ(kill(guard_pid, SIGKILL), 0);
 	owner.reset();
 	plan.nonce = "next";
 	UAM_ASSERT(WaitForLockFixture([&]() { owner = uam::remote::AcquireBootstrapInstallLease(plan, "linux", error); return owner != nullptr; }));
+	UAM_ASSERT(fs::exists(marker) && fs::exists(metadata));
+	owner.reset();
+	UAM_ASSERT(WaitForLockFixture([&]() { owner = AcquireAcknowledgedTestLease(plan, error); return owner != nullptr; }));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(installed), old);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(manifest), std::string("previous manifest\n"));
+	UAM_ASSERT(!fs::exists(checksum));
+	UAM_ASSERT(!fs::exists(metadata));
 	UAM_ASSERT(!fs::exists(marker)); UAM_ASSERT(!fs::exists(backup));
 	owner.reset();
 	UAM_ASSERT(uam::io::WriteTextFile(root / "install.transaction", "4.9.0\ncommitted\n3\n"));
@@ -3732,7 +3908,7 @@ UAM_TEST(RemoteBootstrapAbandonedUiResultRollsBackWithoutWaitingOnTheOwnerThread
 	uam::remote::BootstrapPlan plan;
 	plan.ssh_alias = "host-first"; plan.version = "4.9.0"; plan.nonce = "abandoned"; plan.runner_directory = "tools/uam";
 	std::string error;
-	std::shared_ptr<uam::remote::BootstrapInstallLease> owner = uam::remote::AcquireBootstrapInstallLease(plan, "linux", error);
+	std::shared_ptr<uam::remote::BootstrapInstallLease> owner = AcquireAcknowledgedTestLease(plan, error);
 	if (owner == nullptr) throw std::runtime_error(error);
 	const fs::path root = temp.root / "home/tools/uam/4.9.0";
 	const fs::path installed = root / "uam-runner";

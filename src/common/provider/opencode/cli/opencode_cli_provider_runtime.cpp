@@ -609,9 +609,7 @@ namespace
 		if (remote_host != nullptr)
 		{
 			child.remote = std::make_unique<uam::remote::RunnerClient>(service,
-			    uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version,
-			                               remote_host->runner_directory, remote_host->runner_protocol_version),
-			    remote_host->runner_version, remote_host->runner_protocol_version);
+			    *remote_host);
 			const std::string operation_id = service.GenerateUuid();
 			if (operation_id.empty()) return fail("Could not allocate a remote OpenCode creation request.");
 			child.remote_process_id = "opencode-create-" + operation_id;

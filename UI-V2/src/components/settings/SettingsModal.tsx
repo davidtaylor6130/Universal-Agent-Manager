@@ -1,6 +1,7 @@
 import { VoiceSettings } from './VoiceSettings'
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
+import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './DataFolderSettingsSection'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
@@ -11,6 +12,7 @@ import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
+import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
@@ -431,7 +433,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
-  { id: 'storage-cleanup', label: 'Storage Cleanup', icon: Trash2 },
+  { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
     { id: 'about', label: 'About', icon: Info },
 ].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'routing' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
 
@@ -463,7 +465,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
   vcs: 'git svn source control version control worktrees checkpoints commits revisions base branch merge squash patch pull',
-  'storage-cleanup': 'cleanup retention worktrees backup logs cache days',
+  'storage-cleanup': 'data folder directory storage migration restart cleanup retention worktrees backup logs cache days',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents agent store create edit delete helpers subagents instructions import providers codex gemini claude copilot opencode',
@@ -865,6 +867,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const vcsRef = useRef<SettingsDraftHandle>(null)
   const routingRef = useRef<ExecutionRoutingSettingsHandle>(null)
   const cleanupRef = useRef<SettingsDraftHandle>(null)
+  const dataFolderRef = useRef<DataFolderSettingsHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
@@ -900,7 +903,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   const requestSectionExit = (next: () => void) => {
     if (selectedSection === 'vcs' && vcsRef.current) vcsRef.current.requestLeave(next)
-    else if (selectedSection === 'storage-cleanup' && cleanupRef.current) cleanupRef.current.requestLeave(next)
+    else if (selectedSection === 'storage-cleanup') {
+      const leaveCleanup = () => cleanupRef.current ? cleanupRef.current.requestLeave(next) : next()
+      if (dataFolderRef.current) dataFolderRef.current.requestLeave(leaveCleanup)
+      else leaveCleanup()
+    }
     else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
@@ -1731,6 +1738,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     ] as const
     return <div className="grid gap-0">
       <SettingsSection title="Control method">
+        <ComputerUseSettingRow />
         <SettingRow
           title="Computer Use backend"
           description={activeSession
@@ -1988,7 +1996,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (selectedSection === 'vcs') return <VcsSettingsSection ref={vcsRef} />
-    if (selectedSection === 'storage-cleanup') return <StorageCleanupSettingsSection ref={cleanupRef} />
+    if (selectedSection === 'storage-cleanup') return <div className="grid gap-6"><DataFolderSettingsSection ref={dataFolderRef} /><StorageCleanupSettingsSection ref={cleanupRef} /></div>
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)

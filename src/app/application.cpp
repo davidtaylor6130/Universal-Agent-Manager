@@ -3,6 +3,8 @@
 #include "common/discovery/management_discovery.h"
 #include "common/platform/platform_speech_output.h"
 #include "app/storage_retention_service.h"
+#include "app/data_folder_settings_service.h"
+#include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
 #include "application.h"
@@ -405,7 +407,9 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 	if (!m_done) CefRunMessageLoop();
 	if (previous_interrupt != SIG_ERR) std::signal(SIGINT, previous_interrupt);
 	if (previous_terminate != SIG_ERR) std::signal(SIGTERM, previous_terminate);
-	return uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode;
+	if (uam::platform::ApplicationRestartRequested())
+		Shutdown();
+	return uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode;
 }
 
 // ---------------------------------------------------------------------------
@@ -711,14 +715,13 @@ bool Application::InitializeState()
 {
 	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
 	const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR");
-	m_app.data_root = data_root_env.value_or(m_platformServices->path_service.DefaultDataRootPath());
+	// Retain the original override: exporting the effective root below must not change its provenance.
+	const fs::path default_root = m_platformServices->path_service.DefaultDataRootPath();
+	m_app.data_root = data_root_env.value_or(default_root);
 	std::string data_root_error;
-	if (m_app.data_root.empty() || !PersistenceCoordinator().EnsureDataRootLayout(m_app.data_root, &data_root_error))
+	if (!uam::DataFolderTransition::ProbeStartupRoot(default_root, data_root_env, m_app.data_root, data_root_error))
 	{
-		std::fprintf(stderr,
-		             "Failed to initialize the requested application data root '%s'. UAM will not open a fallback database: %s\n",
-		             uam::paths::Utf8PathString(m_app.data_root).c_str(),
-		             data_root_error.empty() ? "invalid or empty path" : data_root_error.c_str());
+		std::fprintf(stderr, "Data-folder ownership is held: %s\n", data_root_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
@@ -749,6 +752,30 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	// Keep queued shell-action forwarding and the existing root-lock ordering above intact.
+	// Activate only while stopped, before logs, settings, queues, memory or runtime services start.
+	m_app.data_folder_settings = uam::DataFolderSettingsService::Open(default_root, data_root_env, m_platformServices->process_service, data_root_error);
+	if (!m_app.data_folder_settings || m_app.data_folder_settings->StartupRoot() != m_app.data_root)
+	{
+		std::fprintf(stderr, "Failed to initialize data-folder preferences. UAM will not open a fallback database: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	if (!m_app.data_folder_settings->AttachStartupOwner(m_dataRootLock, uam::DataFolderSettingsService::kTransfersValidated && uam::platform::ConfirmedDataFolderRestart(), data_root_error, uam::DataFolderSettingsService::kTransfersValidated && std::find(m_launchArguments.begin(), m_launchArguments.end(), "--uam-data-folder-rollback") != m_launchArguments.end()))
+	{
+		std::fprintf(stderr, "Data-folder startup handoff is held: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	m_app.data_root = m_app.data_folder_settings->StartupRoot();
+	m_dataRootLock = std::static_pointer_cast<uam::platform::DataRootLock>(m_app.data_folder_settings->StartupLease());
+	if (m_app.data_root.empty() || !PersistenceCoordinator().EnsureDataRootLayout(m_app.data_root, &data_root_error))
+	{
+		std::fprintf(stderr, "Failed to initialize the requested application data root. UAM will not open a fallback database: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 	std::string log_error;
 	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
 		uam::diagnostics::Write(log_error);
@@ -1002,10 +1029,13 @@ void Application::Shutdown()
 		(void)uam::StopSpeechOutput(uam::GetSpeechOutputState().speech_id);
 	}
 	// Revoke initial task authority and settle real cleanup before the FIRST force-save barrier.
-	(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(m_app);
+	// An active provider has no generic confirmed-stop receipt. Until each adapter supplies one,
+	// a data-folder restart requires a dormant runtime before teardown begins.
+	bool folder_shutdown_confirmed = std::none_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) && std::none_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; });
+	folder_shutdown_confirmed = uam::AgentRunScheduler::QuiesceInitialForShutdown(m_app) && folder_shutdown_confirmed;
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
-		PersistenceCoordinator().SaveSettings(m_app);
+		folder_shutdown_confirmed = PersistenceCoordinator().SaveSettings(m_app) && folder_shutdown_confirmed;
 		uam::FinalizePendingAcpRemoteStopsForExit(m_app);
 		uam::FlushPendingChatSaves(m_app, true);
 	}
@@ -1020,7 +1050,7 @@ void Application::Shutdown()
 	m_app.permission_review_tasks.clear();
 	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
-	(void)uam::AgentRunScheduler::InterruptForShutdown(m_app);
+	folder_shutdown_confirmed = uam::AgentRunScheduler::InterruptForShutdown(m_app) && folder_shutdown_confirmed;
 	uam::FastStopAcpSessionsForExit(m_app);
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
@@ -1058,7 +1088,8 @@ void Application::Shutdown()
 		{
 			// Saves and provider shutdown above are complete. Process exit releases
 			// the data lock; do not tear CEF down underneath an unconfirmed worker.
-			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode);
+			// Unconfirmed worker teardown must not mint a migration restart marker.
+			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
 #endif
 		CefShutdown();
@@ -1067,5 +1098,22 @@ void Application::Shutdown()
 	// Join the cache writer while this instance still owns the data-root lock.
 	m_app.provider_model_catalog.reset();
 	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
+	for (const auto& session : m_app.acp_sessions)
+		if (session && session->running)
+			folder_shutdown_confirmed = false;
+	for (const auto& terminal : m_app.cli_terminals)
+		if (terminal && terminal->running)
+			folder_shutdown_confirmed = false;
+	for (const auto& chat : m_app.chats)
+		if (chat.acp_queue_storage_error || chat.remote_process_exists || chat.remote_stop_cleanup_pending || chat.remote_restart_pending || chat.remote_source_exit_pending || chat.remote_turn_reconnect_pending)
+			folder_shutdown_confirmed = false;
+	for (const auto& run : m_app.agent_runs)
+		if (run.status == "queued" || run.status == "running")
+			folder_shutdown_confirmed = false;
+	if (!m_app.pending_chat_save_tasks.empty() || !m_app.pending_chat_save_at_by_chat_id.empty() || !m_app.memory_extraction_tasks.empty() || !m_app.memory_extraction_queue.empty() || ChatHistorySyncService().TerminalNativeMediaPending(m_app))
+		folder_shutdown_confirmed = false;
+	if (m_app.memory_settings_uncertain || !m_app.pending_agent_run_cancellation_ids.empty())
+		folder_shutdown_confirmed = false;
+	uam::platform::ConfirmDataFolderShutdown(folder_shutdown_confirmed);
 	m_dataRootLock.reset();
 }

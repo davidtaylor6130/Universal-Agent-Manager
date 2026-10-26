@@ -40,6 +40,7 @@ namespace uam
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
 	struct ManagedInitialHistoryCatalogue;
@@ -1289,6 +1290,7 @@ namespace uam
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
+		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;

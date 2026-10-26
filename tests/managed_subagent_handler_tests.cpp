@@ -266,7 +266,7 @@ int main(int argc, char** argv)
 			std::cerr << "FAIL " << test.name << ": " << error.what() << '\n';
 		}
 	}
-	std::size_t expected = 5 + (UAM_ENABLE_RUNTIME_GEMINI_CLI ? 16 : 0) + (UAM_ENABLE_RUNTIME_COPILOT_CLI ? 5 : 0);
+	std::size_t expected = 5 + (UAM_ENABLE_RUNTIME_GEMINI_CLI ? 17 : 0) + (UAM_ENABLE_RUNTIME_COPILOT_CLI ? 5 : 0);
 #if UAM_ENABLE_RUNTIME_CODEX_CLI && !defined(_WIN32)
 	expected += 3; // Public initial receipt, later publication refusal and parent catalogue-growth regressions.
 #endif

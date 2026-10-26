@@ -50,6 +50,8 @@ namespace uam
 		{
 		  public:
 			virtual ~DataRootLock() = default;
+			// Legacy implementations cannot establish current transition ownership.
+			virtual bool Current() const { return false; }
 		};
 	} // namespace platform
 } // namespace uam

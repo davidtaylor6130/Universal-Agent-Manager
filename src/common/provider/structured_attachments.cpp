@@ -25,6 +25,11 @@ namespace uam::structured_attachments
 				error = "Recorded or invalid attachment sources cannot be sent as file paths. Remove them and attach files from the execution host again.";
 				return false;
 			}
+			else if (strings::TrimAsciiView(attachment.path).empty() || attachment.path.find('\0') != std::string::npos)
+			{
+				error = "An attached resource has an invalid path. Remove it and attach it again.";
+				return false;
+			}
 		return true;
 	}
 
