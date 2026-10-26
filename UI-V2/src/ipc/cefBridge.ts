@@ -37,6 +37,8 @@ export interface CEFResponse<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  /** Native CEF failure code; absent for companion and transport failures. */
+  code?: number
   requestId?: string
 }
 
@@ -160,7 +162,7 @@ export async function sendToCEF<T = unknown>(
         },
         onFailure: (code, message) => {
           if (logFailures) console.error(`[CEF] Error ${code}: ${message}`)
-          resolve({ ok: false, error: message, requestId })
+          resolve({ ok: false, error: message, code, requestId })
         },
       })
     }).catch((cause: unknown) => {

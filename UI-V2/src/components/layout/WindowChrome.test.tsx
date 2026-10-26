@@ -17,6 +17,7 @@ describe('native window controls', () => {
   let maximized: boolean
   let fullscreen: boolean
   let failCommand: boolean
+  let chromeFailure: number | null
   let requests: Array<{ action: string; payload?: { command: string } }>
 
   beforeEach(() => {
@@ -26,11 +27,13 @@ describe('native window controls', () => {
     maximized = false
     fullscreen = false
     failCommand = false
+    chromeFailure = null
     requests = []
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request)
       requests.push(parsed)
+      if (parsed.action === 'getWindowChrome' && chromeFailure !== null) { onFailure(chromeFailure, chromeFailure === 404 ? 'Unknown action: getWindowChrome' : 'The native window is unavailable.'); return }
       if (parsed.action === 'windowCommand') {
         if (failCommand) { onFailure(503, 'Window unavailable.'); return }
         if (parsed.payload.command === 'toggleMaximize') maximized = !maximized
@@ -84,6 +87,22 @@ describe('native window controls', () => {
     expect(host.querySelector('[data-platform="macos"]')).toBeTruthy()
     expect(host.querySelector('[data-testid="window-chrome"]')).toBeTruthy()
     expect(host.querySelector('button')).toBeNull()
+  })
+
+  it('removes the strip when the native host keeps its system title bar', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    chromeFailure = 404
+    await mount()
+    expect(host.querySelector('[data-testid="window-chrome"]')).toBeNull()
+    expect(host.querySelector('[data-platform]')).toBeNull()
+    await act(async () => { window.dispatchEvent(new Event('resize')); window.dispatchEvent(new Event('focus')) })
+    expect(requests.filter(r => r.action === 'getWindowChrome')).toHaveLength(1)
+  })
+
+  it('keeps the strip while the native window is briefly unavailable', async () => {
+    chromeFailure = 503
+    await mount()
+    expect(host.querySelector('[aria-label="Window controls"]')).toBeTruthy()
   })
 
   it('rechecks native state after the last resize of a window transition', async () => {
