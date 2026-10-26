@@ -56,13 +56,18 @@ export function placeViewportMenu(
 
 /**
  * Callers unmount menus on close, so the exit plays on an inert copy left at the same place.
- * Skipped under reduced motion and Motion Off, and when the caller already ran its own exit (`data-state` other than open).
+ * Skipped under reduced motion and Motion Off, before the menu was ever placed (StrictMode's simulated
+ * unmount), and when the caller already ran its own exit (`data-state` other than open).
  */
 export function leaveMenuGhost(menu: HTMLElement | null) {
-  if (!menu?.isConnected || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed() || document.documentElement.getAttribute('data-motion') === 'off') return
+  if (!menu?.isConnected || menu.style.visibility === 'hidden' || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed() || document.documentElement.getAttribute('data-motion') === 'off') return
   const ghost = menu.cloneNode(true) as HTMLElement
   ghost.dataset.state = 'closed'
-  ghost.removeAttribute('id')
+  // The copy must not answer id lookups (ARIA references, a reopened picker) or test-id queries.
+  for (const node of [ghost, ...ghost.querySelectorAll<HTMLElement>('[id], [data-testid]')]) {
+    node.removeAttribute('id')
+    node.removeAttribute('data-testid')
+  }
   ghost.setAttribute('aria-hidden', 'true')
   ghost.inert = true
   document.body.appendChild(ghost)

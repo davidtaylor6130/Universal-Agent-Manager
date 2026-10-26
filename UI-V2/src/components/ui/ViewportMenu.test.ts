@@ -125,11 +125,12 @@ describe('placeViewportMenu', () => {
 
 describe('ViewportMenu exit motion', () => {
   const stubReducedMotion = (reduce: boolean) => vi.stubGlobal('matchMedia', (query: string) => ({ matches: reduce && query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {} }))
-  const openThenClose = () => {
+  const openThenClose = (extra: Record<string, unknown> = {}) => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(createElement(ViewportMenu, { point: { x: 10, y: 10 }, role: 'menu', 'aria-label': 'Row actions' })))
+    act(() => root.render(createElement(ViewportMenu, { point: { x: 10, y: 10 }, role: 'menu', 'aria-label': 'Row actions', id: 'row-menu', ...extra },
+      createElement('div', { id: 'row-option', 'data-testid': 'row-option', role: 'menuitem' }, 'Rename'))))
     act(() => root.unmount())
     host.remove()
     return document.querySelector<HTMLElement>('[data-viewport-menu][data-state="closed"]')
@@ -152,9 +153,22 @@ describe('ViewportMenu exit motion', () => {
       expect(ghost?.getAttribute('aria-hidden')).toBe('true')
       expect(ghost?.inert).toBe(true)
       expect(ghost?.getAttribute('aria-label')).toBe('Row actions')
+      expect(ghost?.textContent).toBe('Rename')
+      expect(ghost?.querySelector('[id], [data-testid]')).toBeNull()
+      expect(ghost?.id).toBe('')
       finish()
       await act(async () => { await finished; await Promise.resolve() })
       expect(ghost?.isConnected).toBe(false)
+    } finally {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
+    }
+  })
+
+  it('leaves no copy when the caller already played its own exit', () => {
+    stubReducedMotion(false)
+    Object.defineProperty(HTMLElement.prototype, 'getAnimations', { configurable: true, value: () => [{ finished: new Promise(() => {}) }] })
+    try {
+      expect(openThenClose({ 'data-state': 'closing' })).toBeNull()
     } finally {
       delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
     }

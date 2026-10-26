@@ -452,6 +452,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-app {
+  position: relative; /* containing block for closing panels; same box as the viewport */
   min-width: 0;
   min-height: 0;
   width: 100%;
@@ -1957,10 +1958,14 @@ button.uam-commit-check { cursor: pointer; }
    area never relayouts per frame. Content slides from the panel's own edge. */
 .uam-shell-panel { --panel-dir: -1; overflow: hidden; animation: uam-panel-in var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-shell-panel--right { --panel-dir: 1; }
-.uam-shell-panel[data-state="closed"] { z-index: 1; animation: uam-panel-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-/* A closing panel gives its space back at once and fades out over the content it uncovers. */
-.uam-shell-panel--left[data-state="closed"] { margin-inline-end: calc(var(--panel-w) * -1); }
-.uam-shell-panel--right[data-state="closed"] { margin-inline-start: calc(var(--panel-w) * -1); }
+.uam-shell-panel[data-state="closed"] { animation: uam-panel-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* A docked panel that is closing leaves the layout at once and fades out where it was (beside its rail),
+   above the chat's own layers; narrow windows already show panels as fixed overlays. */
+@media not all and (max-width: 1000px) {
+  .uam-shell-panel[data-state="closed"] { position: absolute; inset-block: 0; z-index: 20; }
+  .uam-shell-panel--left[data-state="closed"] { left: 44px; }
+  .uam-shell-panel--right[data-state="closed"] { right: 44px; }
+}
 .uam-shell-panel > * { width: 100%; animation: uam-panel-content-in var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-shell-panel[data-state="closed"] > * { animation: uam-panel-content-out var(--dur-exit) var(--ease) forwards; }
 @keyframes uam-panel-in { from { opacity: 0; } }

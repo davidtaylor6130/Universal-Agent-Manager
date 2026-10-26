@@ -54,13 +54,24 @@ describe('shared motion contract', () => {
     expect(sessionItem).not.toMatch(/uam-sb-row[^`]*transition-all/)
   })
 
+  it('changes only paint when a sidebar row is selected', () => {
+    // A selection rule that swaps the row's animation restarts its entrance, so the old row blinks out on deselect.
+    expect(sidebarGlide).not.toMatch(/\[data-session-id\]\[(aria-current|data-selected)[^{]*\{[^}]*animation/)
+    expect(sidebar).not.toMatch(/\.uam-sb-row--selected[^{]*\{[^}]*animation/)
+  })
+
+  it('takes a closing docked panel out of the layout instead of animating its width', () => {
+    expect(styles).toMatch(/@media not all and \(max-width: 1000px\) \{\s*\.uam-shell-panel\[data-state="closed"\] \{ position: absolute; inset-block: 0; z-index: 20; \}/)
+    expect(styles).not.toMatch(/\.uam-shell-panel[^{]*\{[^}]*margin-inline/)
+  })
+
   it('uses the shared duration tokens so Appearance motion speed and Off apply', () => {
     const timed = [
       rule(styles, '.uam-shell-panel'),
       rule(styles, '.uam-shell-panel[data-state="closed"]'),
       rule(styles, '[data-viewport-menu]'),
       rule(styles, '[data-viewport-menu][data-state="closed"]'),
-      rule(sidebarGlide, ".uam-sidebar-glide [data-session-id][aria-current='page'],\n.uam-sidebar-glide [data-session-id][data-selected='true']"),
+      rule(sidebarGlide, '.uam-sidebar-glide .uam-folder-expand-glide'),
       rule(mainPanel, '.uam-pane-glide'),
     ]
     for (const block of timed) {
