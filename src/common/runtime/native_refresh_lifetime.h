@@ -8,7 +8,7 @@
 
 namespace uam::native_history
 {
-	enum class NativeRefreshWorkerPool { Shared, TerminalParser };
+	enum class NativeRefreshWorkerPool { Shared, TerminalParser, DiscoveryParser };
 
 	namespace detail
 	{
@@ -18,6 +18,10 @@ namespace uam::native_history
 		inline constexpr unsigned kMaxRefreshOwners = 2;
 		inline std::atomic<unsigned> terminal_parser_owners{0};
 		inline constexpr unsigned kMaxTerminalParserOwners = 2;
+		// Discovery can retain candidates while awaiting a user decision. It must
+		// neither consume batch admission capacity nor grow unbounded producers.
+		inline std::atomic<unsigned> discovery_parser_owners{0};
+		inline constexpr unsigned kMaxDiscoveryParserOwners = 2;
 	}
 
 	/// Arm before admitting any payload, prepared file or transcript. CEF tasks
@@ -30,10 +34,12 @@ namespace uam::native_history
 		auto& owners = []() -> std::atomic<unsigned>&
 		{
 			if constexpr (Pool == NativeRefreshWorkerPool::TerminalParser) return detail::terminal_parser_owners;
+			else if constexpr (Pool == NativeRefreshWorkerPool::DiscoveryParser) return detail::discovery_parser_owners;
 			else return detail::refresh_owners;
 		}();
 		constexpr unsigned limit = Pool == NativeRefreshWorkerPool::TerminalParser
-		    ? detail::kMaxTerminalParserOwners : detail::kMaxRefreshOwners;
+		    ? detail::kMaxTerminalParserOwners : Pool == NativeRefreshWorkerPool::DiscoveryParser
+		        ? detail::kMaxDiscoveryParserOwners : detail::kMaxRefreshOwners;
 		unsigned count = owners.load();
 		do
 		{

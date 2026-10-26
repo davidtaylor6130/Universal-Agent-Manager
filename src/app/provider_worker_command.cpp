@@ -275,6 +275,13 @@ namespace uam
 			SetError(error_out, "This provider does not support text workers.");
 			return {};
 		}
+		std::string launch_error;
+		bool private_isolation = false;
+		if (!remote_target && !runtime.PrepareLocalWorkerLaunch(app, profile, argv, launch_error, &private_isolation))
+		{
+			SetError(error_out, launch_error);
+			return {};
+		}
 
 		const std::shared_ptr<const std::filesystem::path> isolation_directory = PrepareWorkerIsolationDirectory();
 		if (!isolation_directory)
@@ -282,12 +289,12 @@ namespace uam
 			SetError(error_out, "Failed to prepare the isolated provider worker directory.");
 			return {};
 		}
-		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
+		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv, private_isolation))
 		{
 			SetError(error_out, "Failed to prepare the provider worker safety policy.");
 			return {};
 		}
-		if (!uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
+		if (!private_isolation && !uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
 		{
 			SetError(error_out, "Provider worker prompt arguments are invalid.");
 			return {};
