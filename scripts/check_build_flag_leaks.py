@@ -17,7 +17,7 @@ import fnmatch
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALLOWLIST = ROOT / 'scripts' / 'build_flag_leak_allowlist.json'
@@ -43,7 +43,7 @@ TEXT_SUFFIXES = {'.js', '.mjs', '.css', '.html', '.json', '.webmanifest', '.svg'
 # Third-party runtime files that UAM does not author; scanning them would only find Chromium text.
 SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2'}
 # Packaged copies of binaries that are scanned once in their own scope.
-SKIP_FILES = {'uam-runner', 'uam-runner.exe'}
+SKIP_FILES = {'uam-runner', 'uam-runner.exe', 'universal_agent_manager.exe'}
 SKIP_SUFFIXES = {'.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
 # A pattern entry is tested against the token around a match (up to whitespace, quotes, commas, semicolons or
 # brackets), so text from a neighbouring statement in a minified bundle cannot excuse it.
@@ -118,9 +118,10 @@ def local_path_pattern(folders):
     return re.compile('|'.join(map(re.escape, spellings)), re.IGNORECASE) if spellings else None
 
 
-def find_leaks(disabled, artifacts, local_folders=()):
+def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
     patterns = {name: re.compile('|'.join(FLAGS[name][1]), re.IGNORECASE) for name in disabled}
-    local = local_path_pattern([form for folder in local_folders for form in (Path(folder).absolute(), Path(folder).resolve())])
+    local = local_path_pattern([form for folder in local_folders for form in (Path(folder).absolute(), Path(folder).resolve())] +
+                               [PureWindowsPath(folder) if '\\' in folder or ':' in folder else PurePosixPath(folder) for folder in foreign_folders])
     leaks = []
     any_flag = re.compile('|'.join(pattern.pattern for pattern in patterns.values()), re.IGNORECASE) if patterns else None
     for scope, path, text in collect(artifacts):
@@ -192,8 +193,9 @@ def native_artifacts(build_dir, values):
     for candidate in (build_dir / 'Release' / 'universal_agent_manager.exe', build_dir / 'universal_agent_manager.exe'):
         if candidate.is_file():
             found.append(('native', candidate))
-            found.extend(('resources', path) for path in candidate.parent.iterdir()
-                         if path != candidate and path.name not in SKIP_NAMES and path.suffix.lower() not in SKIP_SUFFIXES and path.name != 'UI-V2')
+            # The executable's folder is the Windows package: scan it as one resource tree (paths such as
+            # markdown-store/... match their allowlist globs) without rescanning the executables.
+            found.append(('resources', candidate.parent))
     for runner in (build_dir / 'uam-runner', build_dir / 'Release' / 'uam-runner.exe', build_dir / 'Release' / 'uam-runner'):
         if runner.is_file() and cmake_bool(values.get('UAM_ENABLE_SSH', 'ON')):
             found.append(('runner', runner))
@@ -268,6 +270,7 @@ def main(argv=None):
     parser.add_argument('--allowlist', type=Path, default=DEFAULT_ALLOWLIST)
     parser.add_argument('--residue', type=Path, default=DEFAULT_RESIDUE, help='Reviewed exact native strings per executable')
     parser.add_argument('--record-residue', action='store_true', help='Add unexcused native matches to the residue file for review')
+    parser.add_argument('--local-path', action='append', default=[], help='Extra machine-local folder whose spelling in __FILE__ paths is ignored (for outputs copied from another machine)')
     parser.add_argument('--ui-only', action='store_true', help='Scan only the UI dist even when a build folder is given')
     args = parser.parse_args(argv)
     if not args.build_dir and not args.dist:
@@ -317,7 +320,7 @@ def main(argv=None):
         if 'max' not in entry and 'path' not in entry:
             failures.append(f'Allowlist entry without a budget: {entry}')
     residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
-    leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []))
+    leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []), args.local_path)
     leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)
     if args.record_residue:
         record_residue(args.residue, residue, leak_failures)
