@@ -54,6 +54,7 @@ import type {
   VcsCommitStatus,
   VcsType,
   ComputerUseAllowedApplication,
+  WindowsPowerShellPreference,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
@@ -141,6 +142,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   fileExplorerApplication: string
+  windowsPowerShell: WindowsPowerShellPreference
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
@@ -249,7 +251,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
-  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
+  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>) => Promise<boolean>
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
   setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>

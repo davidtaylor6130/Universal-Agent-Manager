@@ -16,7 +16,7 @@ import { defaultsForExecutionHost, withSettingsScope } from '../../utils/setting
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
-import type { CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
+import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
@@ -29,7 +29,7 @@ import {
   normalizeCliProviderIdAlias,
   providerCapabilities,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -511,6 +511,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
     fileExplorerApplication: '',
+    windowsPowerShell: 'auto' as WindowsPowerShellPreference,
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
     providerAvailability: [],
@@ -2335,14 +2336,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
-    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>): Promise<boolean> => {
+    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>): Promise<boolean> => {
       const previous = {
         ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: get().fileExplorerApplication } : {}),
+        ...(settings.windowsPowerShell !== undefined ? { windowsPowerShell: get().windowsPowerShell } : {}),
         defaultEditorPresetId: get().defaultEditorPresetId,
         editorFileAssociations: get().editorFileAssociations,
       }
       const next = {
         ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: settings.fileExplorerApplication } : {}),
+        ...(settings.windowsPowerShell !== undefined ? { windowsPowerShell: sanitizeWindowsPowerShell(settings.windowsPowerShell) } : {}),
         defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
         editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
       }
@@ -2356,6 +2359,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'setEditorSettings',
           payload: {
             ...(next.fileExplorerApplication !== undefined ? { fileExplorerApplication: next.fileExplorerApplication } : {}),
+            ...(next.windowsPowerShell !== undefined ? { windowsPowerShell: next.windowsPowerShell } : {}),
             defaultEditorPresetId: next.defaultEditorPresetId,
             fileAssociations: next.editorFileAssociations,
           },

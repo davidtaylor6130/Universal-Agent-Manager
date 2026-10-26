@@ -26,6 +26,8 @@ For focused native checks, build `uam_core_tests` and pass exact names to `scrip
 
 Unrelated CEF handler fixtures use `tests/cef_handler_fixture.h` to construct the real handler through its private test seam before either usage-history or account-allowance service is created. Configuring a private provider command or avoiding allowance actions does not isolate the ordinary constructor, which starts background readers. These fixtures exclude usage actions; usage tests require explicit isolated services. The public application constructor retains its existing startup behavior.
 
+Windows executables (the app, `uam-runner`, `uam_core_tests` and the CEF handler test executables) embed `src/uam_long_paths.manifest`. Besides long paths, it declares Windows 10 support. Without that entry, Windows reports version 6.2 (Windows 8) to the process in a signed-in desktop session, including kernel32's file version. Chromium then hits `NOTREACHED()` in its client-hint platform-version code, and CEF crashes about 4 seconds after start (`libcef.dll`, `0x80000003`). Background SSH sessions do not apply that version lie, so they hide the crash. The core case `WindowsManifestDeclaresWindows10SoCefSeesTheRealVersion` fails when the entry is missing, because Windows then reports a pre-Windows 10 version to every session type.
+
 The supported release slice has six provider implementations and the React/CEF, ACP, terminal, workspace and memory paths. Do not add excluded engines or remove a provider without explicit direction. Update the root V5 log in the same implementation commit and retain review/user acceptance flags until they are actually complete.
 
 ## Ownership and checks
