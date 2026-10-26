@@ -305,7 +305,9 @@ static bool PrepareUnboundCodexHistory(AppState& app, ChatSession& chat, const s
 		ChatSession loaded = chat;
 		if (!ChatRepository::HydrateChatMessages(app.data_root, loaded, &error) || !domain.MatchesBranchHistoryIdentity(loaded, identity))
 		{
-			error = "Could not load the unchanged complete conversation before opening its terminal.";
+			error = chat.provider_id == uam::provider_ids::kCodexCli
+			    ? "Could not load the unchanged complete Codex conversation before opening its terminal."
+			    : "Could not load the unchanged complete conversation before opening its terminal.";
 			return false;
 		}
 		chat.messages = std::move(loaded.messages);
