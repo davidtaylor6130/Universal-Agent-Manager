@@ -2193,7 +2193,6 @@ const FolderRow = memo(function FolderRow({
         >
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="workspace" icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" />
-            <SingleOnlyMenuItem noun="workspace" icon={<Brain size={14} aria-hidden />} label="Project memory" />
             <CollectionMenuItems target={folder.id} label={folder.name} targets={selectionTargets} onAdded={() => setMenuPos(null)} />
             <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" />
             <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} workspaces`} onClick={() => { setMenuPos(null); iconPicker.open('workspace', selectionTargets, `${selectionTargets.length} workspaces`) }} />

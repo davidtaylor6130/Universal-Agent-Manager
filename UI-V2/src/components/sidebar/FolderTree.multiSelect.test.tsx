@@ -232,7 +232,7 @@ describe('workspace multi-selection actions', () => {
 
   it('disables single-workspace actions with an explanation and applies the rest to every workspace', async () => {
     selectWorkspaces()
-    for (const label of ['New chat', 'Project memory', 'Review native chats', 'Change host icon', 'Rename folder']) {
+    for (const label of ['New chat', 'Review native chats', 'Change host icon', 'Rename folder']) {
       const element = item(label)
       expect(element.getAttribute('aria-disabled')).toBe('true')
       expect(document.getElementById(element.getAttribute('aria-describedby')!)?.textContent).toBe('Not available for multiple selection — select a single workspace')
