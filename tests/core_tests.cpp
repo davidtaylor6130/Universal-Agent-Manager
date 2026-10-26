@@ -5821,6 +5821,17 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 4), std::string_view("ab"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 4), std::string_view("cd"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 5), std::string_view("€cd"));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xxxx€€", 8), std::string("xxxx..."));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xx€", 3), std::string("xx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab", 0), std::string_view());
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a😀", 4), std::string_view("a"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("😀b", 4), std::string_view("b"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a\x80\x80\x80\x80\x80", 5).size(), std::size_t{2}); // Non-UTF-8 input never collapses to empty.
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));
@@ -8891,6 +8902,42 @@ UAM_TEST(ChatRepositoryDeletesStorageFilesWithSafeIdsOnly)
 	UAM_ASSERT(rejected.unsafe_chat_id);
 	UAM_ASSERT(rejected.Failed());
 	UAM_ASSERT(fs::exists(escaped_file));
+}
+
+UAM_TEST(ChatRepositoryLogsAttributablePrimaryDeletion)
+{
+	TempDir temp("uam-chat-delete-attribution");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+
+	ChatSession chat;
+	chat.id = "chat-delete-attribution";
+	chat.provider_id = "codex-cli";
+	chat.title = "Private title";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-01 00:00:01";
+	ChatDomainService().AddMessage(chat, MessageRole::User, "private prompt body");
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(fs::exists(uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, chat.id))));
+
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "user_deletion").Failed());
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "create_rollback").Failed());
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, "../escaped-attribution", "user_deletion").unsafe_chat_id);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("Chat storage delete: reason=user_deletion, chat_id=chat-delete-attribution, primary=removed, backup=removed, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete: reason=create_rollback, chat_id=chat-delete-attribution, primary=absent, backup=absent, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete refused: reason=user_deletion, unsafe chat id") != std::string::npos);
+	UAM_ASSERT(text.find("escaped-attribution") == std::string::npos);
+	UAM_ASSERT(text.find("private prompt body") == std::string::npos);
+	UAM_ASSERT(text.find("Private title") == std::string::npos);
+	UAM_ASSERT(text.find(temp.root.string()) == std::string::npos);
 }
 
 UAM_TEST(ChatRepositoryReportsSummaryDeleteFailures)

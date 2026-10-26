@@ -7,6 +7,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
@@ -79,7 +80,7 @@ void Reject(AppState& app, AcpSessionState& session, const ChatSession& chat, Js
 {
 	if (Text(state, "phase") == "failed") return;
 	state["phase"] = "failed";
-	state["error"] = std::string(reason.substr(0, 512));
+	state["error"] = std::string(uam::strings::Utf8Prefix(reason, 512));
 	for (auto it = state["requests"].begin(); it != state["requests"].end(); ++it) RetireRequest(session, it.key(), *it);
 	state["requests"] = Json::object();
 	AgentRunScheduler::RejectManagedReadPolicy(app, session, chat, CapturedScope(state), Text(state, "error"));

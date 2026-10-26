@@ -376,7 +376,7 @@ namespace uam
 				if (made_progress != nullptr) *made_progress = true;
 				stderr_tail.append(buffer.data(), static_cast<std::size_t>(count));
 				if (stderr_tail.size() > 4096)
-					stderr_tail.erase(0, stderr_tail.size() - 4096);
+					stderr_tail = std::string(uam::strings::Utf8Suffix(stderr_tail, 4096));
 			}
 			return true;
 		}

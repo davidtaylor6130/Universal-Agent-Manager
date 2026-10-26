@@ -31,7 +31,7 @@ OpenCode CLI uses V1 ACP or the checked V2 native API adapter. Common behaviour 
 | `usage` | Both | Partial | V1 token/history routes and V2 owned-turn step/result accounting, including validated totals on confirmed cancellation, exist; no independent account-quota reader is integrated, and local request counts do not establish a provider allowance. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources capture the host's progressive MCP preference; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | SSH helper route exists; [V2 launch admission](#version-compatibility) uses the checked executing host, and neither source preparation nor a desktop-only change verifies deployed helpers or live platform/CLI combinations. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; [V2 launch admission](#version-compatibility) uses the checked executing host, and neither source preparation nor a desktop-only change verifies deployed helpers or live platform/CLI combinations. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 
 ## Version compatibility
 

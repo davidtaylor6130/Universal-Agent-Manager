@@ -15,6 +15,7 @@ import { deleteSessionsFromState } from './sessionsSlice'
 import { discardPendingPushesForChats } from '../push/pushBuffers'
 import { removeChatsFromGrid } from '../../utils/chatGridStorage'
 import { removeComposerDrafts } from '../../utils/composerDraftStorage'
+import { reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 
 let folderCounter = 10
 
@@ -35,10 +36,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ workspaceDeletionError: 'A selected workspace no longer exists. Select the remaining workspaces again.' })
       return false
     }
-    const deletedSessionIds = new Set(snapshot.sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
+    let deletedFolderIds = folderIds
+    let refused = false
     let selectedChatId: string | null | undefined
+    let confirmedChatIds: string[] = []
     if (isCefContext()) {
-      const response = await sendWhenRemoteStopSettles<{ deletedChatIds?: string[]; selectedChatId?: string | null }>({
+      const response = await sendWhenRemoteStopSettles<{ deletedChatIds?: string[]; deletedFolderIds?: string[]; rejected?: DeletionRejection[]; selectedChatId?: string | null }>({
         action,
         payload: action === 'deleteFolder' ? { folderId: [...folderIds][0] } : { folderIds: [...folderIds] },
         requestId: createRequestId(action),
@@ -48,17 +51,22 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         return false
       }
       selectedChatId = response.data?.selectedChatId
+      // Workspaces refused by their safeguards stay; the rest of the selection is deleted.
+      const confirmedFolderIds = response.data?.deletedFolderIds
+      if (Array.isArray(confirmedFolderIds)) deletedFolderIds = new Set(confirmedFolderIds.filter((id) => typeof id === 'string').map((id) => id.trim()))
+      refused = reportDeletionRejections(response.data?.rejected, (id) => snapshot.folders.find((folder) => folder.id === id)?.name, 'workspaces', folderIds.size)
       // The native transaction also deletes hidden goal iterations and agent transcripts.
-      for (const id of response.data?.deletedChatIds ?? []) deletedSessionIds.add(id)
+      confirmedChatIds = response.data?.deletedChatIds ?? []
     }
+    const deletedSessionIds = new Set([...snapshot.sessions.filter((session) => session.folderId && deletedFolderIds.has(session.folderId)).map((session) => session.id), ...confirmedChatIds])
     discardPendingPushesForChats(deletedSessionIds)
     set((state) => ({
       ...deleteSessionsFromState(state, deletedSessionIds, selectedChatId),
-      folders: state.folders.filter((folder) => !folderIds.has(folder.id)),
+      folders: state.folders.filter((folder) => !deletedFolderIds.has(folder.id)),
     }))
     removeChatsFromGrid(deletedSessionIds)
     removeComposerDrafts(deletedSessionIds)
-    return true
+    return !refused
   }
 
   // Opening and refreshing share ownership: only the latest visible-library request may apply.

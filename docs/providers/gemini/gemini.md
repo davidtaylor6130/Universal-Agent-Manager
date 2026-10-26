@@ -31,7 +31,7 @@ Gemini CLI uses ACP. Common behaviour is defined once in the [provider agreement
 | `usage` | Both | Partial | Token/history and an independent local quota reader exist; current account eligibility can deny acquisition, and custom commands, remote feeds and platform acceptance remain limited. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 
 **Source:** [provider runtime](../../../src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
 

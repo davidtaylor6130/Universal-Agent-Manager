@@ -1675,6 +1675,8 @@ summary,
 .uam-menu-select__option:hover,
 .uam-menu-select__option:focus-visible { background: var(--sidebar-item-hover); }
 .uam-menu-select__option.is-selected { background: var(--accent-dim); }
+.uam-menu-select__option[aria-disabled="true"] { opacity: .5; cursor: default; }
+.uam-menu-select__option[aria-disabled="true"]:hover { background: transparent; }
 
 /* ── Tooltip ────────────────────────────────────────────────── */
 .uam-tooltip {

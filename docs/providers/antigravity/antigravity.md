@@ -31,7 +31,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `usage` | Both | Partial | Validated native step tokens reach live figures and UAM goal budgets without cumulative-result or text-estimate deltas; missing or malformed counts remain unknown, budgeted continuation holds on unverified usage, native history/context coverage remains limited, and independent local account quota-summary reads retain existing eligibility, custom-command, remote and platform limits. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 
 **Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
 

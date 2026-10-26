@@ -640,7 +640,7 @@ namespace
 		{
 			return value;
 		}
-		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + value.substr(value.size() - kMaxWorkerLogBytes);
+		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + std::string(uam::strings::Utf8Suffix(value, kMaxWorkerLogBytes));
 	}
 
 	std::string ReadFirstTitle(const fs::path& path)
