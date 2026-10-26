@@ -381,6 +381,9 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("permissionReviewerProviderId", ""));
 		candidate.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
+		// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+		candidate.excluded_provider_selections.erase("permission_reviewer_provider_id");
+		m_app.settings.excluded_provider_selections.erase("permission_reviewer_provider_id");
 	}
 	if (payload.contains("permissionReviewerModelId"))
 	{
@@ -552,6 +555,8 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		{
 			if (scope.empty()) m_app.settings.default_new_chat_provider_id = provider->id;
 			else m_app.settings.host_scoped_settings[scope].default_new_chat_provider_id = provider->id;
+			// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+			m_app.settings.excluded_provider_selections.erase(scope.empty() ? std::string("default_new_chat_provider_id") : "host:" + scope);
 		}
 	}
 

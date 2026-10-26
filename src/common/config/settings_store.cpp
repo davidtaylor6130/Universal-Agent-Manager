@@ -889,6 +889,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		}
 	}
 	result.loaded = true;
+	settings.excluded_provider_selections.clear(); // Only this file's choices may be remembered.
 
 	std::istringstream lines(text);
 	std::string line;

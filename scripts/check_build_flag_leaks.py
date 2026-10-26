@@ -41,16 +41,19 @@ OPTION_TO_FLAG = {option: name for name, (option, _) in FLAGS.items()}
 FALSE_VALUES = {'0', 'OFF', 'NO', 'FALSE', 'N', 'IGNORE', 'NOTFOUND', ''}
 TEXT_SUFFIXES = {'.js', '.mjs', '.css', '.html', '.json', '.webmanifest', '.svg', '.txt', '.toml', '.md', '.uam', '.map', '.plist', '.sha256', '.version'}
 # Third-party runtime files that UAM does not author; scanning them would only find Chromium text.
-SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2'}
+SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2', 'CMakeFiles', '_deps'}
 # Packaged copies of binaries that are scanned once in their own scope.
 SKIP_FILES = {'uam-runner', 'uam-runner.exe', 'universal_agent_manager.exe'}
-SKIP_SUFFIXES = {'.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
+SKIP_SUFFIXES = {'.pdb', '.obj', '.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
 # A pattern entry is tested against the token around a match (up to whitespace, quotes, commas, semicolons or
 # brackets), so text from a neighbouring statement in a minified bundle cannot excuse it.
-TOKEN_BREAKS = set(' \t\r\n"\'`,;()[]')
+TOKEN_BREAKS = set(' \t\r\n"\'`,;()[]=+&?!')
+TOKEN_REACH = 60  # characters a token may extend either side of the match
 PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
 # Windows wide string literals (L"...") are UTF-16LE: printable characters each followed by a zero byte.
 PRINTABLE_UTF16 = re.compile(rb'(?:[\x20-\x7e]\x00){4,}')
+# macOS and Linux wide literals are UTF-32LE.
+PRINTABLE_UTF32 = re.compile(rb'(?:[\x20-\x7e]\x00\x00\x00){4,}')
 
 
 def cmake_bool(value):
@@ -82,7 +85,8 @@ def file_strings(path):
     if path.suffix.lower() in TEXT_SUFFIXES:
         return data.decode('utf-8', errors='replace').splitlines()
     return [chunk.decode('ascii') for chunk in PRINTABLE.findall(data)] + \
-        [chunk.decode('utf-16-le') for chunk in PRINTABLE_UTF16.findall(data)]
+        [chunk.decode('utf-16-le') for chunk in PRINTABLE_UTF16.findall(data)] + \
+        [chunk.decode('utf-32-le') for chunk in PRINTABLE_UTF32.findall(data)]
 
 
 def walk(root):
@@ -133,9 +137,9 @@ def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
             for match in pattern.finditer(text):
                 start = max(0, match.start() - 60)
                 token_start, token_end = match.start(), match.end()
-                while token_start > 0 and text[token_start - 1] not in TOKEN_BREAKS:
+                while token_start > max(0, match.start() - TOKEN_REACH) and text[token_start - 1] not in TOKEN_BREAKS:
                     token_start -= 1
-                while token_end < len(text) and text[token_end] not in TOKEN_BREAKS:
+                while token_end < min(len(text), match.end() + TOKEN_REACH) and text[token_end] not in TOKEN_BREAKS:
                     token_end += 1
                 leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': text[token_start:token_end],
                               'text': text[start:match.end() + 60]})
@@ -273,6 +277,10 @@ def main(argv=None):
     parser.add_argument('--local-path', action='append', default=[], help='Extra machine-local folder whose spelling in __FILE__ paths is ignored (for outputs copied from another machine)')
     parser.add_argument('--ui-only', action='store_true', help='Scan only the UI dist even when a build folder is given')
     args = parser.parse_args(argv)
+    for folder in args.local_path:
+        form = PureWindowsPath(folder) if '\\' in folder or ':' in folder else PurePosixPath(folder)
+        if not form.is_absolute() or len(form.parts) < 3:
+            parser.error(f'--local-path {folder} must be an absolute folder at least two levels deep, or it could hide real matches.')
     if not args.build_dir and not args.dist:
         parser.error('Pass --build-dir or --dist.')
 
@@ -317,7 +325,7 @@ def main(argv=None):
     for entry in entries:
         if not entry.get('reason', '').strip():
             failures.append(f'Allowlist entry without a justification: {entry}')
-        if 'max' not in entry and 'path' not in entry:
+        if 'max' not in entry and ('pattern' in entry or 'match' in entry or 'path' not in entry):
             failures.append(f'Allowlist entry without a budget: {entry}')
     residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
     leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []), args.local_path)

@@ -106,6 +106,16 @@ int main()
 			Check(text.find(key) != std::string::npos, "a provider choice naming an excluded provider is saved unchanged");
 		Check(text.find("defaultProviderId") != std::string::npos, "a host default naming an excluded provider is saved unchanged");
 	}
+	{
+		// Reloading a file that now names an included provider forgets the earlier remembered choice.
+		AppSettings reused;
+		(void)SettingsStore::Load(file, reused);
+		const std::filesystem::path included = root / "included.txt";
+		AppSettings plain;
+		plain.active_provider_id = "claude-cli";
+		Check(SettingsStore::Save(included, plain) && SettingsStore::Load(included, reused).loaded, "a settings file naming only included providers loads");
+		Check(reused.excluded_provider_selections.empty(), "a reload forgets choices remembered from an earlier file");
+	}
 	std::error_code ignored;
 	std::filesystem::remove_all(root, ignored);
 
