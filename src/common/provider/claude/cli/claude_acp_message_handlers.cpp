@@ -372,7 +372,7 @@ namespace uam::acp_detail
 			}
 			if (!known_parent) return true;
 			const std::string identity = JsonDiagnosticStringValue(message, "uuid");
-			if (!identity.empty() && !session.claude_seen_child_messages.insert(identity).second) return true;
+			if (!identity.empty() && !session.claude_seen_child_messages.Insert(identity)) return true;
 			AcpToolCallState& tool = RestoreClaudeTool(session, chat, parent);
 			tool.is_sub_agent = true;
 			if (tool.title.empty()) tool.title = "Sub-agent";
@@ -514,7 +514,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 	if (JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !identity.empty() &&
-	    !session.claude_seen_parent_messages.insert(identity).second) return;
+	    !session.claude_seen_parent_messages.Insert(identity)) return;
 	const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(assistant_message, "content"));
 	const bool child_message = !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
@@ -727,7 +727,7 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	bool completion_result_fresh = false;
 	if (!result_uuid.empty())
 	{
-		const bool fresh = session.claude_seen_parent_messages.insert("result:" + result_uuid).second;
+		const bool fresh = session.claude_seen_parent_messages.Insert("result:" + result_uuid);
 		completion_result_fresh = fresh;
 		if (session.manual_compaction_pending && !fresh)
 			return;

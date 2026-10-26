@@ -167,6 +167,38 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ loadSessionMessages: originalLoad, chatHistoryReadBySessionId: {} }) }
   })
 
+  it('shows a refreshing divider over loaded messages only while a slow explicit native refresh runs', () => {
+    vi.useFakeTimers()
+    const loaded: Message[] = [{ id: 'kept', role: 'assistant', content: 'Already loaded answer', createdAt: new Date(0) } as Message]
+    const read = (refreshNative: boolean, messages: Message[] = loaded, birthOffset = 0) => useAppStore.setState(state => ({
+      messages: { 'chat-1': messages }, chatHistoryErrorBySessionId: {},
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 1 })),
+      chatHistoryReadBySessionId: { 'chat-1': { requestId: 'refresh', birth: state.sessions[0].createdAt.getTime() + birthOffset, ...(refreshNative ? { refreshNative } : {}) } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const render = () => act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const open = () => host.querySelector('.chat-status-strip[data-state="open"]')
+    try {
+      read(true); render()
+      expect(open()).toBeNull() // A refresh that answers quickly never flashes the divider.
+      act(() => { vi.advanceTimersByTime(400) })
+      const strip = open()
+      expect(strip?.getAttribute('role')).toBe('status')
+      expect(strip?.textContent).toContain('Refreshing history')
+      expect(host.textContent).toContain('Already loaded answer')
+      expect(host.querySelector('.conversation-skeleton')).toBeNull()
+      read(false); render() // An ordinary saved-page read over loaded messages stays quiet.
+      act(() => { vi.advanceTimersByTime(400) })
+      expect(open()).toBeNull()
+      read(true, loaded, -1); render() // A read owned by an earlier chat birth is not this chat's work.
+      act(() => { vi.advanceTimersByTime(400) })
+      expect(open()).toBeNull()
+      read(true, []); render() // An empty pane keeps the loading skeleton instead.
+      act(() => { vi.advanceTimersByTime(400) })
+      expect(open()).toBeNull()
+      expect(host.querySelector('.conversation-skeleton')).not.toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); vi.useRealTimers(); useAppStore.setState({ chatHistoryReadBySessionId: {}, messages: {} }) }
+  })
+
   it('does not claim an old-birth read is work on the current chat', () => {
     useAppStore.setState(state => ({ messages: {}, chatHistoryErrorBySessionId: {},
       sessions: state.sessions.map(session => ({ ...session, messageCount: 2 })),
@@ -1762,6 +1794,20 @@ describe('ChatView', () => {
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
+
+    // Motion Off jumps to the bottom instantly.
+    document.documentElement.setAttribute('data-motion', 'off')
+    try {
+      await act(async () => {
+        transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await new Promise(window.requestAnimationFrame)
+      })
+      act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'end', behavior: 'auto' })
+    } finally {
+      document.documentElement.removeAttribute('data-motion')
+    }
 
     act(() => root.unmount())
     host.remove()

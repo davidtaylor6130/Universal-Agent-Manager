@@ -99,7 +99,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   chatHistoryErrorBySessionId: Record<string, string>
   // Failed request context changes notice wording only, never native save authority.
   chatHistoryErrorWasRefreshBySessionId: Record<string, boolean>
-  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
+  /** refreshNative marks an explicit native refresh, shown while it runs even over loaded messages. */
+  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number; refreshNative?: boolean }>
   chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
@@ -227,7 +228,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
   editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
-  setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
+  /** `quiet` leaves failure reporting to a caller that names each chat. */
+  setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>

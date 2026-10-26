@@ -22,8 +22,8 @@
 .uam-store-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-up); }
 
 /* Add is the one primary action only while the library is empty. */
-.uam-iconbtn.uam-store-add--primary { background: var(--accent); border-color: transparent; color: var(--bg); }
-.uam-iconbtn.uam-store-add--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--bg); }
+.uam-iconbtn.uam-store-add--primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+.uam-iconbtn.uam-store-add--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--on-accent); }
 
 /* Long sidebar and folder labels: one line, full text on hover. */
 .uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

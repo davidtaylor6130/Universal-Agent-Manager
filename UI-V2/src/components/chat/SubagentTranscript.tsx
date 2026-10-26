@@ -7,6 +7,7 @@ import { MessageNavigationRail } from './MessageNavigationRail'
 import { PersistedConversationHistory } from './PersistedConversationMessage'
 import type { PassiveHistoryView } from './usePassiveHistoryWindow'
 import { readSubagentViewportVisit, rememberSubagentViewportVisit } from '../../utils/subagentViewportVisits'
+import { alignRowStart } from '../../utils/motionStorage'
 
 export const TRANSCRIPT_BATCH = 20
 const REVEAL_EDGE_PX = 320
@@ -63,6 +64,8 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
   const prior = useRef({ version: contentVersion, start: nativeStartIndex })
   const olderSerial = useRef(0)
   const olderInFlight = useRef(false)
+  // A smooth rail jump owns the scroll until `scrollend`; reveal-older and tail intent wait so they cannot cancel it.
+  const jumping = useRef(false)
   // Automatic (layout/fill) reads stay off at this native start until user intent or recovery.
   const autoHeldAt = useRef<number | null>(null)
   const start = transcriptWindowStart(count, nativeStartIndex, anchor)
@@ -137,7 +140,7 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
         else if (!olderInFlight.current) target.current = null
       } else {
         const row = region.querySelector<HTMLElement>(`[data-message-index="${target.current}"]`)
-        if (row || (anchor !== null && anchor <= target.current)) { row?.scrollIntoView?.({ block: 'start' }); target.current = null }
+        if (row || (anchor !== null && anchor <= target.current)) { alignRow(row); target.current = null }
         else setAnchor(target.current)
       }
     } else if (prepend.current) {
@@ -149,7 +152,7 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
     toTail.current = false
     prepend.current = null
     // Only an actual programmatic alignment may recompute intent here; user scroll owns every other change.
-    if (target.current === null && positioned) followTail.current = nearTail(region)
+    if (target.current === null && positioned && !jumping.current) followTail.current = nearTail(region)
     checkpoint(region)
     // A short window fills itself one bounded batch at a time; scroll drives every later reveal.
     if (target.current === null && region.scrollHeight <= region.clientHeight + REVEAL_EDGE_PX) revealOlder(false)
@@ -159,14 +162,20 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
   const onScroll = useCallback(() => {
     const region = scrollRef.current
     if (!region) return
-    followTail.current = nearTail(region)
+    if (!jumping.current) followTail.current = nearTail(region)
     if (followTail.current) setNewContent(false)
     // Leaving the tail pins the rendered rows so live appends cannot move what the reader is looking at.
     // ponytail: revealed rows stay rendered until Show latest/remount, as in the main transcript; trim if DOM size matters.
     else if (live.current.anchor === null) setAnchor(live.current.absoluteStart)
-    if (region.scrollTop < REVEAL_EDGE_PX) revealOlder(true)
+    if (!jumping.current && region.scrollTop < REVEAL_EDGE_PX) revealOlder(true)
     checkpoint(region)
   }, [checkpoint, revealOlder])
+
+  /** Aligns a rail target row, smoothly unless Motion is Off or reduced. */
+  const alignRow = useCallback((row: HTMLElement | null | undefined) => {
+    const region = scrollRef.current
+    if (row && region && alignRowStart(region, row, () => { jumping.current = false; onScroll() })) jumping.current = true
+  }, [onScroll])
 
   /** Message-navigation rail target: reveals rows down to `index` (reading existing older pages if needed), then aligns it. */
   const revealIndex = useCallback((index: number) => {
@@ -174,7 +183,7 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
     jumpPages.current = 0
     const loaded = index >= live.current.nativeStartIndex
     if (loaded && index >= live.current.absoluteStart) {
-      scrollRef.current?.querySelector<HTMLElement>(`[data-message-index="${index}"]`)?.scrollIntoView?.({ block: 'start' })
+      alignRow(scrollRef.current?.querySelector<HTMLElement>(`[data-message-index="${index}"]`))
       return
     }
     target.current = index
@@ -182,7 +191,7 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
     // Reveal every loaded row first; the layout pass then reads existing older pages toward the target.
     else if (live.current.absoluteStart > live.current.nativeStartIndex) setAnchor(live.current.nativeStartIndex)
     else { ++jumpPages.current; revealOlder(true) }
-  }, [revealOlder])
+  }, [alignRow, revealOlder])
 
   const retryOlder = useCallback(() => { autoHeldAt.current = null; revealOlder(true) }, [revealOlder])
 

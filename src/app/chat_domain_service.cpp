@@ -1147,7 +1147,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			app.selected_chat_index = FindChatIndexById(app, previous_selected_chat_id);
 			RefreshRememberedSelection(app);
 		}
-		(void)ChatRepository::DeleteChatStorageFiles(app.data_root, branch.id);
+		(void)ChatRepository::DeleteChatStorageFiles(app.data_root, branch.id, "branch_settings_rollback");
 		app.status_line = "Failed to persist branch selection.";
 		return false;
 	}

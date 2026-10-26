@@ -65,6 +65,8 @@ Deletion publishes transient `deletionProgress` through full updates and fingerp
 
 Progress and final publication require the current task, bridge lifetime and data root. Committed cleanup retains its owned snapshot after query or bridge closure. Terminal paths omit progress, and committed deletion still returns success with a recovery status when cleanup cannot finish. Native cleanup failures retain transaction evidence for restart recovery. Private fixtures are in `tests/deletion_progress_tests.cpp`; this contract does not record user deletion acceptance.
 
+Multi-selection deletion (`deleteSessions`, `deleteFolders`) preflights each requested branch family or workspace with the ordinary single-target safeguards, then stages the admitted union as one transaction. The reply adds `deletedFolderIds` and `rejected` (`{id, error}` per refused family root or workspace) to `deletedChatIds`; a request with nothing admitted fails with its own safeguard message, or a combined per-item message when several were refused. Fixtures are in `tests/deletion_progress_tests.cpp` and `FolderTree.multiSelect.test.tsx`.
+
 Native history refresh applies deletion tombstones within the data root and workspace scope before overlay reconciliation or direct saves. Unreadable deletion records stop refresh; when tombstones exist, an unscoped native session also stops refresh. Asynchronous native history request identities include the data root so an old-root response cannot populate the current database.
 
 ## Sidebar render ownership

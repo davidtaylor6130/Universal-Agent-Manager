@@ -208,6 +208,36 @@ UAM_TEST(UamControlHeartbeatsPreserveToolQuotaAndRootRevocationRemovesDescendant
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlReplayWindowEvictsOnlyTheOldestRequestId)
+{
+	uam_test::TempDir temp("control-replay-window");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat; chat.id = "replay-chat"; chat.provider_id = "opencode-cli"; chat.execution_host_id = "local"; chat.uam_control_enabled = true;
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::UamControlService::Initialize(app));
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back(); session.chat_id = chat.id; session.provider_id = chat.provider_id; session.running = true;
+	nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats.front(), "session/new", setup));
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const auto call = [&](const std::string& id, const std::string& method) {
+		return uam::UamControlService::HandleRequestForTests(app, session.uam_control_capability_id, {{"requestId", id}, {"method", method}, {"arguments", {{"connectionId", "connection"}}}}, now);
+	};
+	const nlohmann::json replay{{"ok", false}, {"error", "Control request replay was rejected."}};
+	UAM_ASSERT(call("oldest", "_mcp_initialized").value("ok", false));
+	constexpr int kWindow = 256; // kMaxSeenRequests: one more than the window evicts exactly one ID.
+	for (int index = 0; index < kWindow; ++index)
+		UAM_ASSERT(call("heartbeat-" + std::to_string(index), "_mcp_heartbeat").value("ok", false));
+	UAM_ASSERT_EQ(app.uam_control_capabilities.front().seen_request_ids.size(), std::size_t{kWindow});
+	UAM_ASSERT_EQ(app.uam_control_capabilities.front().seen_request_order.size(), std::size_t{kWindow});
+	for (int index = kWindow - 1; index >= 0; --index)
+		UAM_ASSERT_EQ(call("heartbeat-" + std::to_string(index), "_mcp_heartbeat"), replay);
+	UAM_ASSERT(call("oldest", "_mcp_initialized").value("ok", false));
+	UAM_ASSERT_EQ(call("heartbeat-1", "_mcp_heartbeat"), replay);
+	UAM_ASSERT(call("heartbeat-0", "_mcp_heartbeat").value("ok", false));
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(FullFrontendStatePushDoesNotReloadAnEntireLongTranscript)
 {
 	uam::AppState app;

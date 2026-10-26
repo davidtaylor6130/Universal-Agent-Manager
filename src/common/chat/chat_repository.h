@@ -323,7 +323,8 @@ class ChatRepository
 	/// <summary>Deletes only the unchanged temporary child owned by the specified parent.</summary>
 	static bool DeleteTemporaryChatIfRevision(const std::filesystem::path& data_root, std::string_view chat_id, std::string_view parent_id, std::string_view expected_revision);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>
-	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
+	/// Every call logs its caller reason and primary/backup outcome so an absent primary is attributable.
+	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id, std::string_view reason = "unspecified");
 
   private:
 	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr, std::string* saved_revision = nullptr, PreparedChatPublication* publication = nullptr, SavedChatPrimaryWitness* primary_witness = nullptr);

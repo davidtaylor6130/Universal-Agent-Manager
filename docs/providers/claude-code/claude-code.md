@@ -6,7 +6,7 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Partial | Native stream input normalises into UAM messages and retains durable admission without RPC-only correlation for native envelopes; ordinary SSH image delivery has private helper-backed verification, while failure controls and broader acceptance remain pending. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
+| `structured-chat` | Both | Partial | Native stream input normalises into UAM messages and retains durable admission without RPC-only correlation for native envelopes; repeated parent, child and result envelopes are dropped by native identity within the most recent 4,096 per process, so memory stays bounded; ordinary SSH image delivery has private helper-backed verification, while failure controls and broader acceptance remain pending. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves the bound session and existing history; live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |
@@ -31,6 +31,6 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 | `usage` | Both | Partial | Token/history, declared allowance events and independent local OAuth usage reads exist; custom commands, remote acquisition and platform acceptance remain limited. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | Private helper-backed ordinary image Send verifies launch, native initialization, durable input and saved response; same-process indexed retained-image Retry is verified privately, and cold resume and live platform/CLI combinations remain pending. |
+| `remote-execution` | Both | Needs verification | Private helper-backed ordinary image Send verifies launch, native initialization, durable input and saved response; same-process indexed retained-image Retry is verified privately, and cold resume and live platform/CLI combinations remain pending. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 
 **Source:** [provider runtime](../../../src/common/provider/claude/cli/claude_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.

@@ -3,6 +3,7 @@
 #include "remote/runner_startup.h"
 #include "test_harness.h"
 #include "bootstrap_metadata/windows_command_assertions.h"
+#include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"

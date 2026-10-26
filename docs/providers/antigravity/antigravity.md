@@ -13,7 +13,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching is in scope; exact context replay and empty-chat behaviour retain the shared implementation gaps. |
 | `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |
-| `mcp-connections` | Both | Partial | Private additional-directory setup exists; discovery does not establish permission to invoke tools. |
+| `mcp-connections` | Both | Partial | Private additional-directory setup exists; discovery does not establish permission to invoke tools. Native Plan mode ignores UAM’s [read-only tool hint](../uam-tools.md), so Plan children cannot call UAM read tools. |
 | `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
 | `attachments` | Both | Partial | Ordinary files remain provider-host references; structured native image input is explicitly unavailable rather than silently discarded. Shared input validation follows the [admission agreement](../attachments.md#input-admission), including native admission. UAM also supplies [quoted context snapshots](../attachments.md) with authored messages. |
 | `compaction` | Both | Partial | Recent native TUI versions expose compact while structured stream input has no safe manual compaction control or implemented UAM equivalent. |
@@ -31,7 +31,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `usage` | Both | Partial | Validated native step tokens reach live figures and UAM goal budgets without cumulative-result or text-estimate deltas; missing or malformed counts remain unknown, budgeted continuation holds on unverified usage, native history/context coverage remains limited, and independent local account quota-summary reads retain existing eligibility, custom-command, remote and platform limits. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. Shared UAM [bootstrap failure classification](../../remote-environments/ssh.md#bootstrap-failures) has passing isolated native probe regressions; helper delivery and live acceptance remain unverified. |
 
 **Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.
 

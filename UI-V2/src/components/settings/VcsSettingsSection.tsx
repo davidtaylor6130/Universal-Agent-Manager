@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Button, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
 export interface VcsSettingsSectionHandle { requestLeave: (next: () => void) => void }
 
@@ -72,7 +72,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}
     <div className="flex justify-end gap-2">
       <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved); setError('') }}>Discard</Button>
-      <Button size="sm" variant="primary" disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save VCS settings'}</Button>
+      <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>
     </div>
     {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved VCS changes?</span><div className="flex gap-2">
       <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" disabled={saving} onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
