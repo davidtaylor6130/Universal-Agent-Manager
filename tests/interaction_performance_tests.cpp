@@ -261,6 +261,7 @@ namespace
 	// on the shared, heavily loaded build host the same binary measured 230-446 ms/s between runs, so a
 	// wall-clock limit only measured host load. Its deterministic push/rebuild counts are the regression gate
 	// (they fail without the throttle fixes), and CustomPngDataUrlIsReusedUntilTheIconFileChanges guards the icon cache.
+	// The structural slice comparison is not gated; a revert would show only in the printed figure.
 
 	std::string FixturePng(std::size_t size)
 	{
@@ -417,7 +418,6 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 	constexpr int kTicks = 62;
 	constexpr std::chrono::milliseconds kTick{16};
 	const double window_seconds = std::chrono::duration<double>(kTicks * kTick).count();
-	const int windows = static_cast<int>((kTicks * kTick) / std::chrono::milliseconds(100)) + 1;
 	double per_second = 0.0;
 	std::vector<double> calls;
 	int pushes = 0;
@@ -439,10 +439,11 @@ UAM_TEST(PerformanceStreamingStatePushTick)
 			clock.Advance(kTick);
 		}
 
-		// Three streaming chats share one 100 ms window each: at most one push per window per chat (plus the first),
-		// and quiet ticks rebuild only when a deferred summary is due.
-		UAM_ASSERT(run_pushes <= windows + 1);
-		UAM_ASSERT(static_cast<int>(run_calls.size()) <= kTicks / 2 + windows);
+		// The three streaming chats share one 100 ms window: pushes land on ticks 0, 7, 14 ... 56 (every 112 ms),
+		// so 9 pushes; rebuilds are the 31 streamed ticks plus the quiet ticks 7, 21, 35 and 49 that are due.
+		// Without the background-chat throttle pushes rise to ~31; rebuilding every deferred quiet tick gives ~58.
+		UAM_ASSERT_EQ(run_pushes, 9);
+		UAM_ASSERT_EQ(run_calls.size(), std::size_t{35});
 
 		// Final streamed state must reach the frontend: flush deferred work, then nothing may remain unsent.
 		for (int tick = 0; tick < 20 && uam::HasDeferredStatePush(); ++tick)
