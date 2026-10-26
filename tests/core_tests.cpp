@@ -34,6 +34,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
+#include <versionhelpers.h>
 #endif
 
 #if defined(__APPLE__)
@@ -5050,6 +5051,12 @@ UAM_TEST(IoUtilsCommitsFirstWriteAndCleansReplacementTemps)
 }
 
 #if defined(_WIN32)
+UAM_TEST(WindowsManifestDeclaresWindows10SoCefSeesTheRealVersion)
+{
+	// The app embeds this same manifest; without its Windows 10 entry Chromium reads 6.2 and crashes on start-up.
+	UAM_ASSERT(IsWindows10OrGreater());
+}
+
 /// <summary>Remove only this test's fresh temporary tree through an extended path, including on assertion failure.</summary>
 class ScopedNativeTempCleanup
 {
