@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <memory>
@@ -24,6 +25,7 @@ namespace uam::gemini
 namespace uam::native_assets
 {
 	class PayloadBudget;
+	class InlinePayload;
 }
 
 enum class GeminiHistoryParseStatus
@@ -52,6 +54,23 @@ struct GeminiHistoryParseContext
 	static constexpr std::size_t kMaxUriBytes = 16U * 1024U;
 	GeminiHistoryParseContext();
 	std::shared_ptr<uam::native_assets::PayloadBudget> payload_budget;
+	// Optional owner armed by the producer before parsing. Returned payloads
+	// alias this owner so copies outside the discovery result retain its lease.
+	// Only fresh originals enter its fixed slots; aliases cannot be fed back to
+	// form a cycle, and no retention allocation can fail after payload creation.
+	struct RetainedPayloads
+	{
+		RetainedPayloads() = default;
+		RetainedPayloads(const RetainedPayloads&) = delete;
+		RetainedPayloads& operator=(const RetainedPayloads&) = delete;
+	  private:
+		friend struct GeminiHistoryParseContext;
+		std::array<std::shared_ptr<const uam::native_assets::InlinePayload>, kMaxAttachments> originals_;
+		std::size_t count_ = 0;
+	};
+	std::shared_ptr<RetainedPayloads> payload_retirement;
+	std::shared_ptr<const uam::native_assets::InlinePayload> MakePayload(std::string&& encoded, std::string mime, std::string& error, std::stop_token stop);
+	std::string RetirementError();
 	std::stop_token cancel;
 	bool AdmitMetadata(std::size_t bytes, std::string& error);
 
@@ -59,6 +78,7 @@ struct GeminiHistoryParseContext
 	std::mutex mutex_;
 	std::size_t attachments_ = 0;
 	std::size_t metadata_bytes_ = 0;
+	std::string retirement_error_;
 };
 
 struct GeminiJsonHistoryStoreOptions
@@ -88,6 +108,6 @@ class GeminiJsonHistoryStore
 	static bool SaveFile(const std::filesystem::path& file_path, const ChatSession& chat);
 };
 
-std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token = {});
+std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token = {}, const std::shared_ptr<GeminiHistoryParseContext>& context = {});
 
 std::vector<ProviderChatSource> DiscoverGeminiTmpChatSources(std::string* error_out = nullptr, std::stop_token stop_token = {});
