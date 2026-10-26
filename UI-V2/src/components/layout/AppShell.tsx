@@ -50,6 +50,8 @@ import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup, relativeNotificationTime } from '../../utils/notificationTime'
+import { isSshHost } from '../../utils/remoteWorkspace'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
@@ -248,7 +250,7 @@ function remoteConnectionIssueSignature(state: ReturnType<typeof useAppStore.get
   const hosts = new Map(state.executionHosts.map((host) => [host.id, host]))
   const signature: string[] = []
   for (const host of state.executionHosts) {
-    if (host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
+    if (isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
       signature.push(['host', host.id, host.label, host.runnerStatus].join('\0'))
     }
   }
@@ -272,7 +274,7 @@ function remoteConnectionIssues(
   cliBindings: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'],
 ): RemoteConnectionNotification[] {
   const hosts = new Map(executionHosts.map((host) => [host.id, host]))
-  const issues = executionHosts.flatMap((host) => host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
+  const issues = executionHosts.flatMap((host) => isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
     id: `remote-host-${host.id}-${host.runnerStatus}`,
     connectionKey: `host-${host.id}`,
     hostLabel: host.label,
@@ -606,7 +608,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
   const updateCount = monitor.updates.length
-  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || update.remoteHostId).length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || (SSH_ENABLED && update.remoteHostId)).length
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton

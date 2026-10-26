@@ -1,4 +1,5 @@
 #include "app/local_chat_bundle_service.h"
+#include "common/provider/excluded_provider_data.h"
 
 #include "app/runtime_orchestration_services.h"
 
@@ -502,6 +503,15 @@ namespace uam
 			{
 				return {};
 			}
+#if !UAM_ALL_PROVIDERS_INCLUDED
+			{
+				// Export reads the disk itself, so it leaves out the chats this build hides; they stay on disk unchanged.
+				std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(data_root);
+				std::unordered_set<std::string> hidden;
+				for (const ChatSession& chat : uam::excluded_provider_data::TakeChats(summaries)) hidden.insert(chat.id);
+				std::erase_if(chat_ids, [&](const std::string& id) { return hidden.contains(id); });
+			}
+#endif
 			std::vector<ExportCandidate> candidates;
 			candidates.reserve(chat_ids.size());
 			std::size_t total_bytes = 0;

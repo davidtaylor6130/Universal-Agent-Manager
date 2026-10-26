@@ -6,7 +6,7 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 
 const features = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
-vi.mock('../../config/buildFeatures', () => features)
+vi.mock('../../config/buildFeatures', async importOriginal => ({ ...await importOriginal<typeof import('../../config/buildFeatures')>(), get COMPUTER_USE_ENABLED() { return features.COMPUTER_USE_ENABLED } }))
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }))
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 

@@ -6,12 +6,14 @@ import copilotLogo from '../../assets/provider-logos/copilot.svg'
 import opencodeLogo from '../../assets/provider-logos/opencode.svg'
 import antigravityLogo from '../../assets/provider-logos/antigravity.svg'
 import geminiLogo from '../../assets/provider-logos/gemini-cli.png'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import {
   ANTIGRAVITY_CLI_PROVIDER_ID,
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
   DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
 } from '../../utils/providerMetadata'
 
@@ -23,13 +25,16 @@ interface ProviderLogoProps {
 }
 
 export function ProviderLogo({ providerId, size = 16, style, className }: ProviderLogoProps) {
-  const codex = providerId === CODEX_CLI_PROVIDER_ID
-  const claude = providerId === CLAUDE_CLI_PROVIDER_ID
-  const opencode = providerId === OPENCODE_CLI_PROVIDER_ID
-  const copilot = providerId === COPILOT_CLI_PROVIDER_ID
-  const gemini = !providerId || providerId === DEFAULT_PROVIDER_ID
+  // Each check is guarded by its build flag so an excluded provider's logo file is never bundled.
+  const id = providerId || DEFAULT_PROVIDER_ID
+  const codex = CODEX_ENABLED && id === CODEX_CLI_PROVIDER_ID
+  const claude = CLAUDE_ENABLED && id === CLAUDE_CLI_PROVIDER_ID
+  const opencode = OPENCODE_ENABLED && id === OPENCODE_CLI_PROVIDER_ID
+  const copilot = COPILOT_ENABLED && id === COPILOT_CLI_PROVIDER_ID
+  const antigravity = ANTIGRAVITY_ENABLED && id === ANTIGRAVITY_CLI_PROVIDER_ID
+  const gemini = GEMINI_ENABLED && id === GEMINI_CLI_PROVIDER_ID
   const logoSrc = codex ? codexLogo : claude ? claudeLogo : opencode ? opencodeLogo : copilot ? copilotLogo
-    : providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? antigravityLogo : gemini ? geminiLogo : ''
+    : antigravity ? antigravityLogo : gemini ? geminiLogo : ''
 
   return (
     <span

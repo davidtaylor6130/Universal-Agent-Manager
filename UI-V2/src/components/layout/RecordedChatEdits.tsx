@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { Button, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import '../shared/review.css'
+import { CODEX_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 
 function receiptStatus(receipt: ChatFileChangeReceipt): string {
   if (receipt.destinationPath) return 'R'
@@ -75,7 +76,7 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
     setLoading(false)
     if (failure) { setError(failure); return }
     if (data?.chatId !== chatId || data.scope !== 'recorded-provider-edits' || !Array.isArray(data.receipts) ||
-      data.receipts.some((item) => !item || typeof item !== 'object' || item.chatId !== chatId || item.providerId !== 'codex-cli' || typeof item.path !== 'string' || typeof item.patch !== 'string' || typeof item.destinationPath !== 'string' ||
+      data.receipts.some((item) => !item || typeof item !== 'object' || item.chatId !== chatId || item.providerId !== CODEX_CLI_PROVIDER_ID || typeof item.path !== 'string' || typeof item.patch !== 'string' || typeof item.destinationPath !== 'string' ||
         !Number.isSafeInteger(item.messageIndex) || item.messageIndex < 0 || typeof item.toolCallId !== 'string' || typeof item.messageCreatedAt !== 'string' ||
         !(typeof item.kind === 'string' || item.kind !== null && typeof item.kind === 'object' && !Array.isArray(item.kind)))) {
       setError('Recorded chat edits returned an invalid response.')

@@ -1325,6 +1325,9 @@ namespace uam
 
 		std::vector<ChatSession> chats;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
+		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
+		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
+		std::vector<ChatSession> excluded_provider_chats;
 		std::vector<AgentRun> agent_runs;
 		// Read-only restart metadata, never an execution or capacity inventory.
 		std::shared_ptr<const ManagedInitialHistoryCatalogue> managed_initial_history;

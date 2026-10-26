@@ -89,15 +89,26 @@ namespace uam::central_configuration
 				if (entry.contains("kind") && (!entry["kind"].is_string() || entry["kind"] != "preference"))
 				{ error = "Unknown provider MCP setting kind."; return false; }
 				item.is_preference = entry.contains("kind");
-				if (item.is_preference && (item.provider_id != provider_ids::kOpenCodeCli || item.server_id != kOpenCodeProgressiveMcpSetting))
+				// A build that excludes providers keeps their saved switches as inert data; McpEnabled is only asked about included providers.
+				const bool retained = uam::provider_ids::IsRetainedExcludedProviderId(item.provider_id);
+				const bool known = uam::provider_ids::IsKnownCliProviderId(item.provider_id) || retained;
+				if (!retained && item.is_preference && (item.provider_id != provider_ids::kOpenCodeCli || item.server_id != kOpenCodeProgressiveMcpSetting))
 				{ error = "Unknown provider preference."; return false; }
-				if (!uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, item.provider_id) || !scopes.emplace(item.provider_id, item.execution_host_id, item.server_id, item.is_preference).second) { error = "Provider MCP settings contain an unknown provider or duplicate scope."; return false; }
+				if (!known || !scopes.emplace(item.provider_id, item.execution_host_id, item.server_id, item.is_preference).second) { error = "Provider MCP settings contain an unknown provider or duplicate scope."; return false; }
 				parsed.mcp_overrides.push_back(std::move(item));
 			}
 		}
 		configuration = std::move(parsed);
 		return true;
 	}
+	/// <summary>The interface edits included providers only, so saved switches of excluded providers carry over unchanged.</summary>
+	inline void KeepExcludedProviderOverrides(const CentralProviderConfiguration& previous, CentralProviderConfiguration& next)
+	{
+		std::erase_if(next.mcp_overrides, [](const ProviderMcpOverride& entry) { return uam::provider_ids::IsRetainedExcludedProviderId(entry.provider_id); });
+		for (const ProviderMcpOverride& entry : previous.mcp_overrides)
+			if (uam::provider_ids::IsRetainedExcludedProviderId(entry.provider_id)) next.mcp_overrides.push_back(entry);
+	}
+
 	/// Per-provider host settings affect only subsequent launches; chat permissions remain separate.
 	inline bool McpEnabled(const CentralProviderConfiguration& configuration, std::string_view provider, std::string_view host, std::string_view server, bool fallback)
 	{

@@ -1,4 +1,5 @@
 #include "cef/uam_query_handler.h"
+#include "common/provider/excluded_provider_data.h"
 #include "cef/uam_query_handler_async.h"
 
 #include "app/chat_domain_service.h"
@@ -14,6 +15,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace uam::query_handler_async;
@@ -179,11 +181,28 @@ void UamQueryHandler::HandleImportLocalChats(
 			    }
 			    imported_summaries->push_back(std::move(*summary));
 		    }
+		    // An excluded provider's chats are saved for a fuller build but do not exist here, so they are not reported.
+		    std::vector<ChatSession> visible = *imported_summaries;
+		    std::unordered_set<std::string> hidden;
+		    for (const ChatSession& chat : uam::excluded_provider_data::TakeChats(visible)) hidden.insert(chat.id);
+		    if (!hidden.empty())
+		    {
+			    std::erase_if(import_result->items, [&](const uam::LocalChatBundleImportItem& item)
+			    {
+				    if (!item.imported || !hidden.contains(item.imported_id)) return false;
+				    if (item.renamed) --import_result->renamed_count;
+				    return true;
+			    });
+			    import_result->imported_count -= hidden.size();
+			    import_result->total_count -= hidden.size();
+		    }
 		    return AsyncSuccess(SerializeImportResult(*import_result));
 	    },
 	    [live_app, browser, imported_summaries](AsyncCefResult& result) {
 		    if (!result.ok || imported_summaries->empty()) return;
 		    bool changed = false;
+		    for (ChatSession& hidden : uam::excluded_provider_data::TakeChats(*imported_summaries))
+			    live_app->excluded_provider_chats.push_back(std::move(hidden));
 		    for (ChatSession& summary : *imported_summaries)
 		    {
 			    if (ChatDomainService().FindChatById(*live_app, summary.id) != nullptr) continue;

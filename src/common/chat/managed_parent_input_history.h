@@ -1,5 +1,6 @@
 #pragma once
 #include "common/models/app_models.h"
+#include "common/provider/provider_ids.h"
 #include <algorithm>
 #include <charconv>
 #include <unordered_map>
@@ -24,7 +25,7 @@ namespace uam::managed_parent_history
 	inline bool Valid(const ManagedParentInputReceipt& r)
 	{
 		return r.version == 1 && Token(r.id) && Token(r.origin_id) && Token(r.root_id) &&
-		    r.provider_id == "codex-cli" && Token(r.host_id) && !r.workspace.empty() && r.workspace.size() <= 16384 &&
+		    r.provider_id == uam::provider_ids::kCodexCli && Token(r.host_id) && !r.workspace.empty() && r.workspace.size() <= 16384 &&
 		    Token(r.native_thread) && Token(r.origin_turn) && !r.payload.empty() && r.payload.size() <= 72 * 1024 &&
 		    (r.native_request_id.empty() || RequestId(r.native_request_id)) &&
 		    (r.accepted_turn_id.empty() || (Token(r.accepted_turn_id) && RequestId(r.native_request_id) && r.accepted_turn_id != r.origin_turn)) && !r.run_ids.empty() && r.run_ids.size() <= 4;

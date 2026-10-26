@@ -25,9 +25,10 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
-import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable } from '../../utils/remoteWorkspace'
+import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { usePresence } from '../ui/Overlay'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 interface FolderTreeProps {
   onSessionOpen?: (sessionId: string) => void
@@ -200,7 +201,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [newFolderExecutionHostId, setNewFolderExecutionHostId] = useState('local')
   const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
   const newFolderExecutionHost = executionHosts.find((host) => host.id === newFolderExecutionHostId) ?? executionHosts[0]
-  const newFolderIsRemote = newFolderExecutionHost?.transport === 'ssh'
+  const newFolderIsRemote = isSshHost(newFolderExecutionHost)
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null)
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
@@ -565,7 +566,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     if (!name || !directory || !executionHost) {
       return
     }
-    if (executionHost.transport === 'ssh' && !isAbsoluteRemoteWorkspace(executionHost.platform, directory)) {
+    if (isSshHost(executionHost) && !isAbsoluteRemoteWorkspace(executionHost.platform, directory)) {
       setActionError(`Enter an absolute ${executionHost.platform.toLowerCase() === 'windows' ? 'Windows' : 'Linux'} directory.`)
       return
     }
@@ -647,7 +648,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const chooseNewFolderDirectory = async () => {
     const host = executionHosts.find((candidate) => candidate.id === newFolderExecutionHostId)
-    if (host?.transport === 'ssh') {
+    if (isSshHost(host)) {
       setRemoteBrowserOpen(true)
       return
     }
@@ -724,7 +725,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         activityFolderName={folder?.name}
         activityFolderIcon={folder?.customIcon}
         activityHostLabel={`Runs on ${host?.label || hostId}`}
-        activityHostRemote={hostId !== 'local'}
+        activityHostRemote={SSH_ENABLED && hostId !== 'local'}
         onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
       />
     )
@@ -1253,7 +1254,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         )}
       </div>
 
-      {remoteBrowserOpen && newFolderExecutionHost?.transport === 'ssh' && (
+      {remoteBrowserOpen && isSshHost(newFolderExecutionHost) && (
         <RemoteDirectoryBrowser
           host={newFolderExecutionHost}
           initialPath={newFolderDirectory}

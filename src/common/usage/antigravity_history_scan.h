@@ -23,4 +23,16 @@ namespace uam::usage
 		std::vector<AntigravityUsageCandidate> m_candidates;
 		std::size_t m_invalidRows = 0;
 	};
+#if !UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	// Builds without Antigravity list no Antigravity history source, so this scan never reads anything.
+	struct AntigravityHistoryScan::State {};
+	inline AntigravityHistoryScan::AntigravityHistoryScan() = default;
+	inline AntigravityHistoryScan::~AntigravityHistoryScan() = default;
+	inline ScanResult AntigravityHistoryScan::Refresh(const std::filesystem::path&, const std::function<bool()>&, const std::function<bool(const std::vector<Record>&, std::string&)>&)
+	{
+		ScanResult result;
+		result.complete = true;
+		return result;
+	}
+#endif
 }
