@@ -223,9 +223,12 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleOpenComputerUseSystemSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetCompanionSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetCompanionKeychainPrompts(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& config);
 	nlohmann::json CompanionConnectionStatus(const nlohmann::json& config) const;
+	nlohmann::json CompanionTransportStatus(const nlohmann::json& config) const;
+	bool CompanionAllowsKeychainPrompts() const;
 	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAppPermissions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRequestAppPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

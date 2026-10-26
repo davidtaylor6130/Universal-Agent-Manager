@@ -76,12 +76,13 @@ void UamQueryHandler::HandleGetProviderAllowances(CefRefPtr<CefBrowser>, const n
 {
 	const auto host = payload.find("executionHostId");
 	if (host == payload.end() || !host->is_string() || host->get_ref<const std::string&>().empty() || host->get_ref<const std::string&>().size() > 128 ||
-	    (payload.contains("refresh") && !payload["refresh"].is_boolean())) { cb->Failure(400, "Account allowance request is invalid."); return; }
+	    (payload.contains("refresh") && !payload["refresh"].is_boolean()) || (payload.contains("allowKeychainPrompt") && !payload["allowKeychainPrompt"].is_boolean()))
+	{ cb->Failure(400, "Account allowance request is invalid."); return; }
 	const std::string id = host->get<std::string>();
 	if (!uam::execution_hosts::Find(m_app.settings.execution_hosts, id)) { cb->Failure(404, "Usage machine is no longer configured."); return; }
 	if (m_providerAllowances && m_providerAllowances->DataRoot() != m_app.data_root) { cb->Failure(409, "Account storage changed. Restart UAM to read this data root."); return; }
 	RefreshAllowanceTargets();
-	cb->Success(m_providerAllowances->Query(id, payload.value("refresh", false)).dump());
+	cb->Success(m_providerAllowances->Query(id, payload.value("refresh", false), payload.value("allowKeychainPrompt", false)).dump());
 }
 
 void UamQueryHandler::HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

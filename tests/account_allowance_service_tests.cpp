@@ -227,3 +227,20 @@ UAM_TEST(AccountAllowanceServiceConfigurationChangeDropsQueuedPromptPermission)
 	WaitAccount(service, [](const auto& row) { return row.value("status", "") == "ready"; });
 	UAM_ASSERT_EQ(calls.load(), 2); UAM_ASSERT_EQ(manual_calls.load(), 0);
 }
+
+UAM_TEST(AccountAllowanceServiceSilentRefreshNeverPromptsAndKeepsCooldown)
+{
+	TempDir temp("uam-account-silent-refresh"); std::atomic<int> calls{0}, manual_calls{0}; std::atomic<std::int64_t> clock_ms{1000};
+	Service service(temp.root, configs, [&](const auto&, const auto&, std::stop_token, bool manual) { ++calls; if (manual) ++manual_calls; return Snapshot(); },
+	    [&] { return std::chrono::steady_clock::time_point(std::chrono::milliseconds(clock_ms.load())); });
+	WaitAccount(service, [](const auto& row) { return row.value("status", "") == "ready"; });
+	// A refresh that may not prompt is still limited by the 30-second cooldown of the automatic read.
+	UAM_ASSERT_EQ(service.Query("local", true, false)["refreshAfterMs"], nlohmann::json(30000));
+	UAM_ASSERT_EQ(calls.load(), 1);
+	clock_ms = 31000;
+	service.Query("local", true, false);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	while (calls.load() < 2 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	WaitAccount(service, [](const auto& row) { return row.value("status", "") == "ready"; });
+	UAM_ASSERT_EQ(calls.load(), 2); UAM_ASSERT_EQ(manual_calls.load(), 0);
+}

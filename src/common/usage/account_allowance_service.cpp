@@ -134,26 +134,26 @@ namespace uam::usage
 		m_wake.notify_all();
 	}
 
-	nlohmann::json AccountAllowanceService::Query(std::string_view host, bool refresh)
+	nlohmann::json AccountAllowanceService::Query(std::string_view host, bool refresh, bool allow_prompt)
 	{
 		nlohmann::json rows = nlohmann::json::array(); bool refreshing = false;
 		std::int64_t refresh_after_ms = 30000; bool has_targets = false;
 		std::lock_guard lock(m_mutex);
-		const auto now = m_clock();
+		const auto now = m_clock(); const bool prompting = refresh && allow_prompt;
 		for (auto& provider : m_providers)
 		{
 			if (host != "local") { auto row = EmptyRow(provider->config.provider_id); row["scope"] = "remote-unavailable"; row["error"] = "Independent account allowances are not available on this remote connection."; rows.push_back(std::move(row)); continue; }
 			if (!provider->config.command.empty() && !provider->requested && !provider->in_flight && (refresh || !provider->account_unavailable) &&
-			    (!provider->last_attempt || (refresh && !provider->last_manual) || now - *provider->last_attempt >= (refresh ? std::chrono::seconds(30) : std::chrono::seconds(300))))
-			{ provider->requested = true; provider->manual = refresh; provider->row["status"] = "loading"; provider->row["error"] = ""; }
-			// An explicit refresh is not held back by automatic reads: it takes over a queued one, follows an in-flight one,
+			    (!provider->last_attempt || (prompting && !provider->last_manual) || now - *provider->last_attempt >= (refresh ? std::chrono::seconds(30) : std::chrono::seconds(300))))
+			{ provider->requested = true; provider->manual = prompting; provider->row["status"] = "loading"; provider->row["error"] = ""; }
+			// A prompting refresh is not held back by automatic reads: it takes over a queued one, follows an in-flight one,
 			// or skips the manual cooldown, so it can still offer the Keychain prompt.
-			else if (refresh && (provider->requested || (provider->in_flight && !provider->last_manual))) { provider->requested = true; provider->manual = true; }
+			else if (prompting && (provider->requested || (provider->in_flight && !provider->last_manual))) { provider->requested = true; provider->manual = true; }
 			refreshing = refreshing || provider->requested || provider->in_flight;
 			if (!provider->config.command.empty())
 			{
 				has_targets = true;
-				const auto elapsed = provider->last_attempt && provider->last_manual ? std::chrono::duration_cast<std::chrono::milliseconds>(now - *provider->last_attempt).count() : 30000;
+				const auto elapsed = provider->last_attempt && (provider->last_manual || !allow_prompt) ? std::chrono::duration_cast<std::chrono::milliseconds>(now - *provider->last_attempt).count() : 30000;
 				refresh_after_ms = std::min(refresh_after_ms, std::clamp<std::int64_t>(30000 - elapsed, 0, 30000));
 			}
 			auto row = provider->row;

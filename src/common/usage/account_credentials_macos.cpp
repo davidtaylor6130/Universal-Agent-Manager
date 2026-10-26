@@ -102,7 +102,7 @@ function run(argv)
 		if (!response.is_object() || !response.contains("status") || !response["status"].is_number_integer()) return Failure("macOS account storage response is invalid.");
 		if (response["status"] == -25300) return Failure("No existing account credential was found in the login keychain.", true);
 		if (!allow_prompt && (response["status"] == -25293 || response["status"] == -25308))
-			return Failure("macOS needs permission or an unlocked keychain to read the existing login; choose Refresh allowances to allow it.");
+			return Failure("macOS needs permission or an unlocked keychain to read the existing login; choose Refresh allowances on this Mac to allow it.");
 		if (response["status"] != 0) return Failure("macOS did not allow access to the existing login keychain.");
 		if (!response.contains("credential") || !response["credential"].is_string() || response["credential"].get_ref<const std::string&>().empty() || response["credential"].get_ref<const std::string&>().size() > kCredentialLimit)
 			return Failure("macOS account storage returned an invalid credential.");

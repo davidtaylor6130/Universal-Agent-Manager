@@ -26,7 +26,8 @@ namespace uam::usage
 		AccountAllowanceService(std::filesystem::path data_root, std::vector<AccountAllowanceProviderConfig> providers, AccountAllowanceFetcher fetcher,
 		    AccountAllowanceClock clock = [] { return std::chrono::steady_clock::now(); });
 		~AccountAllowanceService();
-		nlohmann::json Query(std::string_view execution_host_id = "local", bool refresh = false);
+		// allow_prompt=false keeps an explicit refresh silent, as for phone requests when Phone settings disallow Keychain prompts.
+		nlohmann::json Query(std::string_view execution_host_id = "local", bool refresh = false, bool allow_prompt = true);
 		void SetProviders(std::vector<AccountAllowanceProviderConfig> providers);
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
 
