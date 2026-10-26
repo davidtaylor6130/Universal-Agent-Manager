@@ -119,7 +119,9 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
     const menu = menuRef.current
     if (!menu || (manageFocus ?? props.role === 'menu') === false) return
     const items = () => Array.from(menu.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled])'))
-    items()[0]?.focus()
+    // Open on the first usable action; unavailable items stay reachable with the arrow keys.
+    const initial = items()
+    ;(initial.find((item) => item.getAttribute('aria-disabled') !== 'true') ?? initial[0])?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && onRequestCloseRef.current) {
         event.preventDefault()
