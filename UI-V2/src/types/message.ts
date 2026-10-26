@@ -20,6 +20,8 @@ export interface Attachment {
   nativeSourceField?: string
   nativeAssetKey?: string
   contentDigest?: string
+  /** Passive saved-page identity for detail reads; never publication authority. */
+  historyDigest?: string
 }
 
 export interface MessageToolCall {
@@ -31,6 +33,8 @@ export interface MessageToolCall {
   content: string
   contentDeferred?: boolean
   contentDigest?: string
+  /** Passive saved-page identity for detail reads; never publication authority. */
+  historyDigest?: string
   /** Native-derived accepted launch correlation; scoped run metadata alone grants actions. */
   managedLaunchRunId?: string
   isSubAgent?: boolean
