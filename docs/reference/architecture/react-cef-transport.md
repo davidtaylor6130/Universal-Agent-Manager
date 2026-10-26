@@ -8,7 +8,7 @@ The React app runs inside the native CEF window. React sends action envelopes th
 
 `UI-V2/src/ipc/cefBridge.ts` wraps request/reply transport. `UamQueryHandler` maps action names to handlers, which call app services. `StateSerializer` returns initial state; `cef_push` sends `stateUpdate` or `cliOutput`. The store registers the push callback at module load, before React effects, so the first native push is not lost. Keep action payloads and responses explicit and version-compatible across both ends.
 
-CEF accepts bridge messages only from the trusted bundled page and main frame. Keep bridge work asynchronous when a handler can block. For a new action, update the native dispatch/handler, frontend action caller and relevant transport tests together.
+Native text clipped to a byte limit (titles, errors, diagnostics, stderr tails) is cut on UTF-8 code-point boundaries with `uam::strings::Utf8Prefix`/`Utf8Suffix`. As a backstop, `getInitialState` and state pushes replace any remaining invalid UTF-8 with U+FFFD instead of failing; `getInitialState` logs that a replacement happened without the text. CEF accepts bridge messages only from the trusted bundled page and main frame. Keep bridge work asynchronous when a handler can block. For a new action, update the native dispatch/handler, frontend action caller and relevant transport tests together.
 
 ## Ownership and checks
 

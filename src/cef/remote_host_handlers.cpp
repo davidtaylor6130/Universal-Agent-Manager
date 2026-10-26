@@ -887,7 +887,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		    }
 		    else if (!found->runner_startup_applied)
 		    {
-			    found->runner_startup_error = result->startup_error.substr(0, 300);
+			    found->runner_startup_error = uam::strings::Utf8Prefix(result->startup_error, 300);
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app) && response.ok)
 			    response = uam::query_handler_async::AsyncFailure(

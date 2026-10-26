@@ -1418,7 +1418,7 @@ namespace uam
 		owner->binding_withheld = true;
 		if (owner->resume_only)
 		{
-			ForbidInitialInput(*owner, diagnostic.empty() ? "The provider did not confirm the saved managed read policy. No input was replayed." : std::string(diagnostic.substr(0, 1024)));
+			ForbidInitialInput(*owner, diagnostic.empty() ? "The provider did not confirm the saved managed read policy. No input was replayed." : std::string(uam::strings::Utf8Prefix(diagnostic, 1024)));
 			session.last_error = owner->diagnostic;
 		}
 	}
@@ -1807,7 +1807,7 @@ namespace uam
 		{
 			owner->desired_status = outcome == "completed" && owner->input_written ? "completed" : "failed";
 			owner->diagnostic_code = owner->desired_status == "completed" ? "" : "provider_turn_failed";
-			owner->diagnostic = std::string(error.substr(0, 4096));
+			owner->diagnostic = std::string(uam::strings::Utf8Prefix(error, 4096));
 		}
 		owner->input_forbidden = true;
 	}
