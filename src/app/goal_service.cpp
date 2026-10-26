@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <sstream>
 
@@ -817,7 +818,9 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 		return;
 	}
 
-	goal->tokens_used += tokens_used;
+	const std::int64_t added = std::max<std::int64_t>(0, tokens_used);
+	goal->tokens_used = added > std::numeric_limits<std::int64_t>::max() - std::max<std::int64_t>(0, goal->tokens_used)
+	    ? std::numeric_limits<std::int64_t>::max() : std::max<std::int64_t>(0, goal->tokens_used) + added;
 	goal->updated_at = uam::time::TimestampNow();
 
 	// Check if token budget is exceeded
