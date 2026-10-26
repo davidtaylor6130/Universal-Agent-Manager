@@ -4131,6 +4131,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    receipt.prepared_for_delivery || !receipt.claude_quota_continuation_id.empty() || receipt.existing_user_message_index < 0)
 			return reject("The retained message changed or its delivery is unresolved. Your input is kept.");
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		if (!session && !paths::IsControllerLocalWorkspace(*chat) &&
+		    std::ranges::any_of(receipt.attachments, [](const MessageAttachment& attachment) { return attachment.source == AttachmentSource::OwnedNativeAsset; }))
+			return reject("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.");
 		if (!session) session = &EnsureAcpSessionForChat(app, *chat);
 		const std::vector<int> recoverable = RecoverableUnsentAcpMessageIndices(app, *chat);
 		if (!session->queue_held || std::ranges::find(recoverable, receipt.existing_user_message_index) == recoverable.end())
@@ -4216,6 +4219,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (prompt.id.empty() || prompt.revision < 1 || prompt.prepared_for_delivery ||
 			    prompt.id != expected[index].first || prompt.revision != expected[index].second || !ids.insert(prompt.id).second)
 				return reject("Queue changed or a prompt was dispatched. Refresh before resuming.");
+		}
+		// Queue identity is durable intent, not saved-image execution authority.
+		// Generic Resume cannot mint or restore the invocation captured by Retry.
+		if (!paths::IsControllerLocalWorkspace(*chat))
+		{
+			for (const AcpQueuedUserPromptState& prompt : queue)
+			{
+				if (!std::ranges::any_of(prompt.attachments, [](const MessageAttachment& attachment) { return attachment.source == AttachmentSource::OwnedNativeAsset; })) continue;
+				const auto& permission = session->saved_image_retry;
+				const auto refuse_images = [&] { return reject("Saved image Retry needs fresh saved-message verification before this queue can resume. Your input remains held."); };
+				if (!permission || !permission->remote_scope || session->saved_image_retry_turn_serial >= 0 ||
+				    session->processing || !session->queued_prompt.empty() || session->prompt_request_id != 0 || session->pending_prompt_delivery ||
+				    chat->acp_dispatched_queued_prompt_count != 0 || !chat->acp_queue_held || chat->acp_queued_prompts.size() != queue.size() ||
+				    !std::equal(chat->acp_queued_prompts.begin(), chat->acp_queued_prompts.end(), queue.begin()) ||
+				    permission->queued_id != prompt.id || permission->queued_revision != prompt.revision ||
+				    prompt.existing_user_message_index != permission->row_index || prompt.text != permission->content || prompt.attachments != permission->attachments ||
+				    !ReferencedQueuedRowsMatch(*chat, {prompt}) || !acp_detail::SavedImageRetrySourceMatches(app, *session, *chat, *permission)) return refuse_images();
+				const Message& row = chat->messages[static_cast<std::size_t>(permission->row_index)];
+				if (prompt.markdown_store_files != row.markdown_store_files || prompt.markdown_store_prompt_blocks != row.markdown_store_prompt_blocks) return refuse_images();
+			}
 		}
 		if (session->queued_rollback_save_pending && !SaveChatQuietly(app, *chat, AcpChatSavePurpose::PreserveQueuedIntent))
 			return reject("The restored queue could not be fully saved. Its input remains held.");
@@ -5035,8 +5058,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    IsWorktreeLaunchPreparationPending(app, chat.id);
 	}
 
-	static std::shared_ptr<SavedImageRetryPermission> CaptureSavedImageRetry(AppState& app, const AcpSessionState& session, const ChatSession& chat, int index, std::string* error_out)
+	static std::shared_ptr<SavedImageRetryPermission> CaptureSavedImageRetry(const AppState& app, const AcpSessionState* existing, const ChatSession& chat, int index, std::string* error_out)
 	{
+		if (!existing)
+		{
+			if (error_out)
+				*error_out = "Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.";
+			return {};
+		}
+		const AcpSessionState& session = *existing;
 		const Message& row = chat.messages[static_cast<std::size_t>(index)];
 		if (row.attachments.size() > 256)
 		{
@@ -5232,7 +5262,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				if (owned_images)
 				{
-					auto permission = CaptureSavedImageRetry(app, *retained, *chat, message_index, error_out);
+					auto permission = CaptureSavedImageRetry(app, retained, *chat, message_index, error_out);
 					if (!permission || retained->queued_user_prompts.size() != 1)
 						return false;
 					permission->queued_id = retained->queued_user_prompts.front().id;
@@ -5248,6 +5278,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (error_out) error_out->clear();
 			return true;
 		}
+		// Cold/replacement SSH input has no qualified launch/binding route. Refuse
+		// before changing placeholders, goals, workspace intent or runtime ownership.
+		if (owned_images && !paths::IsControllerLocalWorkspace(*chat) &&
+		    !CaptureSavedImageRetry(app, FindAcpSessionForChat(app, chat_id), *chat, message_index, error_out))
+			return false;
 		const std::vector<int> fresh_retry = RecoverableUnsentAcpMessageIndices(app, *chat);
 		if (chat->native_session_id.empty() && !fresh_retry.empty() && fresh_retry.back() == message_index)
 		{
@@ -5316,7 +5351,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::shared_ptr<SavedImageRetryPermission> image_permission;
 		if (owned_images)
 		{
-			image_permission = CaptureSavedImageRetry(app, *session, *chat, message_index, error_out);
+			image_permission = CaptureSavedImageRetry(app, session, *chat, message_index, error_out);
 			if (!image_permission)
 				return false;
 		}
@@ -5440,7 +5475,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				if (owned_images)
 				{
-					auto permission = CaptureSavedImageRetry(app, *retained, *chat, message_index, error_out);
+					auto permission = CaptureSavedImageRetry(app, retained, *chat, message_index, error_out);
 					if (!permission || retained->queued_user_prompts.size() != 1)
 						return false;
 					permission->queued_id = retained->queued_user_prompts.front().id;
@@ -5457,6 +5492,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				error_out->clear();
 			return true;
 		}
+		// Route eligibility precedes goal/session mutation. Recapture permission
+		// after setup below; this temporary check grants no launch or input authority.
+		if (owned_images && !paths::IsControllerLocalWorkspace(*chat) &&
+		    !CaptureSavedImageRetry(app, FindAcpSessionForChat(app, chat_id), *chat, message_index, error_out))
+			return false;
 		const bool needs_workspace = RetryNeedsWorkspacePreparation(app, *chat);
 		if (const AcpSessionState* existing = FindAcpSessionForChat(app, chat_id); existing && ((needs_workspace && AcpRetryHasPendingWork(app, *chat, *existing, false)) || (!needs_workspace && !existing->model_discovery_only && (existing->processing || AcpSessionIsWaitingForInput(*existing) || !existing->queued_prompt.empty() || existing->prompt_request_id != 0))))
 		{
@@ -5495,7 +5535,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::shared_ptr<SavedImageRetryPermission> image_permission;
 		if (owned_images)
 		{
-			image_permission = CaptureSavedImageRetry(app, session, *chat, message_index, error_out);
+			image_permission = CaptureSavedImageRetry(app, &session, *chat, message_index, error_out);
 			if (!image_permission)
 				return false;
 		}
