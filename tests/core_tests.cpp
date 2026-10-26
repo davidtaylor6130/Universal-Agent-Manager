@@ -15350,6 +15350,11 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 	uam::CliProviderVersionState& copilot_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
 	copilot_version.checked = true;
 	copilot_version.supported = true;
+	uam::CliProviderVersionState& opencode_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+	opencode_version.execution_host = uam::execution_hosts::LocalHost();
+	opencode_version.checked = true;
+	opencode_version.supported = true;
+	opencode_version.installed_version = "1.19.4";
 	AppSettings settings;
 	settings.provider_extra_flags = "--dangerously-skip-permissions --yolo --allow-all --ask-for-approval never --agent unsafe --plugin-dir injected";
 
