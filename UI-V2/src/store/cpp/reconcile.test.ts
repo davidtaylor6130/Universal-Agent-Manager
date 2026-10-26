@@ -24,6 +24,12 @@ describe('computerUseGloballyEnabled sanitization', () => {
     expect(sanitizeCppSettings({ computerUseGloballyEnabled: 'yes' }).computerUseGloballyEnabled).toBeUndefined()
     expect(sanitizeCppSettings({}).computerUseGloballyEnabled).toBeUndefined()
   })
+  it('keeps unknown cleanup distinct from an explicit cleared state', () => {
+    expect(sanitizeCppSettings({ computerUseRevocationPending: true }).computerUseRevocationPending).toBe(true)
+    expect(sanitizeCppSettings({ computerUseRevocationPending: false }).computerUseRevocationPending).toBe(false)
+    expect(sanitizeCppSettings({ computerUseRevocationPending: 'false' }).computerUseRevocationPending).toBeUndefined()
+    expect(sanitizeCppSettings({}).computerUseRevocationPending).toBeUndefined()
+  })
 })
 
 describe('hostScopedSettings capability sanitization', () => {

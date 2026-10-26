@@ -303,8 +303,7 @@ bool RemoveCliProviderHandoff(AppState& app, const ChatSession& chat, std::strin
 			continue;
 		}
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version),
-		    host->runner_version, host->runner_protocol_version);
+		    *host);
 		if (!client.Connect(&error, stop_token) || !client.SupportsProviderNativeContext()) return false;
 		if (!client.RemoveProviderContext(directory, &error, stop_token)) return false;
 	}
@@ -384,8 +383,7 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	if (remote)
 	{
 		client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		if (!client->Connect(&error, stop_token)) return false;
 		if (!client->SupportsProviderNativeContext())
 		{
@@ -474,6 +472,10 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	{
 		settings.central_provider_configuration = {};
 		settings.central_provider_configuration.enabled = true;
+		// A control-only launch still honours the saved discovery choice; do not copy shared resources.
+		for (const ProviderMcpOverride& entry : app.settings.central_provider_configuration.mcp_overrides)
+			if (entry.is_preference && entry.server_id == uam::central_configuration::kOpenCodeProgressiveMcpSetting)
+				settings.central_provider_configuration.mcp_overrides.push_back(entry);
 	}
 	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error, nullptr,
 	                                 CheckedProviderConfigurationVersion(app, chat.provider_id, host))) return false;
@@ -484,7 +486,7 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	{
 		target = workspace / ".UAM" / "provider-setup" / bundle.local_directory.filename();
 		client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		    host);
 		if (!client->InstallProviderConfiguration(bundle.local_directory, target, &error, stop_token)) return false;
 	}
 	if (!PrepareCliProviderConversation(app, chat, host, argv, environment, launch_channel, error, stop_token, uam::paths::Utf8PathString(target), native_servers)) return false;
@@ -495,7 +497,7 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	if (launch_channel.empty())
 	{
 		if (!client)
-			client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+			client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service, host);
 		launch_channel = "terminal-configuration-" + PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (!client->OpenChannel(launch_channel, &error, false, 60000, stop_token)) return false;
 		if (!client->WriteChannel(launch_channel, "desktopToRemote", uam::remote::BuildProcessProxySpec("terminal", workspace, argv, environment, false, {}, 0, 0, {}, {}, target.empty() ? "" : chat.provider_id, uam::paths::Utf8PathString(target), native_servers), &error, stop_token))
@@ -532,7 +534,8 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 			}
 		}
 	}
-	const bool launch_option_override = (ProviderRuntimeRegistry::ResolveById(chat.provider_id).ModelOptionsRequireRestart() && !chat.reasoning_effort.empty()) || (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kClaudeCli) && (chat.service_tier == "fast" || chat.service_tier_explicit));
+	const bool launch_option_override = (ProviderRuntimeRegistry::ResolveById(chat.provider_id).ModelOptionsRequireRestart() && !chat.reasoning_effort.empty()) || (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kClaudeCli) && (chat.service_tier == "fast" || chat.service_tier_explicit)) ||
+	    ShouldEnableOpenCodeV1ProgressiveMcp(app.settings.central_provider_configuration, chat.provider_id, host.id, CheckedProviderConfigurationVersion(app, chat.provider_id, host));
 	const bool prepare_history = NeedsUnboundCodexHistory(chat, argv);
 	const ProviderHandoffCliContext location{host.id,
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};

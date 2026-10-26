@@ -285,10 +285,6 @@ namespace
 			attachment.preview_key = item.value(std::string(attachment_fields::kPreviewKeyField), "");
 			if (!uam::attachment_preview::IsKey(attachment.preview_key)) attachment.preview_key.clear();
 			attachment.preview_origin_path = item.value(std::string(attachment_fields::kPreviewOriginField), "");
-			if (attachment.path.empty())
-			{
-				continue;
-			}
 			if (attachment.id.empty())
 			{
 				attachment.id = AttachmentId();
@@ -329,6 +325,12 @@ namespace
 			for (const auto field : {attachment_fields::kSourceUriField, attachment_fields::kOriginHostField, attachment_fields::kNativePartKeyField, attachment_fields::kNativeToolCallIdField, attachment_fields::kNativeSourceField, attachment_fields::kNativeAssetKeyField, attachment_fields::kContentDigestField})
 				if (const auto value = item.find(std::string(field)); value != item.end() && (!value->is_string() || !value->get_ref<const std::string&>().empty()))
 					return reject();
+			const std::string path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+			if (path.empty() || path.find('\0') != std::string::npos)
+			{
+				error = "An attached resource has an invalid path. Remove it and attach it again.";
+				return false;
+			}
 		}
 		return true;
 	}
@@ -356,9 +358,7 @@ namespace
 		}
 		uam::remote::RunnerClient client(
 		    PlatformServicesFactory::Instance().process_service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		                               host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		std::vector<std::filesystem::path> committed;
 		std::size_t index = 0;
 		for (const nlohmann::json& item : items)

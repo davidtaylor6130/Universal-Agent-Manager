@@ -11,15 +11,172 @@ vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOrigina
 let host: HTMLDivElement
 let root: Root
 const server = { id: 'docs', name: 'Docs', executionHostId: '', workspaceDirectory: '/workspace', transport: 'http' as const, command: '', args: [], url: 'https://example.test/mcp', environment: [], headers: [], enabled: true }
-const status = (hostId = 'local') => ({ executionHostId: hostId, connectedProofAvailable: false, handshakeProofAvailable: false, computerUseBuiltInAvailable: hostId === 'local', providers: SUPPORTED_CLI_PROVIDER_IDS.map(providerId => ({ providerId, status: 'configured-unverified', detail: '', activeSessionCount: 0, configuredSessionCount: 0, uamControlEnabled: true, sharedSetupEnabled: true, mcpServers: [{ id: 'docs', name: 'Docs', enabled: true }] })) })
+const status = (hostId = 'local') => ({ executionHostId: hostId, connectedProofAvailable: false, handshakeProofAvailable: false, computerUseBuiltInAvailable: hostId === 'local', providers: SUPPORTED_CLI_PROVIDER_IDS.map(providerId => ({ providerId, status: 'configured-unverified', detail: '', activeSessionCount: 0, configuredSessionCount: 0, uamControlEnabled: true, sharedSetupEnabled: true, progressiveMcpDiscoveryEnabled: providerId === 'opencode-cli' ? true : undefined, mcpServers: [{ id: 'docs', name: 'Docs', enabled: true }] })) })
 beforeEach(() => {
   vi.mocked(sendToCEF).mockReset().mockImplementation(async request => ({ ok: true, data: status(request.payload?.executionHostId as string) }))
+  useAppStore.setState({ computerUseEnabled: true, computerUseRevocationPending: false })
   useAppStore.setState(state => ({ settingsScopeHostId: '*', hostScopedSettings: true, hostScopedSettingsValues: {}, sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
 })
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers() })
 async function render(providerId?: string, selectedHostId?: string) { await act(async () => root.render(<ProviderConnections providerId={providerId} selectedHostId={selectedHostId} onMcpSelect={vi.fn()} onPreferencesSelect={vi.fn()} />)) }
 async function click(label: string) { await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click()) }
+
+it.each(['local', 'ssh-lab'])('saves OpenCode progressive discovery in the exact %s scope after acknowledgement', async hostId => {
+  await render('opencode-cli', hostId)
+  const control = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  expect(control().checked).toBe(true)
+  expect(host.textContent).toContain('the next time OpenCode starts')
+  for (const enabled of [false, true]) {
+    let finish!: (value: unknown) => void
+    vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
+    await click('OpenCode progressive MCP discovery')
+    expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: hostId, providerId: 'opencode-cli', serverId: 'opencode-progressive-mcp', enabled, kind: 'preference' } })
+    expect(control().disabled).toBe(true)
+    expect(host.textContent).toContain('Saving discovery preference')
+    expect(control().checked).toBe(enabled)
+    const reply = status(hostId)
+    reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = enabled
+    await act(async () => finish({ ok: true, data: reply }))
+    expect(control().checked).toBe(enabled)
+    expect(control().disabled).toBe(false)
+  }
+})
+
+it('keeps a same-named MCP server independent from the discovery preference', async () => {
+  const collision = { ...server, id: 'opencode-progressive-mcp', name: 'Separate server' }
+  useAppStore.setState({ mcpServers: [collision] })
+  const reply = status()
+  for (const row of reply.providers) row.mcpServers = [{ id: collision.id, name: collision.name, enabled: false }]
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: reply })
+  await render('opencode-cli')
+  let finish!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
+  await click('OpenCode progressive MCP discovery')
+  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('data-pending')).toBeNull()
+  const discoveryReply = structuredClone(reply)
+  discoveryReply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  await act(async () => finish({ ok: true, data: discoveryReply }))
+  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('aria-checked')).toBe('false')
+  const serverReply = structuredClone(discoveryReply)
+  serverReply.providers.find(row => row.providerId === 'opencode-cli')!.mcpServers[0].enabled = true
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: serverReply })
+  await click('OpenCode Separate server')
+  expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'local', providerId: 'opencode-cli', serverId: collision.id, enabled: true } })
+  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.checked).toBe(false)
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it.each(['server', 'discovery'])('keeps pending controls separate for a prefixed server ID when saving %s', async saving => {
+  const collision = { ...server, id: 'preference:opencode-progressive-mcp', name: 'Prefixed server' }
+  useAppStore.setState({ mcpServers: [collision] })
+  const reply = status()
+  for (const row of reply.providers) row.mcpServers = [{ id: collision.id, name: collision.name, enabled: true }]
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: reply })
+  await render('opencode-cli')
+  const serverControl = () => host.querySelector<HTMLButtonElement>('[aria-label="OpenCode Prefixed server"]')!
+  const discoveryControl = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  let finish!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
+  const discovery = saving === 'discovery'
+  await click(discovery ? 'OpenCode progressive MCP discovery' : 'OpenCode Prefixed server')
+  expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'local', providerId: 'opencode-cli', serverId: discovery ? 'opencode-progressive-mcp' : collision.id, enabled: false, ...(discovery ? { kind: 'preference' } : {}) } })
+  expect(serverControl().disabled).toBe(!discovery)
+  expect(serverControl().getAttribute('data-pending')).toBe(discovery ? null : 'true')
+  expect(discoveryControl().disabled).toBe(discovery)
+  expect(host.textContent?.includes('Saving discovery preference')).toBe(discovery)
+  expect(serverControl().getAttribute('aria-checked')).toBe('true')
+  expect(discoveryControl().checked).toBe(!discovery)
+  const saved = structuredClone(reply)
+  const row = saved.providers.find(item => item.providerId === 'opencode-cli')!
+  if (discovery) row.progressiveMcpDiscoveryEnabled = false
+  else row.mcpServers[0].enabled = false
+  await act(async () => finish({ ok: true, data: saved }))
+  expect(serverControl().disabled).toBe(false)
+  expect(discoveryControl().disabled).toBe(false)
+  expect(serverControl().getAttribute('data-pending')).toBeNull()
+  expect(serverControl().getAttribute('aria-checked')).toBe(discovery ? 'true' : 'false')
+  expect(discoveryControl().checked).toBe(!discovery)
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('keeps the progressive setting unknown when an older backend omits it', async () => {
+  const reply = status()
+  reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = undefined
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: reply })
+  await render('opencode-cli')
+  const control = host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  expect(control.disabled).toBe(true)
+  expect(host.textContent).toContain('Discovery setting unavailable')
+  await click('OpenCode progressive MCP discovery')
+  expect(vi.mocked(sendToCEF).mock.calls).toHaveLength(1)
+})
+
+it.each(['failure', 'mismatched acknowledgement', 'wrong host'])('keeps the unsaved progressive choice for retry after %s', async outcome => {
+  await render('opencode-cli', 'ssh-lab')
+  const control = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  const button = (text: string) => [...host.querySelectorAll('button')].find(item => item.textContent === text)
+  vi.mocked(sendToCEF).mockResolvedValueOnce(outcome === 'failure' ? { ok: false, error: 'Could not persist discovery.' } : { ok: true, data: status(outcome === 'wrong host' ? 'local' : 'ssh-lab') })
+  await click('OpenCode progressive MCP discovery')
+  expect(control().checked).toBe(false)
+  expect(host.textContent).toContain('Not saved:')
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Still failing.' })
+  await act(async () => button('Retry')!.click())
+  expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'ssh-lab', providerId: 'opencode-cli', serverId: 'opencode-progressive-mcp', enabled: false, kind: 'preference' } })
+  expect(control().checked).toBe(false)
+  await act(async () => button('Discard')!.click())
+  expect(control().checked).toBe(true)
+  expect(host.textContent).not.toContain('Not saved:')
+})
+
+it('shows no discovery row for other providers', async () => {
+  await render('codex-cli')
+  expect(host.querySelector('[aria-label="OpenCode progressive MCP discovery"]')).toBeNull()
+})
+
+it('ignores an old-host progressive save reply after switching computers', async () => {
+  await render('opencode-cli')
+  let finish!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
+  await click('OpenCode progressive MCP discovery')
+  await render('opencode-cli', 'ssh-lab')
+  const reply = status()
+  reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  await act(async () => finish({ ok: true, data: reply }))
+  expect(host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.checked).toBe(true)
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+})
+
+it('binds pending discovery saves to their host and keeps a newer save pending', async () => {
+  await render('opencode-cli', 'local')
+  let finishLocal!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finishLocal = resolve as typeof finishLocal }))
+  await click('OpenCode progressive MCP discovery')
+  await render('opencode-cli', 'ssh-lab')
+  const control = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  expect(control().disabled).toBe(false)
+  let finishRemote!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finishRemote = resolve as typeof finishRemote }))
+  await click('OpenCode progressive MCP discovery')
+  expect(control().disabled).toBe(true)
+  const localReply = status('local')
+  localReply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  await act(async () => finishLocal({ ok: true, data: localReply }))
+  expect(control().disabled).toBe(true)
+  const remoteReply = status('ssh-lab')
+  remoteReply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  await act(async () => finishRemote({ ok: true, data: remoteReply }))
+  expect(control().disabled).toBe(false)
+  expect(control().checked).toBe(false)
+})
+
+it('offers progressive discovery only on the OpenCode provider page', async () => {
+  for (const provider of [undefined, ...SUPPORTED_CLI_PROVIDER_IDS.filter(id => id !== 'opencode-cli')]) {
+    await render(provider)
+    expect(host.querySelector('[aria-label="OpenCode progressive MCP discovery"]')).toBeNull()
+  }
+})
 
 it('renders six compact provider rows with all server columns and no guessed connection success', async () => {
   await render()
@@ -49,6 +206,28 @@ it('reads Off in the Computer Use column when the built-in setting is disabled',
   expect(cell?.getAttribute('aria-checked')).toBe('false')
   expect(cell?.getAttribute('title')).toContain('Off')
   useAppStore.setState({ computerUseEnabled: undefined })
+})
+
+it.each([true, undefined])('shows unresolved Computer Use cleanup %s without advertising re-enable', async pending => {
+  useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: pending })
+  await render('codex-cli')
+  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
+  expect(cell.getAttribute('aria-checked')).toBe('mixed')
+  expect(cell.disabled).toBe(true)
+  expect(cell.title).toContain(pending ? 'Cleanup pending' : 'Global status not confirmed')
+  expect(cell.title).not.toContain('Turn Computer Use on')
+})
+
+it('distinguishes On with per-chat cleanup from a retry of global disable', async () => {
+  useAppStore.setState({ computerUseEnabled: true, computerUseRevocationPending: true })
+  await render('codex-cli')
+  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
+  expect(cell.title).toContain("On. A chat's controls are still stopping.")
+  expect(cell.title).toContain('Turn off for all chats in Computer Use settings to retry cleanup.')
+  expect(cell.title).not.toContain('in that chat')
+  expect(cell.title).not.toContain('Retry disabling')
+  expect(cell.getAttribute('aria-checked')).toBe('mixed')
+  expect(cell.disabled).toBe(true)
 })
 
 it('updates a provider server override only after successful verified backend reply', async () => {
@@ -301,4 +480,49 @@ it('closes an open MCP popup when its scoped list no longer has a chip', async (
   expect(host.querySelector('button[aria-haspopup="dialog"]')).toBeNull()
   await act(async () => vi.advanceTimersByTime(500))
   expect(document.querySelector('[role="dialog"][aria-label="Codex MCP servers"]')).toBeNull()
+})
+
+it('keeps the discovery draft locked and unconfirmed when another switch save supersedes it', async () => {
+  await render('opencode-cli')
+  const control = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  let finish!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
+  await click('OpenCode progressive MCP discovery')
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(() => {}))
+  await click('OpenCode Shared setup')
+  expect(control().disabled).toBe(true)
+  const reply = status()
+  reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  await act(async () => finish({ ok: true, data: reply }))
+  expect(control().checked).toBe(false)
+  expect(host.textContent).toContain('Result not confirmed')
+})
+
+it('clears a failed discovery draft when switching computers and refocuses the switch on Discard', async () => {
+  await render('opencode-cli', 'ssh-lab')
+  const control = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
+  const button = (text: string) => [...host.querySelectorAll('button')].find(item => item.textContent === text)
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Could not persist discovery.' })
+  await click('OpenCode progressive MCP discovery')
+  await act(async () => button('Discard')!.click())
+  expect(document.activeElement).toBe(control())
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Could not persist discovery.' })
+  await click('OpenCode progressive MCP discovery')
+  expect(host.textContent).toContain('Not saved:')
+  await render('opencode-cli', 'local')
+  expect(host.textContent).not.toContain('Not saved:')
+  expect(control().checked).toBe(true)
+})
+
+it('resolves an unconfirmed discovery draft when a refresh reports the drafted value', async () => {
+  await render('opencode-cli')
+  vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => resolve({ ok: false, error: 'Could not persist discovery.' })))
+  await click('OpenCode progressive MCP discovery')
+  expect(host.textContent).toContain('Not saved:')
+  const reply = status()
+  reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: reply })
+  await click('Refresh provider connections')
+  expect(host.textContent).not.toContain('Not saved:')
+  expect(host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!.checked).toBe(false)
 })

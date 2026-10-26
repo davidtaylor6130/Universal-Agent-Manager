@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import type { Attachment } from '../../types/message'
+import { Button } from '../ui'
 
 const MAX_PREVIEW_BYTES = 512 * 1024
 const MAX_BASE64_LENGTH = 4 * Math.ceil(MAX_PREVIEW_BYTES / 3)
@@ -35,8 +36,10 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
   const host = useRef<HTMLSpanElement>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [unavailableIdentity, setUnavailableIdentity] = useState<string | null>(null)
+  const [loadingIdentity, setLoadingIdentity] = useState<string | null>(null)
+  const [retry, setRetry] = useState<{ identity: string; serial: number } | null>(null)
   const identity = JSON.stringify([chatId, messageIndex, attachment.id, attachment.mimeType, attachment.path, attachment.name, attachment.size, attachment.previewKey, attachment.previewOriginPath,
-    attachment.source ?? 'legacy_path', attachment.sourceUri, attachment.originExecutionHostId, attachment.nativePartKey, attachment.nativeToolCallId, attachment.nativeSourceField, attachment.nativeAssetKey, attachment.contentDigest])
+    attachment.source ?? 'legacy_path', attachment.sourceUri, attachment.originExecutionHostId, attachment.nativePartKey, attachment.nativeToolCallId, attachment.nativeSourceField, attachment.nativeAssetKey, attachment.contentDigest, attachment.historyDigest])
   const sourceSupported = attachment.source === 'owned_native_asset' || ((attachment.source === undefined || attachment.source === 'legacy_path') && !attachment.sourceUri)
   const eligible = sourceSupported && Boolean(chatId && attachment.id) && Number.isSafeInteger(messageIndex) && Number(messageIndex) >= 0 &&
     (attachment.mimeType === 'image/png' || attachment.mimeType === 'image/jpeg')
@@ -52,9 +55,11 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
       if (disposed || requested) return
       requested = true
       observer?.disconnect()
+      setLoadingIdentity(identity)
       try {
         const response = await sendToCEF<unknown>({ action: 'getAttachmentImagePreview', payload: {
           chatId, messageIndex, attachmentId: attachment.id,
+          ...(attachment.historyDigest ? { historyDigest: attachment.historyDigest } : {}),
         } }, false)
         if (disposed) return
         if (!response.ok) { setUnavailableIdentity(identity); return }
@@ -66,9 +71,11 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
       } catch {
         // Unavailable images retain their ordinary attachment entry.
         if (!disposed) setUnavailableIdentity(identity)
+      } finally {
+        if (!disposed) setLoadingIdentity(null)
       }
     }
-    if (typeof IntersectionObserver === 'undefined') void request()
+    if (retry?.identity === identity || typeof IntersectionObserver === 'undefined') void request()
     else if (host.current) {
       observer = new IntersectionObserver((entries) => {
         if (entries.some((entry) => entry.isIntersecting)) void request()
@@ -80,13 +87,20 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
       observer?.disconnect()
       if (url) URL.revokeObjectURL(url)
     }
-  }, [chatId, messageIndex, attachment.id, identity, eligible])
+  }, [chatId, messageIndex, attachment.id, identity, eligible, retry])
 
   if (!eligible) return <>{unavailableFallback}</>
 
   const current = preview?.identity === identity ? preview : null
-  return <span ref={host} className="inline-flex max-w-full">
+  return <span ref={host} className="inline-flex max-w-full flex-wrap items-center gap-2">
     {current ? <img src={current.url} alt={attachment.name} width={current.width} height={current.height}
-      className="conversation-image-preview h-20 w-20 object-contain" onError={() => { URL.revokeObjectURL(current.url); setPreview(null); setUnavailableIdentity(identity) }} /> : unavailableIdentity === identity ? unavailableFallback : fallback}
+      className="conversation-image-preview h-20 w-20 object-contain" onError={() => { URL.revokeObjectURL(current.url); setPreview(null); setUnavailableIdentity(identity) }} /> : unavailableIdentity === identity && loadingIdentity !== identity ? unavailableFallback : fallback}
+    {!current && attachment.historyDigest && unavailableIdentity === identity && <Button type="button"
+      variant="secondary" size="sm" aria-label={`Retry image preview for ${attachment.name}`}
+      loading={loadingIdentity === identity}
+      onClick={(event) => {
+        event.stopPropagation()
+        setRetry((previous) => ({ identity, serial: previous?.identity === identity ? previous.serial + 1 : 1 }))
+      }}>Retry preview</Button>}
   </span>
 }

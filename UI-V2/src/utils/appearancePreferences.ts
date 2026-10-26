@@ -5,9 +5,11 @@ export interface AppearancePreferences {
   chatWidth: ChatWidth
   highContrast: boolean
   diffPalette: DiffPalette
+  /** Show reported context/output token limits in the model picker. */
+  modelTokenLimits: boolean
 }
 
-export const DEFAULT_APPEARANCE: AppearancePreferences = { chatWidth: 'comfortable', highContrast: false, diffPalette: 'default' }
+export const DEFAULT_APPEARANCE: AppearancePreferences = { chatWidth: 'comfortable', highContrast: false, diffPalette: 'default', modelTokenLimits: true }
 
 const STORAGE_KEY = 'uam-appearance'
 
@@ -18,6 +20,7 @@ export function normalizeAppearance(value: unknown): AppearancePreferences {
     chatWidth: input.chatWidth === 'wide' || input.chatWidth === 'full' ? input.chatWidth : 'comfortable',
     highContrast: input.highContrast === true,
     diffPalette: input.diffPalette === 'colour-blind' ? 'colour-blind' : 'default',
+    modelTokenLimits: input.modelTokenLimits !== false,
   }
 }
 
