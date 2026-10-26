@@ -1329,6 +1329,7 @@ if(UAM_BUILD_TESTS)
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
   add_executable(uam_core_tests
+    tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp

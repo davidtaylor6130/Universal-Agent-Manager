@@ -21,6 +21,7 @@
 #include "common/runtime/acp/acp_control_capability_retention.h"
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_process_handoff.h"
 
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
@@ -1106,11 +1107,11 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		    uam::remote::kRemoteStopControlLine.size(), &ignored_error);
 		auto pending = std::make_unique<PendingAcpRemoteStop>();
 		pending->chat_id = chat.id;
+		pending->projection_owner = CaptureAcpStopProjectionOwner(session, persisted ? persisted : &chat);
 		pending->deadline_time_s = GetAppTimeSeconds() + (stop_requested ? kRemoteStopConfirmationTimeoutSeconds : 0.0);
 		pending->recoverable_turn = AcpSessionHasActiveTurn(session);
 		pending->restart_after_stop = true;
-		TransferStdioProcessFields(session, *pending);
-		app.pending_acp_remote_stops.push_back(std::move(pending));
+		PublishStdioProcessTransfer(session, std::move(pending), app.pending_acp_remote_stops);
 		session.running = false;
 		session.remote_stop_pending = true;
 		session.transport_ownership_error.clear();
@@ -1211,6 +1212,8 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 
 	auto session = std::make_unique<AcpSessionState>();
 	session->chat_id = chat.id;
+	session->shutdown_chat_incarnation = chat.metadata_incarnation;
+	session->shutdown_data_root = app.data_root;
 	session->provider_id = provider.id;
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	session->managed_agent_run_id = chat.agent_run_id;

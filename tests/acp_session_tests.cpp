@@ -4,6 +4,7 @@
 #include "app/opencode_compaction_sync_service.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/chat/conversation_handoff.h"
+#include "common/chat/acp_prompt_recovery.h"
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
 #include "app/runtime_activity.h"
@@ -9403,6 +9404,276 @@ UAM_TEST(FastShutdownPreservesQueuedRemotePromptsForRestart)
 	UAM_ASSERT_EQ(reloaded->acp_queued_prompts.front().text,
 	              std::string("Keep this queued."));
 	UAM_ASSERT(reloaded->messages.empty());
+}
+
+namespace
+{
+	// Deliberately no Start, PollAllAcpSessions, real runner, proxy, writer or worker.
+	// This covers the queue-conservation boundary independently of the held process fixture.
+	struct UnmirroredShutdownQueueFixture
+	{
+		TempDir temp{"uam-shutdown-unmirrored-queue"};
+		uam::AppState app;
+		ChatSession before;
+		std::string primary_bytes, journal_bytes, foreign_bytes;
+
+		explicit UnmirroredShutdownQueueFixture(bool cold = false)
+		{
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			for (auto& profile : app.provider_profiles) profile.interactive_command.clear();
+			ChatSession chat;
+			chat.id = "remote-unmirrored-shutdown";
+			chat.provider_id = uam::provider_ids::kClaudeCli;
+			chat.execution_host_id = "private-missing-host";
+			chat.native_session_id = "retained-native-session";
+			chat.remote_process_control_token = "fixture-only-remote-token";
+			chat.remote_process_exists = true;
+			chat.remote_stop_cleanup_pending = true;
+			chat.messages.push_back({.role = MessageRole::User, .content = "  Keep authored input\n",
+			    .created_at = "2026-10-23T12:00:00Z", .provider = chat.provider_id,
+			    .interrupted = true, .acp_prompt_not_sent = true});
+			uam::AcpQueuedUserPromptState prompt;
+			prompt.id = "retained-queue-input";
+			prompt.revision = 7;
+			prompt.text = "  Keep queued input\n";
+			prompt.native_input_id = "5e260211-2bef-4d58-8df9-e372c5c2ba6a";
+			prompt.origin_request_id = "queued-origin";
+			UAM_ASSERT(uam::input_provenance::ValidNativeInputId(*prompt.native_input_id));
+			UAM_ASSERT(uam::input_provenance::ValidOriginRequestId(*prompt.origin_request_id));
+			prompt.markdown_store_files = {"authored-skill.md"};
+			prompt.markdown_store_prompt_blocks = {"Keep the original skill snapshot."};
+			MessageAttachment attachment;
+			attachment.id = "retained-attachment";
+			attachment.name = "authored.txt";
+			attachment.path = (temp.root / "authored.txt").string();
+			attachment.kind = "file";
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "authored.txt", "Keep attachment bytes.\n"));
+			prompt.attachments.push_back(attachment);
+			chat.messages.front().attachments = prompt.attachments;
+			chat.messages.front().markdown_store_files = prompt.markdown_store_files;
+			chat.messages.front().markdown_store_prompt_blocks = prompt.markdown_store_prompt_blocks;
+			auto recovery = prompt;
+			recovery.id = "retained-authored-recovery";
+			recovery.uam_agent_definition_snapshot = "builtin:build:v1";
+			chat.acp_unsent_prompt_recoveries.push_back(uam::prompt_recovery::Capture(chat, 0, recovery));
+			UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			// Make the authoritative queue live in a real outbox journal, not just the primary.
+			chat.acp_queued_prompts.push_back(prompt);
+			UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(app.data_root, chat));
+			const auto loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(loaded && loaded->acp_queued_prompts == chat.acp_queued_prompts);
+			UAM_ASSERT_EQ(loaded->acp_unsent_prompt_recoveries, chat.acp_unsent_prompt_recoveries);
+			before = *loaded;
+			primary_bytes = ReadFile(Primary());
+			journal_bytes = ReadFile(Journal());
+			UAM_ASSERT(!primary_bytes.empty() && !journal_bytes.empty());
+			ChatSession foreign;
+			foreign.id = "foreign-shutdown-chat";
+			foreign.messages.push_back({.role = MessageRole::User, .content = "Other chat's authored input."});
+			foreign.acp_queued_prompts.push_back(prompt);
+			foreign.acp_queued_prompts.front().id = "foreign-queue-input";
+			foreign.acp_queued_prompts.front().text = "Other chat's distinct queued input.";
+			foreign.acp_queued_prompts.front().native_input_id = "d6a66392-489f-40ca-b835-52dc18162e68";
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, foreign));
+			foreign_bytes = ReadFile(Foreign());
+			if (cold)
+			{
+				const auto summaries = ChatRepository::LoadLocalChatSummaries(app.data_root);
+				const auto summary = std::ranges::find(summaries, chat.id, &ChatSession::id);
+				UAM_ASSERT(summary != summaries.end());
+				app.chats.push_back(*summary);
+				UAM_ASSERT(!app.chats.front().messages_loaded);
+				UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts, before.acp_queued_prompts);
+			}
+			else app.chats.push_back(before);
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = chat.provider_id;
+			UAM_ASSERT(!session->running && !uam::AcpSessionHasActiveTurn(*session));
+			UAM_ASSERT(!session->stdin_writer);
+#if defined(_WIN32)
+			UAM_ASSERT(session->process_info.hProcess == INVALID_HANDLE_VALUE && session->process_info.hThread == INVALID_HANDLE_VALUE);
+			UAM_ASSERT(session->job_object == nullptr && session->stdin_write == INVALID_HANDLE_VALUE && session->stdout_read == INVALID_HANDLE_VALUE && session->stderr_read == INVALID_HANDLE_VALUE);
+#else
+			UAM_ASSERT(session->child_pid == -1 && session->watchdog_pid == -1);
+			UAM_ASSERT(session->stdin_write_fd == -1 && session->stdout_read_fd == -1 && session->stderr_read_fd == -1);
+#endif
+			app.acp_sessions.push_back(std::move(session));
+		}
+
+		fs::path Primary() const { return app.data_root / "chats/remote-unmirrored-shutdown.json"; }
+		fs::path Journal() const { return app.data_root / "queue-outboxes/remote-unmirrored-shutdown.json"; }
+		fs::path Foreign() const { return app.data_root / "chats/foreign-shutdown-chat.json"; }
+
+		void ReplaceAdoptedOwner()
+		{
+			app.acp_sessions.clear(); // Only the asserted resource-free placeholder is discarded.
+			auto& chat = app.chats.front();
+			auto& runtime = uam::acp_detail::EnsureAcpSessionForChat(app, chat);
+			UAM_ASSERT_EQ(runtime.shutdown_chat_incarnation, chat.metadata_incarnation);
+			UAM_ASSERT_EQ(runtime.shutdown_data_root, app.data_root);
+			runtime.queued_user_prompts = {before.acp_queued_prompts.front()};
+			runtime.queued_user_prompts.front().id = "retired-runtime-queue";
+			runtime.queued_user_prompts.front().text = "Retired runtime's different queue";
+			runtime.processing = true; // Projection alone, never a physical process.
+			chat.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+			chat.acp_queued_prompts.front().id = "replacement-authoritative-chat-queue";
+			chat.acp_queued_prompts.front().text = "Preserve foreign authoritative queue during shutdown";
+			chat.acp_queue_held = true;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			before = chat;
+			primary_bytes = ReadFile(Primary());
+			journal_bytes = ReadFile(Journal());
+		}
+
+		void Shutdown()
+		{
+			uam::FastStopAcpSessionsForExit(app);
+			UAM_ASSERT(app.acp_sessions.empty() && app.acp_process_stop_tasks.empty());
+			UAM_ASSERT(app.claude_input_tasks.empty() && app.local_acp_launch_tasks.empty() && app.agent_input_preparation_tasks.empty());
+		}
+	};
+}
+
+UAM_TEST(FastShutdownPreservesRemoteQueueWithoutRuntimeOwner)
+{
+	for (const bool cold : {false, true})
+	{
+		UnmirroredShutdownQueueFixture fixture(cold);
+		fixture.Shutdown();
+		UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts, fixture.before.acp_queued_prompts);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.before.id);
+		UAM_ASSERT(saved);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts, fixture.before.acp_queued_prompts);
+		UAM_ASSERT_EQ(ReadFile(fixture.Journal()), fixture.journal_bytes);
+		fixture.Shutdown(); // Repeated shutdown still cannot acquire ownership of the journal.
+		UAM_ASSERT_EQ(ReadFile(fixture.Journal()), fixture.journal_bytes);
+	}
+}
+
+UAM_TEST(FastShutdownPreservesUnownedQueueAuthoredStateIndependently)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.Shutdown();
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.before.id);
+	UAM_ASSERT(saved);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages, fixture.before.messages);
+	UAM_ASSERT_EQ(saved->messages, fixture.before.messages);
+	UAM_ASSERT_EQ(saved->acp_unsent_prompt_recoveries, fixture.before.acp_unsent_prompt_recoveries);
+	UAM_ASSERT(uam::prompt_recovery::BindingsMatch(*saved));
+	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), fixture.primary_bytes);
+	UAM_ASSERT_EQ(ReadFile(fixture.temp.root / "authored.txt"), std::string("Keep attachment bytes.\n"));
+}
+
+UAM_TEST(FastShutdownPreservesForeignChatIndependently)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.Shutdown();
+	UAM_ASSERT_EQ(ReadFile(fixture.Foreign()), fixture.foreign_bytes);
+}
+
+UAM_TEST(FastShutdownRetiredRuntimeCannotOverwriteReplacementQueue)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.ReplaceAdoptedOwner();
+	fixture.Shutdown();
+	UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts, fixture.before.acp_queued_prompts);
+	UAM_ASSERT_EQ(fixture.app.chats.front().metadata_incarnation, fixture.before.metadata_incarnation);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.before.id);
+	UAM_ASSERT(saved);
+	UAM_ASSERT_EQ(saved->acp_queued_prompts, fixture.before.acp_queued_prompts);
+	UAM_ASSERT_EQ(ReadFile(fixture.Journal()), fixture.journal_bytes);
+}
+
+UAM_TEST(FastShutdownRetiredRuntimePreservesReplacementAuthoredStateIndependently)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.ReplaceAdoptedOwner();
+	fixture.Shutdown();
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages, fixture.before.messages);
+	UAM_ASSERT_EQ(fixture.app.chats.front().native_session_id, fixture.before.native_session_id);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_process_control_token, fixture.before.remote_process_control_token);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_process_exists, fixture.before.remote_process_exists);
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_stop_cleanup_pending, fixture.before.remote_stop_cleanup_pending);
+	UAM_ASSERT_EQ(fixture.app.chats.front().acp_queue_held, fixture.before.acp_queue_held);
+	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), fixture.primary_bytes);
+	UAM_ASSERT_EQ(ReadFile(fixture.Foreign()), fixture.foreign_bytes);
+}
+
+UAM_TEST(FastShutdownCurrentRuntimeStillPersistsOwnedQueue)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.app.acp_sessions.clear();
+	const auto& chat = fixture.app.chats.front();
+	const auto& owner = chat.metadata_incarnation;
+	const auto& runtime = uam::acp_detail::EnsureAcpSessionForChat(fixture.app, chat);
+	UAM_ASSERT_EQ(runtime.shutdown_chat_incarnation, owner);
+	// A second lookup must not refresh the original owner fence.
+	UAM_ASSERT_EQ(&uam::acp_detail::EnsureAcpSessionForChat(fixture.app, chat), &runtime);
+	fixture.app.acp_sessions.front()->queued_user_prompts.assign(fixture.before.acp_queued_prompts.begin(), fixture.before.acp_queued_prompts.end());
+	fixture.Shutdown();
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.before.id);
+	UAM_ASSERT(saved);
+	UAM_ASSERT_EQ(saved->acp_queued_prompts, fixture.before.acp_queued_prompts);
+}
+
+namespace
+{
+	// Inject only completed-task DATA to exercise projection fencing. This never
+	// claims a real process exited, and owns no process handles or worker.
+	void AddInjectedCompletedStop(UnmirroredShutdownQueueFixture& fixture)
+	{
+		auto& runtime = uam::acp_detail::EnsureAcpSessionForChat(fixture.app, fixture.app.chats.front());
+		runtime.local_stop_pending = true;
+		uam::AsyncAcpProcessStopTask task;
+		task.chat_id = runtime.chat_id;
+		task.turn_serial = runtime.turn_serial;
+		task.observe_exit = true;
+		task.projection_owner = uam::CaptureAcpStopProjectionOwner(runtime, nullptr);
+		task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+		task.result->exit_confirmed = true;
+		task.finished = std::make_shared<std::atomic<bool>>(true);
+		fixture.app.acp_process_stop_tasks.push_back(std::move(task));
+	}
+}
+
+UAM_TEST(CompletedStopProjectionCannotMutateReplacedChatRuntimeOrEpoch)
+{
+	for (int change = 0; change != 4; ++change)
+	{
+		UnmirroredShutdownQueueFixture fixture;
+		const auto primary = fixture.Primary(), journal = fixture.Journal();
+		fixture.app.acp_sessions.clear();
+		AddInjectedCompletedStop(fixture);
+		if (change == 0) fixture.app.chats.front().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		else if (change == 1)
+		{
+			fixture.app.acp_sessions.clear();
+			uam::acp_detail::EnsureAcpSessionForChat(fixture.app, fixture.app.chats.front()).local_stop_pending = true;
+		}
+		else if (change == 2) fixture.app.acp_sessions.front()->permission_review_incarnation = std::make_shared<const char>(0);
+		else fixture.app.data_root = fixture.temp.root / "replacement-data-root";
+		UAM_ASSERT(uam::PollCompletedAcpProcessStops(fixture.app, nullptr) == false);
+		UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+		UAM_ASSERT(fixture.app.acp_sessions.front()->local_stop_pending);
+		UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts, fixture.before.acp_queued_prompts);
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages, fixture.before.messages);
+		UAM_ASSERT_EQ(ReadFile(primary), fixture.primary_bytes);
+		UAM_ASSERT_EQ(ReadFile(journal), fixture.journal_bytes);
+		if (change == 3) UAM_ASSERT(!fs::exists(fixture.app.data_root));
+	}
+}
+
+UAM_TEST(CompletedStopProjectionStillSettlesItsCurrentOwner)
+{
+	UnmirroredShutdownQueueFixture fixture;
+	fixture.app.acp_sessions.clear();
+	AddInjectedCompletedStop(fixture);
+	UAM_ASSERT(uam::PollCompletedAcpProcessStops(fixture.app, nullptr));
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT(!fixture.app.acp_sessions.front()->local_stop_pending);
 }
 
 UAM_TEST(FastShutdownPreservesUndeliveredRemotePromptForRestart)

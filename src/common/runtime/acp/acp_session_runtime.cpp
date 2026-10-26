@@ -1,4 +1,6 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/runtime/acp/acp_process_handoff.h"
+#include <type_traits>
 #include "common/chat/acp_prompt_recovery.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "common/config/provider_availability.h"
@@ -402,10 +404,10 @@ namespace uam
 		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
 		{
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
+			ChatSession* chat = FindAcpRuntimeChatById(app, pending.chat_id);
 			// A replacement session cannot consume output from the old Stop proxy.
-			if (session != nullptr && !session->remote_stop_pending) session = nullptr;
-			return DrainRemoteStopStdout(app, pending, session,
-			    FindAcpRuntimeChatById(app, pending.chat_id), browser);
+			if (session != nullptr && (!session->remote_stop_pending || !AcpStopProjectionStillOwned(app, session, chat, pending.projection_owner))) session = nullptr;
+			return DrainRemoteStopStdout(app, pending, session, chat, browser);
 		}
 
 		bool HasUncertainClaudeQuotaInput(const ChatSession& chat)
@@ -5917,7 +5919,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id, AcpStopPurpose purpose, bool observe_exit)
 	{
 		auto owned = std::make_shared<platform::StdioProcessPlatformFields>();
-		TransferStdioProcessFields(process, *owned);
 		AsyncAcpProcessStopTask task;
 		task.chat_id = std::string(chat_id);
 		task.purpose = purpose;
@@ -5925,6 +5926,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 		task.result = std::make_shared<platform::ObservedProcessStopResult>();
 		task.owned_process = owned;
 		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id)) task.turn_serial = session->turn_serial;
+		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
+		    session && static_cast<const platform::StdioProcessPlatformFields*>(session) == &process)
+			task.projection_owner = CaptureAcpStopProjectionOwner(*session, FindAcpRuntimeChatById(app, task.chat_id));
+		else
+		{
+			for (const auto& pending : app.pending_acp_remote_stops)
+				if (pending && pending.get() == &process) { task.projection_owner = pending->projection_owner; break; }
+		}
 		if (const ChatSession* chat = FindAcpRuntimeChatById(app, task.chat_id))
 		{
 			task.provider_id = chat->provider_id;
@@ -5949,6 +5958,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::shared_ptr<std::atomic<bool>> finished = task.finished;
 		const std::shared_ptr<platform::ObservedProcessStopResult> result = task.result;
 		const bool confirm_writer_exit = !task.native_writer_key.empty();
+		// Complete all fallible preparation before relinquishing the caller's fields.
+		// Reserved capacity and a nonthrowing move make publication safe after start.
+		static_assert(std::is_nothrow_move_constructible_v<AsyncAcpProcessStopTask>);
+		if (app.acp_process_stop_tasks.size() == app.acp_process_stop_tasks.capacity())
+			app.acp_process_stop_tasks.reserve(std::max<std::size_t>(1, app.acp_process_stop_tasks.capacity() * 2));
+		acp_detail::ScopedStdioProcessTransfer handoff(process, *owned);
 		task.worker = std::make_unique<std::jthread>(
 		    [owned = std::move(owned), finished, result, purpose, observe_exit, confirm_writer_exit](std::stop_token stop_token)
 		    {
@@ -5972,9 +5987,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				else PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
 			    finished->store(true);
 		    });
-		if (AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id))
-			AgentRunScheduler::InitialProcessStopQueued(*session, task);
+		handoff.Commit();
 		app.acp_process_stop_tasks.push_back(std::move(task));
+		if (AcpSessionState* session = FindAcpSessionForChat(app, app.acp_process_stop_tasks.back().chat_id))
+			AgentRunScheduler::InitialProcessStopQueued(*session, app.acp_process_stop_tasks.back());
 	}
 
 	void PreserveFailedRemoteStop(AppState& app, AcpSessionState& session,
@@ -6356,11 +6372,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			auto pending = std::make_unique<PendingAcpRemoteStop>();
 			pending->chat_id = chat_id;
+			pending->projection_owner = CaptureAcpStopProjectionOwner(*session, chat);
 			pending->deadline_time_s = GetAppTimeSeconds() + acp_detail::kRemoteStopConfirmationTimeoutSeconds;
 			pending->recoverable_turn = recoverable_remote_turn;
 			pending->restart_after_stop = session->restart_after_remote_stop_cleanup;
-			TransferStdioProcessFields(*session, *pending);
-			app.pending_acp_remote_stops.push_back(std::move(pending));
+			acp_detail::PublishStdioProcessTransfer(*session, std::move(pending), app.pending_acp_remote_stops);
 			session->running = false;
 			session->remote_stop_pending = true;
 			session->transport_ownership_error.clear();
@@ -6778,6 +6794,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (task.managed_initial_owner && !AgentRunScheduler::InitialStopCompletionOwned(app, task.managed_initial_owner))
 				return true; // Original process is reaped; do not touch any replacement namespace.
 			AcpSessionState* stopped = FindAcpSessionForChat(app, task.chat_id);
+			if (!AcpStopProjectionStillOwned(app, stopped, FindAcpRuntimeChatById(app, task.chat_id), task.projection_owner))
+				return true; // Process settlement is complete; a successor cannot inherit its projection.
 			if ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && stopped != nullptr && stopped->local_stop_pending && stopped->turn_serial == task.turn_serial)
 			{
 				changed = true;
@@ -6854,7 +6872,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(pending);
 
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
-			if (session != nullptr && !session->remote_stop_pending)
+			if (!AcpStopProjectionStillOwned(app, session, FindAcpRuntimeChatById(app, pending.chat_id), pending.projection_owner) ||
+			    (session != nullptr && !session->remote_stop_pending))
 			{
 				stop = app.pending_acp_remote_stops.erase(stop);
 				changed = true;
@@ -7602,6 +7621,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			AcpSessionState* session = FindAcpSessionForChat(app, stop->chat_id);
 			if (session == nullptr || !session->remote_stop_pending) continue;
 			ChatSession* chat = FindAcpRuntimeChatById(app, stop->chat_id);
+			if (!AcpStopProjectionStillOwned(app, session, chat, stop->projection_owner)) continue;
 			if (RemoteStopExitConfirmed(exited, exit_code, stop->stderr_tail))
 			{
 				ApplyConfirmedRemoteStopOutcome(app, *session, chat, stop->stderr_tail);
@@ -7621,6 +7641,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	void FastStopAcpSessionsForExit(AppState& app)
 	{
+		const auto owned_shutdown_chat = [&app](const AcpSessionState& session) -> ChatSession*
+		{
+			ChatSession* chat = FindAcpRuntimeChatById(app, session.chat_id);
+			if (chat && session.shutdown_chat_incarnation &&
+			    (chat->metadata_incarnation != session.shutdown_chat_incarnation || app.data_root != session.shutdown_data_root))
+				return nullptr;
+			return chat;
+		};
 		for (const auto& entry : app.pending_chat_save_tasks) RevokePendingEmptyHeldSend(app, entry.first);
 		for (ClaudeInputPreparationTask& task : app.claude_input_tasks)
 			if (task.state != nullptr) task.state->cancel.request_stop();
@@ -7637,7 +7665,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			if (session == nullptr || !session->running ||
 			    (session->claude_live_background_task_ids.empty() && session->codex_live_background_thread_ids.empty())) continue;
-			ChatSession* chat = FindAcpRuntimeChatById(app, session->chat_id);
+			ChatSession* chat = owned_shutdown_chat(*session);
 			if (chat != nullptr && chat->execution_host_id == uam::execution_hosts::kLocalHostId)
 				(void)StopAcpSession(app, session->chat_id, AcpStopPurpose::Interrupt, true);
 		}
@@ -7666,7 +7694,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (owned_session == nullptr || !owned_session->running ||
 			    AcpSessionHasActiveTurn(*owned_session))
 				continue;
-			ChatSession* chat = FindAcpRuntimeChatById(app, owned_session->chat_id);
+			ChatSession* chat = owned_shutdown_chat(*owned_session);
 			if (chat == nullptr ||
 			    chat->execution_host_id == uam::execution_hosts::kLocalHostId)
 				continue;
@@ -7737,7 +7765,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			if (session != nullptr)
 			{
-				if (ChatSession* chat = FindAcpRuntimeChatById(app, session->chat_id); chat != nullptr)
+				if (ChatSession* chat = owned_shutdown_chat(*session); chat != nullptr)
 				{
 					const bool local_turn_settled = AcpSessionHasActiveTurn(*session) &&
 					    (chat->execution_host_id == uam::execution_hosts::kLocalHostId ||
@@ -7760,7 +7788,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 						if (!ChatRepository::SaveChat(app.data_root, *chat))
 							acp_detail::ScheduleChatSave(app, *chat, 0.0);
 					}
-					if (preserve_remote_queue && !held_queue)
+					// A saved, undispatched queue can exist before an idle runtime adopts it.
+					// An empty runtime queue alone does not authorize clearing that intent on exit.
+					const bool saved_queue_without_runtime_owner = !chat->acp_queued_prompts.empty() &&
+					    chat->acp_dispatched_queued_prompt_count == 0 && !AcpSessionHasActiveTurn(*session);
+					if (preserve_remote_queue && !held_queue && !saved_queue_without_runtime_owner)
 					{
 						const bool undelivered_remote_prompt =
 						    !chat->remote_turn_reconnect_pending && session->processing &&
