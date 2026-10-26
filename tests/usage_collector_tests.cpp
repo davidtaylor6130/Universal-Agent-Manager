@@ -223,3 +223,25 @@ UAM_TEST(UsageCollectorStreamedExportKeepsItsLeasedSnapshotAcrossBackgroundPubli
 	UAM_ASSERT(!leased.contains("error")); UAM_ASSERT_EQ(leased["fingerprint"], first["fingerprint"]); UAM_ASSERT_EQ(leased["totalBytes"], first["totalBytes"]); UAM_ASSERT_EQ(leased["dataBase64"], first["dataBase64"]);
 	UAM_ASSERT(collector.ExportReceipts(1).contains("error")); UAM_ASSERT(collector.ExportReceipts(original->bytes + 1, original->fingerprint).contains("error"));
 }
+
+UAM_TEST(UsageCollectorParksCollectionWhenUnreadAndResumesOnTheNextExport)
+{
+	// A helper with no usage reader used to rescan all history and rewrite its receipts every pass forever.
+	TempDir temp("uam-usage-idle-park");
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true,
+	                                std::chrono::milliseconds(200), std::chrono::milliseconds(20));
+	const auto wait_for_new_receipts = [&](const std::shared_ptr<const uam::usage::ReceiptSnapshot>& previous)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (collector.Receipts() == previous && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		return collector.Receipts() != previous;
+	};
+	UAM_ASSERT(wait_for_new_receipts(nullptr));
+	(void)collector.ExportReceipts();
+	std::this_thread::sleep_for(std::chrono::seconds(2));
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> parked = collector.Receipts();
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+	UAM_ASSERT(collector.Receipts() == parked);
+	(void)collector.ExportReceipts();
+	UAM_ASSERT(wait_for_new_receipts(parked));
+}

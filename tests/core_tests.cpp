@@ -4,6 +4,8 @@
 #include "common/platform/platform_speech_output.h"
 #include "test_harness.h"
 #include "common/platform/file_explorer_application.h"
+#include "common/platform/powershell_selection.h"
+#include "remote/remote_workspace_terminal.h"
 #include "common/config/custom_icon.h"
 #include "common/config/companion_network.h"
 #include "app/chat_lifecycle_service.h"
@@ -34,6 +36,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
+#include <versionhelpers.h>
 #endif
 
 #if defined(__APPLE__)
@@ -1517,6 +1520,17 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(computer_use_tool != control_tools.end());
 	UAM_ASSERT((*goal_tool)["inputSchema"]["required"] == nlohmann::json::array({"objective", "idempotencyKey"}));
 	UAM_ASSERT((*computer_use_tool)["inputSchema"]["required"] == nlohmann::json::array({"reason"}));
+	// Plan children rely on the standard read-only hint; anything that edits or widens access must not carry it.
+	std::size_t hinted = 0;
+	for (const auto& tool : control_tools)
+	{
+		const std::string name = tool.value("name", "");
+		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
+		    name == "skill_read" || name == "goal_get" || name == "user_question";
+		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
+		hinted += read_only ? 1 : 0;
+	}
+	UAM_ASSERT_EQ(hinted, std::size_t{7});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -5050,6 +5064,12 @@ UAM_TEST(IoUtilsCommitsFirstWriteAndCleansReplacementTemps)
 }
 
 #if defined(_WIN32)
+UAM_TEST(WindowsManifestDeclaresWindows10SoCefSeesTheRealVersion)
+{
+	// The app embeds this same manifest; without its Windows 10 entry Chromium reads 6.2 and crashes on start-up.
+	UAM_ASSERT(IsWindows10OrGreater());
+}
+
 /// <summary>Remove only this test's fresh temporary tree through an extended path, including on assertion failure.</summary>
 class ScopedNativeTempCleanup
 {
@@ -5370,7 +5390,7 @@ UAM_TEST(ChatRenameDoesNotRollBackAfterCommittedPrimaryWithDegradedBackup)
 UAM_TEST(PerformanceScriptTargetsRuntimeChatDataDirectory)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
-	const std::string script = uam::io::ReadTextFile(source_root / "run_performance_test.ps1");
+	const std::string script = uam::io::ReadTextFile(source_root / "docs/reference/history/run_performance_test.ps1");
 	const std::string runtime_directory = AppPaths::ChatsRootPath("data").filename().string();
 
 	UAM_ASSERT(script.find("$chatsDir = Join-Path $testDataRoot \"" + runtime_directory + "\"") != std::string::npos);
@@ -5812,6 +5832,17 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 4), std::string_view("ab"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 4), std::string_view("cd"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 5), std::string_view("€cd"));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xxxx€€", 8), std::string("xxxx..."));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xx€", 3), std::string("xx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab", 0), std::string_view());
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a😀", 4), std::string_view("a"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("😀b", 4), std::string_view("b"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a\x80\x80\x80\x80\x80", 5).size(), std::size_t{2}); // Non-UTF-8 input never collapses to empty.
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));
@@ -6554,6 +6585,46 @@ UAM_TEST(FileExplorerApplicationsRejectCommandsAndWrongNativeTypes)
 	UAM_ASSERT(!uam::platform::IsFileExplorerApplication((root / "missing.exe").string(), true));
 }
 
+UAM_TEST(WindowsPowerShellSelectionNeverAssumesPwsh)
+{
+	std::string error;
+	UAM_ASSERT_EQ(AppSettings{}.windows_powershell, std::string("auto"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, false, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("auto", false, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("windows-powershell", true, true, &error), std::string("powershell.exe"));
+	UAM_ASSERT_EQ(uam::powershell::Select("pwsh", true, true, &error), std::string("pwsh.exe"));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(uam::powershell::Select("pwsh", true, false, &error).empty());
+	UAM_ASSERT(error.find("PowerShell 7 (pwsh.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("windows-powershell", false, true, &error).empty());
+	UAM_ASSERT(error.find("Windows PowerShell (powershell.exe) was not found") != std::string::npos);
+	UAM_ASSERT(uam::powershell::Select("auto", false, false, &error).empty());
+	UAM_ASSERT(error.find("No PowerShell was found") != std::string::npos);
+
+	TempDir temp("uam-powershell-setting");
+	const fs::path settings_file = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings_file, "windows_powershell=bash\n"));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("auto"));
+}
+
+#if defined(_WIN32)
+UAM_TEST(WindowsTerminalScriptRunsOnWindowsPowerShell51)
+{
+	// The SSH terminal window script must run on built-in Windows PowerShell 5.1, not only PowerShell 7.
+	const std::string command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " +
+	    uam::remote::WindowsTerminalEncodedCommand({"cmd.exe", "/d", "/c", "echo", "uam-ps51-terminal-ok"}) +
+	    " & powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"'uam-ps-major=' + $PSVersionTable.PSVersion.Major\"";
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 30000);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT(result.output.find("uam-ps51-terminal-ok") != std::string::npos);
+	// Merged stderr can carry CLIXML progress records, so look for an explicit marker.
+	UAM_ASSERT(result.output.find("uam-ps-major=5") != std::string::npos);
+}
+#endif
+
 UAM_TEST(SettingsStorePersistsEditorSettings)
 {
 	TempDir temp("uam-editor-settings");
@@ -6562,6 +6633,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 	AppSettings settings;
 	settings.default_editor_preset_id = "clion";
 	settings.file_explorer_application = "/Applications/Explorer = Custom.app";
+	settings.windows_powershell = "pwsh";
 	settings.editor_default_groups_version = 1;
 	settings.editor_file_associations = {
 	    EditorFileAssociation{"cpp", "C++", {".cpp", ".h"}, "clion"},
@@ -6575,6 +6647,7 @@ UAM_TEST(SettingsStorePersistsEditorSettings)
 
 	UAM_ASSERT_EQ(loaded.default_editor_preset_id, std::string("clion"));
 	UAM_ASSERT_EQ(loaded.file_explorer_application, settings.file_explorer_application);
+	UAM_ASSERT_EQ(loaded.windows_powershell, std::string("pwsh"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].name, std::string("C++"));
 	UAM_ASSERT_EQ(loaded.editor_file_associations[0].extensions.size(), static_cast<std::size_t>(2));
@@ -8842,6 +8915,42 @@ UAM_TEST(ChatRepositoryDeletesStorageFilesWithSafeIdsOnly)
 	UAM_ASSERT(fs::exists(escaped_file));
 }
 
+UAM_TEST(ChatRepositoryLogsAttributablePrimaryDeletion)
+{
+	TempDir temp("uam-chat-delete-attribution");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+
+	ChatSession chat;
+	chat.id = "chat-delete-attribution";
+	chat.provider_id = "codex-cli";
+	chat.title = "Private title";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-01 00:00:01";
+	ChatDomainService().AddMessage(chat, MessageRole::User, "private prompt body");
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(fs::exists(uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, chat.id))));
+
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "user_deletion").Failed());
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "create_rollback").Failed());
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, "../escaped-attribution", "user_deletion").unsafe_chat_id);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("Chat storage delete: reason=user_deletion, chat_id=chat-delete-attribution, primary=removed, backup=removed, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete: reason=create_rollback, chat_id=chat-delete-attribution, primary=absent, backup=absent, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete refused: reason=user_deletion, unsafe chat id") != std::string::npos);
+	UAM_ASSERT(text.find("escaped-attribution") == std::string::npos);
+	UAM_ASSERT(text.find("private prompt body") == std::string::npos);
+	UAM_ASSERT(text.find("Private title") == std::string::npos);
+	UAM_ASSERT(text.find(temp.root.string()) == std::string::npos);
+}
+
 UAM_TEST(ChatRepositoryReportsSummaryDeleteFailures)
 {
 	TempDir temp("uam-chat-summary-delete-failure");
@@ -10686,6 +10795,39 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(FinalizeChatSyncSelectionKeepsClosedSelectionEmpty)
+{
+	TempDir temp("uam-sync-selection-closed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.remember_last_chat = true;
+	for (const char* id : {"chat-first", "chat-terminal"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+	}
+
+	// Closing or deleting the open chat leaves no selection. A later terminal
+	// history sync (its own chat, another native ID, or a removed chat) must not
+	// reopen anything.
+	for (const char* preferred : {"chat-terminal", "native-session-id", "chat-deleted", ""})
+	{
+		ChatDomainService().SelectChatById(app, "");
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, false));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, true));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string());
+	}
+
+	// An open chat still follows its terminal's import target as before.
+	ChatDomainService().SelectChatById(app, "chat-first");
+	UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "chat-first", "chat-terminal", false));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("chat-terminal"));
+}
+
 UAM_TEST(FinalizeChatSyncSelectionPrunesReferencesAndReportsHydrationFailure)
 {
 	TempDir temp("uam-sync-selection-hydration");
@@ -10748,11 +10890,15 @@ UAM_TEST(SyncChatsFromLoadedNativeTrimsPreferredNativeSessionId)
 	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved.front().id, std::string("target-chat"));
 	UAM_ASSERT_EQ(saved.front().native_session_id, std::string("target-native"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	// No chat was open, so the background import must not open one.
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
 	app.chats.clear();
 	app.selected_chat_index = -1;
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, "missing-chat"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, std::string("target-chat"));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Target history"));
 }
 
@@ -15350,6 +15496,11 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 	uam::CliProviderVersionState& copilot_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
 	copilot_version.checked = true;
 	copilot_version.supported = true;
+	uam::CliProviderVersionState& opencode_version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+	opencode_version.execution_host = uam::execution_hosts::LocalHost();
+	opencode_version.checked = true;
+	opencode_version.supported = true;
+	opencode_version.installed_version = "1.19.4";
 	AppSettings settings;
 	settings.provider_extra_flags = "--dangerously-skip-permissions --yolo --allow-all --ask-for-approval never --agent unsafe --plugin-dir injected";
 
@@ -18389,8 +18540,7 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	                               "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
 	                               "--disable-builtin-mcps",
 	                               "--no-custom-instructions",
-	                               "--no-remote",
-	                               "--no-remote-export",
+	                               "--sync-session=off",
 	                               "--disallow-temp-dir",
 	                               "--silent",
 	                           }));
@@ -18406,6 +18556,30 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "COPILOT_HOME="));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--agent"));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--plugin-dir"));
+
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export; older CLIs reject --sync-session.
+	const auto worker_flags = [&](std::string_view host_id)
+	{
+		return uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, nullptr, host_id).argv;
+	};
+	const auto uses_legacy_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--no-remote")) && uam::ranges::Contains(argv, std::string("--no-remote-export")) &&
+		       !uam::ranges::Contains(argv, std::string("--sync-session=off"));
+	};
+	const auto uses_current_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--sync-session=off")) && !uam::ranges::Contains(argv, std::string("--no-remote")) &&
+		       !uam::ranges::Contains(argv, std::string("--no-remote-export"));
+	};
+	UAM_ASSERT(uses_current_flags(worker_invocation.argv));
+	worker_version.installed_version = "1.0.102";
+	UAM_ASSERT(uses_legacy_flags(worker_flags({})));
+	worker_version.installed_version = "1.0.103-0";
+	UAM_ASSERT(uses_current_flags(worker_flags({})));
+	worker_app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, "ssh-old")].installed_version = "1.0.98";
+	UAM_ASSERT(uses_legacy_flags(worker_flags("ssh-old")));
+	UAM_ASSERT(uses_current_flags(worker_flags("ssh-unchecked")));
 
 	const std::string long_prompt(12000, 'x');
 	const uam::ProviderWorkerInvocation long_worker = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, long_prompt, "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);
@@ -25806,6 +25980,33 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	UAM_ASSERT(state.supported);
 	UAM_ASSERT_EQ(state.installed_version, std::string("1.0.75"));
 	UAM_ASSERT_EQ(state.install_method, std::string("winget"));
+}
+
+UAM_TEST(WindowsLaunchesAppendRegistryPathMissingFromStaleProcessPath)
+{
+	// A helper started before a CLI install keeps its old PATH; System32 stands in for the newly added registry entry.
+	TempDir temp("uam-win-stale-path");
+	const auto expect_registry_path_child = [&](const ProcessExecutionResult& result)
+	{
+		UAM_ASSERT(result.ok);
+		UAM_ASSERT_EQ(result.exit_code, 0);
+		UAM_ASSERT(uam::strings::ContainsCaseInsensitive(result.output, "\\cmd.exe"));
+		std::wstring path(32767, L'\0');
+		path.resize(GetEnvironmentVariableW(L"PATH", path.data(), static_cast<DWORD>(path.size())));
+		UAM_ASSERT(path.starts_with(temp.root.wstring() + L";"));
+	};
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		expect_registry_path_child(PlatformServicesFactory::Instance().process_service.ExecuteCommand("where.exe cmd", 10000));
+	}
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		uam::ProviderWorkerInvocation invocation;
+		invocation.direct_process = true;
+		invocation.argv = {"where.exe", "cmd"};
+		invocation.command_preview = "where.exe cmd";
+		expect_registry_path_child(uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 10000));
+	}
 }
 
 #endif

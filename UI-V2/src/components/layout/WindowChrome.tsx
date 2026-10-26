@@ -45,6 +45,10 @@ export function useWindowChrome() {
           const next = response.data
           setState(current => current?.platform === next.platform && current.maximized === next.maximized
             && current.fullscreen === next.fullscreen ? current : next)
+        } else if (response.code === 404) {
+          // A native host without this bridge keeps its system title bar; a second strip would push content off screen.
+          setState(null)
+          break
         }
       } while (refreshAgain)
       inFlight = false

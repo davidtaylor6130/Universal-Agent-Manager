@@ -4,6 +4,10 @@ import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
 import { Notice } from '../ui/Notice'
 import './panels.css'
+import './update-release-notes.css'
+
+// The build define is used directly here: this chunk imports buildFeatures through a chunk cycle, which stops
+// the bundler from folding the imported constant and would ship the SSH helper branches.
 
 export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: UpdateMonitor; onClose: () => void; closing?: boolean }) {
   const [installError, setInstallError] = useState('')
@@ -16,7 +20,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
   useEffect(() => () => batchRef.current?.abort(), [])
 
   const checkFailure = monitor.error || checkError
-	const installableUpdates = monitor.updates.filter((update) => update.remoteHostId || (update.providerId && update.installable))
+	const installableUpdates = monitor.updates.filter((update) => (__UAM_FEATURE_SSH__ && update.remoteHostId) || (update.providerId && update.installable))
   const checked = monitor.lastCheckedAt ? new Date(monitor.lastCheckedAt) : null
   const checkedLabel = checked && !Number.isNaN(checked.getTime())
     ? `Last checked ${checked.toLocaleString()}`
@@ -54,13 +58,13 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                 setUpdatingAll(true)
                 setInstallError('')
                 try {
-                  const providers = installableUpdates.filter((update): update is typeof update & { providerId: string } => Boolean(update.providerId && !update.remoteHostId))
+                  const providers = installableUpdates.filter((update): update is typeof update & { providerId: string } => Boolean(update.providerId && !(__UAM_FEATURE_SSH__ && update.remoteHostId)))
                   const results = await Promise.allSettled([
                     ...(providers.length ? [monitor.installProviderUpdates(providers)] : []),
-                    ...installableUpdates.filter((update) => update.remoteHostId).map((update) => monitor.applyRemoteHelperUpdate(update.remoteHostId!)),
+                    ...(__UAM_FEATURE_SSH__ ? installableUpdates.filter((update) => update.remoteHostId).map((update) => monitor.applyRemoteHelperUpdate(update.remoteHostId!)) : []),
                   ])
                   const failures = results.flatMap((result, index) => result.status === 'rejected' || !result.value.ok
-                    ? [`${providers.length && index === 0 ? 'Provider updates' : installableUpdates.filter((update) => update.remoteHostId)[index - (providers.length ? 1 : 0)]?.name}: ${result.status === 'fulfilled' && result.value.error?.trim() || 'Check its update status and retry.'}`] : [])
+                    ? [`${providers.length && index === 0 ? 'Provider updates' : installableUpdates.filter((update) => __UAM_FEATURE_SSH__ && update.remoteHostId)[index - (providers.length ? 1 : 0)]?.name}: ${result.status === 'fulfilled' && result.value.error?.trim() || 'Check its update status and retry.'}`] : [])
                   if (failures.length && !batch.signal.aborted) setInstallError(failures.join('\n'))
                 } catch {
                   if (!batch.signal.aborted) setInstallError('Some updates failed. Check each provider status and retry.')
@@ -126,7 +130,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               onClick={async () => {
                 setCheckError('')
                 if (!await monitor.refreshCliProviderVersion(result.providerId, result.executionHostId)) {
-                  setCheckError(`${result.name} check could not be started. Check its SSH connection and try again.`)
+                  setCheckError(__UAM_FEATURE_SSH__ ? `${result.name} check could not be started. Check its SSH connection and try again.` : `${result.name} check could not be started. Try again.`)
                 }
               }}>Retry check</Button>}
           >
@@ -220,10 +224,18 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                       onClick={() => monitor.dismiss(update.id, update.latestVersion)}
                     />
                   </div>
+                  {update.releaseNotesExcerpt?.trim() && (
+                    <details key={update.latestVersion} className="uam-update-notes">
+                      <summary aria-label={`Release notes excerpt for ${update.name} ${update.latestVersion}`}>
+                        Release notes excerpt
+                      </summary>
+                      <p>{update.releaseNotesExcerpt}</p>
+                    </details>
+                  )}
                   {Boolean(providerState?.blockingChatIds?.length) && <p role="status" className="text-xs">Waiting for {providerState!.blockingChatIds!.length} provider session(s).</p>}
                   {providerRunning && <p role="status" className="text-xs">{providerState?.message || 'Installing update.'}</p>}
                   <div className="flex flex-wrap gap-2">
-                    {update.remoteHostId ? (
+                    {__UAM_FEATURE_SSH__ && update.remoteHostId ? (
                       <Button
                         size="sm"
                         variant="primary"
@@ -279,7 +291,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                         View release
                       </Button>
                     )}
-                    {update.providerId && !update.remoteHostId && (
+                    {update.providerId && !(__UAM_FEATURE_SSH__ && update.remoteHostId) && (
                       <Button
                         size="sm"
                         variant="ghost"

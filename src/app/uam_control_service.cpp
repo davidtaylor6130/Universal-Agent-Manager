@@ -4,6 +4,8 @@
 #include <condition_variable>
 #include <mutex>
 #include "app/uam_control_service.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
@@ -454,7 +456,7 @@ namespace uam
 			    {"lastVerification", goal->last_verification}, {"currentStep", goal->current_step},
 			    {"completedItems", goal->completed_items}, {"remainingItems", goal->remaining_items},
 			    {"maxLoopIterations", bounded_settings.goal_max_loop_iterations},
-			    {"executionOwner", "uam"}, {"creator", goal->creator},
+			    {"executionOwner", goal->execution_owner == "provider" ? "provider" : "uam"}, {"creator", goal->creator},
 			    {"creatorProviderId", goal->creator_provider_id}, {"creatorAgentId", goal->creator_agent_id},
 			    {"creatorRunId", goal->creator_run_id},
 			};
@@ -1339,8 +1341,12 @@ namespace uam
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
-			if (capability->seen_request_ids.size() > kMaxSeenRequests)
-				capability->seen_request_ids.erase(capability->seen_request_ids.begin());
+			capability->seen_request_order.push_back(request_id);
+			if (capability->seen_request_order.size() > kMaxSeenRequests)
+			{
+				capability->seen_request_ids.erase(capability->seen_request_order.front());
+				capability->seen_request_order.pop_front();
+			}
 
 
 
@@ -1473,7 +1479,7 @@ namespace uam
 			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
-			return nlohmann::json::array({
+			nlohmann::json tools = nlohmann::json::array({
 			    std::move(agent_wait),
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
@@ -1489,6 +1495,17 @@ namespace uam
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
 			                       {"required", nlohmann::json::array({"reason"})}, {"additionalProperties", false}}} },
 			});
+			// Standard MCP hint: providers may run these in Plan/read-only mode without a prompt. They change no
+			// workspace, chat, run or goal state (only audit and pending-request bookkeeping; user_question reads
+			// the user's answer). The server still enforces every ceiling.
+			for (nlohmann::json& tool : tools)
+			{
+				const std::string name = tool.value("name", "");
+				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
+				    name == "skill_read" || name == "goal_get" || name == "user_question")
+					tool["annotations"] = {{"readOnlyHint", true}};
+			}
+			return tools;
 		}
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
@@ -1512,6 +1529,16 @@ namespace uam
 				return reason != WaitAbortReason::None;
 			};
 			if (!uam::paths::IsDirectoryNoThrow(capability) || uam::paths::IsLinkOrReparsePointNoThrow(capability))
+				return std::nullopt;
+			// Independent stdio clients must finish their file IO before a stopped transfer.
+			std::error_code path_error;
+			const auto absolute_capability = std::filesystem::absolute(capability, path_error);
+			if (path_error || absolute_capability.parent_path().parent_path().filename() != "uam-control")
+				return std::nullopt;
+			const auto root = absolute_capability.parent_path().parent_path().parent_path();
+			std::string ownership_error;
+			const auto writer = platform::DataFolderWriterLease::TryAcquire(root, platform::DataFolderWriterLease::Access::Shared, ownership_error);
+			if (!writer || !DataFolderTransition::CheckExternalSourceFence(root, ownership_error, true))
 				return std::nullopt;
 			const std::string id = RandomRequestId();
 			if (request_id_out != nullptr) *request_id_out = id;
@@ -1566,7 +1593,7 @@ namespace uam
 			// A timed-out receipt is NOT proof of retirement. Never print/adopt the abandoned payload.
 			(void)SubmitToManager(capability, "_mcp_cancel_request",
 			    {{"connectionId", connection}, {"requestId", original_request}});
-			(void)uam::paths::RemoveFileNoThrow(capability / "responses" / (original_request + ".json"));
+			// The manager retires the response; do not perform unleased cleanup after SubmitToManager.
 		}
 
 	} // namespace

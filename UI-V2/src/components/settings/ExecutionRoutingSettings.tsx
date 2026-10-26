@@ -5,10 +5,11 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, StatusDot, Switch, type StatusTone } from '../ui'
-import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
+import { isSshHost } from '../../utils/remoteWorkspace'
 
 export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: StatusTone; label: string }> = {
   ready: { tone: 'success', label: 'Ready' },
@@ -46,7 +47,7 @@ function savePayload(settings: RoutingSettings) {
  * SSH routing configuration, shared by the New chat dialog ("dialog") and the Settings page ("page").
  * The dialog closes on Cancel or a successful save; the page keeps Discard/Save and guards leaving with unsaved edits.
  */
-export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void }>(
+export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void }>(
   function ExecutionRoutingSettings({ variant, onClose, onBusyChange }, ref) {
     const saved = useAppStore((state) => state.executionRouting)
     const hosts = useAppStore((state) => state.executionHosts)
@@ -125,7 +126,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
       }
       finally { busyRef.current = false; setBusy(false); onBusyChange?.(false) }
     }
-    const sshHosts = hosts.filter((host) => host.transport === 'ssh')
+    const sshHosts = hosts.filter((host) => isSshHost(host))
     const localFolders = folders.filter((folder) => folder.directory && (!matching || !folder.executionHostId || folder.executionHostId === 'local'))
     const repositoryOf = (folderId: string) => repositories?.find((item) => item.folderId === folderId)
     /** Manual override wins; otherwise the repository match from the backend. */
@@ -147,12 +148,12 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
       ? <div className="uam-rt-dialog__foot">
           {errorText}
           <Button variant="ghost" size="md" disabled={busy} onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</Button>
+          <SaveButton size="md" saving={busy} disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</SaveButton>
         </div>
       : <div className="flex items-center justify-end gap-2 pt-1">
           {errorText}
           <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setBaseline(saved); setError('') }}>Discard</Button>
-          <Button size="sm" variant="primary" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit()}>Save routing</Button>
+          <SaveButton saving={busy} disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit()}>Save routing</SaveButton>
         </div>
 
     return <>

@@ -33,3 +33,31 @@ export function applyMotionSpeed(speed: MotionSpeed): void {
   if (speed === 'default') document.documentElement.removeAttribute('data-motion')
   else document.documentElement.setAttribute('data-motion', speed)
 }
+
+/** Smooth programmatic scrolling unless Appearance > Motion is Off or the system asks for reduced motion. */
+export function motionScrollBehavior(): ScrollBehavior {
+  if (typeof document === 'undefined') return 'auto'
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  return reduced || document.documentElement.getAttribute('data-motion') === 'off' ? 'auto' : 'smooth'
+}
+
+/** Aligns `row` to the top of its scrolling `region` with motionScrollBehavior(). Returns true while a smooth scroll
+ * owns the region; `onEnd` then runs once, on `scrollend` or after two frames if nothing moved (a row already in
+ * place, or the region already at its end, never fires `scrollend`). */
+export function alignRowStart(region: HTMLElement, row: HTMLElement, onEnd: () => void): boolean {
+  const behavior = motionScrollBehavior()
+  const from = region.scrollTop
+  row.scrollIntoView?.({ block: 'start', behavior })
+  // A scroll that already landed was instant (Motion Off, or smooth not honoured); nothing to hold.
+  if (behavior !== 'smooth' || region.scrollTop !== from) return false
+  let done = false
+  const end = () => {
+    if (done) return
+    done = true
+    region.removeEventListener('scrollend', end)
+    onEnd()
+  }
+  region.addEventListener('scrollend', end)
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (region.scrollTop === from) end() }))
+  return true
+}

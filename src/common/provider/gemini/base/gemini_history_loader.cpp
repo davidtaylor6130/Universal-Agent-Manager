@@ -267,8 +267,7 @@ namespace
 				if (raw.inline_data)
 				{
 					attachment.source = AttachmentSource::NativeInlinePending;
-					attachment.native_inline_payload = uam::native_assets::MakeInlinePayload(std::move(raw.blob->Find("data")->string_value), attachment.mime_type,
-					    state_.context->payload_budget, state_.error, state_.cancel);
+					attachment.native_inline_payload = state_.context->MakePayload(std::move(raw.blob->Find("data")->string_value), attachment.mime_type, state_.error, state_.cancel);
 					if (!attachment.native_inline_payload) return false;
 					attachment.content_digest = attachment.native_inline_payload->Digest();
 					attachment.size_bytes = attachment.native_inline_payload->DecodedSize();
@@ -325,6 +324,21 @@ namespace
 			return true;
 		}
 	};
+
+	// Gemini CLI getInitialChatHistory() records its generated environment preamble as the
+	// first user row, using the fixed id deriveStableId(["environment-context"]). That row is
+	// model context, not a user turn; every marker is required so typed text stays visible.
+	bool IsSessionContextRow(const JsonValue& row, std::size_t ordinal)
+	{
+		if (ordinal != 0 || JsonStringOrEmpty(row.Find("id")) != "d04923d38bb0f6017037e74183378ef4" || JsonStringOrEmpty(row.Find("type")) != "user") return false;
+		const JsonValue* content = row.Find("content");
+		if (!content || content->type != JsonValue::Type::Array || content->array_value.size() != 1) return false;
+		const JsonValue& part = content->array_value.front();
+		const JsonValue* text = part.Find("text");
+		if (part.object_value.size() != 1 || !text || text->type != JsonValue::Type::String) return false;
+		const std::string_view value = text->string_value;
+		return value.starts_with("<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n") && value.ends_with("\n</session_context>");
+	}
 
 	std::optional<ChatSession> MapGeminiDocument(JsonValue& root, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options, MappingState& state)
 	{
@@ -393,6 +407,7 @@ namespace
 				if (!state.Check()) return std::nullopt;
 				const auto ordinal = row_index++;
 				if (raw_message.type != JsonValue::Type::Object) { state.Fail("Gemini native history contains a malformed current message."); return std::nullopt; }
+				if (IsSessionContextRow(raw_message, ordinal)) continue;
 				const auto native_id = JsonStringOrEmpty(raw_message.Find("id"));
 				if (!BoundedIdentity(native_id)) { state.Fail("Gemini native message identity exceeds its bound."); return std::nullopt; }
 				const auto row_identity = !native_id.empty() && message_ids[native_id] == 1 ? "id:" + IdentityComponent(native_id) : "snapshot:" + attempt + ":" + std::to_string(ordinal);
@@ -532,12 +547,49 @@ namespace
 
 GeminiHistoryParseContext::GeminiHistoryParseContext() : payload_budget(std::make_shared<uam::native_assets::PayloadBudget>()) {}
 
+std::shared_ptr<const uam::native_assets::InlinePayload> GeminiHistoryParseContext::MakePayload(std::string&& encoded, std::string mime, std::string& error, std::stop_token stop)
+{
+	if (!payload_retirement)
+		return uam::native_assets::MakeInlinePayload(std::move(encoded), std::move(mime), payload_budget, error, stop);
+	const std::lock_guard lock(mutex_);
+	if (payload_retirement->count_ == payload_retirement->originals_.size())
+	{
+		error = "Gemini native history operation exceeds 256 retained originals.";
+		if (retirement_error_.empty()) retirement_error_ = error;
+		return {};
+	}
+	// The slot exists before acquiring the original. Assignment and aliasing
+	// shared_ptr construction are nonthrowing; later mapping failures leave the
+	// raw handle here for worker disposal, never in a caller-owned temporary.
+	auto& original = payload_retirement->originals_[payload_retirement->count_];
+	original = uam::native_assets::MakeInlinePayload(std::move(encoded), std::move(mime), payload_budget, error, stop);
+	if (!original)
+	{
+		if (retirement_error_.empty()) retirement_error_ = error;
+		return {};
+	}
+	++payload_retirement->count_;
+	return {payload_retirement, original.get()};
+}
+
+std::string GeminiHistoryParseContext::RetirementError()
+{
+	const std::lock_guard lock(mutex_);
+	return retirement_error_;
+}
+
 bool GeminiHistoryParseContext::AdmitMetadata(std::size_t bytes, std::string& error)
 {
 	const std::lock_guard lock(mutex_);
-	if (cancel.stop_requested()) { error = "Gemini native history mapping cancelled."; return false; }
-	if (attachments_ >= kMaxAttachments) { error = "Gemini native history operation exceeds 256 attachment admissions."; return false; }
-	if (bytes > kMaxMetadataBytes - metadata_bytes_) { error = "Gemini native history operation exceeds 1 MiB attachment metadata."; return false; }
+	const auto fail = [&](const char* reason)
+	{
+		error = reason;
+		if (payload_retirement && retirement_error_.empty()) retirement_error_ = error;
+		return false;
+	};
+	if (cancel.stop_requested()) return fail("Gemini native history mapping cancelled.");
+	if (attachments_ >= kMaxAttachments) return fail("Gemini native history operation exceeds 256 attachment admissions.");
+	if (bytes > kMaxMetadataBytes - metadata_bytes_) return fail("Gemini native history operation exceeds 1 MiB attachment metadata.");
 	++attachments_;
 	metadata_bytes_ += bytes;
 	return true;
@@ -765,11 +817,12 @@ bool GeminiJsonHistoryStore::SaveFile(const std::filesystem::path& file_path, co
 	return uam::io::WriteTextFile(file_path, SerializeJson(root));
 }
 
-std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token)
+std::vector<ChatSession> LoadGeminiJsonHistoryForRuntime(const std::filesystem::path& chats_dir, const ProviderProfile& profile, const ProviderRuntimeHistoryLoadOptions& options, std::stop_token stop_token, const std::shared_ptr<GeminiHistoryParseContext>& context)
 {
 	GeminiJsonHistoryStoreOptions native_options;
 	native_options.max_file_bytes = options.native_max_file_bytes;
 	native_options.max_messages = options.native_max_messages;
+	native_options.context = context;
 	if (chats_dir.empty() || stop_token.stop_requested()) return {};
 	auto directory = uam::paths::AbsolutePathNoThrow(chats_dir);
 	if (directory.filename().empty()) directory = directory.parent_path();

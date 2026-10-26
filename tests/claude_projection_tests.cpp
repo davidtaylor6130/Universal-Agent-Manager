@@ -468,6 +468,25 @@ UAM_TEST(ClaudeParentEnvelopeReplayDoesNotDuplicateNarration)
 #endif
 }
 
+UAM_TEST(ClaudeSeenEnvelopeIdentitiesStayBoundedAndStillDropRecentRepeats)
+{
+	uam::AcpSessionState session;
+	uam::RecentIdentitySet& seen = session.claude_seen_parent_messages;
+	const std::size_t total = uam::RecentIdentitySet::kCapacity * 3;
+	for (std::size_t index = 0; index < total; ++index)
+	{
+		UAM_ASSERT(seen.Insert("frame-" + std::to_string(index)));
+		UAM_ASSERT(!seen.Insert("frame-" + std::to_string(index)));
+	}
+	UAM_ASSERT_EQ(seen.ids.size(), uam::RecentIdentitySet::kCapacity);
+	UAM_ASSERT_EQ(seen.order.size(), uam::RecentIdentitySet::kCapacity);
+	// Every identity inside the window is still a repeat; only the oldest beyond it is forgotten.
+	UAM_ASSERT(!seen.Insert("frame-" + std::to_string(total - uam::RecentIdentitySet::kCapacity)));
+	UAM_ASSERT(!seen.Insert("frame-" + std::to_string(total - 1)));
+	UAM_ASSERT(seen.Insert("frame-0"));
+	UAM_ASSERT_EQ(seen.ids.size(), uam::RecentIdentitySet::kCapacity);
+}
+
 UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI

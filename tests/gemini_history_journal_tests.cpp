@@ -6,6 +6,7 @@
 #include "common/chat/native_media_chat_save.h"
 #include "common/utils/base64.h"
 #include "app/native_agent_history_service.h"
+#include "app/chat_title_service.h"
 #include "common/provider/gemini_history_journal.h"
 #include "common/provider/gemini_history_loader.h"
 #include "common/provider/native_provider_agent_history.h"
@@ -5324,4 +5325,66 @@ UAM_TEST(ChatDomainDuplicateChangedUnknownTimesPreserveExistingGraph)
 	CheckDuplicateTimestampBoundary("2026-10-16T13:00:00Z", "2026-10-16T13:00:00Z",
 	    "2026-10-16T11:00:00Z", "unknown-created", false);
 }
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+namespace
+{
+	// deriveStableId(["environment-context"]) in Gemini CLI: sha256 hex truncated to 32 characters.
+	const std::string kSessionContextId = "d04923d38bb0f6017037e74183378ef4";
+	// Shape of the row Gemini CLI 0.65.0 getInitialChatHistory() records, copied from a real
+	// ~/.gemini/tmp/<project>/chats/session-*.jsonl with local paths replaced.
+	const std::string kSessionContextText =
+	    "<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n"
+	    "Today's date is Sunday, October 25, 2026 (formatted according to the user's locale).\n"
+	    "My operating system is: darwin\nThe project's temporary directory is: /home/user/.gemini/tmp/demo-ws\n"
+	    "- **Workspace Directories:**\n  - /home/user/demo-ws\n- **Directory Structure:**\n\n"
+	    "Showing up to 200 items (files + folders).\n\n/home/user/demo-ws/\n\n\n\n"
+	    "<loaded_context>\n<project_context>\nServer instructions.\n</project_context>\n</loaded_context>\n</session_context>";
+	Json SessionContextRow(const std::string& id = kSessionContextId, const std::string& text = kSessionContextText)
+	{
+		return {{"id", id}, {"timestamp", "2026-10-16T12:00:00Z"}, {"type", "user"}, {"content", Json::array({{{"text", text}}})}};
+	}
+	std::string ConversationRows(const std::string& question = "Native question")
+	{
+		return Line({{"id", "u"}, {"type", "user"}, {"content", Json::array({{{"text", question}}})}}) +
+		    Line({{"id", "a"}, {"type", "gemini"}, {"content", "Current answer"}});
+	}
+}
+
+UAM_TEST(GeminiSessionContextRowIsOmittedFromHistoryTitleAndTitlePrompt)
+{
+	const auto provider = ProviderProfileStore::DefaultGeminiProfile();
+	const auto parsed = GeminiJsonHistoryStore::ParseText(Line(Header()) + Line(SessionContextRow()) + ConversationRows(), provider);
+	UAM_ASSERT(parsed && parsed->messages.size() == 2);
+	UAM_ASSERT_EQ(parsed->messages.front().content, std::string("Native question"));
+	UAM_ASSERT_EQ(parsed->title, std::string("Native question"));
+	UAM_ASSERT(uam::ChatTitleService::BuildPrompt(*parsed).find("session_context") == std::string::npos);
+	// A session holding only Gemini's preamble is an empty placeholder, never an imported chat.
+	const auto empty = GeminiJsonHistoryStore::ParseTextResult(Line(Header()) + Line(SessionContextRow()), provider);
+	UAM_ASSERT(empty.status == GeminiHistoryParseStatus::ConfirmedEmpty && !empty.chat);
+}
+
+UAM_TEST(GeminiSessionContextLiteralTypedByUserIsPreserved)
+{
+	const auto provider = ProviderProfileStore::DefaultGeminiProfile();
+	const auto first_content = [&](const std::string& text)
+	{
+		const auto parsed = GeminiJsonHistoryStore::ParseText(text, provider);
+		UAM_ASSERT(parsed && !parsed->messages.empty());
+		return parsed->messages.front().content;
+	};
+	const std::string literal = "What does <session_context> mean in Gemini?";
+	UAM_ASSERT_EQ(first_content(Line(Header()) + ConversationRows(literal)), literal);
+	// Gemini's preamble is omitted while the user's literal turn after it stays.
+	UAM_ASSERT_EQ(first_content(Line(Header()) + Line(SessionContextRow()) + ConversationRows(kSessionContextText)), kSessionContextText);
+	// Without Gemini's fixed id, matching text is the user's own first message.
+	UAM_ASSERT_EQ(first_content(Line(Header()) + Line(SessionContextRow("typed")) + ConversationRows()), kSessionContextText);
+	// The fixed id alone does not hide a partial literal.
+	UAM_ASSERT_EQ(first_content(Line(Header()) + Line(SessionContextRow(kSessionContextId, "<session_context>")) + ConversationRows()), std::string("<session_context>"));
+	// Gemini injects only the first row; later rows are never treated as its preamble.
+	const auto later = GeminiJsonHistoryStore::ParseText(Line(Header()) + ConversationRows() + Line(SessionContextRow()), provider);
+	UAM_ASSERT(later && later->messages.size() == 3 && later->messages.back().content == kSessionContextText);
+}
+
 #endif

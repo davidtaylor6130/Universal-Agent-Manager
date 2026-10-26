@@ -34,7 +34,8 @@ const out = process.env.VITE_UAM_OUT_DIR;
 fs.mkdirSync(out + '/.vite', {recursive: true});
 fs.writeFileSync(out + '/index.html', JSON.stringify({
   VITE_UAM_UI_BUILD_ID: process.env.VITE_UAM_UI_BUILD_ID,
-  VITE_UAM_SSH: process.env.VITE_UAM_SSH
+  UAM_FEATURE_SSH: process.env.UAM_FEATURE_SSH,
+  UAM_FEATURE_CODEX: process.env.UAM_FEATURE_CODEX
 }));
 fs.writeFileSync(out + '/.vite/manifest.json', '{}');
 fs.appendFileSync('runs.txt', 'build\\n');
@@ -49,7 +50,7 @@ if (fs.existsSync('src/fail')) process.exit(1);
 cmake_minimum_required(VERSION 3.20)
 project(ui_build_fixture LANGUAGES CXX)
 set(UAM_PRESENTATION_VERSION "fixture" CACHE STRING "")
-option(UAM_ENABLE_SSH "" ON)
+include("{(ROOT / 'cmake/build_features.cmake').as_posix()}")
 include("{(ROOT / 'cmake/ui_build.cmake').as_posix()}")
 add_executable(uam_runner runner.cpp)
 add_executable(universal_agent_manager main.cpp)
@@ -80,6 +81,7 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD COMMAND "${{CMAKE_C
             self.assertEqual(count(), 1)
             packaged = build / 'packaged.html'
             first = packaged.stat().st_mtime_ns
+            self.assertEqual(json.loads(packaged.read_text())['UAM_FEATURE_SSH'], '1')
             make()
             run('-S', source, '-B', build)
             make()
@@ -115,10 +117,12 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD COMMAND "${{CMAKE_C
             edit(ui / 'node_modules/.package-lock.json', '{"installed":true}')
             self.assertEqual(count(), 6)
             time.sleep(1.05)
-            run('-S', source, '-B', build, '-DUAM_ENABLE_SSH=OFF', '-DUAM_PRESENTATION_VERSION=next')
+            # Any CMake false spelling must reach the UI as the same normalised 0 as native code.
+            run('-S', source, '-B', build, '-DUAM_ENABLE_SSH=0', '-DUAM_ENABLE_RUNTIME_CODEX_CLI=false', '-DUAM_PRESENTATION_VERSION=next')
             make()
             environment = json.loads(packaged.read_text())
-            self.assertEqual(environment['VITE_UAM_SSH'], 'OFF')
+            self.assertEqual(environment['UAM_FEATURE_SSH'], '0')
+            self.assertEqual(environment['UAM_FEATURE_CODEX'], '0')
             self.assertTrue(environment['VITE_UAM_UI_BUILD_ID'].startswith('next-'))
             self.assertEqual(count(), 7)
             shutil.rmtree(build / 'UI-V2/dist')

@@ -1,4 +1,6 @@
 #include "common/usage/antigravity_history_scan.h"
+// Builds without this provider use the inline stubs in the header; test targets may still list this file.
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 #include "common/memory/memory_storage_guard.h"
 #include "common/paths/path_utils.h"
 #include <chrono>
@@ -189,3 +191,4 @@ namespace uam::usage
 		return result;
 	}
 }
+#endif // UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI

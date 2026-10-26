@@ -4,6 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { isSingleIconText, lucideIconName, lucideIconValue, resolveCustomIcon, type CustomIcon as Icon, type CustomIconInput, type CustomIconTarget } from '../../types/customIcon'
 import { rememberRecentLucideIcon } from '../../utils/lucideIconLibrary'
 import { Button } from '../ui'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 // The Lucide grid and per-icon loaders are a separate chunk; they load on first use only.
 const LazyLucideGlyph = lazy(() => import('./LucideIcons').then((module) => ({ default: module.LucideGlyph })))
@@ -41,7 +42,7 @@ function IconLibrarySkeleton() {
 
 /** Library icons are the primary choice; emoji/character and PNG upload are secondary tabs. */
 export function useCustomIconPicker() {
-  const [target, setTarget] = useState<{ type: CustomIconTarget; id: string; label: string } | null>(null)
+  const [target, setTarget] = useState<{ type: CustomIconTarget; ids: BulkTarget[]; label: string } | null>(null)
   const [tab, setTab] = useState<PickerTab>('library')
   const [libraryName, setLibraryName] = useState<string | null>(null)
   const [text, setText] = useState('')
@@ -65,10 +66,13 @@ export function useCustomIconPicker() {
     const request = generation.current
     setBusy(true); setError('')
     try {
-      const ok = await useAppStore.getState().setCustomIcon(target.type, target.id, icon)
+      // Multi-selection saves the same icon on every target and names each failure in the shared notification.
+      const saved = target.ids.length === 1
+        ? await useAppStore.getState().setCustomIcon(target.type, target.ids[0].id, icon) ? 1 : 0
+        : (await runForEach(target.ids, async ({ id }) => await useAppStore.getState().setCustomIcon(target.type, id, icon) ? null : 'Icon could not be saved.', 'Could not change icons')).length
       if (generation.current !== request) return
-      if (ok) close()
-      else setError('Icon could not be saved.')
+      if (saved === target.ids.length) close()
+      else setError(target.ids.length === 1 ? 'Icon could not be saved.' : `Icon could not be saved for ${target.ids.length - saved} of ${target.ids.length}.`)
     } catch { if (generation.current === request) setError('Icon could not be saved.') }
     finally { setBusy(false) }
   }
@@ -133,5 +137,5 @@ export function useCustomIconPicker() {
     {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
     <div className="mt-4 flex items-center gap-2"><Button size="sm" variant="ghost" disabled={busy} onClick={() => void save(null)}>Reset to default</Button><span className="flex-1" /><Button size="sm" variant="secondary" disabled={busy} onClick={close}>Cancel</Button>{tab !== 'upload' && <Button size="sm" variant="primary" disabled={busy || !canSave} onClick={saveSelection}>Save</Button>}</div>
   </dialog>, document.body)
-  return { dialog, open: (type: CustomIconTarget, id: string, label: string) => { generation.current++; setTab('library'); setLibraryName(null); setText(''); setError(''); setTarget({ type, id, label }) } }
+  return { dialog, open: (type: CustomIconTarget, id: string | BulkTarget[], label: string) => { generation.current++; setTab('library'); setLibraryName(null); setText(''); setError(''); setTarget({ type, ids: typeof id === 'string' ? [{ id, label }] : id, label }) } }
 }

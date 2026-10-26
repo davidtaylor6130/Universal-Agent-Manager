@@ -540,8 +540,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildWorkerArgv(const Provid
 	                                                     "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
 	                                                     "--disable-builtin-mcps",
 	                                                     "--no-custom-instructions",
-	                                                     "--no-remote",
-	                                                     "--no-remote-export",
+	                                                     "--sync-session=off",
 	                                                     "--disallow-temp-dir",
 	                                                     "--silent",
 	                                                 });

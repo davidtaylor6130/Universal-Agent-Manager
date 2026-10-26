@@ -7,6 +7,8 @@ import {
   providerCapabilities,
   normalizeCliProviderIdAlias,
   DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
   providerRuntimeKindLabel,
@@ -17,7 +19,7 @@ import {
   CODEX_SPEED_LABELS,
 } from '../../utils/providerMetadata'
 
-export interface ModelOption {
+export interface ModelOption extends Pick<AcpModel, 'contextWindowTokens' | 'maxOutputTokens'> {
   id: string
   label: string
   shortLabel: string
@@ -55,10 +57,11 @@ function unresolvedModelOption(providerName: string): ModelOption {
 function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): ModelOption | null {
   const id = model.id.trim()
   if (!id) return null
+  const capacity = { contextWindowTokens: model.contextWindowTokens, maxOutputTokens: model.maxOutputTokens }
   if (useFriendlyLabels) {
     const friendly = FRIENDLY_MODEL_LABELS[id]
     if (friendly) {
-      return { id, ...friendly, detail: model.description || friendly.detail }
+      return { id, ...friendly, ...capacity, detail: model.description || friendly.detail }
     }
   }
   const label = model.name.trim() || titleFromModelId(id)
@@ -67,6 +70,7 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
     label,
     shortLabel: label.length <= 16 ? label : titleFromModelId(id),
     detail: model.description.trim() || id,
+    ...capacity,
   }
 }
 
@@ -150,7 +154,7 @@ export function buildModelOptions(
     )
   }
 
-  if (providerId === 'opencode-cli' && visibility) {
+  if (providerId === OPENCODE_CLI_PROVIDER_ID && visibility) {
     return options.flatMap((option) => {
       const hidden = Boolean(option.id) && (visibility.hiddenModelIds?.includes(option.id) || visibility.hiddenProviderIds?.includes(option.id.split('/')[0]))
       if (!hidden) return [option]
@@ -198,7 +202,7 @@ export function buildCodexReasoningOptions(
 export function buildProviderReasoningOptions(providerId: string, acp: ModelCatalogSource | undefined, modelId: string, savedEffort = ''): ModelOption[] {
   const id = normalizeCliProviderIdAlias(providerId)
   const caps = providerCapabilities(id)
-  if (id === DEFAULT_PROVIDER_ID) {
+  if (id === GEMINI_CLI_PROVIDER_ID) {
     const options = buildCodexReasoningOptions(acp, modelId, savedEffort, [], true)
     if (!savedEffort || options.some(option => option.id === savedEffort)) return options
     const saved = labeledOption(savedEffort, CODEX_REASONING_LABELS)

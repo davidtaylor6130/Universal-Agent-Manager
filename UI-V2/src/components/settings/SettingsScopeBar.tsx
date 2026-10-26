@@ -1,6 +1,7 @@
 import { MenuSelect, Tooltip } from '../ui'
 import type { ExecutionHost } from '../../types/session'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
+import { isSshHost } from '../../utils/remoteWorkspace'
 
 /**
  * Which computer the settings on this page apply to. Only SSH hosts are offered;
@@ -16,7 +17,7 @@ export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onC
   supported: boolean
   onChange: (hostId: string) => void
 }) {
-  const sshHosts = hosts.filter((host) => host.transport === 'ssh')
+  const sshHosts = hosts.filter((host) => isSshHost(host))
   const selected = sshHosts.find((host) => host.id === value)
   const options = [
     { value: SETTINGS_ALL_ENVIRONMENTS, label: 'All environments' },

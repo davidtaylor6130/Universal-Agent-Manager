@@ -36,9 +36,11 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
+	namespace acp_detail { struct ColdRetryBinding; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
 	struct ManagedInitialHistoryCatalogue;
@@ -201,6 +203,21 @@ namespace uam
 		std::string last_error;
 	};
 
+	/// <summary>Recent native envelope identities. Past 4096 the oldest is forgotten, so a long session stays bounded.</summary>
+	struct RecentIdentitySet
+	{
+		static constexpr std::size_t kCapacity = 4096;
+		std::unordered_set<std::string> ids;
+		std::deque<std::string> order;
+		/// <summary>True for a new identity; false for one still remembered.</summary>
+		bool Insert(const std::string& id)
+		{
+			if (!ids.insert(id).second) return false;
+			order.push_back(id);
+			if (order.size() > kCapacity) { ids.erase(order.front()); order.pop_front(); }
+			return true;
+		}
+	};
 	struct AcpToolCallState
 	{
 		std::string id;
@@ -311,6 +328,9 @@ namespace uam
 		AcpTokenUsageBreakdownState total;
 		AcpTokenUsageBreakdownState last;
 		std::int64_t model_context_window = 0;
+		// Runtime-only goal baseline from correlated cumulative receipts, separate from display totals.
+		std::optional<std::int64_t> goal_cumulative_total;
+		std::string goal_cumulative_session_id;
 	};
 
 	struct AcpContextUsageState
@@ -489,6 +509,7 @@ namespace uam
 		int64_t expires_at_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
+		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
@@ -676,15 +697,21 @@ namespace uam
 		std::string chat_id;
 		std::string provider_id;
 		std::string process_execution_host_id;
+		/// Volatile shutdown projection fence captured at runtime creation, never native/input authority.
+		std::shared_ptr<const std::uint8_t> shutdown_chat_incarnation;
+		std::filesystem::path shutdown_data_root;
 		/// Catalog ownership captured when this provider process is launched; never persisted.
 		std::string model_catalog_scope_key;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
 		bool prompt_image_supported = false;
 		std::shared_ptr<OpenCodeNativeCompanion> opencode_native_companion;
+		bool opencode_v2_native = false; // owned local process only; never persisted
 		// Optional guard captured from the actual process adapter, never mutable chat/provider selection.
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
+		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
+		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -701,8 +728,24 @@ namespace uam
         int64_t antigravity_input_tokens = 0;
         int64_t antigravity_output_tokens = 0;
         bool antigravity_turn_usage_complete = true;
-        int64_t antigravity_completed_turns = 0;
-        std::unordered_set<int64_t> antigravity_completed_steps;
+		bool antigravity_turn_has_usage = false;
+		int64_t antigravity_completed_turns = 0;
+		std::unordered_set<int64_t> antigravity_completed_steps;
+		struct AntigravityGoalTurn
+		{
+			std::string owner_chat_id;
+			std::string goal_id;
+			std::string revision;
+			std::string execution_host_id;
+			std::string native_conversation_id;
+			std::filesystem::path data_root;
+			std::shared_ptr<const std::uint8_t> owner_incarnation;
+			int turn_serial = -1;
+			int64_t accounted_tokens = 0;
+			std::optional<int64_t> result_tokens;
+			bool settled = false;
+		};
+		AntigravityGoalTurn antigravity_goal_turn;
 		std::string lifecycle_state = "stopped";
 		/// Volatile blocked-transport latch; last_error retains the original failure.
 		std::string transport_ownership_error;
@@ -764,6 +807,7 @@ namespace uam
 		std::unique_ptr<std::jthread> uam_control_relay;
 		std::filesystem::path provider_configuration_directory;
 		std::string launch_model_options_id;
+		bool launch_model_options_captured = false; // Runtime-only: empty captured Default differs from an unknown reattached launch.
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
@@ -828,6 +872,16 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// Runtime receipt from validated provider usage, never reconstructed from review text.
+		struct GoalReviewUsage
+		{
+			int turn_serial = -1;
+			std::optional<std::int64_t> tokens;
+			std::optional<std::int64_t> cumulative_baseline;
+			std::string session_id;
+			bool fresh_session = false;
+			bool consumed = false;
+		} goal_review_usage;
 		bool ignore_session_updates_until_ready = false;
 		bool codex_resume_fallback_attempted = false;
 		bool acp_resume_fallback_attempted = false;
@@ -874,9 +928,9 @@ namespace uam
 		/// Current-process protocol receipts only; saved tool history cannot create live activity.
 		std::unordered_map<std::string, OpenCodeChildActivity> opencode_child_activity_by_tool;
 		std::vector<AcpToolCallState> tool_calls;
-		std::unordered_set<std::string> claude_seen_child_messages;
+		RecentIdentitySet claude_seen_child_messages;
 		/// <summary>Native parent envelope identities prevent repeated delivery from appending twice.</summary>
-		std::unordered_set<std::string> claude_seen_parent_messages;
+		RecentIdentitySet claude_seen_parent_messages;
 		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
 		std::unordered_set<std::string> claude_live_background_task_ids;
 		std::vector<AcpPlanEntryState> plan_entries;
@@ -972,8 +1026,18 @@ namespace uam
 		std::string wait_stale_reason;
 	};
 
+	/// Mutation fence for a captured stop result; never process ownership or replay permission.
+	struct AcpStopProjectionOwner
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> chat_incarnation;
+		std::shared_ptr<const char> runtime_incarnation;
+		const AcpSessionState* runtime = nullptr; // Comparison only, never dereferenced.
+	};
+
 	struct PendingAcpRemoteStop : public platform::StdioProcessPlatformFields
 	{
+		std::optional<AcpStopProjectionOwner> projection_owner;
 		std::string chat_id;
 		std::string stderr_tail;
 		double deadline_time_s = 0.0;
@@ -983,6 +1047,7 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		std::optional<AcpStopProjectionOwner> projection_owner;
 		// Initial-v2 completion must not fall back to a replacement chat ID/serial.
 		std::shared_ptr<ManagedInitialRuntimeOwner> managed_initial_owner;
 		std::string chat_id;
@@ -995,6 +1060,9 @@ namespace uam
 		bool result_consumed = false;
 		std::string native_writer_key;
 		bool observe_exit = false;
+		bool preserve_queued_prompts = false;
+		// Optional owned platform dependency; retained through asynchronous stop and exit polling.
+		std::shared_ptr<IPlatformProcessService> stop_service;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1239,6 +1307,7 @@ namespace uam
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
+		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;
@@ -1272,6 +1341,9 @@ namespace uam
 
 		std::vector<ChatSession> chats;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
+		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
+		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
+		std::vector<ChatSession> excluded_provider_chats;
 		std::vector<AgentRun> agent_runs;
 		// Read-only restart metadata, never an execution or capacity inventory.
 		std::shared_ptr<const ManagedInitialHistoryCatalogue> managed_initial_history;
@@ -1311,6 +1383,8 @@ namespace uam
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
+		// Earlier-release data roots found at startup that still await Copy / Brand new / Stop.
+		std::vector<std::filesystem::path> pending_legacy_data_roots;
 		// Ownership of the native-sync failure currently shown in status_line.
 		std::string native_chat_refresh_error_target_id;
 		std::string native_chat_refresh_error_status;

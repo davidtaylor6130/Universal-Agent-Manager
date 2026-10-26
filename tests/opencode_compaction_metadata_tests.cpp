@@ -1514,6 +1514,125 @@ UAM_TEST(OpenCodeMetadataFailedTurnCollapsesOnlyVerifiedSummaryPartial)
 	UAM_ASSERT_EQ(fixture.Chat().messages.back().content, std::string("Preserve authored answerRetained partial summary."));
 }
 
+UAM_TEST(OpenCodeMetadataFailedLifecycleRetainsInterruptedBoundaryBeforeReset)
+{
+	for (const bool first_chunk : {false, true})
+	for (const bool reset_before_poll : {false, true})
+	{
+		NativeMetadataFixture fixture;
+		if (first_chunk)
+		{
+			fixture.Chat().messages.resize(1);
+			fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+		}
+		fixture.Parent(); fixture.WaitGate();
+		if (first_chunk) { fixture.Session().queued_prompt.clear(); fixture.Session().prompt_request_id = 99; }
+		else fixture.StartStreaming();
+		fixture.Summary("cmp_failed_lifecycle", 2, "");
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+		while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)fixture.service->Poll(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+		UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Retained partial summary.", "opencode-message:cmp_failed_lifecycle").empty());
+		uam::acp_detail::CompletePromptTurn(fixture.Session(), uam::acp_detail::kAcpLifecycleError);
+		UAM_ASSERT_EQ(fixture.Session().current_assistant_message_index, -1);
+		if (reset_before_poll) fixture.service->ObserveBeforeTurnReset(fixture.app, fixture.Session(), fixture.Chat());
+		else (void)fixture.service->Poll(fixture.app);
+		UAM_ASSERT(std::ranges::none_of(fixture.Session().turn_events,
+		    [](const uam::AcpTurnEventState& event) { return event.type == "context_compaction_pending"; }));
+		const Message original = fixture.Chat().messages[1];
+		UAM_ASSERT_EQ(original.blocks.back().type, std::string("context_compaction_interrupted"));
+		UAM_ASSERT_EQ(original.blocks.back().request_id_json, std::string("acp-compaction:cmp_failed_lifecycle"));
+		UAM_ASSERT_EQ(original.blocks.back().text, std::string("Retained partial summary."));
+		UAM_ASSERT_EQ(original.content, first_chunk ? std::string("Retained partial summary.") : std::string("Preserve authored answerRetained partial summary."));
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, fixture.Chat()));
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+		UAM_ASSERT(saved && saved->messages[1] == original);
+		if (!reset_before_poll) fixture.service->ObserveBeforeTurnReset(fixture.app, fixture.Session(), fixture.Chat());
+		uam::acp_detail::ResetAcpTurnStreamState(fixture.Session());
+		++fixture.Session().turn_serial;
+		fixture.Session().processing = true;
+		fixture.Session().queued_prompt = "Exact next continuation";
+		fixture.Session().turn_assistant_message_index = -1;
+		UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1], original);
+		UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("ses_owned"));
+		UAM_ASSERT_EQ(fixture.Session().session_id, std::string("ses_owned"));
+		UAM_ASSERT_EQ(fixture.Session().queued_prompt, std::string("Exact next continuation"));
+		UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(OpenCodeMetadataExplicitStopRetainsInterruptedBoundaryWithoutProcess)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_explicit_stop", 2, "");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Explicitly stopped summary.", "opencode-message:cmp_explicit_stop").empty());
+	fixture.app.opencode_compaction_before_turn_reset = [&](uam::AcpSessionState& session, const ChatSession& chat)
+	{ fixture.service->ObserveBeforeTurnReset(fixture.app, session, chat); };
+	// Exercise public Stop's retained-history retirement without owning or launching a process.
+	fixture.Session().running = false;
+	UAM_ASSERT(uam::StopAcpSession(fixture.app, fixture.Chat().id));
+	UAM_ASSERT(fixture.Session().turn_events.empty());
+	UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction_interrupted"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().text, std::string("Explicitly stopped summary."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, std::string("acp-compaction:cmp_explicit_stop"));
+	UAM_ASSERT(fixture.Chat().messages[1].interrupted);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, fixture.Chat()));
+	const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root, fixture.Chat().id);
+	UAM_ASSERT(saved && saved->messages[1] == fixture.Chat().messages[1]);
+	UAM_ASSERT_EQ(saved->native_session_id, std::string("ses_owned"));
+	fixture.Session().running = fixture.Session().session_ready = fixture.Session().processing = true;
+	fixture.Session().turn_serial = 2;
+	fixture.Session().queued_prompt = "Continuation after explicit Stop";
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT_EQ(fixture.Session().session_id, saved->native_session_id);
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, std::string("Continuation after explicit Stop"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+}
+
+UAM_TEST(OpenCodeMetadataPendingCancelRetainsFirstChunkWithoutReplayingInput)
+{
+	NativeMetadataFixture fixture;
+	fixture.Chat().messages.resize(1);
+	fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+	fixture.Parent(); fixture.WaitGate();
+	fixture.Session().queued_prompt.clear(); fixture.Session().prompt_request_id = 99;
+	fixture.Summary("cmp_pending_cancel", 2, "");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "First cancelled summary chunk.", "opencode-message:cmp_pending_cancel").empty());
+	// Inject CancelAcpTurn's pre-ack state, retaining its native request without writing to a process.
+	fixture.Session().processing = false;
+	fixture.Session().cancel_requested = true;
+	fixture.Session().current_assistant_message_index = -1;
+	(void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction_interrupted"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().text, std::string("First cancelled summary chunk."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, std::string("acp-compaction:cmp_pending_cancel"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
+	UAM_ASSERT(fixture.Session().cancel_requested);
+	UAM_ASSERT(fixture.Session().queued_prompt.empty());
+	UAM_ASSERT_EQ(fixture.Chat().native_session_id, std::string("ses_owned"));
+}
+
 
 UAM_TEST(OpenCodeMetadataSummaryCompletionPreservesInterleavedPendingMarker)
 {

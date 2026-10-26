@@ -7,6 +7,8 @@ import type { Session } from '../../types/session'
 import { Notice } from '../ui'
 import { ManagedSubagentConversation } from './ManagedSubagentConversation'
 import { SubagentHeader, SubagentTranscript, SubagentTranscriptLoading, type OlderHistoryOutcome } from './SubagentTranscript'
+import { CLAUDE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 
 export function SubagentPaneContent({ parent, route, active = true, navigationKey = '', onBack }: { parent: Session; route: SubagentRoute; active?: boolean; navigationKey?: string; onBack?: () => void }) {
   const visitKey = navigationKey ? JSON.stringify([navigationKey, readIdentity(parent)]) : ''
@@ -24,8 +26,18 @@ const readIdentity = (session: Session | undefined) => session ? JSON.stringify(
 // Passive journal Sessions retain the exact attested history reference as their ID.
 // The existing native import endpoint validates the reference; lineage grants no execution authority.
 function nativeJournalReference(child: Session | undefined) {
-  const prefix = child?.providerId === 'gemini-cli' ? 'gemini' : child?.providerId === 'claude-cli' ? 'claude' : child?.providerId === 'copilot-cli' ? 'copilot' : ''
+  const prefix = GEMINI_ENABLED && child?.providerId === GEMINI_CLI_PROVIDER_ID ? 'gemini' : CLAUDE_ENABLED && child?.providerId === CLAUDE_CLI_PROVIDER_ID ? 'claude' : COPILOT_ENABLED && child?.providerId === COPILOT_CLI_PROVIDER_ID ? 'copilot' : ''
   return child?.importedReadOnly && prefix && (child.id.startsWith(`${prefix}-agent-`) || child.id.startsWith(`${prefix}-a32-`)) ? child.id : undefined
+}
+
+const nativeReadFallback = 'The native conversation could not be read. Refresh to try again.'
+// Exact application-authored refusal only; provider/transport diagnostics are secondary.
+const shorterNativeHistory = "Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it."
+type NativeHistoryFailure = { message: string; details?: string; savedRetained?: boolean }
+function nativeHistoryFailure(raw = ''): NativeHistoryFailure {
+  if (raw === shorterNativeHistory) return { message: shorterNativeHistory, savedRetained: true }
+  const detail = raw.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim()
+  return { message: nativeReadFallback, details: detail && detail !== nativeReadFallback ? detail.slice(0, 400) + (detail.length > 400 ? '…' : '') : undefined }
 }
 
 /** Passive native history has no composer, permission buttons, resume or provider controls. */
@@ -90,7 +102,7 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
     },
   })
   const [loading, setLoading] = useState(false)
-  const [readError, setReadError] = useState('')
+  const [readError, setReadError] = useState<NativeHistoryFailure>()
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => { if (autoFocus) heading.current?.focus({ preventScroll: true }) }, [])
   const reference = parent && nativeJournalReference(child)
@@ -102,6 +114,7 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
     const key = hydrationKey
     if (publishedCurrent && activeLoad.current?.key === key) return
     if (activeLoad.current?.key === key && (activeLoad.current.pending || activeLoad.current.acceptedOwner === readOwner)) return
+    const retainedRefusal = activeLoad.current?.key === key && readError?.savedRetained ? readError : undefined
     const serial = ++loadSerial.current
     activeLoad.current = { key, pending: true }
     let adopted = false
@@ -119,17 +132,25 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
         : !liveParent && Boolean(liveChild && hasNativeSubagentLineage(liveChild)))
     }
     setLoading(true)
-    setReadError('')
+    setReadError(retainedRefusal)
     void (async () => {
+      let refreshFailure: NativeHistoryFailure | undefined = retainedRefusal
       try {
         if (explicit && reference && parent) {
-          const imported = await useAppStore.getState().openSubAgentSession(parent.id, reference, child.name, false)
+          let importError = ''
+          const imported = await useAppStore.getState().openSubAgentSession(parent.id, reference, child.name, false, message => { importError = message })
           if (!current()) return
-          if (imported !== chatId) throw new Error('Native history import unavailable')
+          if (imported !== chatId) {
+            refreshFailure = nativeHistoryFailure(importError)
+            setReadError(refreshFailure)
+            if (useAppStore.getState().messages[chatId]?.length || scopedHistory.view?.messages.length) return
+          }
         }
         if (current()) {
           setBaseline({ key, page: useAppStore.getState().chatHistoryPageBySessionId?.[chatId] })
-          const page = await useAppStore.getState().loadSessionMessages(chatId, explicit)
+          // A refused native import grants no new authority. Empty panes can still read the
+          // retained saved tail through the same passive route as initial opening.
+          const page = await useAppStore.getState().loadSessionMessages(chatId, refreshFailure ? false : explicit)
           if (page && current(page.totalCount) && page.chatId === chatId && page.birth === child.createdAt.getTime() &&
               page.summaryDigest === child.messagesDigest) {
             adopted = true
@@ -138,7 +159,7 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
           }
         }
       } catch {
-        if (current()) setReadError('The native conversation could not be read. Refresh to try again.')
+        if (current()) setReadError(refreshFailure ?? nativeHistoryFailure())
       } finally {
         if (serial === loadSerial.current) {
           activeLoad.current = { key, pending: false, acceptedOwner: adoptedOwner }
@@ -164,9 +185,12 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
   const shown = Boolean(visibleMessages?.length)
   const unverified = shown && !error && !loading && activeLoad.current?.pending === false && scopedHistory.view &&
     !(acceptedForRead?.owner === readOwner && pageCurrent(acceptedForRead.page))
-  const unavailable = readError || (unverified ? 'Loaded messages are retained. Refresh to verify the current history before reading more.' : '')
-  const failure = (error || unavailable) && <Notice tone="error" title={shown ? 'Native conversation partly unavailable' : 'Native conversation unavailable'} dismissLabel="Dismiss native conversation error">
-    {unavailable || `Could not load this native conversation. ${error}`}{shown ? ' Loaded messages are still shown.' : ''}</Notice>
+  const unavailable: NativeHistoryFailure | undefined = readError || (unverified ? { message: 'Loaded messages are retained. Refresh to verify the current history before reading more.', savedRetained: true } : error ? nativeHistoryFailure(error) : undefined)
+  const details = unavailable?.details
+  const failure = unavailable && <Notice key={attempt} tone="error" title={shown ? 'Native conversation partly unavailable' : 'Native conversation unavailable'} dismissLabel="Dismiss native conversation error">
+    <p>{unavailable.message}{shown && !unavailable.savedRetained ? ' Loaded messages are still shown.' : ''}</p>
+    {details && <details className="mt-2" key={details}><summary>Technical details</summary><pre className="mt-1 whitespace-pre-wrap font-mono" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{details}</pre></details>}
+  </Notice>
   return <section className="uam-managed-conversation" aria-label="Native subagent conversation">
     <SubagentHeader title={child?.name || 'Native subagent'} parentName={parent?.name} detail="Read-only" headingRef={heading} onBack={onBack} onClose={onClose}
       onRefresh={child ? () => { scopedHistory.invalidate(); setAttempt(value => value + 1) } : undefined} refreshing={loading} refreshDisabled={loading} />
@@ -178,7 +202,9 @@ function NativeConversationContent({ parent, chatId, child, autoFocus = true, na
       : <div className="uam-subagent-transcript__empty">
           {failure}
           {loading ? <SubagentTranscriptLoading label="Loading native conversation…" />
-            : <p role="status" className="conversation-empty">{!child || !messages
+            : <p role="status" className="conversation-empty">{readError?.savedRetained
+              ? 'Saved history was retained, but could not be read this time. Refresh to try reading it again.'
+              : !child || !messages
               ? 'This native conversation is unavailable. The provider has not supplied a readable transcript.'
               : 'No readable native messages are available.'}</p>}
         </div>}

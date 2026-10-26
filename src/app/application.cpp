@@ -2,7 +2,10 @@
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
 #include "common/platform/platform_speech_output.h"
+#include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
+#include "app/data_folder_settings_service.h"
+#include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
 #include "application.h"
@@ -38,6 +41,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
@@ -405,7 +409,9 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 	if (!m_done) CefRunMessageLoop();
 	if (previous_interrupt != SIG_ERR) std::signal(SIGINT, previous_interrupt);
 	if (previous_terminate != SIG_ERR) std::signal(SIGTERM, previous_terminate);
-	return uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode;
+	if (uam::platform::ApplicationRestartRequested())
+		Shutdown();
+	return uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode;
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +504,13 @@ void Application::PollTick()
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
 	const bool opencode_native_changed = m_app.opencode_native_activity && m_app.opencode_native_activity->Poll(m_app);
+#else
+	constexpr bool compaction_sync_changed = false;
+	constexpr bool opencode_native_changed = false;
+#endif
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
@@ -557,7 +568,7 @@ void Application::PollTick()
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
-	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
+	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
 		uam::PushDictationEvent(m_browser, event);
@@ -602,7 +613,10 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	ScheduleNextUpdate(m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)));
+	int next_poll_delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
+	// A throttled summary must flush when its 100 ms window ends, not on the next idle 250/1000 ms tick.
+	if (uam::HasDeferredStatePush()) next_poll_delay_ms = std::min(next_poll_delay_ms, uam::MillisecondsUntilDeferredStatePushDue());
+	ScheduleNextUpdate(next_poll_delay_ms);
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -711,14 +725,13 @@ bool Application::InitializeState()
 {
 	const fs::path executable_path = m_platformServices->process_service.ResolveCurrentExecutablePath();
 	const std::optional<fs::path> data_root_env = uam::env::GetTrimmedPath("UAM_DATA_DIR");
-	m_app.data_root = data_root_env.value_or(m_platformServices->path_service.DefaultDataRootPath());
+	// Retain the original override: exporting the effective root below must not change its provenance.
+	const fs::path default_root = m_platformServices->path_service.DefaultDataRootPath();
+	m_app.data_root = data_root_env.value_or(default_root);
 	std::string data_root_error;
-	if (m_app.data_root.empty() || !PersistenceCoordinator().EnsureDataRootLayout(m_app.data_root, &data_root_error))
+	if (!uam::DataFolderTransition::ProbeStartupRoot(default_root, data_root_env, m_app.data_root, data_root_error))
 	{
-		std::fprintf(stderr,
-		             "Failed to initialize the requested application data root '%s'. UAM will not open a fallback database: %s\n",
-		             uam::paths::Utf8PathString(m_app.data_root).c_str(),
-		             data_root_error.empty() ? "invalid or empty path" : data_root_error.c_str());
+		std::fprintf(stderr, "Data-folder ownership is held: %s\n", data_root_error.c_str());
 		m_exitCode = 1;
 		return false;
 	}
@@ -749,6 +762,30 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	// Keep queued shell-action forwarding and the existing root-lock ordering above intact.
+	// Activate only while stopped, before logs, settings, queues, memory or runtime services start.
+	m_app.data_folder_settings = uam::DataFolderSettingsService::Open(default_root, data_root_env, m_platformServices->process_service, data_root_error);
+	if (!m_app.data_folder_settings || m_app.data_folder_settings->StartupRoot() != m_app.data_root)
+	{
+		std::fprintf(stderr, "Failed to initialize data-folder preferences. UAM will not open a fallback database: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	if (!m_app.data_folder_settings->AttachStartupOwner(m_dataRootLock, uam::DataFolderSettingsService::kTransfersValidated && uam::platform::ConfirmedDataFolderRestart(), data_root_error, uam::DataFolderSettingsService::kTransfersValidated && std::find(m_launchArguments.begin(), m_launchArguments.end(), "--uam-data-folder-rollback") != m_launchArguments.end()))
+	{
+		std::fprintf(stderr, "Data-folder startup handoff is held: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	m_app.data_root = m_app.data_folder_settings->StartupRoot();
+	m_dataRootLock = std::static_pointer_cast<uam::platform::DataRootLock>(m_app.data_folder_settings->StartupLease());
+	if (m_app.data_root.empty() || !PersistenceCoordinator().EnsureDataRootLayout(m_app.data_root, &data_root_error))
+	{
+		std::fprintf(stderr, "Failed to initialize the requested application data root. UAM will not open a fallback database: %s\n", data_root_error.c_str());
+		m_exitCode = 1;
+		return false;
+	}
+	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 	std::string log_error;
 	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
 		uam::diagnostics::Write(log_error);
@@ -761,6 +798,13 @@ bool Application::InitializeState()
 		return false;
 	}
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
+#if !UAM_ALL_PROVIDERS_INCLUDED
+	{
+		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
+		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+	}
+#endif
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
 	m_app.agent_runs = std::move(agent_runs.runs);
@@ -821,6 +865,10 @@ bool Application::InitializeState()
 		}
 	}
 
+	// Earlier releases could keep data beside the executable or in the default root that
+	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
+	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
+	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 
@@ -829,6 +877,7 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 	m_app.provider_model_catalog->SetExecutionHostContext(m_app.settings.execution_hosts);
 	m_app.provider_model_catalog->MaybeStartRefresh();
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	m_openCodeCompactionSync = std::make_shared<uam::OpenCodeCompactionSyncService>();
 	m_app.opencode_native_activity = std::make_shared<uam::OpenCodeNativeActivityService>();
 	const std::weak_ptr<uam::OpenCodeCompactionSyncService> compaction_sync = m_openCodeCompactionSync;
@@ -843,6 +892,7 @@ bool Application::InitializeState()
 		if (!service) { error = "Native compaction synchronization is stopping."; return uam::OpenCodeCompactionGateState::Failed; }
 		return service->BeforeDispatch(*app, session, chat, error);
 	};
+#endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
@@ -974,6 +1024,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)
 		m_app.opencode_native_activity->Stop();
 	m_app.opencode_native_activity.reset();
@@ -981,6 +1032,7 @@ void Application::Shutdown()
 	m_app.opencode_compaction_before_dispatch = {};
 	if (m_openCodeCompactionSync) m_openCodeCompactionSync->Stop();
 	m_openCodeCompactionSync.reset();
+#endif
 	m_worktreeRetention.Stop();
 	if (m_app.storage_retention_service != nullptr) m_app.storage_retention_service->Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();
@@ -1002,10 +1054,13 @@ void Application::Shutdown()
 		(void)uam::StopSpeechOutput(uam::GetSpeechOutputState().speech_id);
 	}
 	// Revoke initial task authority and settle real cleanup before the FIRST force-save barrier.
-	(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(m_app);
+	// An active provider has no generic confirmed-stop receipt. Until each adapter supplies one,
+	// a data-folder restart requires a dormant runtime before teardown begins.
+	bool folder_shutdown_confirmed = std::none_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) && std::none_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; });
+	folder_shutdown_confirmed = uam::AgentRunScheduler::QuiesceInitialForShutdown(m_app) && folder_shutdown_confirmed;
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
-		PersistenceCoordinator().SaveSettings(m_app);
+		folder_shutdown_confirmed = PersistenceCoordinator().SaveSettings(m_app) && folder_shutdown_confirmed;
 		uam::FinalizePendingAcpRemoteStopsForExit(m_app);
 		uam::FlushPendingChatSaves(m_app, true);
 	}
@@ -1020,7 +1075,7 @@ void Application::Shutdown()
 	m_app.permission_review_tasks.clear();
 	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
-	(void)uam::AgentRunScheduler::InterruptForShutdown(m_app);
+	folder_shutdown_confirmed = uam::AgentRunScheduler::InterruptForShutdown(m_app) && folder_shutdown_confirmed;
 	uam::FastStopAcpSessionsForExit(m_app);
 	if (m_settingsLoaded && m_dataRootLock != nullptr)
 	{
@@ -1058,7 +1113,8 @@ void Application::Shutdown()
 		{
 			// Saves and provider shutdown above are complete. Process exit releases
 			// the data lock; do not tear CEF down underneath an unconfirmed worker.
-			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::kApplicationRestartExitCode : m_exitCode);
+			// Unconfirmed worker teardown must not mint a migration restart marker.
+			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
 #endif
 		CefShutdown();
@@ -1067,5 +1123,22 @@ void Application::Shutdown()
 	// Join the cache writer while this instance still owns the data-root lock.
 	m_app.provider_model_catalog.reset();
 	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
+	for (const auto& session : m_app.acp_sessions)
+		if (session && session->running)
+			folder_shutdown_confirmed = false;
+	for (const auto& terminal : m_app.cli_terminals)
+		if (terminal && terminal->running)
+			folder_shutdown_confirmed = false;
+	for (const auto& chat : m_app.chats)
+		if (chat.acp_queue_storage_error || chat.remote_process_exists || chat.remote_stop_cleanup_pending || chat.remote_restart_pending || chat.remote_source_exit_pending || chat.remote_turn_reconnect_pending)
+			folder_shutdown_confirmed = false;
+	for (const auto& run : m_app.agent_runs)
+		if (run.status == "queued" || run.status == "running")
+			folder_shutdown_confirmed = false;
+	if (!m_app.pending_chat_save_tasks.empty() || !m_app.pending_chat_save_at_by_chat_id.empty() || !m_app.memory_extraction_tasks.empty() || !m_app.memory_extraction_queue.empty() || ChatHistorySyncService().TerminalNativeMediaPending(m_app))
+		folder_shutdown_confirmed = false;
+	if (m_app.memory_settings_uncertain || !m_app.pending_agent_run_cancellation_ids.empty())
+		folder_shutdown_confirmed = false;
+	uam::platform::ConfirmDataFolderShutdown(folder_shutdown_confirmed);
 	m_dataRootLock.reset();
 }

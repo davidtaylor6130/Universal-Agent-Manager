@@ -54,6 +54,7 @@ import type {
   VcsCommitStatus,
   VcsType,
   ComputerUseAllowedApplication,
+  WindowsPowerShellPreference,
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
@@ -96,6 +97,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   consumeChatSearchJump: (chatId: string, generation: number) => boolean
   clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
+  // Failed request context changes notice wording only, never native save authority.
+  chatHistoryErrorWasRefreshBySessionId: Record<string, boolean>
   chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
   chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
@@ -139,6 +142,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   defaultNewChatProviderId: string
   providerChatDefaults: Record<string, ProviderChatDefaults>
   fileExplorerApplication: string
+  windowsPowerShell: WindowsPowerShellPreference
   defaultEditorPresetId: string
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
@@ -150,6 +154,14 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
   computerUseEnabled?: boolean
+  computerUseRevocationPending?: boolean
+  /** Native publication witness for these two fields; never a consent grant. */
+  computerUseSettingsStateRevision?: number
+  /** Session-only global settings request, shared across both settings surfaces. */
+  computerUseSettingsOperation?: 'check' | 'enable' | 'disable'
+  computerUseSettingsError?: string
+  /** Native observation current when the session-only failure was received. */
+  computerUseSettingsErrorStateRevision?: number
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
   branchSwitching?: boolean
@@ -215,7 +227,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
   editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
-  setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
+  /** `quiet` leaves failure reporting to a caller that names each chat. */
+  setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
@@ -239,7 +252,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
-  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
+  setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>) => Promise<boolean>
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
   setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
@@ -267,7 +280,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   openSessionWorkspace: (id: string) => Promise<boolean>
   openSessionWorkspaceEditor: (id: string) => Promise<boolean>
   openSessionTerminal: (id: string) => Promise<boolean>
-  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean) => Promise<string | null>
+  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean, onFailure?: (message: string) => void) => Promise<string | null>
   getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
   createChatWorktree: (id: string) => Promise<GitWorktreeResult>
   discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>

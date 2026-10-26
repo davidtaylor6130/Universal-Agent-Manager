@@ -6,6 +6,7 @@ import { buildMessageFromCpp } from '../../store/cpp/reconcile'
 import type { ChatMessagesResponse } from '../../store/cpp/types'
 import type { AcceptedHistoryPage } from '../../store/storeTypes'
 import type { Message } from '../../types/message'
+import { alignRowStart } from '../../utils/motionStorage'
 
 const WINDOW_ROWS = 300
 type Visit = { pin: Alignment; prefix: number }
@@ -49,6 +50,8 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
   const following = useRef(true)
   const attestedTotal = useRef(config.total)
   const scrollRevision = useRef(0)
+  // A smooth rail jump owns the scroll until it settles; window reads and alignment wait so they cannot cancel it.
+  const jumping = useRef(false)
   const initialFill = useRef(false)
   const alignment = useRef<Alignment | null>(null)
   const retry = useRef<{ direction: Direction; index?: number; visit?: Visit } | null>(null)
@@ -105,6 +108,8 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       return false
     }
     const end = previous.first + previous.rows.length
+    // Reaching a known history edge needs no anchor or retry, even while row geometry is unavailable.
+    if (direction === 'older' && previous.first <= 0 || direction === 'newer' && end >= owner.total) return false
     const target = direction === 'latest' ? owner.total - 1 : index
     if ((direction === 'target' || direction === 'latest' || direction === 'restore') && (!Number.isSafeInteger(target) || target! < 0 || target! >= owner.total)) {
       if (direction === 'restore') {
@@ -123,7 +128,6 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       setState(value => ({ ...value, error: 'The visible reading position is unavailable. Loaded messages are retained; choose a rail mark or retry history.' }))
       return false
     }
-    if (direction === 'older' && previous.first <= 0 || direction === 'newer' && end >= owner.total) return false
     const before = direction === 'older' ? previous.first : Math.min(owner.total, end + 100)
     const limit = direction === 'older' ? Math.min(100, previous.first) : Math.min(100, owner.total - end)
     const payload = direction === 'target' || direction === 'latest' || direction === 'restore'
@@ -256,7 +260,7 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       const row = region.querySelector<HTMLElement>(`[data-message-index="${pin.index}"]`)
       if (row) {
         if (pin.end) region.scrollTop = region.scrollHeight
-        else if (pin.start) row.scrollIntoView?.({ block: 'start' })
+        else if (pin.start) { if (alignRowStart(region, row, () => { jumping.current = false; onScroll() })) jumping.current = true }
         else region.scrollTop += row.getBoundingClientRect().top - region.getBoundingClientRect().top - pin.offset
         alignment.current = null
       }
@@ -288,6 +292,7 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
     const region = scrollRef.current
     if (!region) return
     ++scrollRevision.current
+    if (jumping.current) return
     const wasFollowing = following.current
     following.current = live.current.segment.first + live.current.segment.rows.length === attestedTotal.current && region.scrollHeight - region.scrollTop - region.clientHeight < 48
     if (following.current !== wasFollowing) setState(value => ({ ...value }))

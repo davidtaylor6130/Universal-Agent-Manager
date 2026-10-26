@@ -132,6 +132,8 @@ namespace uam::usage
 				std::array<char, 8192> bytes{}; std::string output; int exit_code = -1; bool exited = false;
 				while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
 				{
+					// Observe exit before the final read: output written before exit is already in the pipe.
+					const bool exit_observed = service.PollStdioProcessExited(process, &exit_code);
 					bool progress = false;
 					for (bool stderr_stream : {false, true})
 					{
@@ -143,7 +145,7 @@ namespace uam::usage
 						bytes_read += static_cast<std::size_t>(count);
 						if (!stderr_stream) output.append(bytes.data(), static_cast<std::size_t>(count));
 					}
-					if (!progress && service.PollStdioProcessExited(process, &exit_code)) { exited = true; break; }
+					if (!progress && exit_observed) { exited = true; break; }
 					if (!progress) std::this_thread::sleep_for(std::chrono::milliseconds(2));
 				}
 				if (stop.stop_requested()) { Wipe(output); return {nullptr, "Google account allowance refresh was canceled."}; }

@@ -1,4 +1,5 @@
 #include "provider_model_catalog_service.h"
+#include "common/config/build_features.h"
 #include "app/provider_worker_command.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/command_line_words.h"
@@ -180,8 +181,7 @@ namespace
 	{
 		ProcessExecutionResult result;
 		auto& process = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(process, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform,
-		    host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		uam::remote::RunnerClient client(process, host);
 		if (!client.Connect(&result.error, stop)) return result;
 		const std::string uuid = process.GenerateUuid();
 		if (uuid.empty()) { result.error = "Could not allocate a model discovery process identity."; return result; }
@@ -305,6 +305,7 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root, const st
 
 bool ProviderModelCatalogService::MaybeStartRefresh()
 {
+	if (!UAM_ENABLE_RUNTIME_OPENCODE_CLI) return false; // The only remote catalogue is OpenCode Zen.
 	std::lock_guard<std::mutex> lock(m_mutex);
 
 	if (m_refresh_task->running)
@@ -1188,6 +1189,7 @@ std::optional<ProviderModelCatalogService::ConfiguredOpenCodeSnapshot> ProviderM
 
 void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
 {
+	if (!UAM_ENABLE_RUNTIME_OPENCODE_CLI) return; // Builds without OpenCode never read its configuration.
 	const std::optional<ConfiguredOpenCodeSnapshot> snapshot = ReadConfiguredOpenCodeModels(OpenCodeConfigPaths());
 	if (snapshot)
 	{
@@ -1198,6 +1200,7 @@ void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
 
 bool ProviderModelCatalogService::StartConfiguredOpenCodeRefresh()
 {
+	if (!UAM_ENABLE_RUNTIME_OPENCODE_CLI) return false;
 	std::lock_guard<std::mutex> lock(m_mutex);
 	if (m_configuration_refresh != nullptr) return false;
 	const std::vector<fs::path> paths = OpenCodeConfigPaths();

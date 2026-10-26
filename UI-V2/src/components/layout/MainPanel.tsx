@@ -39,6 +39,7 @@ import {
   type ChatPaneNode,
   type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -344,7 +345,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       </div>
       )}
 
-      <ExecutionRoutingWaitNotice session={session} />
+      {SSH_ENABLED && <ExecutionRoutingWaitNotice session={session} />}
       {refreshError && (
         <Notice tone="error" title="Refresh failed" dismissLabel="Dismiss refresh error" onDismiss={() => setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)}>
           {refreshError}

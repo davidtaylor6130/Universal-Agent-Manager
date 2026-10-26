@@ -10,6 +10,16 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
 } })
 beforeEach(() => values.clear())
 describe('bounded context snapshots', () => {
+  it('requires repository birth/association metadata and whitelists it across draft persistence', () => {
+    const branch = captureContextReference({ ...source, kind: 'branch', sourceChatCreatedAt: source.capturedAt, branchName: 'feature/context', baseRef: 'main' })!
+    expect(captureContextReference({ ...branch, sourceChatCreatedAt: undefined })).toBeNull()
+    expect(captureContextReference({ ...branch, branchName: '' })).toBeNull()
+    expect(captureContextReference({ ...branch, kind: 'worktree', worktreeDirectory: '/foreign' })).toBeNull()
+    writeChatComposerDraft('repository-roundtrip', { text: 'Inspect this', attachments: [], references: [branch] })
+    expect(readChatComposerDraft('repository-roundtrip').references).toEqual([branch])
+    expect(formatContextReferences([branch])).toContain('feature/context')
+    expect(sanitizeContextReferences([{ ...branch, sourcePath: '/not-a-file-read', checkoutAuthority: true }])).toEqual([branch])
+  })
   it('bounds UTF-8 without splitting characters and retains provenance', () => {
     const reference = captureContextReference({ ...source, text: '😀'.repeat(10000) })!
     expect(new TextEncoder().encode(reference.text).length).toBeLessThanOrEqual(CONTEXT_REFERENCE_MAX_BYTES)

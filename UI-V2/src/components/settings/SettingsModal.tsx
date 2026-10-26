@@ -1,20 +1,21 @@
-import { VoiceSettings } from './VoiceSettings'
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
+import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './DataFolderSettingsSection'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
+import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
-import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
@@ -31,6 +32,7 @@ import {
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
+  type WindowsPowerShellPreference,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
 import { sendToCEF } from '../../ipc/cefBridge'
@@ -59,7 +61,12 @@ import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryMod
 import { MarkdownStoreModal } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import {
+  CLAUDE_CLI_PROVIDER_ID,
+  CODEX_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
   DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
+  OPENCODE_CLI_PROVIDER_ID,
   SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
   providerCapabilities,
@@ -70,6 +77,7 @@ import {
 import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOptions, modelCatalogForDefaults, reasoningEffortForModel, titleFromModelId } from '../chat/modelOptions'
 import './settings-motion.css'
 import './settings-shell.css'
+import { isSshHost } from '../../utils/remoteWorkspace'
 
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
@@ -172,7 +180,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
       {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save voice settings'}</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
       </div>
     </SettingsSection>
     {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
@@ -220,7 +228,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
       {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider settings'}</Button></div>
+        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
     {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
   </>
 })
@@ -416,9 +424,8 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'agents', label: 'Agents', icon: ClipboardList },
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
   ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
-  { id: 'remote-hosts', label: 'Remote Hosts', icon: Server },
-  { id: 'routing', label: 'SSH Routing', icon: Route },
-  { id: 'phone', label: 'Phone', icon: Smartphone },
+  ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote Hosts', icon: Server }, { id: 'routing', label: 'SSH Routing', icon: Route }] as SettingsSection[] : []),
+  ...(MOBILE_COMPANION_ENABLED ? [{ id: 'phone', label: 'Phone', icon: Smartphone }] as SettingsSection[] : []),
   { id: 'voice-input', label: 'Voice Input', icon: Mic },
   { id: 'memory-settings', label: 'Memory Settings', icon: Brain },
   { id: 'memory-store', label: 'Memory Store', icon: MemoryStick },
@@ -426,24 +433,24 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'goal-loops', label: 'Goal Loops', icon: Target },
   { id: 'central-configuration', label: 'Central Setup', icon: Server },
   { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
-  { id: 'computer-use', label: 'Computer Use', icon: MousePointerClick },
+  ...(COMPUTER_USE_ENABLED ? [{ id: 'computer-use', label: 'Computer Use', icon: MousePointerClick }] as SettingsSection[] : []),
   { id: 'vcs', label: 'Version Control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
-  { id: 'storage-cleanup', label: 'Storage Cleanup', icon: Trash2 },
+  { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
     { id: 'about', label: 'About', icon: Info },
-].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'routing' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
+]
 
 // Retired pages that now live inside another page; old ids still resolve (search, deep links).
 const SETTINGS_SECTION_ALIASES: Partial<Record<string, SettingsSectionId>> = { typography: 'appearance' }
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
-  { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
+  { label: 'General', sections: ['appearance', 'defaults', ...(MOBILE_COMPANION_ENABLED ? ['phone' as const] : []), 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
-  { label: 'Connections', sections: ['remote-hosts', 'routing', 'mcp-servers'] },
+  { label: 'Connections', sections: [...(SSH_ENABLED ? ['remote-hosts' as const, 'routing' as const] : []), 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
-  { label: 'Security', sections: ['permissions', 'computer-use'] },
+  { label: 'Security', sections: ['permissions', ...(COMPUTER_USE_ENABLED ? ['computer-use' as const] : [])] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
 ]
@@ -452,37 +459,60 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   defaults: 'Default provider and permission reviewer for new chats.',
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
-  'remote-hosts': 'Computers that can run workspaces over SSH.',
-  routing: 'Which computers run new chats and which remote folders they use.',
+  ...(SSH_ENABLED ? { 'remote-hosts': 'Computers that can run workspaces over SSH.', routing: 'Which computers run new chats and which remote folders they use.' } : {}),
   'mcp-servers': 'Model Context Protocol servers available to agents.',
-  phone: 'Use Universal Agent Manager from your phone on the same network.',
+  ...(MOBILE_COMPANION_ENABLED ? { phone: 'Use Universal Agent Manager from your phone on the same network.' } : {}),
 }
 
+
+const PROVIDER_SEARCH_TERMS = [CODEX_ENABLED && 'codex', GEMINI_ENABLED && 'gemini', CLAUDE_ENABLED && 'claude', COPILOT_ENABLED && 'copilot', OPENCODE_ENABLED && 'opencode'].filter(Boolean).join(' ')
+/** Native agent files UAM can import, in menu order; only providers in this build. */
+const AGENT_IMPORT_PROVIDER_OPTIONS = [
+  ...(OPENCODE_ENABLED ? [{ value: OPENCODE_CLI_PROVIDER_ID, label: 'OpenCode' }] : []),
+  ...(COPILOT_ENABLED ? [{ value: COPILOT_CLI_PROVIDER_ID, label: 'GitHub Copilot CLI' }] : []),
+  ...(GEMINI_ENABLED ? [{ value: GEMINI_CLI_PROVIDER_ID, label: 'Gemini CLI' }] : []),
+  ...(CLAUDE_ENABLED ? [{ value: CLAUDE_CLI_PROVIDER_ID, label: 'Claude Code' }] : []),
+]
+/** Structured protocols that can host UAM control; excluded providers contribute none. */
+const UAM_CONTROL_PROTOCOLS = [
+  ...(CODEX_ENABLED ? ['codex-app-server'] : []), ...(CLAUDE_ENABLED ? ['claude-code-stream-json'] : []), ...(GEMINI_ENABLED ? ['gemini-acp'] : []),
+  ...(OPENCODE_ENABLED ? ['opencode-acp'] : []), ...(COPILOT_ENABLED ? ['copilot-acp', 'copilot-sdk'] : []), ...(ANTIGRAVITY_ENABLED ? ['antigravity-stream-json'] : []),
+]
 
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
   vcs: 'git svn source control version control worktrees checkpoints commits revisions base branch merge squash patch pull',
-  'storage-cleanup': 'cleanup retention worktrees backup logs cache days',
+  'storage-cleanup': 'data folder directory storage migration restart cleanup retention worktrees backup logs cache days',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
-  defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
-  agents: 'agents agent store create edit delete helpers subagents instructions import providers codex gemini claude copilot opencode',
-  'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
-  'remote-hosts': 'computers ssh connections hosts runners servers install',
-  routing: 'routing ssh automatic remote folders mapping',
-  phone: 'phone mobile companion token url remote access',
+  defaults: `models reasoning providers permissions safety approval yolo memory defaults ${PROVIDER_SEARCH_TERMS} reviewer`,
+  agents: `agents agent store create edit delete helpers subagents instructions import providers ${PROVIDER_SEARCH_TERMS}`,
+  'cli-version': `installed recommended latest download update version ${PROVIDER_SEARCH_TERMS}`,
+  ...(SSH_ENABLED ? { 'remote-hosts': 'computers ssh connections hosts runners servers install', routing: 'routing ssh automatic remote folders mapping' } : {}),
+  ...(MOBILE_COMPANION_ENABLED ? { phone: 'phone mobile companion token url remote access' } : {}),
   'voice-input': 'microphone dictation transcription speech whisper',
   'memory-settings': 'memory workers recall budgets idle models tokens processing',
   'memory-store': 'memory library lessons entries search delete',
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
-  'central-configuration': 'central provider setup instructions agents.md skills files defaults ssh',
+  'central-configuration': `central provider setup instructions agents.md skills files defaults${SSH_ENABLED ? ' ssh' : ''}`,
   'mcp-servers': 'mcp computer browser control setup server config json',
-  'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
-  editors: 'editors extensions associations groups default vscode clion file types file explorer finder open',
+  ...(COMPUTER_USE_ENABLED ? { 'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos' } : {}),
+  editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
   'chat-data': 'chat data history storage import export backup',
   about: 'version build release updates app information',
+}
+
+const WINDOWS_POWERSHELL_OPTIONS: { value: WindowsPowerShellPreference; label: string }[] = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'windows-powershell', label: 'Windows PowerShell 5.1' },
+  { value: 'pwsh', label: 'PowerShell 7' },
+]
+const WINDOWS_POWERSHELL_DESCRIPTIONS: Record<WindowsPowerShellPreference, string> = {
+  auto: "Uses Windows PowerShell 5.1, or PowerShell 7 if it's missing.",
+  'windows-powershell': 'Uses built-in Windows PowerShell 5.1.',
+  pwsh: "Uses PowerShell 7; terminals won't open if it isn't installed.",
 }
 
 const EDITOR_PRESETS = [
@@ -740,9 +770,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
-  const defaultNewChatProviderId = useAppStore((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.defaultNewChatProviderId) || s.defaultNewChatProviderId)
-  const providerChatDefaults = useAppStore(useShallow((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.providerChatDefaults) || s.providerChatDefaults))
+  const defaultNewChatProviderId = useAppStore((s) => (s.hostScopedSettings && s.executionHosts.some((host) => isSshHost(host) && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.defaultNewChatProviderId) || s.defaultNewChatProviderId)
+  const providerChatDefaults = useAppStore(useShallow((s) => (s.hostScopedSettings && s.executionHosts.some((host) => isSshHost(host) && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.providerChatDefaults) || s.providerChatDefaults))
   const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
+  const windowsPowerShell = useAppStore((s) => s.windowsPowerShell)
+  const isWindows = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent)
   const [explorerDraft, setExplorerDraft] = useState('')
   const [customExplorer, setCustomExplorer] = useState(false)
   useEffect(() => { setExplorerDraft(fileExplorerApplication); setCustomExplorer(Boolean(fileExplorerApplication)) }, [fileExplorerApplication])
@@ -821,7 +853,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [remoteDirectory, setRemoteDirectory] = useState('uam-helper')
   const remoteDirectoryValidation = remoteCustomDirectory ? runnerDirectoryError(remoteDirectory) : ''
   const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
-  const [agentImportProvider, setAgentImportProvider] = useState('opencode-cli')
+  const [agentImportProvider, setAgentImportProvider] = useState(AGENT_IMPORT_PROVIDER_OPTIONS[0]?.value ?? '')
   const [agentImportPath, setAgentImportPath] = useState('')
   const [agentImportId, setAgentImportId] = useState('')
   const [agentImportAccess, setAgentImportAccess] = useState<'read' | 'write'>('read')
@@ -865,11 +897,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const vcsRef = useRef<SettingsDraftHandle>(null)
   const routingRef = useRef<ExecutionRoutingSettingsHandle>(null)
   const cleanupRef = useRef<SettingsDraftHandle>(null)
+  const dataFolderRef = useRef<DataFolderSettingsHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
   const [editorError, setEditorError] = useState('')
+  const [openWithError, setOpenWithError] = useState('')
   const editorSavePending = useRef(false)
   const [editorSaving, setEditorSaving] = useState(false)
   const [themeStep, setThemeStep] = useState(0)
@@ -900,7 +934,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   const requestSectionExit = (next: () => void) => {
     if (selectedSection === 'vcs' && vcsRef.current) vcsRef.current.requestLeave(next)
-    else if (selectedSection === 'storage-cleanup' && cleanupRef.current) cleanupRef.current.requestLeave(next)
+    else if (selectedSection === 'storage-cleanup') {
+      const leaveCleanup = () => cleanupRef.current ? cleanupRef.current.requestLeave(next) : next()
+      if (dataFolderRef.current) dataFolderRef.current.requestLeave(leaveCleanup)
+      else leaveCleanup()
+    }
     else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
@@ -1212,10 +1250,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const saveExplorer = async (path: string) => {
     if (editorSavePending.current) return
     editorSavePending.current = true
-    setEditorSaving(true); setEditorError('')
+    setEditorSaving(true); setOpenWithError('')
     try {
-      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setEditorError('File explorer could not be saved.')
-    } catch { setEditorError('File explorer could not be saved.') }
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, fileExplorerApplication: path })) setOpenWithError('File explorer could not be saved.')
+    } catch { setOpenWithError('File explorer could not be saved.') }
+    finally { editorSavePending.current = false; setEditorSaving(false) }
+  }
+  const saveWindowsPowerShell = async (value: WindowsPowerShellPreference) => {
+    if (editorSavePending.current) return
+    editorSavePending.current = true
+    setEditorSaving(true); setOpenWithError('')
+    try {
+      if (!await setEditorSettings({ defaultEditorPresetId, editorFileAssociations, windowsPowerShell: value })) setOpenWithError('Terminal shell could not be saved.')
+    } catch { setOpenWithError('Terminal shell could not be saved.') }
     finally { editorSavePending.current = false; setEditorSaving(false) }
   }
   const saveEditorSettings = async (nextAssociations = editorAssociationsDraft, nextDefaultEditor = defaultEditorDraft) => {
@@ -1509,7 +1556,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
@@ -1721,7 +1768,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const activeUamControlSupported = Boolean(
       activeSession
       && activeProvider?.supportsStructured !== false
-      && ['codex-app-server', 'claude-code-stream-json', 'gemini-acp', 'opencode-acp', 'copilot-acp', 'copilot-sdk', 'antigravity-stream-json'].includes(
+      && UAM_CONTROL_PROTOCOLS.includes(
         activeProvider?.structuredProtocol || providerMetadataForId(activeProvider?.id || '').structuredProtocol,
       ),
     )
@@ -1731,6 +1778,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     ] as const
     return <div className="grid gap-0">
       <SettingsSection title="Control method">
+        <ComputerUseSettingRow />
         <SettingRow
           title="Computer Use backend"
           description={activeSession
@@ -1834,8 +1882,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const settingsScopeHostId = useAppStore((s) => s.settingsScopeHostId)
   const setSettingsScopeHostId = useAppStore((s) => s.setSettingsScopeHostId)
   const hostScopedSettings = useAppStore((s) => s.hostScopedSettings === true)
-  const hasSshHosts = SSH_ENABLED && executionHosts.some((host) => host.transport === 'ssh')
-  const storedScopeHostId = executionHosts.some((host) => host.transport === 'ssh' && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
+  const hasSshHosts = SSH_ENABLED && executionHosts.some((host) => isSshHost(host))
+  const storedScopeHostId = executionHosts.some((host) => isSshHost(host) && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const onProviderPage = selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')
   const scopeBarVisible = hasSshHosts && (onProviderPage || selectedSection === 'defaults' || selectedSection === 'mcp-servers')
   const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
@@ -1988,7 +2036,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (selectedSection === 'vcs') return <VcsSettingsSection ref={vcsRef} />
-    if (selectedSection === 'storage-cleanup') return <StorageCleanupSettingsSection ref={cleanupRef} />
+    if (selectedSection === 'storage-cleanup') return <div className="grid gap-6"><DataFolderSettingsSection ref={dataFolderRef} /><StorageCleanupSettingsSection ref={cleanupRef} /></div>
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
@@ -2058,8 +2106,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const reasoningOptions = defaultReasoningOption && !liveReasoningOptions.some((option) => !option.id)
                     ? [defaultReasoningOption, ...liveReasoningOptions]
                     : liveReasoningOptions
-                  const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier, provider.id === 'codex-cli')
-                  const visibilityGroups = provider.id === 'opencode-cli'
+                  const speedOptions = buildCodexSpeedOptions(providerAcp, defaults.modelId, defaults.serviceTier, provider.id === CODEX_CLI_PROVIDER_ID)
+                  const visibilityGroups = provider.id === OPENCODE_CLI_PROVIDER_ID
                     ? [...new Set(modelOptions.filter((option) => option.id).map((option) => option.id.split('/')[0]))]
                     : []
                   const toggleVisibility = (key: 'hiddenModelIds' | 'hiddenProviderIds', id: string) => {
@@ -2224,7 +2272,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               </>
                             )}
                           >
-                            New {pendingDefaultYolo.providerName} chats will automatically approve computer use, commands, file changes, and every other permission request.
+                            New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
                           </Notice>
                         )}
                         <details className="uam-skill-folder">
@@ -2419,7 +2467,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             })}
           </SettingsSection>
 
-          <SettingsSection title="Import from a provider">
+          {AGENT_IMPORT_PROVIDER_OPTIONS.length > 0 && <SettingsSection title="Import from a provider">
             <SettingRow
               title="Source provider"
               htmlFor="agent-import-source-provider"
@@ -2428,12 +2476,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   id="agent-import-source-provider"
                   label="Source provider"
                   value={agentImportProvider}
-                  options={[
-                    { value: 'opencode-cli', label: 'OpenCode' },
-                    { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
-                    { value: 'gemini-cli', label: 'Gemini CLI' },
-                    { value: 'claude-cli', label: 'Claude Code' },
-                  ]}
+                  options={AGENT_IMPORT_PROVIDER_OPTIONS}
                   onChange={(value) => {
                     setAgentImportProvider(value)
                     invalidateAgentImport()
@@ -2543,7 +2586,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
               {importNeedsChat && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat to import into this workspace, or choose All workspaces.</div>}
             </div>
-          </SettingsSection>
+          </SettingsSection>}
         </div>
       )
     }
@@ -2637,12 +2680,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const statusColor = (status?: string) => status === 'ready' ? 'var(--green)' : status === 'error' ? 'var(--red)' : 'var(--text-3)'
       return (
         <div className="space-y-4">
-          <details className="text-xs" style={{ color: 'var(--text-3)' }}>
+          {COMPUTER_USE_ENABLED && <details className="text-xs" style={{ color: 'var(--text-3)' }}>
             <summary className="flex cursor-pointer items-center gap-2" style={{ color: 'var(--text-2)' }}>
               <Info size={14} aria-hidden />Remote Computer Use is off
             </summary>
             <p className="mt-1.5 pl-[22px]">Remote chats can't see or control the screen.</p>
-          </details>
+          </details>}
 
           <SettingsSection
             title="Add a host"
@@ -2960,7 +3003,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
 
-    if (selectedSection === 'voice-input') return <div className="grid gap-6"><VoiceInputControls ref={voiceRef} /><VoiceSettings /></div>
+    if (selectedSection === 'voice-input') return <VoiceInputControls ref={voiceRef} />
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
@@ -3137,10 +3180,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             >
               {customExplorer && <div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
-                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setOpenWithError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
               </div>}
             </SettingRow>
+            {isWindows && <SettingRow
+              title="Terminal shell"
+              description={WINDOWS_POWERSHELL_DESCRIPTIONS[windowsPowerShell]}
+              control={<MenuSelect label="Terminal shell" disabled={editorSaving} value={windowsPowerShell} options={WINDOWS_POWERSHELL_OPTIONS} onChange={(value) => void saveWindowsPowerShell(value as WindowsPowerShellPreference)} />}
+            />}
+            {openWithError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{openWithError}</p>}
           </SettingsSection>
         </div>
       )
@@ -3315,7 +3364,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>
-      <Presence open={Boolean(remotePreview)}>
+      {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
         {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5">
@@ -3351,7 +3400,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </div>
           </div>
         </Overlay>}
-      </Presence>
+      </Presence>}
       <Presence open={confirmDiscard}>
         {confirmDiscard && <Overlay open zIndex={70}>
           <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
@@ -3382,10 +3431,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>
-      <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
+      {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.
-      </ConfirmDialog>
+      </ConfirmDialog>}
     </div>
   )
 })

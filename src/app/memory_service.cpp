@@ -641,7 +641,7 @@ namespace
 		{
 			return value;
 		}
-		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + value.substr(value.size() - kMaxWorkerLogBytes);
+		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + std::string(uam::strings::Utf8Suffix(value, kMaxWorkerLogBytes));
 	}
 
 	std::string ReadFirstTitle(const fs::path& path)
@@ -880,9 +880,9 @@ namespace
 		return last_match;
 	}
 
-	uam::ProviderWorkerInvocation BuildMemoryWorkerInvocation(const uam::AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out = nullptr, bool remote_target = false)
+	uam::ProviderWorkerInvocation BuildMemoryWorkerInvocation(const uam::AppState& app, const ProviderProfile& profile, const std::string& prompt, const std::string& model_id, std::string* error_out = nullptr, std::string_view remote_host_id = {})
 	{
-		return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, error_out, remote_target);
+		return uam::BuildProviderWorkerInvocation(app, profile, app.settings, prompt, model_id, uam::ProviderWorkerPathMode::IncludeNvmNodeVersions, error_out, remote_host_id);
 	}
 
 	void SetError(std::string* error_out, const std::string& message)
@@ -1504,7 +1504,7 @@ namespace
 	    uam::AsyncMemoryExtractionState& extraction, std::stop_token stop_token)
 	{
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		uam::remote::RunnerClient client(service, host);
 		ProcessExecutionResult result;
 		const std::string id = service.GenerateUuid();
 		fs::path directory;
@@ -1573,7 +1573,7 @@ namespace
 		}
 
 		std::string compatibility_error;
-		uam::ProviderWorkerInvocation invocation = BuildMemoryWorkerInvocation(app, *worker_provider, {}, worker.model_id, &compatibility_error, remote_host.has_value());
+		uam::ProviderWorkerInvocation invocation = BuildMemoryWorkerInvocation(app, *worker_provider, {}, worker.model_id, &compatibility_error, remote_host ? std::string_view(remote_host->id) : std::string_view());
 		if (invocation.Empty())
 		{
 			app.memory_last_status = uam::strings::NonEmptyOrFallback(compatibility_error, "Memory worker command is empty.");
@@ -2164,6 +2164,15 @@ std::string MemoryService::BuildWorkerCommandForTests(const ProviderProfile& pro
 		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kCopilotCli];
 		version.checked = true;
 		version.supported = true;
+	}
+	if (uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kOpenCodeCli))
+	{
+		// The OpenCode worker gate requires a checked local version; V1 keeps the direct `opencode run` command.
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+		version.execution_host = uam::execution_hosts::LocalHost();
+		version.checked = true;
+		version.supported = true;
+		version.installed_version = "1.19.4";
 	}
 	return BuildMemoryWorkerInvocation(app, profile, prompt, model_id).command_preview;
 }

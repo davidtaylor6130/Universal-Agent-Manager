@@ -28,6 +28,7 @@ import {
   ToolCallInlineRows,
 } from './ToolCallViews'
 import { ContextMeter } from './StatusHelpers'
+import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
 function isCompactNativeSubagentTool(tool: AcpToolCall) {
@@ -347,7 +348,7 @@ export function PlanBlock({
   entries,
   showActions = false,
   actionsDisabled = false,
-  disabledTitle = 'Codex is still working.',
+  disabledTitle = CODEX_ENABLED ? 'Codex is still working.' : 'Plan action is unavailable.',
   onApprove,
   onDeny,
 }: {

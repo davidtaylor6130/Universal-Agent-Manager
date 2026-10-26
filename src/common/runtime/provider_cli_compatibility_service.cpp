@@ -1,4 +1,5 @@
 #include "provider_cli_compatibility_service.h"
+#include "common/runtime/cli_version_parser.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -132,9 +133,7 @@ namespace
 			return result;
 		}
 		uam::remote::RunnerClient client(service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		        host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		const auto finish = [&]() -> ProcessExecutionResult
 		{
 			if (remote_connected_out != nullptr && !result.canceled)
@@ -294,47 +293,7 @@ namespace
 		return true;
 	}
 
-	bool ConsumeDigits(std::string_view text, std::size_t& offset)
-	{
-		const std::size_t start = offset;
-		while (offset < text.size() && uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[offset])))
-		{
-			++offset;
-		}
-
-		return offset > start;
-	}
-
-	bool ConsumeDot(std::string_view text, std::size_t& offset)
-	{
-		if (offset >= text.size() || text[offset] != '.')
-		{
-			return false;
-		}
-
-		++offset;
-		return true;
-	}
-
-	std::optional<std::string> ExtractSemverVersion(std::string_view text)
-	{
-		for (std::size_t start = 0; start < text.size(); ++start)
-		{
-			if (!uam::strings::IsAsciiDigit(static_cast<unsigned char>(text[start])))
-			{
-				continue;
-			}
-
-			std::size_t end = start;
-			const bool has_semver = ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end) && ConsumeDot(text, end) && ConsumeDigits(text, end);
-			if (has_semver)
-			{
-				return std::string(text.substr(start, end - start));
-			}
-		}
-
-		return std::nullopt;
-	}
+	using uam::cli_versions::ExtractSemverVersion;
 
 	int CompareSemverComponent(std::string_view lhs, std::string_view rhs)
 	{
@@ -1244,20 +1203,20 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 					task.command_preview = install_command;
 					task.state = std::make_shared<AsyncProcessTaskState>();
 					const std::shared_ptr<AsyncProcessTaskState> launch_state = task.state;
-					task.worker = std::make_unique<std::jthread>([terminal, nonce, launch_state](std::stop_token stop)
+					task.worker = std::make_unique<std::jthread>([terminal, nonce, launch_state, powershell = app.settings.windows_powershell](std::stop_token stop)
 					{
 						if (stop.stop_requested())
 						{
 							launch_state->result.canceled = true;
 							launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal launch was canceled.";
 						}
-						else if (PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(terminal, &launch_state->result.error))
+						else if (PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(terminal, &launch_state->result.error, powershell))
 						{
 							launch_state->result.ok = true;
 							launch_state->result.exit_code = 0;
 							launch_state->result.output = std::string(kInteractiveInstallMarker) + nonce + "\nComplete the update in the terminal, then check this host's CLI version.";
 						}
-						else launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal could not be opened.";
+						else launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal could not be opened." + (launch_state->result.error.empty() ? "" : " " + launch_state->result.error);
 						launch_state->completed.store(true, std::memory_order_release);
 					});
 					for (auto& [other_key, other_task] : app.runtime_cli_install_tasks)

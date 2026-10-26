@@ -36,7 +36,7 @@ namespace uam::execution_hosts
 	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded, std::string_view error = {})
 	{
 		current.runner_startup_applied = succeeded ? (current.startup_enabled ? "enabled" : "disabled") : "failed";
-		current.runner_startup_error = succeeded ? "" : std::string(error.substr(0, 300));
+		current.runner_startup_error = succeeded ? "" : std::string(uam::strings::Utf8Prefix(error, 300));
 		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
 		else
 		{
@@ -45,11 +45,16 @@ namespace uam::execution_hosts
 		}
 	}
 
+	inline bool HasInstallFence(const ExecutionHost& host)
+	{
+		return host.runner_install_unresolved || !host.runner_install_nonce.empty() || !host.runner_install_identity.empty();
+	}
+
 	/// Records a completed probe only while its host configuration and health snapshot remain current.
 	inline bool ApplyHealthObservation(ExecutionHost& current, const ExecutionHost& observed,
 	                                   bool connected, std::string_view timestamp)
 	{
-		if (current != observed) return false;
+		if (current != observed || HasInstallFence(current) || current.runner_status == "installing") return false;
 		current.runner_status = connected ? "ready" : "error";
 		if (connected) current.last_seen_at = timestamp;
 		return true;
@@ -58,9 +63,35 @@ namespace uam::execution_hosts
 	/// Allows read-only directory browsing to retry an installed helper after a transient health failure.
 	inline bool CanBrowseRemoteDirectories(const ExecutionHost& host)
 	{
-		return !host.runner_version.empty() &&
+		return !HasInstallFence(host) && !host.runner_version.empty() &&
 		       (host.runner_status == "ready" || host.runner_status == "offline" ||
 		        host.runner_status == "error");
+	}
+
+	inline bool CanConnectRunner(const ExecutionHost& host)
+	{
+		return host.transport == "ssh" && !HasInstallFence(host) &&
+		       (host.runner_status == "ready" || host.runner_status == "offline" || host.runner_status == "error");
+	}
+
+	inline void BeginInstallFence(ExecutionHost& host, std::string nonce, std::string identity)
+	{
+		host.runner_status = "installing";
+		host.runner_install_unresolved = true;
+		host.runner_install_nonce = std::move(nonce);
+		host.runner_install_identity = std::move(identity);
+	}
+
+	inline void RequireInstallReconciliation(ExecutionHost& host)
+	{
+		host.runner_status = "error";
+		host.runner_install_unresolved = true;
+	}
+
+	inline void ApplyInstallCommit(ExecutionHost& host, bool committed)
+	{
+		if (!committed) RequireInstallReconciliation(host);
+		else { host.runner_status = "ready"; host.runner_install_unresolved = false; host.runner_install_nonce.clear(); host.runner_install_identity.clear(); }
 	}
 
 	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
@@ -70,7 +101,9 @@ namespace uam::execution_hosts
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
 		       left.runner_protocol_version == right.runner_protocol_version &&
-		       left.runner_directory == right.runner_directory && left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
+		       left.runner_directory == right.runner_directory && left.runner_install_unresolved == right.runner_install_unresolved &&
+		       left.runner_install_nonce == right.runner_install_nonce && left.runner_install_identity == right.runner_install_identity &&
+		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
 	}
 
 	inline bool IsPortableId(std::string_view value)
@@ -179,7 +212,7 @@ namespace uam::execution_hosts
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);
-		if (result.size() > maximum) result.resize(maximum);
+		result.resize(uam::strings::Utf8Prefix(result, maximum).size());
 		std::erase_if(result, [](unsigned char c) { return c < 0x20 || c == 0x7f; });
 		return result;
 	}
@@ -205,6 +238,7 @@ namespace uam::execution_hosts
 		    host.runner_status != "ready" && host.runner_status != "offline" &&
 		    host.runner_status != "error")
 			host.runner_status = "uninstalled";
+		if (HasInstallFence(host) && host.runner_status != "installing") host.runner_status = "error";
 		host.runner_version = Bounded(host.runner_version, 64);
 		host.platform = Bounded(host.platform, 64);
 		host.architecture = Bounded(host.architecture, 64);
@@ -276,6 +310,8 @@ namespace uam::execution_hosts
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
+			    {"runnerInstallUnresolved", host.runner_install_unresolved},
+			    {"runnerInstallNonce", host.runner_install_nonce}, {"runnerInstallIdentity", host.runner_install_identity},
 			    {"instructionFile", host.instruction_file},
 		    {"instructionText", host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
@@ -312,6 +348,15 @@ namespace uam::execution_hosts
 				    entry.contains("instructionText") && entry["instructionText"].is_string()
 				        ? std::optional<std::string>(entry["instructionText"].get<std::string>()) : std::nullopt,
 				});
+				hosts.back().runner_install_unresolved = entry.contains("runnerInstallUnresolved")
+				    ? (!entry["runnerInstallUnresolved"].is_boolean() || entry["runnerInstallUnresolved"].get<bool>())
+				    : hosts.back().runner_status == "installing";
+				for (const auto& [key, field] : {std::pair{"runnerInstallNonce", &hosts.back().runner_install_nonce}, std::pair{"runnerInstallIdentity", &hosts.back().runner_install_identity}})
+				{
+					if (entry.contains(key) && entry[key].is_string()) *field = entry[key].get<std::string>();
+					else if (entry.contains(key)) hosts.back().runner_install_unresolved = true;
+				}
+				if (!hosts.back().runner_install_nonce.empty() || !hosts.back().runner_install_identity.empty()) hosts.back().runner_install_unresolved = true;
 			}
 		}
 		Normalize(hosts);

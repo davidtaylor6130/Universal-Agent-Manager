@@ -73,7 +73,7 @@ public:
 			// A readable partial journal does not authorize discarding saved history.
 			// Compare the actual full graphs, independently of metadata/cache timestamps.
 			if (loaded->messages.size() < old->messages.size())
-				return fail("Native child history is shorter than the saved conversation. Saved history was kept; retry the refresh.");
+				return fail("Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it.");
 			// Explicit passive refresh has an actual scoped native conversation.
 			// The saved record owns UAM metadata, not a newer conversation merely
 			// because Rename/Pin/attention changed its display timestamp.
@@ -208,8 +208,7 @@ std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_vi
 	if (host->id != source.execution_host_id || host->transport != "ssh" || host->runner_status != "ready")
 	{ if (error) *error = "The exact remote native parent helper is unavailable."; return std::nullopt; }
 	remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version),
-		host->runner_version, host->runner_protocol_version);
+		*host);
 	nlohmann::json snapshot;
 	if (!client.ReadNativeHistory(decoded->provider_id, decoded->parent_session_id, source.workspace_directory, snapshot, error, stop_token, decoded->agent_id)) return std::nullopt;
 	return ParseHistorySnapshot(*host, source, reference, snapshot, error, stop_token);
