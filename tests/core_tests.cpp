@@ -5379,7 +5379,7 @@ UAM_TEST(ChatRenameDoesNotRollBackAfterCommittedPrimaryWithDegradedBackup)
 UAM_TEST(PerformanceScriptTargetsRuntimeChatDataDirectory)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
-	const std::string script = uam::io::ReadTextFile(source_root / "run_performance_test.ps1");
+	const std::string script = uam::io::ReadTextFile(source_root / "docs/reference/history/run_performance_test.ps1");
 	const std::string runtime_directory = AppPaths::ChatsRootPath("data").filename().string();
 
 	UAM_ASSERT(script.find("$chatsDir = Join-Path $testDataRoot \"" + runtime_directory + "\"") != std::string::npos);

@@ -156,8 +156,13 @@ React/UI changes follow `docs/ui/design-language.md`; settings pages also follow
 - OpenCode provider: `src/common/provider/opencode/`
 - Claude Code provider: `src/common/provider/claude/`
 - GitHub Copilot provider: `src/common/provider/copilot/`
+- Antigravity provider: `src/common/provider/antigravity/`
 - ACP runtime: `src/common/runtime/acp/`
 - Terminal runtime: `src/common/runtime/terminal/` plus platform services
+- Computer use: `src/computer_use/` (MCP server and macOS/Windows platform layers)
+- Phone companion: `src/cef/companion_server.cpp`, protocol in `src/common/companion/`, browser UI in `UI-V2/src/components/companion/`, iOS client in `Mobile/iOS/`
+- Remote runner (`uam_runner`): `src/remote/`
+- Markdown store: `src/app/markdown_store_service.cpp`; shipped entries in `markdown-store/bundled/` (top-level `markdown-store/*.uam` are maintainer-local)
 - Memory service: `src/app/memory_service.cpp`
 - Data storage: `<data-root>/chats/` JSON files plus optional `<data-root>/memory/`
 
