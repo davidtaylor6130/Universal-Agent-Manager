@@ -12,7 +12,7 @@ const block = (selector: string) => {
   const blocks = [...styles.matchAll(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`, 'g'))].map((match) => match[1])
   return blocks.find((body) => body.includes('--accent:')) ?? ''
 }
-const token = (body: string, name: string) => body.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,6})\\b`))?.[1]
+const token = (body: string, name: string) => body.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{3,6}\\b|var\\(--[a-z-]+\\))`))?.[1]
 // color-mix(in srgb, a p%, b): per-channel interpolation of the gamma-encoded values.
 const mix = (a: string, b: string, share: number) => `#${[1, 3, 5].map((i) => Math.round(parseInt(a.slice(i, i + 2), 16) * share + parseInt(b.slice(i, i + 2), 16) * (1 - share)).toString(16).padStart(2, '0')).join('')}`
 
@@ -20,8 +20,19 @@ describe('on-accent contrast', () => {
   const root = block(':root')
   const themes = BUILT_IN_THEMES.filter((theme) => theme.id !== 'system').map((theme) => {
     const body = theme.id === 'light' ? root : block(`[data-theme="${theme.id}"]`)
-    const pick = (name: string) => hex(token(body, name) ?? token(root, name) ?? '')
+    const pick = (name: string): string => {
+      const raw = token(body, name) ?? token(root, name) ?? ''
+      const reference = raw.match(/^var\((--[a-z-]+)\)$/)?.[1]
+      return reference ? pick(reference) : hex(raw)
+    }
     return { id: theme.id, accent: pick('--accent'), onAccent: pick('--on-accent'), text: pick('--text') }
+  })
+
+  it('uses one of each theme\'s own colours rather than a new fixed colour', () => {
+    for (const theme of BUILT_IN_THEMES.filter((entry) => entry.id !== 'system')) {
+      const body = theme.id === 'light' ? root : block(`[data-theme="${theme.id}"]`)
+      expect(token(body, '--on-accent') ?? '', theme.id).toMatch(/^var\(--(bg|text|surface)\)$/)
+    }
   })
 
   it.each(themes)('$id: text and icons on the accent meet WCAG AA, including primary hover', ({ accent, onAccent, text }) => {
@@ -39,10 +50,13 @@ describe('on-accent contrast', () => {
     for (let value = 0; value < 0xffffff; value += 0x0f0f0f) {
       const accent = `#${value.toString(16).padStart(6, '0')}`
       expect(contrastRatio(accent, onAccentFor(accent))).toBeGreaterThanOrEqual(AA)
+      expect(contrastRatio(accent, onAccentFor(accent, ['#202020', '#e0e0e0']))).toBeGreaterThanOrEqual(AA)
     }
+    expect(onAccentFor('#00ffff', ['#101010', '#f0f0f0'])).toBe('#101010')
+    expect(onAccentFor('#808080', ['#606060', '#a0a0a0'])).toBe('#000000')
     const colors = { background: '#101010', surface: '#141414', surfaceUp: '#1a1a1a', text: '#f0f0f0', textMuted: '#a0a0a0', accent: '#00ffff', sidebar: '#121212', userMessage: '#202020', assistantMessage: '#141414', success: '#00ff00', warning: '#ffff00', error: '#ff0000' }
     applyDocumentTheme('custom:cyan', [{ version: 1, id: 'custom:cyan', name: 'Cyan', base: 'dark', colors }])
-    expect(document.documentElement.style.getPropertyValue('--on-accent')).toBe('#000000')
+    expect(document.documentElement.style.getPropertyValue('--on-accent')).toBe('#101010')
     applyDocumentTheme('dark')
     expect(document.documentElement.style.getPropertyValue('--on-accent')).toBe('')
   })

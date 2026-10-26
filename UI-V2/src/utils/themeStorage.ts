@@ -87,8 +87,13 @@ export function contrastRatio(first: string, second: string): number {
   return (light + 0.05) / (dark + 0.05)
 }
 
-/** Black or white, whichever reads better on the accent; one of them always reaches 4.5:1. */
-export const onAccentFor = (accent: string) => contrastRatio(accent, '#ffffff') >= contrastRatio(accent, '#000000') ? '#ffffff' : '#000000'
+const mostContrasting = (accent: string, colors: string[]) => colors.reduce((best, color) => contrastRatio(accent, color) > contrastRatio(accent, best) ? color : best)
+
+/** The theme's own colour that reads best on the accent; black or white (one always reaches 4.5:1) when none of them does. */
+export function onAccentFor(accent: string, themeColors: string[] = []): string {
+  const own = themeColors.length ? mostContrasting(accent, themeColors) : ''
+  return own && contrastRatio(accent, own) >= 4.5 ? own : mostContrasting(accent, ['#000000', '#ffffff'])
+}
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
   if (value === 'mono') return 'focus'
@@ -176,7 +181,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-fg': text,
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
-        '--on-accent': onAccentFor(accent),
+        '--on-accent': onAccentFor(accent, [background, text]),
       }
       Object.assign(desiredProperties, derived)
     }
