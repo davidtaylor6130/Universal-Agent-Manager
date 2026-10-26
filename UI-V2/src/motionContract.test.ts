@@ -61,7 +61,7 @@ describe('shared motion contract', () => {
   })
 
   it('takes a closing docked panel out of the layout instead of animating its width', () => {
-    expect(styles).toMatch(/@media not all and \(max-width: 1000px\) \{\s*\.uam-shell-panel\[data-state="closed"\] \{ position: absolute; inset-block: 0; z-index: 20; \}/)
+    expect(styles).toMatch(/@media not all and \(max-width: 1000px\) \{\s*\/\*[^*]*\*\/\s*\.uam-shell-panel\[data-state="closed"\] \{ position: absolute; top: var\(--uam-window-strip-height, 0px\); bottom: 0; height: auto; z-index: 20; \}/)
     expect(styles).not.toMatch(/\.uam-shell-panel[^{]*\{[^}]*margin-inline/)
   })
 
