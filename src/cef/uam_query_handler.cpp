@@ -167,6 +167,8 @@ UamQueryHandler::~UamQueryHandler()
 	m_asyncLifetime.reset();
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
+	for (const auto& install : m_remoteInstallStops)
+		if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
 #endif
@@ -528,6 +530,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		if (action == "setGoal" || action == "updateGoalStatus" || action == "resumeGoal" ||
 		    action == "updateGoalObjective" || action == "setActiveGoal" || action == "removeGoal")
 			m_goalQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
+		if (action == "installRemoteHost")
+			m_remoteInstallQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "setCustomIcon") BeginChatIconQuery(callback.get(),
 		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
@@ -558,6 +562,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 	m_managedFollowupQueryIdentities.erase(callback.get());
 	m_chatIconQueryIdentities.erase(callback.get());
+	m_remoteInstallQueryIdentities.erase(callback.get());
 	m_goalQueryIdentities.erase(callback.get());
 	return true;
 }
@@ -594,6 +599,9 @@ void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<C
 		if (const std::shared_ptr<GoalMutationOperation> operation = goal_operation->second.lock()) operation->cancelled = true;
 		m_goalQueryOperations.erase(goal_operation);
 	}
+	for (const auto& install : m_remoteInstallStops)
+		if (install.first == goal_identity)
+			if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 	CancelChatIconQuery(browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 	if (query_id == m_searchQueryId)
 	{
