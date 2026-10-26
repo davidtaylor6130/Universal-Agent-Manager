@@ -86,6 +86,8 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.CancelChatIconQuery(browser, frame, query);
 	}
+	static void Query(UamQueryHandler& handler, int64_t query) { handler.m_dispatchingQuery = {-1, "", query}; }
+	static void CancelQuery(UamQueryHandler& handler, int64_t query) { handler.OnQueryCanceled(nullptr, nullptr, query); }
 };
 
 namespace
@@ -1884,6 +1886,62 @@ UAM_TEST(NativeChildLineageHandlerBackgroundQueueExecutes)
 	UAM_ASSERT_EQ(observed->load(), 1);
 }
 
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+UAM_TEST(NativeChildLineageHandlerCancelledCodexRefreshSavesWithoutDeliveryAndNextOpenReusesIt)
+{
+	NativeLineageHandlerFixture fixture("codex-cli");
+	const fs::path codex = fixture.temp.root / "codex";
+	ScopedEnvVar codex_home{"CODEX_HOME", codex.string()};
+	const auto write_rollout = [&](const std::vector<std::string>& answers)
+	{
+		std::string rollout;
+		unsigned tick = 10;
+		const auto line = [&](const nlohmann::json& value) { rollout += value.dump() + "\n"; };
+		line({{"type", "session_meta"}, {"timestamp", fixture.child.created_at}, {"payload", {{"id", fixture.child.native_session_id}, {"cwd", fixture.child.workspace_directory}}}});
+		for (std::size_t index = 0; index < answers.size(); ++index)
+		{
+			const std::string turn = "child-turn-" + std::to_string(index);
+			line({{"type", "event_msg"}, {"payload", {{"type", "task_started"}, {"turn_id", turn}}}});
+			line({{"type", "turn_context"}, {"payload", {{"turn_id", turn}}}});
+			for (const auto& [role, text] : std::vector<std::pair<std::string, std::string>>{{"user", "Child question " + std::to_string(index)}, {"assistant", answers[index]}})
+				line({{"type", "response_item"}, {"timestamp", "2026-10-16T10:02:" + std::to_string(tick++) + "Z"},
+				    {"payload", {{"type", "message"}, {"role", role}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", text}}})}}}});
+			line({{"type", "event_msg"}, {"payload", {{"type", "task_complete"}, {"turn_id", turn}}}});
+		}
+		fs::create_directories(codex / "sessions");
+		UAM_ASSERT(uam::io::WriteTextFile(codex / "sessions" / ("rollout-" + fixture.child.native_session_id + ".jsonl"), rollout));
+	};
+	write_rollout({"Native child answer"});
+	auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app);
+	nlohmann::json refresh = fixture.Payload(true);
+	refresh["refreshHistory"] = true;
+	CefRefPtr<RecordingInstructionCallback> cancelled = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::Query(handler, 71);
+	ChatIconHandlerTestAccess::OpenNative(handler, refresh, cancelled);
+	ChatIconHandlerTestAccess::Query(handler, -1);
+	ChatIconHandlerTestAccess::CancelQuery(handler, 71);
+	fixture.Await(cancelled);
+	// Delivery only: no history response, no selection and no state push.
+	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->status, 409);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.parent.id);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app));
+	// The read and its save still finished.
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
+	UAM_ASSERT(saved); UAM_ASSERT_EQ(std::ranges::count(saved->messages, std::string("Native child answer"), &Message::content), 1);
+	// A later native turn proves the next open serves the saved child instead of reading again.
+	write_rollout({"Native child answer", "Later native answer"});
+	CefRefPtr<RecordingInstructionCallback> next = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::OpenNative(handler, refresh, next);
+	fixture.Await(next);
+	UAM_ASSERT_EQ(next->successes, 1); UAM_ASSERT_EQ(next->failures, 0);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.child.id);
+	UAM_ASSERT_EQ(std::ranges::count(fixture.Child().messages, std::string("Native child answer"), &Message::content), 1);
+	UAM_ASSERT_EQ(std::ranges::count(fixture.Child().messages, std::string("Later native answer"), &Message::content), 0);
+}
+#endif
+
 #include "app/persistence_coordinator.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/chat/native_media_chat_save.h"
@@ -3301,6 +3359,37 @@ UAM_TEST(NativeChildLineageHandlerGeminiInlineOriginalsOpenRefreshAndColdReopen)
 	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
 }
 
+UAM_TEST(NativeChildLineageHandlerGeminiCancelledOpenSavesWithoutDeliveryAndNextOpenReusesIt)
+{
+	PassiveGeminiChildMediaFixture fixture(true);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app);
+	const nlohmann::json open{{"chatId", fixture.parent.id}, {"nativeSessionId", fixture.reference}, {"selectChat", true}, {"refreshHistory", true}};
+	CefRefPtr<RecordingInstructionCallback> cancelled = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::Query(handler, 72);
+	ChatIconHandlerTestAccess::OpenNative(handler, open, cancelled);
+	ChatIconHandlerTestAccess::Query(handler, -1);
+	ChatIconHandlerTestAccess::CancelQuery(handler, 72);
+	RunCreationLoopUntil([cancelled] { return cancelled->successes + cancelled->failures != 0; }, std::chrono::seconds(15));
+	AwaitBranchFaultOwnerCount(0);
+	// Delivery only: no history response, no selection and no state push.
+	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app));
+	const auto keys = fixture.AssertSaved(true); // Saved child and owned originals, parent still selected.
+	// A changed native answer proves the next open serves the saved child instead of reading again.
+	fixture.WriteChild(true, "Fresh native child answer");
+	CefRefPtr<RecordingInstructionCallback> next = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::OpenNative(handler, open, next);
+	RunCreationLoopUntil([next] { return next->successes + next->failures != 0; }, std::chrono::seconds(15));
+	AwaitBranchFaultOwnerCount(0);
+	UAM_ASSERT_EQ(next->successes, 1); UAM_ASSERT_EQ(next->failures, 0);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.reference);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.reference, true);
+	UAM_ASSERT(saved); UAM_ASSERT_EQ(saved->messages.back().content, std::string("Original child answer"));
+	(void)keys;
+}
+
 UAM_TEST(NativeChildLineageHandlerGeminiInlineFailurePreservesTextUntilFreshRetry)
 {
 	PassiveGeminiChildMediaFixture fixture(false);
@@ -4434,17 +4523,20 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiLoadedRequestSupersededByNewestPublicRe
 {
 	RemoteOwnedControlsFixture fixture; EstablishActualRemoteOwnedMedia(fixture);
 	const auto keys = RemoteExistingOriginalKeys(fixture); const RemoteGeminiRetainedHandlerState before(fixture);
-	AdvanceActualRemoteAnswer(fixture, "Loaded obsolete answer must not publish");
+	AdvanceActualRemoteAnswer(fixture, "Loaded answer is saved for the newest refresh");
+	const auto expected = fixture.ReadGenuineExpected(true);
 	ActualRemoteLoadedBoundary boundary; const auto first = boundary.Start(fixture);
-	AdvanceActualRemoteAnswer(fixture, "Newest exact public refresh owns this answer");
-	const auto expected = fixture.ReadGenuineExpected(true); const auto launches = fixture.Launches();
+	AdvanceActualRemoteAnswer(fixture, "Later native answer waits for a later refresh");
+	const auto launches = fixture.Launches();
 	const auto newest = BeginActualRemoteRefresh(fixture);
 	UAM_ASSERT(!first->Completed() && !newest->Completed()); before.AssertRetained(fixture);
 	boundary.Release();
 	RunCreationLoopUntil([first, newest] { return first->Completed() && newest->Completed(); }, std::chrono::seconds(15));
 	UAM_ASSERT(first->Completed() && newest->Completed());
+	// Delivery only: the replaced request gets no history, but its read is saved and
+	// the newest request serves that saved result without launching a second read.
 	UAM_ASSERT_EQ(first->successes, 0); UAM_ASSERT_EQ(first->failures, 1); UAM_ASSERT_EQ(first->status, 409);
-	fixture.AssertPrivateTransport(launches); fixture.RequireSuccess(newest);
+	UAM_ASSERT_EQ(fixture.Launches(), launches); fixture.RequireSuccess(newest);
 	fixture.AssertPublished(expected, true); fixture.AssertResponse(newest, expected, true);
 	fixture.Settle(first); fixture.Settle(newest);
 	UAM_ASSERT_EQ(first->successes + first->failures, 1); UAM_ASSERT_EQ(newest->successes + newest->failures, 1);
