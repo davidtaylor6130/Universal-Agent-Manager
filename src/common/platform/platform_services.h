@@ -101,6 +101,15 @@ class IPlatformProcessService
 	{
 		return {};
 	}
+	/// Opt-in finite worker input: the sole consumer may read bounded preloaded regular-file stdin.
+	/// Pipes retain ReadStandardInput's nonblocking behavior; never owns/closes stdin or reads a console.
+	/// Callers also enforce their aggregate byte/deadline limits across reads.
+	virtual uam::platform::StandardInputReadResult ReadFiniteStandardInput(char* buffer,
+	    std::size_t capacity, std::size_t maximum_input_bytes) const
+	{
+		(void)maximum_input_bytes;
+		return ReadStandardInput(buffer, capacity);
+	}
 	virtual bool StartStdioProcess(uam::platform::StdioProcessPlatformFields& process, const std::filesystem::path& working_directory, const std::vector<std::string>& argv, std::string* error_out = nullptr, const std::vector<std::pair<std::string, std::string>>& environment_overrides = {}) const = 0;
 	// Starts with immutable, preloaded stdin and merged stdout/stderr. This avoids
 	// blocking the caller while a child delays or refuses to consume stdin.

@@ -215,6 +215,32 @@ class WindowsProcessService final : public IPlatformProcessService
 		        static_cast<std::size_t>(count)};
 	}
 
+	uam::platform::StandardInputReadResult ReadFiniteStandardInput(char* buffer,
+	    std::size_t capacity, std::size_t maximum_input_bytes) const override
+	{
+		using uam::platform::StandardInputReadStatus;
+		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+		if (buffer == nullptr || capacity == 0 || input == nullptr || input == INVALID_HANDLE_VALUE) return {};
+		const DWORD type = GetFileType(input);
+		if (type == FILE_TYPE_PIPE) return ReadStandardInput(buffer, capacity);
+		if (type != FILE_TYPE_DISK) return {}; // Never block on console/character/unknown handles.
+		BY_HANDLE_FILE_INFORMATION info{};
+		LARGE_INTEGER size{};
+		if (!GetFileInformationByHandle(input, &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+		    !GetFileSizeEx(input, &size) || size.QuadPart < 0 ||
+		    static_cast<unsigned long long>(size.QuadPart) > maximum_input_bytes) return {};
+		// StartStdioProcessWithInput supplies a private synchronous regular file.
+		// Bound every read; neither this operation nor its pipe fallback takes ownership.
+		const DWORD wanted = static_cast<DWORD>(std::min<std::size_t>(capacity, MAXDWORD));
+		DWORD count = 0;
+		if (!ReadFile(input, buffer, wanted, &count, nullptr))
+			return GetLastError() == ERROR_HANDLE_EOF ?
+			    uam::platform::StandardInputReadResult{StandardInputReadStatus::EndOfStream, 0} :
+			    uam::platform::StandardInputReadResult{};
+		return {count == 0 ? StandardInputReadStatus::EndOfStream : StandardInputReadStatus::Data,
+		        static_cast<std::size_t>(count)};
+	}
+
 	bool SupportsDetachedProcesses() const override
 	{
 		return true;
