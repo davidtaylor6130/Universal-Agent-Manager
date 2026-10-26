@@ -1266,6 +1266,7 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_subdirectory(tests/bootstrap_metadata)
   add_executable(uam_opencode_progressive_mcp_checks
     tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
   target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
