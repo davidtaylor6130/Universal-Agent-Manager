@@ -1,11 +1,302 @@
 import { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
-import { MessageNavigationRail, messageIndexAtPointer } from './MessageNavigationRail'
+import { MessageNavigationRail, currentVisibleMessage, markAtOrBefore, messageIndexAtPointer } from './MessageNavigationRail'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+type Observed = { callback: IntersectionObserverCallback; targets: Set<Element>; options?: IntersectionObserverInit }
+
+/** jsdom has no IntersectionObserver; this stand-in lets a test say which rows are on screen. */
+function stubIntersectionObserver() {
+  const observers: Observed[] = []
+  vi.stubGlobal('IntersectionObserver', class {
+    private entry: Observed
+    constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) { this.entry = { callback, targets: new Set(), options }; observers.push(this.entry) }
+    observe(target: Element) { this.entry.targets.add(target) }
+    unobserve(target: Element) { this.entry.targets.delete(target) }
+    disconnect() { this.entry.targets.clear() }
+  })
+  const show = (visible: Element[], hidden: Element[] = []) => {
+    for (const observer of observers) {
+      const entries = [...visible.map((target) => ({ target, isIntersecting: true })), ...hidden.map((target) => ({ target, isIntersecting: false }))]
+        .filter((entry) => observer.targets.has(entry.target))
+      if (entries.length) observer.callback(entries as unknown as IntersectionObserverEntry[], observer as unknown as IntersectionObserver)
+    }
+  }
+  return { observers, show }
+}
+
+function transcript(roles: Array<'user' | 'assistant'>) {
+  const viewport = document.createElement('div')
+  const rows = roles.map((_, index) => {
+    const row = document.createElement('div')
+    row.dataset.messageIndex = String(index)
+    viewport.append(row)
+    return row
+  })
+  const messages = roles.map((role, index) => ({ id: String(index), sessionId: 'chat', role, content: `${role} ${index}`, createdAt: new Date() }))
+  return { viewport, rows, messages, viewportRef: { current: viewport } }
+}
+
+describe('Message navigation rail visible range', () => {
+  it('finds the last mark at or before a message', () => {
+    expect(markAtOrBefore([0, 2, 4, 6], 0)).toBe(0)
+    expect(markAtOrBefore([0, 2, 4, 6], 3)).toBe(1)
+    expect(markAtOrBefore([0, 2, 4, 6], 6)).toBe(3)
+    expect(markAtOrBefore([0, 2, 4, 6], 99)).toBe(3)
+    expect(markAtOrBefore([5], 1)).toBe(0)
+  })
+
+  it('selects the first visible user message, or the one owning the topmost visible reply', () => {
+    expect(currentVisibleMessage([0, 2, 4, 6], [3, 4, 5], false)).toBe(4)
+    expect(currentVisibleMessage([0, 2, 4, 6], [3], false)).toBe(3)
+    expect(markAtOrBefore([0, 2, 4, 6], currentVisibleMessage([0, 2, 4, 6], [3], false))).toBe(1)
+  })
+
+  it('selects the final user message at the bottom even when an earlier one is still visible', () => {
+    // Final Message Selection: the earlier turn at the top used to win, so the rail showed the second-to-last mark.
+    const indices = [0, 2, 4, 6]
+    expect(markAtOrBefore(indices, currentVisibleMessage(indices, [4, 5, 6, 7], true))).toBe(3)
+    expect(markAtOrBefore(indices, currentVisibleMessage(indices, [4, 5, 6, 7], false))).toBe(2)
+    // A long final reply that hides its own question still belongs to the final mark.
+    expect(markAtOrBefore(indices, currentVisibleMessage(indices, [7], true))).toBe(3)
+  })
+})
+
 describe('Message navigation rail', () => {
+  it('lights every visible user mark and selects the final one when the transcript end is on screen', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => show([rows[1], rows[2], rows[3]]))
+      expect([...host.querySelectorAll<HTMLElement>('[data-rail-visible]')].map((mark) => mark.dataset.railVisible)).toEqual(['1'])
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      act(() => show([rows[0]]))
+      expect([...host.querySelectorAll<HTMLElement>('[data-rail-visible]')].map((mark) => mark.dataset.railVisible)).toEqual(['0', '1'])
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      // Scrolled to the bottom: the second-to-last question is still at the top, the final turn below it.
+      act(() => show([rows[2], rows[3], rows[4], rows[5]], [rows[0], rows[1]]))
+      expect([...host.querySelectorAll<HTMLElement>('[data-rail-visible]')].map((mark) => mark.dataset.railVisible)).toEqual(['1', '2'])
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      expect(host.querySelector<HTMLElement>('[data-rail-target]')!.style.top).toBe('100%')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('observes rows that mount after the rail and ignores caller position changes while tracking', async () => {
+    const { observers, show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const render = (currentIndex: number, list = messages) => root.render(<MessageNavigationRail startIndex={0} messages={list} currentIndex={currentIndex}
+      viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />)
+    try {
+      act(() => render(3))
+      act(() => show([rows[0], rows[1]]))
+      const slider = host.querySelector('[role="slider"]')!
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      const late = document.createElement('div')
+      late.dataset.messageIndex = '4'
+      await act(async () => { viewport.append(late); await new Promise((resolve) => requestAnimationFrame(resolve)) })
+      expect(observers[0].targets.has(late)).toBe(true)
+      // A streamed message moves the caller's tail index, but the reader is still at the top.
+      act(() => render(4, [...messages, { id: '4', sessionId: 'chat', role: 'user', content: 'Later', createdAt: new Date() }]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      await act(async () => { rows[0].remove(); await new Promise((resolve) => requestAnimationFrame(resolve)) })
+      expect(observers[0].targets.has(rows[0])).toBe(false)
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('does not count rows hidden under the floating composer as on screen', () => {
+    const { observers, show } = stubIntersectionObserver()
+    let resized: (() => void) | undefined
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resized = callback } observe() {}; unobserve() {}; disconnect() {} })
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const style = window.getComputedStyle
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => element.classList.contains('conversation-rail')
+      ? { bottom: '216px' } as CSSStyleDeclaration : style(element))
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={3} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      expect(observers).toHaveLength(1)
+      expect(observers[0].options?.rootMargin).toBeUndefined()
+      act(() => resized!())
+      // A 200px composer (rail bottom 216px minus its 16px gap) shrinks the visible band; every row is observed again.
+      expect(observers).toHaveLength(2)
+      expect(observers[1].options).toMatchObject({ root: viewport, rootMargin: '0px 0px -200px 0px' })
+      expect([...observers[1].targets]).toEqual(rows)
+      act(() => show([rows[0], rows[1]]))
+      expect(host.querySelector('[role="slider"]')!.getAttribute('aria-valuenow')).toBe('1')
+      act(() => resized!())
+      expect(observers).toHaveLength(2)
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals() }
+  })
+
+  it('steps to the previous and next user message with keyboard-reachable buttons that keep focus while busy', () => {
+    const { show } = stubIntersectionObserver()
+    // Keyboard focus opens the Radix tooltip, which measures itself.
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const onNavigate = vi.fn()
+    const render = (busy: boolean) => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={4}
+      viewportRef={viewportRef} busy={busy} onNavigate={onNavigate} />)
+    try {
+      act(() => render(false))
+      act(() => show([rows[2]]))
+      const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!
+      const next = host.querySelector<HTMLButtonElement>('button[aria-label="Next user message"]')!
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      // Tab order runs previous, marks, next.
+      expect(previous.compareDocumentPosition(slider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(slider.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(previous.type).toBe('button')
+      act(() => next.focus())
+      expect(document.activeElement).toBe(next)
+      act(() => next.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(4)
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      // The parent marks the jump busy; the button stays focused (a disabled button would drop focus) but inert.
+      act(() => render(true))
+      expect(document.activeElement).toBe(next)
+      expect(next.disabled).toBe(false)
+      expect(next.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenCalledTimes(1)
+      act(() => render(false))
+      expect(next.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(2)
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(0)
+      expect(previous.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenCalledTimes(3)
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('keeps a jump target selected near the end until the reader scrolls, so Previous never stalls', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const onNavigate = vi.fn()
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5} viewportRef={viewportRef} busy={false} onNavigate={onNavigate} />))
+      const slider = host.querySelector('[role="slider"]')!
+      const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!
+      act(() => show([rows[2], rows[3], rows[4], rows[5]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(2)
+      // The target scrolls into view but the end stays on screen; the jump target still holds the selection.
+      act(() => show([rows[1]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(0)
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      // Reader input hands selection back to what is on screen.
+      act(() => { viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: 40 })) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('lets go of a jump whose row never appears once loading has settled', () => {
+    vi.useFakeTimers()
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const render = (busy: boolean) => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5}
+      viewportRef={viewportRef} busy={busy} onNavigate={vi.fn()} />)
+    try {
+      act(() => render(false))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => show([rows[3], rows[4], rows[5]]))
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!.click())
+      act(() => render(true))
+      act(() => { vi.advanceTimersByTime(5000) })
+      // Still loading: the target keeps the selection.
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      // The read was refused and the row never showed; the selection returns to what is on screen.
+      act(() => render(false))
+      act(() => { vi.advanceTimersByTime(1999) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals(); vi.useRealTimers() }
+  })
+
+  it('releases a seen jump target once it leaves the screen', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      act(() => show([rows[0], rows[1]]))
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+      act(() => slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+      act(() => show([rows[3], rows[4]], [rows[0], rows[1]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      act(() => show([rows[2], rows[3]], [rows[4]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('treats the end of an older loaded page as mid-chat and drops rows that lose their index', async () => {
+    const { observers, show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      // The full history has a later user message (index 40) that this page does not contain.
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 2, 40]} startIndex={0} messages={messages} currentIndex={3}
+        viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => show([rows[0], rows[1], rows[2], rows[3]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      await act(async () => { rows[0].removeAttribute('data-message-index'); await new Promise((resolve) => requestAnimationFrame(resolve)) })
+      expect(observers[0].targets.has(rows[0])).toBe(false)
+      expect([...host.querySelectorAll<HTMLElement>('[data-rail-visible]')].map((mark) => mark.dataset.railVisible)).toEqual(['1'])
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('moves between marks with the arrow keys and confirms with Enter', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const onNavigate = vi.fn()
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 4, 9]} startIndex={0} messages={[]} currentIndex={4} viewportRef={createRef()} busy={false} onNavigate={onNavigate} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      expect(slider.tabIndex).toBe(0)
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      expect(onNavigate).toHaveBeenLastCalledWith(9)
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })))
+      expect(onNavigate).toHaveBeenLastCalledWith(4)
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      expect(onNavigate).toHaveBeenLastCalledWith(4)
+      expect(onNavigate).toHaveBeenCalledTimes(3)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('maps equal message positions and clamps pointer coordinates', () => {
     expect(messageIndexAtPointer(101, 20, 200, 120)).toBe(50)
     expect(messageIndexAtPointer(101, 20, 200, -100)).toBe(0)

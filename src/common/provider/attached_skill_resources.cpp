@@ -6,6 +6,7 @@
 #include "common/provider/provider_setup.h"
 #include "remote/runner_client.h"
 #include "remote/runner_proxy.h"
+#include "common/utils/string_utils.h"
 
 #include <map>
 
@@ -21,7 +22,7 @@ namespace uam::attached_skills
 			const std::string_view header = captured_block.substr(0, end);
 			if (header.ends_with(" ---") && header.size() > prefix.size() + 4)
 			{
-				span.title = std::string(header.substr(prefix.size(), header.size() - prefix.size() - 4).substr(0, 256));
+				span.title = std::string(uam::strings::Utf8Prefix(header.substr(prefix.size(), header.size() - prefix.size() - 4), 256));
 				for (char& character : span.title)
 					if (static_cast<unsigned char>(character) < 0x20 || character == 0x7f) character = ' ';
 			}

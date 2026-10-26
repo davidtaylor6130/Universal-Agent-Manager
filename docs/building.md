@@ -27,7 +27,7 @@ npm --prefix UI-V2 run build
 
 Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CEF bridge.
 
-For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes; `tests/svn_branch_integration.py <test-binary>` additionally uses disposable `file://` repositories and a private SVN configuration when `svn` and `svnadmin` are installed. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
+For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes; CTest also registers `uam_svn_branch_integration` (`tests/svn_branch_integration.py`), which uses disposable `file://` repositories and a private SVN configuration, when `svn` and `svnadmin` are installed. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
 
 ### Local development build
 

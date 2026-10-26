@@ -25,6 +25,11 @@
 #include "include/cef_load_handler.h"
 #include <future>
 #include "common/runtime/acp/acp_session_internal.h"
+#include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
+#if !defined(_WIN32)
+#include <csignal>
+#endif
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
@@ -80,6 +85,13 @@ struct ChatIconHandlerTestAccess
 	    CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		return handler.DispatchAction(action, nullptr, payload, callback);
+	}
+
+	static void InstallRemoteHost(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, int64_t query)
+	{
+		handler.m_remoteInstallQueryIdentities[callback.get()] = {-1, "", query};
+		handler.HandleInstallRemoteHost(nullptr, payload, callback);
+		handler.m_remoteInstallQueryIdentities.erase(callback.get());
 	}
 
 	static void Cancel(UamQueryHandler& handler, int browser, const std::string& frame, int64_t query)
@@ -705,6 +717,87 @@ UAM_TEST(CentralInstructionHandlersIgnoreBlockedSharedFileQueue)
 	UAM_ASSERT_EQ(state->load(), 1);
 }
 
+UAM_TEST(RemoteHelperInstallLeavesSharedQueueFreeAndStopsOnCancelOrShutdown)
+{
+#if !defined(_WIN32)
+	// ponytail: POSIX shell stand-in for ssh; the stop path under test is platform-neutral.
+	TempDir temp("uam-remote-install-thread");
+	const fs::path bin = temp.root / "bin";
+	const fs::path pids = temp.root / "ssh.pids";
+	fs::create_directories(bin);
+	UAM_ASSERT(uam::io::WriteTextFile(bin / "ssh", "#!/bin/sh\necho $$ >> \"$UAM_FAKE_SSH_PIDS\"\nexec sleep 600\n"));
+	fs::permissions(bin / "ssh", fs::perms::owner_all, fs::perm_options::replace);
+	const char* inherited_path = std::getenv("PATH");
+	ScopedEnvVar path("PATH", bin.string() + ":" + (inherited_path ? inherited_path : ""));
+	ScopedEnvVar pid_file("UAM_FAKE_SSH_PIDS", pids.string());
+	// Planning reads runner artifacts beside this executable; borrow a fixture set only when none exist.
+	struct BorrowedArtifacts
+	{
+		fs::path directory;
+		bool owned;
+		~BorrowedArtifacts() { std::error_code error; if (owned) fs::remove_all(directory, error); }
+	} artifacts{uam::remote::PackagedRunnerPath().parent_path() / "linux-x86_64", false};
+	// A marker lets a later run remove a fixture set left behind by a killed run.
+	artifacts.owned = !fs::exists(artifacts.directory) || fs::exists(artifacts.directory / "uam-test-fixture");
+	if (artifacts.owned)
+	{
+		fs::create_directories(artifacts.directory);
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-test-fixture", ""));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner", "fixture runner"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.sha256", std::string(64, 'a') + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", std::string(64, 'b')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump()));
+	}
+	const auto started = [&pids](std::size_t count)
+	{
+		std::vector<pid_t> found;
+		RunCreationLoopUntil([&]()
+		{
+			found.clear();
+			std::istringstream lines(fs::exists(pids) ? ReadFile(pids) : std::string());
+			for (pid_t pid = 0; lines >> pid;) found.push_back(pid);
+			return found.size() >= count;
+		}, std::chrono::seconds(10));
+		UAM_ASSERT_EQ(found.size(), count);
+		return found.back();
+	};
+	const auto gone = [](pid_t pid)
+	{
+		RunCreationLoopUntil([pid]() { return ::kill(pid, 0) != 0 && errno == ESRCH; }, std::chrono::seconds(5));
+		return ::kill(pid, 0) != 0 && errno == ESRCH;
+	};
+	const nlohmann::json payload = {{"id", "install-thread"}, {"label", "Install thread"}, {"sshAlias", "uam-install-thread"}, {"runnerDirectory", ""}};
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	std::unique_ptr<UamQueryHandler> handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+
+	const CefRefPtr<RecordingInstructionCallback> cancelled = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, payload, cancelled, 41);
+	const pid_t first = started(1);
+	// Other async queries keep the shared user-blocking queue while SSH setup is in flight.
+	const std::shared_ptr<std::atomic<int>> observed = std::make_shared<std::atomic<int>>(0);
+	UAM_ASSERT(CefPostTask(TID_FILE_USER_BLOCKING, new CreationQueueWitness(observed, 1)));
+	RunCreationLoopUntil([observed]() { return observed->load() == 1; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(observed->load(), 1);
+	UAM_ASSERT_EQ(cancelled->successes + cancelled->failures, 0);
+	handler->OnQueryCanceled(nullptr, nullptr, 41);
+	RunCreationLoopUntil([cancelled]() { return cancelled->successes + cancelled->failures != 0; }, std::chrono::seconds(5));
+	UAM_ASSERT_EQ(cancelled->failures, 1);
+	UAM_ASSERT(cancelled->body.find("canceled") != std::string::npos);
+	UAM_ASSERT(gone(first));
+	UAM_ASSERT(uam::execution_hosts::Find(app.settings.execution_hosts, "install-thread") == nullptr);
+
+	const CefRefPtr<RecordingInstructionCallback> shutdown = new RecordingInstructionCallback;
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, payload, shutdown, 42);
+	const pid_t second = started(2);
+	const std::chrono::steady_clock::time_point closing = std::chrono::steady_clock::now();
+	handler.reset();
+	UAM_ASSERT(gone(second));
+	UAM_ASSERT(std::chrono::steady_clock::now() - closing < std::chrono::seconds(5));
+	UAM_ASSERT_EQ(shutdown->successes + shutdown->failures, 0);
+#endif
+}
+
 UAM_TEST(ComputerUseSettingsExposePendingRevocationWithoutChangingConsent)
 {
 	TempDir temp("uam-cu-global-status");
@@ -924,7 +1017,7 @@ int main(int argc, char** argv)
 		const bool window_chrome = test.name.rfind("WindowChrome", 0) == 0;
 		const bool companion_live = test.name.rfind("CompanionLive", 0) == 0;
 		const bool native_lineage = test.name.rfind("NativeChildLineageHandler", 0) == 0;
-		const bool remote_history = test.name.rfind("RemoteNativeHistoryHandler", 0) == 0;
+		const bool remote_history = test.name.rfind("RemoteNativeHistoryHandler", 0) == 0 || test.name.rfind("RemoteHelperInstall", 0) == 0;
 		if (icon) ++icon_selected;
 		if (creation) ++create_selected;
 		if (retry) ++retry_selected;

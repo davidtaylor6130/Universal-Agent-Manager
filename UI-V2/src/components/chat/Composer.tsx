@@ -722,7 +722,7 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        {<button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
+        {<button type="button" title={isCompanionContext() ? `${dictationLabel} · or use your keyboard microphone` : dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
           <Mic size={15} aria-hidden />
         </button>}
       </div>

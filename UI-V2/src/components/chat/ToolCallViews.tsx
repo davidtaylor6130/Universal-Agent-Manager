@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { EXIT_MS, IconButton } from '../ui'
+import { EXIT_MS, IconButton, motionAllowed } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -398,13 +398,13 @@ function ToolCallDetails({
     hasPrevious: boolean
     hasMore: boolean
   }
-	const isLive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const isLive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
   const [contentPage, setContentPage] = useState<ToolContentPage | null>(null)
-	const [contentPages, setContentPages] = useState<ToolContentPage[]>([])
+  const [contentPages, setContentPages] = useState<ToolContentPage[]>([])
   const [contentError, setContentError] = useState('')
   const [contentLoading, setContentLoading] = useState(false)
   const [retryOffset, setRetryOffset] = useState(0)
-	const [followLive, setFollowLive] = useState(isLive)
+  const [followLive, setFollowLive] = useState(isLive)
   const contentRequestSerial = useRef(0)
   const [managedTranscript, setManagedTranscript] = useState<{ runId: string; title: string; status: string; executionCapability: string; messages: Array<{ role: string; content: string; thoughts: string }> } | null>(null)
   const [managedTranscriptError, setManagedTranscriptError] = useState('')
@@ -415,17 +415,17 @@ function ToolCallDetails({
   const contentOffset = useRef(initialContentOffset)
   const contentDigest = useRef(tool.contentDigest)
   const output = cleanToolOutput(
-	shouldLoadContent && contentPages.length === 0
+    shouldLoadContent && contentPages.length === 0
       ? contentLoading ? 'Loading tool output…' : 'Tool output is unavailable.'
-	  : contentPages.length > 0
-		? contentPages
-			.slice()
-			.sort((left, right) => left.offset - right.offset)
-			.map((page, index, pages) => index > 0 && page.offset > pages[index - 1].nextOffset
-				? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
-				: page.content)
-			.join('')
-		: tool.content || (tool.contentDeferred && !chatId ? 'Tool output was not included in this stored transcript.' : 'No tool output yet.')
+      : contentPages.length > 0
+        ? contentPages
+          .slice()
+          .sort((left, right) => left.offset - right.offset)
+          .map((page, index, pages) => index > 0 && page.offset > pages[index - 1].nextOffset
+            ? `\n\n… ${page.offset - pages[index - 1].nextOffset} bytes not loaded …\n\n${page.content}`
+            : page.content)
+          .join('')
+        : tool.content || (tool.contentDeferred && !chatId ? 'Tool output was not included in this stored transcript.' : 'No tool output yet.')
   )
   const transcriptChatId = chatId ? managedTranscriptChatId(output) : ''
   const toolCopyText = cleanToolOutput(contentPages.length
@@ -433,12 +433,25 @@ function ToolCallDetails({
     : shouldLoadContent ? '' : tool.content)
   const [tab, setTab] = useState('Output')
   const [closing, setClosing] = useState(false)
-  // Play the exit animation before the parent unmounts the dialog.
+  const closeTimerRef = useRef(0)
+  const closedRef = useRef(false)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const close = useCallback(() => {
+    if (closedRef.current) return
+    closedRef.current = true
+    window.clearTimeout(closeTimerRef.current)
+    onCloseRef.current()
+  }, [])
+  // A re-keyed dialog unmounts mid-exit: finish the requested close rather than dropping it.
+  useEffect(() => () => { if (closeTimerRef.current) close() }, [close])
+  // Play the exit animation before the parent unmounts the dialog; repeated requests close once.
   const requestClose = useCallback(() => {
-    if (typeof window.matchMedia !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { onClose(); return }
+    if (closeTimerRef.current || closedRef.current) return
+    if (!motionAllowed()) { close(); return }
     setClosing(true)
-    window.setTimeout(onClose, EXIT_MS)
-  }, [onClose])
+    closeTimerRef.current = window.setTimeout(close, EXIT_MS)
+  }, [close])
   const dialogRef = useToolQuestionDialog(requestClose)
   const outputRef = useRef<HTMLPreElement>(null)
   const id = useId()
@@ -474,29 +487,29 @@ function ToolCallDetails({
       return
     }
     setContentPage(response.data)
-	setContentPages((current) => {
-	  if (replace) return [response.data!]
-	  const pages = current.filter((page) => page.offset !== response.data!.offset)
-	  pages.push(response.data!)
-	  return pages
-	})
+    setContentPages((current) => {
+      if (replace) return [response.data!]
+      const pages = current.filter((page) => page.offset !== response.data!.offset)
+      pages.push(response.data!)
+      return pages
+    })
   }, [chatId, messageIndex, shouldLoadContent, tool.id, tool.historyDigest])
 
   useEffect(() => {
     ++contentRequestSerial.current
     setContentPage(null)
-	setContentPages([])
+    setContentPages([])
     setContentError('')
     setContentLoading(false)
-	setRetryOffset(initialContentOffset)
-	setFollowLive(isLive)
-	if (shouldLoadContent) void loadContent(initialContentOffset, true)
-	// The selected tool is fixed for the lifetime of this modal. A status change
-	// must not discard pages the user has already loaded.
-	// eslint-disable-next-line react-hooks/exhaustive-deps
+    setRetryOffset(initialContentOffset)
+    setFollowLive(isLive)
+    if (shouldLoadContent) void loadContent(initialContentOffset, true)
+    // The selected tool is fixed for the lifetime of this modal. A status change
+    // must not discard pages the user has already loaded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialContentOffset, loadContent, shouldLoadContent, tool.id])
 
-	useEffect(() => {
+  useEffect(() => {
       const changed = contentDigest.current !== tool.contentDigest
       if (!isLive) contentDigest.current = tool.contentDigest
       if (shouldLoadContent && !isLive && (followLive || changed)) {
@@ -504,13 +517,13 @@ function ToolCallDetails({
         setContentPages([])
         void loadContent(followLive ? Number.MAX_SAFE_INTEGER : contentOffset.current, true)
       }
-	}, [followLive, isLive, loadContent, shouldLoadContent, tool.contentDigest])
+  }, [followLive, isLive, loadContent, shouldLoadContent, tool.contentDigest])
 
-	useEffect(() => {
-	  if (!shouldLoadContent || !isLive || !followLive || contentLoading) return
-	  const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
-	  return () => window.clearInterval(timer)
-	}, [contentLoading, followLive, isLive, loadContent, shouldLoadContent])
+  useEffect(() => {
+    if (!shouldLoadContent || !isLive || !followLive || contentLoading) return
+    const timer = window.setInterval(() => void loadContent(Number.MAX_SAFE_INTEGER, true), 1500)
+    return () => window.clearInterval(timer)
+  }, [contentLoading, followLive, isLive, loadContent, shouldLoadContent])
 
   useEffect(() => {
     setManagedTranscript(null)
@@ -549,7 +562,7 @@ function ToolCallDetails({
       runId: response.data?.runId || '',
       title: response.data?.title || 'Managed agent transcript',
       status: response.data?.status || 'unknown',
-	  executionCapability: response.data?.executionCapability || 'unknown',
+      executionCapability: response.data?.executionCapability || 'unknown',
       messages,
     })
     setManagedTranscriptLoading(false)
@@ -604,9 +617,9 @@ function ToolCallDetails({
           {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
-			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
-			  <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
-			  <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
+                <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
+                <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
+                <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
               <span aria-live="polite">
                 {contentPage.totalBytes === 0
                   ? '0 bytes'
@@ -660,7 +673,7 @@ function ToolCallDetails({
               <div className="flex items-center justify-between gap-2 text-xs">
                 <strong>{managedTranscript.title}</strong>
                 <span className="flex items-center gap-2">
-				  <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
+                    <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
 
                   {managedTranscript.status === 'interrupted' && (
                     <button

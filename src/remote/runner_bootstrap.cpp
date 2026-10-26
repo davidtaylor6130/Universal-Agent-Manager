@@ -1,4 +1,6 @@
 #include "remote/runner_bootstrap.h"
+#include "common/utils/diagnostic_log.h"
+#include "remote/runner_bootstrap_internal.h"
 
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
@@ -209,12 +211,18 @@ namespace uam::remote
 		bool RunStep(const BootstrapStep& step, std::string& output, std::string& diagnostic,
 		             std::string& error,
 		             std::stop_token stop_token,
-		             IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service)
+		             IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service,
+		             detail::BootstrapProbeResult* probe_result = nullptr)
 		{
+			const auto failed = [&](detail::BootstrapProbeStatus status)
+			{
+				if (probe_result != nullptr) probe_result->status = status;
+				return false;
+			};
 			if (stop_token.stop_requested())
 			{
 				error = "Remote setup was canceled.";
-				return false;
+				return failed(detail::BootstrapProbeStatus::Canceled);
 			}
 			uam::platform::StdioProcessPlatformFields process;
 			std::error_code current_path_error;
@@ -223,10 +231,10 @@ namespace uam::remote
 			if (!current_path)
 			{
 				error = std::string(kUnavailableWorkingDirectoryError);
-				return false;
+				return failed(detail::BootstrapProbeStatus::WorkingDirectoryUnavailable);
 			}
 			if (!service.StartStdioProcess(process, *current_path, step.argv, &error))
-				return false;
+				return failed(detail::BootstrapProbeStatus::LaunchFailed);
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 			std::array<char, 16 * 1024> buffer{};
 			int exit_code = -1;
@@ -249,7 +257,7 @@ namespace uam::remote
 							error = read_error.empty() ? "Remote setup output could not be read."
 							                           : std::move(read_error);
 							service.StopStdioProcess(process, true);
-							return false;
+							return failed(detail::BootstrapProbeStatus::ReadFailed);
 						}
 						if (read <= 0) break;
 						std::string& destination = standard_error ? diagnostic : output;
@@ -257,7 +265,7 @@ namespace uam::remote
 						{
 							error = "Remote setup output exceeded 1 MiB.";
 							service.StopStdioProcess(process, true);
-							return false;
+							return failed(detail::BootstrapProbeStatus::OutputLimitExceeded);
 						}
 						destination.append(buffer.data(), static_cast<std::size_t>(read));
 					}
@@ -268,13 +276,20 @@ namespace uam::remote
 					error = stop_token.stop_requested() ? "Remote setup was canceled."
 					                                    : "Remote setup timed out.";
 					service.StopStdioProcess(process, true);
-					return false;
+					return failed(stop_token.stop_requested() ? detail::BootstrapProbeStatus::Canceled
+					                                           : detail::BootstrapProbeStatus::TimedOut);
 				}
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 			service.CloseStdioProcessHandles(process);
+			if (probe_result != nullptr) probe_result->exit_code = exit_code;
 			if (exit_code != 0)
 			{
+				// OpenSSH reserves 255 for SSH errors; a failed remote shell command
+				// can still justify trying the other platform's probe.
+				if (probe_result != nullptr)
+					return failed(exit_code == 255 ? detail::BootstrapProbeStatus::TransportFailed
+					                               : detail::BootstrapProbeStatus::CommandFailed);
 				error = "Remote setup step failed (exit " + std::to_string(exit_code) + "): " +
 				        step.label;
 				std::string detail = uam::strings::Trim(output);
@@ -291,8 +306,9 @@ namespace uam::remote
 			    uam::strings::Trim(output) != step.expected_output)
 			{
 				error = "Remote runner version verification failed.";
-				return false;
+				return failed(detail::BootstrapProbeStatus::VerificationFailed);
 			}
+			if (probe_result != nullptr) probe_result->status = detail::BootstrapProbeStatus::Succeeded;
 			return true;
 		}
 	}
@@ -440,6 +456,31 @@ namespace uam::remote
 		}
 	};
 
+	std::string WindowsHelperRetirementScript()
+	{
+		// Older helper roots keep their own Run value and resident service; activation leaves only the current one.
+		// A helper with child processes (other than its console host) is busy even if it predates the stop refusal; the whole pass is bounded to stay inside the step deadline. The current root's Run value is
+		// shared across its versions, so it is repointed rather than removed. Folders stay for explicit removal.
+		// A same-root sibling reporting the current version shares the current pipe, so it is never sent stop.
+		// ponytail: paths compare by full-path text; 8.3 or junction aliases of the current root are not recognised.
+		return R"PS(try { $ErrorActionPreference='Stop'; $uamSelf=[IO.Path]::GetFullPath($uamCurrent); $uamSelfRoot=Split-Path (Split-Path $uamSelf); )PS"
+		    R"PS($uamRoot=[IO.Path]::GetFullPath($uamHelperRoot).TrimEnd('\')+'\'; $uamTargets=@{}; )PS"
+		    R"PS(function Get-UamServe($path) { @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'" | Where-Object { $_.ExecutablePath -and $_.CommandLine -match '\sserve\s*$' -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq $path) }) }; )PS"
+		    R"PS($uamRun=Get-Item -LiteralPath $uamRunKey -ErrorAction SilentlyContinue; )PS"
+		    R"PS(if ($uamRun) { foreach ($name in $uamRun.GetValueNames()) { $value=[string]$uamRun.GetValue($name); if ($name -like 'uam-runner-*' -and $value -match '^"([^"]+\\uam-runner\.exe)" start$') { $path=[IO.Path]::GetFullPath($Matches[1]); if (-not $uamTargets.ContainsKey($path)) { $uamTargets[$path]=@() }; $uamTargets[$path]+=$name } } }; )PS"
+		    R"PS(foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='uam-runner.exe'")) { if ($process.ExecutablePath -and $process.CommandLine -match '\sserve\s*$') { $path=[IO.Path]::GetFullPath($process.ExecutablePath); if (-not $uamTargets.ContainsKey($path)) { $uamTargets[$path]=@() } } }; )PS"
+		    R"PS($uamClock=[Diagnostics.Stopwatch]::StartNew(); foreach ($path in @($uamTargets.Keys)) { if ($path -ieq $uamSelf -or -not $path.StartsWith($uamRoot,[StringComparison]::OrdinalIgnoreCase)) { continue }; )PS"
+		    R"PS(if ($uamClock.Elapsed.TotalSeconds -gt 120) { 'UAM_HELPER_KEPT_TIMEOUT:'+$path; continue }; try { )PS"
+		    R"PS(if (@(Get-UamServe $path | ForEach-Object { Get-CimInstance Win32_Process -Filter ('ParentProcessId='+$_.ProcessId+" AND Name<>'conhost.exe'") }).Count -gt 0) { 'UAM_HELPER_KEPT_CHILDREN:'+$path; continue }; $stopped=$true; $sameRoot=(Split-Path (Split-Path $path)) -ieq $uamSelfRoot; )PS"
+		    R"PS(if ($sameRoot -and (Test-Path -LiteralPath $path) -and ((& $path --version) -eq (& $uamSelf --version))) { $shared=$true } else { $shared=$false }; )PS"
+		    R"PS(if (-not $shared -and (Test-Path -LiteralPath $path)) { $stop=Start-Process -FilePath $path -ArgumentList 'stop' -WindowStyle Hidden -PassThru; $null=$stop.Handle; if (-not $stop.WaitForExit(20000)) { try { $stop.Kill() } catch {}; $stopped=$false } elseif ($stop.ExitCode -ne 0) { $stopped=$false } }; )PS"
+		    R"PS(for ($i=0; -not $shared -and $stopped -and $i -lt 50 -and (Get-UamServe $path).Count -gt 0; $i++) { Start-Sleep -Milliseconds 100 }; if (-not $shared -and $stopped -and (Get-UamServe $path).Count -gt 0) { $stopped=$false }; )PS"
+		    R"PS(if (-not $stopped) { 'UAM_HELPER_KEPT_BUSY:'+$path; continue }; )PS"
+		    R"PS(foreach ($name in $uamTargets[$path]) { if ($sameRoot) { Set-ItemProperty -LiteralPath $uamRunKey -Name $name -Value ('"'+$uamSelf+'" start') } else { Remove-ItemProperty -LiteralPath $uamRunKey -Name $name } }; 'UAM_HELPER_RETIRED:'+$path )PS"
+		    R"PS(} catch { 'UAM_HELPER_RETIREMENT_FAILED:'+$path+': '+$_.Exception.Message } } )PS"
+		    R"PS(} catch { 'UAM_HELPER_RETIREMENT_FAILED:'+$_.Exception.Message }; $ErrorActionPreference='Continue'; )PS";
+	}
+
 	static std::string BootstrapFinalizationCommand(const BootstrapPlan& plan, std::string_view platform, bool keep_new_runner, bool wrap_powershell = true)
 	{
 		const std::string root = uam::execution_hosts::RunnerDirectory(
@@ -469,7 +510,8 @@ namespace uam::remote
 		{
 			const std::string script = "$directory=Join-Path $HOME '" + relative + "'; "
 			    "$installed,$backup,$marker,$metadata=Get-UamTransactionPaths $directory '" + plan.nonce + "'; " +
-			    (keep_new_runner ? "Assert-UamPath $marker; if (-not (Test-Path -LiteralPath $marker)) { throw 'Activation is not pending.' }; Remove-UamOptional @($marker); [Console]::WriteLine('UAM_INSTALL_COMMITTED:" + plan.nonce + "'); Complete-UamTransaction $backup $marker $metadata" :
+			    (keep_new_runner ? "Assert-UamPath $marker; if (-not (Test-Path -LiteralPath $marker)) { throw 'Activation is not pending.' }; Remove-UamOptional @($marker); [Console]::WriteLine('UAM_INSTALL_COMMITTED:" + plan.nonce + "'); Complete-UamTransaction $backup $marker $metadata; "
+			                       "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; $uamCurrent=$installed; " + WindowsHelperRetirementScript() :
 			                       "Undo-UamTransaction $installed $backup $marker $metadata");
 			command = wrap_powershell ? PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, WindowsRunnerTransactionScript() + script)) : script;
 		}
@@ -684,6 +726,114 @@ namespace uam::remote
 		return preview.str();
 	}
 
+	detail::BootstrapProbeResult detail::RunBootstrapProbe(const BootstrapStep& step, IPlatformProcessService& service,
+	    std::stop_token stop_token)
+	{
+		BootstrapProbeResult probe;
+		std::string error;
+		RunStep(step, probe.output, probe.diagnostic, error, stop_token, service, &probe);
+		return probe;
+	}
+
+	bool detail::ProbeBootstrapPlatform(const BootstrapPlan& plan, BootstrapResult& result,
+	    const BootstrapProbeExecutor& execute, std::stop_token stop_token)
+	{
+		if (plan.steps.size() != 2)
+		{
+			result.error = "Remote setup plan is invalid.";
+			return false;
+		}
+		BootstrapProbeResult probe;
+		for (std::size_t index = 0; index < plan.steps.size(); ++index)
+		{
+			if (stop_token.stop_requested())
+			{
+				result.error = "Remote setup was canceled.";
+				return false;
+			}
+			probe = execute(plan.steps[index], stop_token);
+			if (stop_token.stop_requested()) probe.status = BootstrapProbeStatus::Canceled;
+			if (probe.status == BootstrapProbeStatus::Succeeded) break;
+			if (probe.status == BootstrapProbeStatus::CommandFailed && index == 0) continue;
+			switch (probe.status)
+			{
+			case BootstrapProbeStatus::TransportFailed:
+				result.error = "Remote setup SSH transport failed (exit " + std::to_string(probe.exit_code) + ").";
+				break;
+			case BootstrapProbeStatus::CommandFailed:
+				result.error = "Remote setup platform probe command failed (exit " + std::to_string(probe.exit_code) + ").";
+				break;
+			case BootstrapProbeStatus::LaunchFailed:
+				result.error = "Remote setup platform probe could not be launched.";
+				break;
+			case BootstrapProbeStatus::ReadFailed:
+				result.error = "Remote setup output could not be read.";
+				break;
+			case BootstrapProbeStatus::OutputLimitExceeded:
+				result.error = "Remote setup output exceeded 1 MiB.";
+				break;
+			case BootstrapProbeStatus::TimedOut:
+				result.error = "Remote setup timed out.";
+				break;
+			case BootstrapProbeStatus::Canceled:
+				result.error = "Remote setup was canceled.";
+				break;
+			case BootstrapProbeStatus::WorkingDirectoryUnavailable:
+				result.error = std::string(kUnavailableWorkingDirectoryError);
+				break;
+			case BootstrapProbeStatus::VerificationFailed:
+				result.error = "Remote runner version verification failed.";
+				break;
+			case BootstrapProbeStatus::Succeeded:
+				break;
+			}
+			return false;
+		}
+		std::istringstream values(probe.output);
+		std::string platform;
+		std::string architecture;
+		std::getline(values, platform);
+		std::getline(values, architecture);
+		platform = uam::strings::Trim(platform);
+		architecture = uam::strings::Trim(architecture);
+		if (!IsToken(platform, 64) || !IsToken(architecture, 64))
+		{
+			result.error = "Remote setup platform probe returned invalid output.";
+			return false;
+		}
+		std::string extra;
+		while (std::getline(values, extra))
+		{
+			if (!uam::strings::Trim(extra).empty())
+			{
+				result.error = "Remote setup platform probe returned invalid output.";
+				return false;
+			}
+		}
+		if (platform == "Linux") platform = "linux";
+		else if (platform == "Windows") platform = "windows";
+		else
+		{
+			result.error = "Remote host is not Ubuntu/Linux or Windows.";
+			return false;
+		}
+		std::ranges::transform(architecture, architecture.begin(),
+		                       [](unsigned char character)
+		                       { return static_cast<char>(std::tolower(character)); });
+		if (architecture == "aarch64" || architecture == "arm64")
+			architecture = "arm64";
+		else if (architecture == "x86_64" || architecture == "amd64")
+			architecture = "x86_64";
+		else
+		{
+			result.error = "Remote CPU architecture is unsupported.";
+			return false;
+		}
+		result.platform = std::move(platform);
+		result.architecture = std::move(architecture);
+		return true;
+	}
+
 	BootstrapResult AcquireBootstrapPlan(const BootstrapPlan& plan, std::stop_token stop_token)
 	{
 		BootstrapResult result;
@@ -694,51 +844,13 @@ namespace uam::remote
 			result.error = "Remote setup plan is invalid.";
 			return result;
 		}
+		const auto execute_probe = [](const BootstrapStep& step, std::stop_token token)
+		{
+			return detail::RunBootstrapProbe(step, PlatformServicesFactory::Instance().process_service, token);
+		};
+		if (!detail::ProbeBootstrapPlatform(plan, result, execute_probe, stop_token)) return result;
 		std::string output;
 		std::string diagnostic;
-		std::string probe_error;
-		bool unix_probe = RunStep(plan.steps[0], output, diagnostic, probe_error, stop_token);
-		if (!unix_probe)
-		{
-			if (stop_token.stop_requested())
-			{
-				result.error = "Remote setup was canceled.";
-				return result;
-			}
-			output.clear();
-			diagnostic.clear();
-			if (!RunStep(plan.steps[1], output, diagnostic, result.error, stop_token))
-			{
-				if (!stop_token.stop_requested() &&
-				    result.error != kUnavailableWorkingDirectoryError)
-					result.error = "Remote host is not a supported Ubuntu/Linux or Windows OpenSSH host.";
-				return result;
-			}
-		}
-		std::istringstream values(output);
-		std::getline(values, result.platform);
-		std::getline(values, result.architecture);
-		result.platform = uam::strings::Trim(result.platform);
-		result.architecture = uam::strings::Trim(result.architecture);
-		if (result.platform == "Linux") result.platform = "linux";
-		else if (result.platform == "Windows") result.platform = "windows";
-		else
-		{
-			result.error = "Remote host is not Ubuntu/Linux or Windows.";
-			return result;
-		}
-		std::ranges::transform(result.architecture, result.architecture.begin(),
-		                       [](unsigned char character)
-		                       { return static_cast<char>(std::tolower(character)); });
-		if (result.architecture == "aarch64" || result.architecture == "arm64")
-			result.architecture = "arm64";
-		else if (result.architecture == "x86_64" || result.architecture == "amd64")
-			result.architecture = "x86_64";
-		else
-		{
-			result.error = "Remote CPU architecture is unsupported: " + result.architecture + ".";
-			return result;
-		}
 		const auto artifact = std::ranges::find_if(plan.artifacts, [&](const RunnerArtifact& value)
 		{
 			return value.platform == result.platform &&
@@ -1011,6 +1123,20 @@ namespace uam::remote
 		if (!finalized) return fail(std::move(error));
 		if (keep_new_runner && !committed) return fail("The remote helper commit could not be confirmed. Retry setup to reconcile it.");
 		lease->Release();
+		if (keep_new_runner && result.platform == "windows")
+		{
+			// Counts only: helper paths can contain private folder names.
+			const auto count = [&output](std::string_view marker)
+			{
+				std::size_t found = 0;
+				for (std::size_t at = output.find(marker); at != std::string::npos; at = output.find(marker, at + 1)) ++found;
+				return found;
+			};
+			const std::size_t retired = count("UAM_HELPER_RETIRED:"), kept = count("UAM_HELPER_KEPT_"), failed = count("UAM_HELPER_RETIREMENT_FAILED:");
+			if (retired + kept + failed > 0)
+				uam::diagnostics::Write("Remote helper activation retired " + std::to_string(retired) + " older helper(s); kept " +
+				                        std::to_string(kept) + " busy or unchecked; " + std::to_string(failed) + " retirement failure(s).");
+		}
 		return true;
 	}
 }

@@ -137,15 +137,22 @@ function migrateLegacy(value: unknown): ChatGridLayout | null {
   return { version: 2, root, activeLeafId: leaves[activeIndex].id }
 }
 
+let cachedLayoutRaw: string | null = null
+let cachedLayout: ChatGridLayout = defaultChatGridLayout
+
+/** Sidebar rows read this on every store change; reparse only when the stored text changes (callers never mutate the result). */
 export function readChatGridLayout(): ChatGridLayout {
   try {
     const raw = localStorage.getItem(storageKey)
+    if (raw && raw === cachedLayoutRaw) return cachedLayout
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<ChatGridLayout>
       const root = parseNode(parsed.root, new Set())
       if (parsed.version === 2 && root && chatGridLeaves(root).length <= MAX_CHAT_PANES) {
         const leaves = chatGridLeaves(root)
-        return { version: 2, root, activeLeafId: leaves.some((leaf) => leaf.id === parsed.activeLeafId) ? parsed.activeLeafId! : leaves[0].id }
+        cachedLayout = { version: 2, root, activeLeafId: leaves.some((leaf) => leaf.id === parsed.activeLeafId) ? parsed.activeLeafId! : leaves[0].id }
+        cachedLayoutRaw = raw
+        return cachedLayout
       }
     }
     const legacyRaw = localStorage.getItem(legacyStorageKey)

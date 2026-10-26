@@ -36,7 +36,7 @@ namespace uam::execution_hosts
 	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded, std::string_view error = {})
 	{
 		current.runner_startup_applied = succeeded ? (current.startup_enabled ? "enabled" : "disabled") : "failed";
-		current.runner_startup_error = succeeded ? "" : std::string(error.substr(0, 300));
+		current.runner_startup_error = succeeded ? "" : std::string(uam::strings::Utf8Prefix(error, 300));
 		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
 		else
 		{
@@ -212,7 +212,7 @@ namespace uam::execution_hosts
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);
-		if (result.size() > maximum) result.resize(maximum);
+		result.resize(uam::strings::Utf8Prefix(result, maximum).size());
 		std::erase_if(result, [](unsigned char c) { return c < 0x20 || c == 0x7f; });
 		return result;
 	}

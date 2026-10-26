@@ -100,6 +100,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	};
 	std::unordered_map<std::string, std::shared_ptr<GoalMutationOperation>> m_goalMutations;
 	std::unordered_map<Callback*, ChatIconQueryIdentity> m_goalQueryIdentities;
+	// SSH helper setup runs for minutes on its own thread; query cancellation and shutdown stop it.
+	CefRefPtr<CefThread> m_remoteInstallQueries;
+	std::unordered_map<Callback*, ChatIconQueryIdentity> m_remoteInstallQueryIdentities;
+	std::vector<std::pair<ChatIconQueryIdentity, std::weak_ptr<std::stop_source>>> m_remoteInstallStops;
 	std::map<ChatIconQueryIdentity, std::weak_ptr<GoalMutationOperation>> m_goalQueryOperations;
 	void PersistGoalMutation(CefRefPtr<CefBrowser> browser, const std::string& chat_id,
 	    std::function<void()> rollback, std::function<bool(std::string*, std::function<bool()>, std::function<bool()>, std::function<void(bool, std::string)>)> execute,
@@ -228,6 +232,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::function<bool(uam::io::AtomicWriteStage)> m_nativeMediaPublicationStageGateForTests;
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_queuedPromptHistoryDispatcherForTests;
 	bool DispatchNativeMediaRefresh(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion, CefThreadId = TID_FILE_BACKGROUND);
+	bool DispatchRemoteInstallStage(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_attachmentPreviewDispatcherForTests;
 	bool DispatchManagedSubagentQuery(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	void HandleListManagedSubagents(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

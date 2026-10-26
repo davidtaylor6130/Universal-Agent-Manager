@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -640,7 +641,7 @@ namespace
 		{
 			return value;
 		}
-		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + value.substr(value.size() - kMaxWorkerLogBytes);
+		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + std::string(uam::strings::Utf8Suffix(value, kMaxWorkerLogBytes));
 	}
 
 	std::string ReadFirstTitle(const fs::path& path)
@@ -1167,6 +1168,30 @@ namespace
 		app.memory_global_retry_not_before = 0.0;
 	}
 
+	// Failure reasons can carry raw worker, provider or SSH runner stderr. The UI keeps the
+	// full reason; the diagnostics log keeps one bounded line: the UAM-authored prefix before
+	// the first ": " with the detail after it withheld, and private-looking words (paths,
+	// user@host, key=value, dotted host names or addresses) redacted from what remains.
+	std::string MemoryFailureLogSummary(std::string_view reason)
+	{
+		std::string line = uam::strings::SafeLine(reason.substr(0, reason.find_first_of("\r\n")), 240);
+		if (uam::sensitive::LooksSensitiveText(line)) return "[failure details withheld]";
+		const std::size_t detail = line.find(": ");
+		if (detail != std::string::npos) line.resize(detail);
+		std::string summary;
+		for (std::size_t at = 0; at < line.size();)
+		{
+			const std::size_t end = std::min(line.find(' ', at), line.size());
+			const std::string_view word = std::string_view(line).substr(at, end - at);
+			const std::size_t dot = word.find('.');
+			const bool private_word = word.find_first_of("/\\@=~:") != std::string_view::npos || (dot != std::string_view::npos && dot + 1 < word.size());
+			if (!word.empty()) summary.append(summary.empty() ? "" : " ").append(private_word ? std::string_view("[redacted]") : word);
+			at = end + 1;
+		}
+		if (summary.empty()) return kMemoryWorkerFailedStatus;
+		return detail == std::string::npos ? summary : summary + ": [details withheld]";
+	}
+
 	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason)
 	{
 		const int failure_count = ++app.memory_failure_count_by_chat_id[chat_id];
@@ -1175,7 +1200,7 @@ namespace
 		app.memory_activity.last_created_count = 0;
 		app.memory_activity.last_status = app.memory_last_status;
 		app.memory_activity.last_worker_status = app.memory_last_status;
-		uam::diagnostics::Write("memory: chat=" + chat_id + " " + app.memory_last_status);
+		uam::diagnostics::Write("memory: chat=" + chat_id + " " + MemoryFailureLogSummary(app.memory_last_status));
 	}
 
 	void RecordMemorySuccess(uam::AppState& app, const std::string& chat_id)
@@ -1362,9 +1387,44 @@ namespace
 		return std::move(out).str();
 	}
 
+	std::atomic<void (*)(std::string_view)> g_worker_fault_for_tests{nullptr};
+
+	void WorkerFaultPoint(std::string_view stage)
+	{
+		if (void (*fault)(std::string_view) = g_worker_fault_for_tests.load(std::memory_order_acquire)) fault(stage);
+	}
+
+	// A std::jthread body that throws calls std::terminate, so every memory worker body
+	// runs here. Any escaped exception takes the hydration-failure path: a fixed reason
+	// is recorded, saved history and scan progress stay unchanged, and the scan retries
+	// with backoff. Completion is always published so the UI thread can join the worker.
+	template <typename Body> void RunGuardedMemoryWorker(AsyncProcessTaskState& state, uam::AsyncMemoryExtractionState& extraction, Body&& body) noexcept
+	{
+		try
+		{
+			body();
+		}
+		catch (...)
+		{
+			extraction.hydration_failed = true;
+			extraction.hydrated_message_count = -1;
+			state.result.ok = false;
+			try
+			{
+				state.result.error = "Memory scan stopped after an internal error. History and progress are unchanged.";
+			}
+			catch (...)
+			{
+				state.result.error.clear();
+			}
+		}
+		state.completed.store(true, std::memory_order_release);
+	}
+
 	bool HydrateMemoryWorkerInput(const fs::path& data_root, ChatSession& chat, std::string& error)
 	try
 	{
+		WorkerFaultPoint("history");
 		return ChatRepository::HydrateChatMessages(data_root, chat, &error, kMaxMemoryHistoryReadBytes);
 	}
 	catch (const std::exception&)
@@ -1415,7 +1475,7 @@ namespace
 		task.worker = std::make_unique<std::jthread>(
 		    [state, extraction_state, preflight_error = std::move(preflight_error), data_root = app.data_root, chat_snapshot = std::move(chat_snapshot), start_message_index](std::stop_token stop_token) mutable
 		    {
-			    try
+			    RunGuardedMemoryWorker(*state, *extraction_state, [&]
 			    {
 				    ChatSession worker_chat = std::move(chat_snapshot);
 				    std::string error;
@@ -1431,15 +1491,8 @@ namespace
 					    extraction_state->low_signal_skip = start_message_index < 0 && !ShouldQueueAutomaticMemoryScan(worker_chat);
 					    if (!extraction_state->low_signal_skip) state->result.error = preflight_error;
 				    }
-			    }
-			    catch (const std::exception&)
-			    {
-				    extraction_state->hydration_failed = true;
-				    extraction_state->hydrated_message_count = -1;
-				    state->result.error = kMemoryInputPreparationError;
-			    }
-			    state->result.canceled = stop_token.stop_requested();
-			    state->completed.store(true, std::memory_order_release);
+				    state->result.canceled = stop_token.stop_requested();
+			    });
 		    });
 		app.memory_extraction_tasks.push_back(std::move(task));
 		app.memory_last_status = "Memory worker preparation started.";
@@ -1564,9 +1617,9 @@ namespace
 		task.worker = std::make_unique<std::jthread>(
 		    [state, extraction_state, invocation = std::move(invocation), cwd, workspace_root, data_root = app.data_root, chat_snapshot = std::move(chat_snapshot), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
 		    {
-			    ChatSession worker_chat = std::move(chat_snapshot);
-			    try
+			    RunGuardedMemoryWorker(*state, *extraction_state, [&]
 			    {
+				    ChatSession worker_chat = std::move(chat_snapshot);
 				    if (!worker_chat.messages_loaded)
 				    {
 					    std::string error;
@@ -1574,7 +1627,6 @@ namespace
 					    {
 						    extraction_state->hydration_failed = true;
 						    state->result.error = "Memory scan could not load chat history: " + error;
-						    state->completed.store(true, std::memory_order_release);
 						    return;
 					    }
 				    }
@@ -1583,33 +1635,20 @@ namespace
 				    if (start_message_index < 0 && !ShouldQueueAutomaticMemoryScan(worker_chat))
 				    {
 					    extraction_state->low_signal_skip = true;
-					    state->completed.store(true, std::memory_order_release);
 					    return;
 				    }
 				    invocation.standard_input = BuildWorkerPrompt(worker_chat, start_message_index);
-				        if (remote_host)
-					    {
-						    constexpr std::string_view prefix = "This is an SSH project memory scan. Return only local project memories.\n";
-						    std::size_t used = invocation.standard_input.size();
-						    AddMemoryInputBytes(used, prefix.size());
-						    invocation.standard_input.insert(0, prefix);
-					    }
-			    }
-			    catch (const std::exception&)
-			    {
-				    extraction_state->hydration_failed = true;
-				    extraction_state->hydrated_message_count = -1;
-				    state->result.error = kMemoryInputPreparationError;
-				    state->completed.store(true, std::memory_order_release);
-				    return;
-			    }
-			    if (remote_host)
-			    {
-				    state->result = ExecuteRemoteMemoryWorker(*remote_host, remote_workspace, invocation, worker_chat, state->provider_id, *extraction_state, stop_token);
-			    }
-			    else
-			    {
+				    if (remote_host)
+				    {
+					    constexpr std::string_view prefix = "This is an SSH project memory scan. Return only local project memories.\n";
+					    std::size_t used = invocation.standard_input.size();
+					    AddMemoryInputBytes(used, prefix.size());
+					    invocation.standard_input.insert(0, prefix);
+					    state->result = ExecuteRemoteMemoryWorker(*remote_host, remote_workspace, invocation, worker_chat, state->provider_id, *extraction_state, stop_token);
+					    return;
+				    }
 				    state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
+				    WorkerFaultPoint("output");
 				    extraction_state->output_prepared = true;
 				    bool tool_activity = false;
 				    (void)ExtractMemoryJsonObject(state->result.output, &tool_activity);
@@ -1621,8 +1660,7 @@ namespace
 					        MessageCount(worker_chat), &extraction_state->output_error, stop_token);
 				    }
 				    else extraction_state->output_error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object.";
-			    }
-			    state->completed.store(true, std::memory_order_release);
+			    });
 		    });
 
 		app.memory_extraction_tasks.push_back(std::move(task));
@@ -1889,6 +1927,11 @@ bool MemoryService::BuildRecallResources(const fs::path& data_root, const AppSet
 	pending.emplace("memory/index.md", std::move(index));
 	files.merge(pending);
 	return true;
+}
+
+void MemoryService::SetWorkerFaultForTests(void (*fault)(std::string_view stage))
+{
+	g_worker_fault_for_tests.store(fault, std::memory_order_release);
 }
 
 std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token)

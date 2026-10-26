@@ -175,6 +175,14 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		cb->Failure(409, "This remote helper is already being installed.");
 		return;
 	}
+	// CEF cancellation names the query, not the callback, so capture it before any wrapper.
+	const auto query_entry = m_remoteInstallQueryIdentities.find(cb.get());
+	const ChatIconQueryIdentity query = query_entry == m_remoteInstallQueryIdentities.end()
+	    ? ChatIconQueryIdentity{-1, "", -1} : query_entry->second;
+	// Registered before any wait, so a cancel while background work stops is not lost.
+	const auto stop = std::make_shared<std::stop_source>();
+	std::erase_if(m_remoteInstallStops, [](const auto& install) { return install.second.expired(); });
+	m_remoteInstallStops.emplace_back(query, stop);
 	if (m_app.startup_native_import_service)
 	{
 		std::shared_ptr<void> pause = m_app.startup_native_import_service->PauseBackgroundScanOnHost(host.id);
@@ -244,7 +252,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			RefreshUsageTargets();
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			CefRefPtr<PendingRemoteInstallTask> task = new PendingRemoteInstallTask(m_asyncLifetime,
-			    [this, browser, payload, cb, reserved, nonce, restore](bool expired)
+			    [this, browser, payload, cb, query, stop, reserved, nonce, restore](bool expired)
 			    {
 				const auto operation = g_remote_install_tokens.find(reserved.id);
 				const auto current = FindMutableHost(m_app.settings.execution_hosts, reserved.id);
@@ -253,6 +261,12 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				{
 					(void)restore();
 					cb->Failure(409, "The remote host changed while its background work was stopping. Retry the helper installation.");
+					return true;
+				}
+				if (stop->stop_requested())
+				{
+					(void)restore();
+					cb->Failure(409, "Remote setup was canceled.");
 					return true;
 				}
 				if (expired)
@@ -272,6 +286,13 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					return true;
 				}
 				// Revalidate and reserve synchronously, before another UI poll can admit discovery.
+				m_remoteInstallQueryIdentities[cb.get()] = query;
+				struct ForgetQuery
+				{
+					std::unordered_map<Callback*, ChatIconQueryIdentity>& identities;
+					Callback* callback;
+					~ForgetQuery() { identities.erase(callback); }
+				} forget{m_remoteInstallQueryIdentities, cb.get()};
 				HandleInstallRemoteHost(browser, payload, cb);
 				return true;
 			    });
@@ -311,14 +332,14 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 
 	auto result = std::make_shared<uam::remote::BootstrapResult>();
 	auto install_plan = std::make_shared<uam::remote::BootstrapPlan>(std::move(plan));
-	const auto run_install = [this, browser, cb, host, install_nonce, previous_host, install_plan, result](std::string saved_nonce, std::string saved_identity)
+	// Every stage holds the stop source; it expires when the last stage settles.
+	const auto run_install = [this, browser, cb, host, install_nonce, previous_host, install_plan, result, stop](std::string saved_nonce, std::string saved_identity)
 	{
-	return uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
-	    cb,
-	    [install_plan, result, saved_nonce = std::move(saved_nonce), saved_identity = std::move(saved_identity)]()
+	return DispatchRemoteInstallStage(cb,
+	    [install_plan, result, stop, saved_nonce = std::move(saved_nonce), saved_identity = std::move(saved_identity)]()
 	    {
 		    const uam::remote::BootstrapPlan& plan = *install_plan;
-		    *result = uam::remote::ExecuteBootstrapPlan(plan, std::move(*result), saved_nonce, saved_identity);
+		    *result = uam::remote::ExecuteBootstrapPlan(plan, std::move(*result), saved_nonce, saved_identity, stop->get_token());
 		    if (result->ok)
 		    {
 			    uam::remote::RunnerClient client(
@@ -357,7 +378,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	    },
 	    [this, browser, cb, host_id = host.id, install_nonce,
 	     ssh_alias = host.ssh_alias, runner_directory = host.runner_directory,
-	     previous_host, install_plan, result](
+	     previous_host, install_plan, result, stop](
 	        uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    const auto release_install = [host_id, install_nonce]()
@@ -407,13 +428,13 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    const auto committed = std::make_shared<bool>(false);
 			    const bool startup_needed = keep_new_runner && previous_host && previous_host->startup_enabled;
 			    const auto startup_confirmed = std::make_shared<std::optional<bool>>();
-			    const bool finalization_queued = uam::query_handler_async::RunAsyncCefQuery(
-			        m_asyncLifetime, cb,
-				[install_plan, result, keep_new_runner, outcome, finalized, committed, startup_needed, startup_confirmed]() mutable
+			    const bool finalization_queued = DispatchRemoteInstallStage(cb,
+				[install_plan, result, keep_new_runner, outcome, finalized, committed, startup_needed, startup_confirmed, stop]() mutable
 			        {
 				        std::string error;
 				        *finalized = uam::remote::FinalizeBootstrapPlan(
-				            *install_plan, *result, keep_new_runner, &error, {}, committed.get());
+				            *install_plan, *result, keep_new_runner, &error,
+				            keep_new_runner ? stop->get_token() : std::stop_token{}, committed.get()); // Rollback ignores cancel.
 				        if (!keep_new_runner) result->rollback_confirmed = *finalized;
 				        if (!*finalized)
 				        {
@@ -570,10 +591,10 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		    finalize_remote(true, false);
 	    });
 	};
-	const bool queued = uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [install_plan, result]()
+	const bool queued = DispatchRemoteInstallStage(cb,
+	    [install_plan, result, stop]()
 	    {
-		    *result = uam::remote::AcquireBootstrapPlan(*install_plan);
+		    *result = uam::remote::AcquireBootstrapPlan(*install_plan, stop->get_token());
 		    return result->ok ? uam::query_handler_async::AsyncSuccess({})
 		        : uam::query_handler_async::AsyncFailure(500, result->error);
 	    },
@@ -621,6 +642,17 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		RefreshUsageTargets();
 		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
+}
+
+bool UamQueryHandler::DispatchRemoteInstallStage(CefRefPtr<Callback> cb, ManagedSubagentWorker worker, ManagedSubagentCompletion completion)
+{
+	// SSH setup can take minutes; its own thread keeps the shared user-blocking queue free.
+	if (!m_remoteInstallQueries) m_remoteInstallQueries = CefThread::CreateThread("uam-remote-install");
+	if (m_remoteInstallQueries && m_remoteInstallQueries->GetTaskRunner()->PostTask(
+	        new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, cb, std::move(worker), std::move(completion))))
+		return true;
+	if (cb) cb->Failure(503, "The helper installation worker is unavailable.");
+	return false;
 }
 
 void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -887,7 +919,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		    }
 		    else if (!found->runner_startup_applied)
 		    {
-			    found->runner_startup_error = result->startup_error.substr(0, 300);
+			    found->runner_startup_error = uam::strings::Utf8Prefix(result->startup_error, 300);
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app) && response.ok)
 			    response = uam::query_handler_async::AsyncFailure(

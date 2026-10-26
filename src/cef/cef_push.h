@@ -5,6 +5,7 @@
 #include "common/state/app_state.h"
 #include "common/platform/platform_services.h"
 
+#include <chrono>
 #include <string>
 
 namespace uam
@@ -18,10 +19,22 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
 
 	/// <summary>
-	/// True when a throttled selected-chat messages payload is still waiting to
-	/// be flushed by a later PushStateUpdateIfChanged call.
+	/// True when a throttled chat summary is still waiting to be flushed by a
+	/// later PushStateUpdateIfChanged call.
 	/// </summary>
 	bool HasDeferredStatePush();
+	/// <summary>
+	/// True when a deferred summary's throttle window has elapsed, so a tick with
+	/// no other state change should rebuild the fingerprint and flush it.
+	/// </summary>
+	bool DeferredStatePushDue();
+	/// <summary>
+	/// Milliseconds (at least 1) until the pending deferred summary is due; the poll
+	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
+	/// </summary>
+	int MillisecondsUntilDeferredStatePushDue();
+	/// <summary>Replaces the summary-throttle clock; nullptr restores steady_clock::now.</summary>
+	void SetStatePushClockForTests(std::chrono::steady_clock::time_point (*clock)());
 	inline std::string StateFingerprintForTests(const AppState& app)
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();

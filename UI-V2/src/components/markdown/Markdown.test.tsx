@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
-import { MarkdownContent } from './Markdown'
+import { MarkdownContent, MarkdownTextBlock } from './Markdown'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -126,5 +126,13 @@ describe('MarkdownContent chips', () => {
       act(() => root.unmount())
       host.remove()
     }
+  })
+
+  it('memoizes text blocks so settled prose before a streaming fence is not re-parsed', () => {
+    expect((MarkdownTextBlock as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'))
+    const host = renderMarkdown('Settled **prose**\n\n```ts\nconst a = 1\n```\nTail')
+    expect(host.querySelector('strong')?.textContent).toBe('prose')
+    expect(host.textContent).toContain('Tail')
+    host.remove()
   })
 })

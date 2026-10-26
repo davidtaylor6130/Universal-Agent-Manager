@@ -1,5 +1,7 @@
+import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { cx } from '../ui'
+import { Button, cx } from '../ui'
+import type { ButtonProps } from '../ui'
 import './settings-shell.css'
 
 /**
@@ -33,6 +35,9 @@ export function SettingsSection({ title, description, actions, children, flush =
   )
 }
 
+const CONTROL_GROUPS = '[role="group"], [role="radiogroup"]'
+const DESCRIBED_CONTROLS = `input, select, textarea, button, ${CONTROL_GROUPS}`
+
 /** One setting: text on the left, its control on the right. Stacks on narrow widths. */
 export function SettingRow({ title, description, control, icon, children, htmlFor, status }: {
   title: ReactNode
@@ -47,20 +52,57 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
   status?: ReactNode
 }) {
   const Title = htmlFor ? 'label' : 'div'
+  const descriptionId = useId()
+  const statusId = useId()
+  const controlRef = useRef<HTMLDivElement>(null)
+  const hasDescription = Boolean(description)
+  const hasStatus = Boolean(status)
+  const hasControl = Boolean(control)
+  // Controls are arbitrary nodes, so the row links its description/status to each focusable control (or its group).
+  // An observer re-links when a control re-renders or a tooltip rewrites its own aria-describedby.
+  useLayoutEffect(() => {
+    const host = controlRef.current
+    if (!host) return
+    const ids = [hasDescription ? descriptionId : '', hasStatus ? statusId : ''].filter(Boolean)
+    const link = () => {
+      for (const element of host.querySelectorAll<HTMLElement>(DESCRIBED_CONTROLS)) {
+        const group = element.parentElement?.closest(CONTROL_GROUPS)
+        if (group && host.contains(group)) continue
+        const current = element.getAttribute('aria-describedby')?.split(/\s+/).filter(Boolean) ?? []
+        // Keep the control's own ids; replace this row's ids so a removed status line is not left referenced.
+        const next = [...new Set([...current.filter((id) => id !== descriptionId && id !== statusId), ...ids])].join(' ')
+        if (next === current.join(' ')) continue
+        if (next) element.setAttribute('aria-describedby', next)
+        else element.removeAttribute('aria-describedby')
+      }
+    }
+    link()
+    const observer = new MutationObserver(link)
+    observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-describedby'] })
+    return () => observer.disconnect()
+  }, [hasDescription, hasStatus, descriptionId, statusId, hasControl])
   return (
     <div className="uam-set-row">
       <div className="uam-set-row__main">
         {icon && <span className="uam-set-row__icon">{icon}</span>}
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
-          {description && <div className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
-          {status && <div className="uam-set-row__status">{status}</div>}
+          {description && <div id={descriptionId} className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
+          {status && <div id={statusId} className="uam-set-row__status">{status}</div>}
         </div>
-        {control && <div className="uam-set-row__control">{control}</div>}
+        {control && <div ref={controlRef} className="uam-set-row__control">{control}</div>}
       </div>
       {children && <div className="uam-set-row__extra">{children}</div>}
     </div>
   )
+}
+
+/** Settings save action: busy while pending, with the pending label announced politely. A `loading` spinner keeps the label visible. */
+export function SaveButton({ saving, pendingLabel = 'Saving…', variant = 'primary', size = 'sm', children, ...props }: ButtonProps & { saving: boolean; pendingLabel?: string }) {
+  return <>
+    <Button variant={variant} size={size} aria-busy={saving || undefined} {...props}>{saving && !props.loading ? pendingLabel : children}</Button>
+    <span className="sr-only" role="status" aria-live="polite">{saving ? pendingLabel : ''}</span>
+  </>
 }
 
 /** Label above a wide input (paths, text areas, multi-column forms). */
