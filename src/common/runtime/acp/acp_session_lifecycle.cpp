@@ -633,7 +633,7 @@ struct ColdRetryBinding
 		        (sequence && sequence->State() != cold_retry::Sequence::Phase::Prepared))) || root != app->data_root ||
 		    incarnation.expired() || incarnation.lock() != chat->metadata_incarnation ||
 		    runtime->saved_image_retry != input || chat->created_at != input->chat_created_at ||
-		    chat->provider_id != "claude-cli" || runtime->provider_id != chat->provider_id ||
+		    chat->provider_id != uam::provider_ids::kClaudeCli || runtime->provider_id != chat->provider_id ||
 		    runtime->protocol_kind != "claude-code-stream-json" || !selected || !execution_hosts::SameConnection(host, *selected) ||
 		    chat->native_session_id != publication->Graph().native_session_id ||
 		    chat->remote_process_control_token != publication->Graph().remote_process_control_token ||

@@ -40,8 +40,8 @@
       "flag": "COMPUTER_USE",
       "scope": "ui",
       "match": "computerUse|ComputerUse",
-      "max": 129,
-      "reason": "Session, settings and composer field, prop and store-method names of the shared state protocol (computerUseEnabled, computerUseTargetId, setSessionComputerUseEnabled). Every computer-use control, label, page, request and message is removed and the store methods refuse. Dropping the field names requires gating the native state serializer and UI sanitizers, which task-1290 is changing (Build Flag Complete Removal follow-up)."
+      "max": 142,
+      "reason": "Session, settings and composer field, prop and store-method names of the shared state protocol (computerUseEnabled, computerUseTargetId, setSessionComputerUseEnabled, and the computerUseAllowlistEnabled, computerUseAllowedApplications, computerUseMode, computerUseAwaitingTarget and setSessionComputerUse{Backend,Control} names added with the global Computer Use setting). Every computer-use control, label, page, request and message is removed and the store methods refuse. Dropping the field names requires gating the native state serializer and UI sanitizers, which task-1290 is changing (Build Flag Complete Removal follow-up)."
     },
     {
       "flag": [

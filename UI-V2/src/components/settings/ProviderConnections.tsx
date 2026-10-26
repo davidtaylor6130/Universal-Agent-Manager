@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
+import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Check, Minus, RefreshCw } from 'lucide-react'
@@ -9,7 +9,7 @@ import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresenc
 import { SettingRow } from './SettingsPrimitives'
 import './provider-settings.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 
 interface McpStatus {
   executionHostId: string
@@ -19,7 +19,7 @@ interface McpStatus {
   providers: Array<{ providerId: string; status: 'disabled' | 'missing' | 'configured-unverified' | 'failed' | 'handshake-confirmed' | 'connected'; detail: string; activeSessionCount: number; configuredSessionCount: number; uamControlEnabled?: boolean; sharedSetupEnabled?: boolean; progressiveMcpDiscoveryEnabled?: boolean; mcpServers?: Array<{ id: string; name: string; enabled: boolean }> }>
 }
 
-const PROGRESSIVE_MCP_SETTING = 'opencode-progressive-mcp'
+const PROGRESSIVE_MCP_SETTING = OPENCODE_ENABLED ? 'opencode-progressive-mcp' : ''
 const configurationKey = (hostId: string, providerId: string, kind: 'server' | 'preference', serverId: string) => JSON.stringify([hostId, providerId, kind, serverId])
 
 /** More server columns than this collapse into one "MCP servers" column with a popover. */
@@ -160,13 +160,13 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     </button>
   }
   const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
-  const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === 'opencode-cli')?.progressiveMcpDiscoveryEnabled : undefined
+  const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
   /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
   const saveDiscovery = async (value: boolean) => {
     const host = activeHostId
     setDiscoveryDraft(previous => ({ host, value, error: previous?.host === host ? previous.error : '', saving: true }))
-    const failure = await setConfiguration('opencode-cli', PROGRESSIVE_MCP_SETTING, value, true)
+    const failure = await setConfiguration(OPENCODE_CLI_PROVIDER_ID, PROGRESSIVE_MCP_SETTING, value, true)
     // null = reply superseded by another save on this panel; outcome unknown, so keep the draft.
     if (currentHost.current === host) setDiscoveryDraft(failure === '' ? null : { host, value, error: failure ?? 'Result not confirmed. Retry or refresh connections.', saving: false })
   }
@@ -228,7 +228,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         })}</tbody>
       </table>
     </div>
-    {providerId === 'opencode-cli' && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
+    {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
       status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
       control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
         disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
