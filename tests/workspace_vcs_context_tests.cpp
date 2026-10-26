@@ -1,7 +1,50 @@
 #include "test_harness.h"
 #include "app/workspace_vcs_context_service.h"
+#include "app/chat_reference_context.h"
 
 using namespace uam_test;
+
+UAM_TEST(ChatReferenceValuesAreBoundedInBytesAndRejectControlCharacters)
+{
+	UAM_ASSERT(uam::BoundedChatReferenceValue("feature/context", 1024));
+	UAM_ASSERT(!uam::BoundedChatReferenceValue(std::string(1025, 'x'), 1024));
+	UAM_ASSERT(!uam::BoundedChatReferenceValue("/workspace\n/other", 4096));
+	UAM_ASSERT(!uam::BoundedChatReferenceValue(std::string("a\0b", 3), 4096));
+}
+
+UAM_TEST(ChatReferenceContextRejectsChangedBirthHostAndWorktreeAssociation)
+{
+	ChatSession captured;
+	captured.id = "reference-owner";
+	captured.created_at = "2026-10-23 12:00:00";
+	captured.execution_host_id = "local";
+	captured.folder_id = "workspace";
+	captured.workspace_directory = "/source";
+	captured.workspace_isolation_kind = "gitWorktree";
+	captured.workspace_source_directory = "/source";
+	captured.workspace_worktree_directory = "/worktree";
+	captured.workspace_branch_name = "feature/context";
+	captured.workspace_base_ref = "main";
+	UAM_ASSERT(uam::SameChatReferenceContext(captured, captured));
+	for (std::string ChatSession::* field : {&ChatSession::id, &ChatSession::created_at, &ChatSession::execution_host_id,
+	         &ChatSession::folder_id, &ChatSession::workspace_directory, &ChatSession::workspace_isolation_kind,
+	         &ChatSession::workspace_source_directory, &ChatSession::workspace_worktree_directory,
+	         &ChatSession::workspace_branch_name, &ChatSession::workspace_base_ref})
+	{
+		ChatSession current = captured;
+		current.*field += "-changed";
+		UAM_ASSERT(!uam::SameChatReferenceContext(current, captured));
+	}
+	ChatSession passive = captured;
+	passive.imported_read_only = true;
+	UAM_ASSERT(!uam::SameChatReferenceContext(passive, captured));
+	ChatSession replacement = captured;
+	replacement.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	UAM_ASSERT(!uam::SameChatReferenceContext(replacement, captured));
+	ChatSession display_only = captured;
+	display_only.title = "Renamed chat";
+	UAM_ASSERT(uam::SameChatReferenceContext(display_only, captured));
+}
 
 UAM_TEST(WorkspaceVcsContextReadsOnlyLocalGitBranchesAndDetachedCommit)
 {

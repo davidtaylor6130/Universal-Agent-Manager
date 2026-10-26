@@ -120,6 +120,15 @@ endif()
 # ---------------------------------------------------------------------------
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
+option(UAM_SVN_BRANCH_TESTS_ONLY "Configure only the isolated SVN branch service tests, without CEF or provider processes." OFF)
+if(UAM_SVN_BRANCH_TESTS_ONLY)
+  if(NOT UAM_BUILD_TESTS)
+    message(FATAL_ERROR "UAM_SVN_BRANCH_TESTS_ONLY requires UAM_BUILD_TESTS=ON.")
+  endif()
+  enable_testing()
+  add_subdirectory(tests/svn-branch)
+  return()
+endif()
 option(UAM_ENABLE_RUNTIME_GEMINI_CLI "Enable Gemini CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CODEX_CLI "Enable Codex CLI runtime backend." ON)
 option(UAM_ENABLE_RUNTIME_CLAUDE_CLI "Enable Claude Code CLI runtime backend." ON)
@@ -191,6 +200,16 @@ set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(nlohmann_json)
 set(CMAKE_FOLDER "")
+
+option(UAM_DATA_FOLDER_TESTS_ONLY "Build only isolated disposable data-folder and supervisor tests, without CEF or helpers." OFF)
+if(UAM_DATA_FOLDER_TESTS_ONLY)
+  if(UAM_PACKAGE_REMOTE_RUNNERS)
+    message(FATAL_ERROR "Focused data-folder tests require UAM_PACKAGE_REMOTE_RUNNERS=OFF.")
+  endif()
+  enable_testing()
+  include("${CMAKE_SOURCE_DIR}/cmake/data_folder_tests.cmake")
+  return()
+endif()
 
 # ---------------------------------------------------------------------------
 # CEF (Chromium Embedded Framework) — platform-aware prebuilt download
@@ -513,6 +532,10 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/git_worktree_service.cpp
   src/app/worktree_retention_service.cpp
   src/app/storage_retention_service.cpp
+  src/app/data_folder_preflight.cpp
+  src/app/data_folder_settings_service.cpp
+  src/app/data_folder_transition.cpp
+  src/common/platform/data_folder_tree.cpp
   src/app/worktree_launch_preparation_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
@@ -549,6 +572,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/vcs_commit_service.cpp
   src/common/discovery/management_discovery.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
@@ -587,6 +612,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
   src/common/chat/chat_message_page_index.cpp
@@ -613,6 +639,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/core/chat_import_utils.cpp
   src/app/opencode_import_stream.cpp
   src/common/config/settings_store.cpp
+  src/common/config/settings_store_data_folder.cpp
+  src/common/chat/chat_folder_data_folder.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
   src/common/provider/provider_profile.cpp
@@ -1266,6 +1294,20 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_subdirectory(tests/bootstrap_metadata)
+  add_executable(uam_opencode_progressive_mcp_checks
+    tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
+  target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_opencode_progressive_mcp_checks PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_opencode_progressive_mcp_checks PRIVATE ${UAM_FEATURE_DEFINITIONS} NOMINMAX
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+    UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>)
+  set_target_properties(uam_opencode_progressive_mcp_checks PROPERTIES FOLDER "Tests")
+  add_test(NAME uam_opencode_progressive_mcp_safe COMMAND uam_opencode_progressive_mcp_checks)
   add_executable(uam_companion_protocol_tests
     tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
   target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -1300,7 +1342,7 @@ if(UAM_BUILD_TESTS)
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)
   target_include_directories(uam_crash_supervisor_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
-  foreach(crash_case normal once loop term nonzero bypass restart restart_many)
+  foreach(crash_case normal once loop term nonzero bypass restart restart_many folder_restart folder_unconfirmed)
     add_test(NAME uam_crash_supervisor_${crash_case} COMMAND uam_crash_supervisor_tests ${crash_case})
   endforeach()
 
@@ -1325,6 +1367,7 @@ if(UAM_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
@@ -1443,6 +1486,9 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/data_folder_preflight_tests.cpp
+    tests/data_folder_settings_tests.cpp
+    tests/data_folder_transition_tests.cpp
     tests/worktree_launch_preparation_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
@@ -1516,6 +1562,10 @@ if(UAM_BUILD_TESTS)
     src/app/git_worktree_service.cpp
     src/app/worktree_retention_service.cpp
     src/app/storage_retention_service.cpp
+    src/app/data_folder_preflight.cpp
+    src/app/data_folder_settings_service.cpp
+    src/app/data_folder_transition.cpp
+    src/common/platform/data_folder_tree.cpp
     src/app/worktree_launch_preparation_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
@@ -1551,6 +1601,8 @@ if(UAM_BUILD_TESTS)
     src/app/theme_service.cpp
     src/app/vcs_commit_service.cpp
   src/app/workspace_vcs_context_service.cpp
+  src/app/svn_branch_service.cpp
+  src/app/svn_branch_process.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
     src/cef/cef_push.cpp
@@ -1561,6 +1613,7 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
+    src/common/provider/native_session_storage_normalization.cpp
   src/common/chat/native_media_chat_save.cpp
   src/common/chat/branch_native_assets.cpp
     src/common/chat/chat_message_page_index.cpp
@@ -1628,6 +1681,8 @@ if(UAM_BUILD_TESTS)
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
+    src/common/config/settings_store_data_folder.cpp
+    src/common/chat/chat_folder_data_folder.cpp
     src/remote/runner_protocol.cpp
     src/remote/runner_bootstrap.cpp
     src/remote/runner_client.cpp
@@ -1763,7 +1818,7 @@ endif()
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
   endif()
-  # Actual goal bridge timing fixtures keep their three-case inventory separate.
+  # Actual goal bridge timing fixtures keep their selectable inventory separate.
   add_executable(uam_goal_handler_timing_tests EXCLUDE_FROM_ALL
     tests/goal_handler_timing_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
   set_target_properties(uam_goal_handler_timing_tests PROPERTIES
@@ -1786,6 +1841,31 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/chrome_elf.dll")
   endif()
   # Keep this opt-in executable outside the standard CTest inventory until built.
+
+  # Safe data/injected remote-publication controls: no CEF browser startup,
+  # provider launch, SSH transport, helper build or desktop packaging dependency.
+  add_executable(uam_remote_refresh_feedback_tests EXCLUDE_FROM_ALL
+    tests/remote_refresh_feedback_test_main.cpp tests/remote_refresh_feedback_tests.cpp
+    tests/native_media_chat_save_tests.cpp tests/chat_publication_tests.cpp tests/native_refresh_lifetime_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_remote_refresh_feedback_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_FEEDBACK_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_FEEDBACK_TEST_VALUE universal_agent_manager ${UAM_FEEDBACK_TEST_PROPERTY})
+    if(NOT UAM_FEEDBACK_TEST_VALUE STREQUAL "UAM_FEEDBACK_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_remote_refresh_feedback_tests PROPERTY ${UAM_FEEDBACK_TEST_PROPERTY} "${UAM_FEEDBACK_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_remote_refresh_feedback_tests PRIVATE tests)
+  if(APPLE)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/chrome_elf.dll")
+  endif()
 
   add_executable(uam_managed_subagent_handler_tests EXCLUDE_FROM_ALL
     tests/managed_subagent_handler_tests.cpp tests/native_media_refresh_handler_tests.cpp tests/native_model_options_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})

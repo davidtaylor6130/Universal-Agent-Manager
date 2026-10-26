@@ -22,6 +22,9 @@ describe('new chat Git base transport', () => {
     expect(Object.prototype.hasOwnProperty.call(payloads[0], 'gitBaseBranch')).toBe(false)
     expect(payloads[1].gitBaseBranch).toBe('')
     expect(payloads[2].gitBaseBranch).toBe('feature/base')
+    expect(payloads[0]).not.toHaveProperty('workspaceDirectory')
+    expect(payloads[1].workspaceDirectory).toBe('/tmp/private-fixture')
+    expect(payloads[2].workspaceDirectory).toBe('/tmp/private-fixture')
     expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
   })
 
@@ -35,6 +38,22 @@ describe('new chat Git base transport', () => {
     expect(sanitizeGitBaseBranch('é'.repeat(127))).toBe('é'.repeat(127))
     expect(sanitizeGitBaseBranch(' \u00a0main\u00a0 ')).toBe('\u00a0main\u00a0')
     expect(useAppStore.getState().gitDefaultBaseBranch).toBe('main')
+  })
+
+  it('retains the selected workspace and open dialog when native creation refuses its captured directory', async () => {
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    const folders = useAppStore.getState().folders
+    useAppStore.setState({ isNewChatModalOpen: true })
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(409, 'The selected workspace path changed.')
+    }
+    await expect(create({ gitBaseBranch: 'feature/base' })).resolves.toBe(false)
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ action: 'createSession', payload: { folderId: 'workspace', workspaceDirectory: '/tmp/private-fixture', gitBaseBranch: 'feature/base' } })
+    expect(useAppStore.getState().folders).toBe(folders)
+    expect(useAppStore.getState().isNewChatModalOpen).toBe(true)
+    expect(useAppStore.getState().sessions).toEqual([])
   })
 
   it('refuses overrides for disabled Git, automatic routing, remote execution or offline mock creation', async () => {

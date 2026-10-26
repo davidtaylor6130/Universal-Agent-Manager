@@ -464,6 +464,7 @@ namespace uam
 		{
 			AgentRun copy;
 			copy.id = run.id;
+			copy.task = TaskTitle(run); // Retain only the bounded display label for detached title validation.
 			copy.root_chat_id = run.root_chat_id;
 			copy.parent_run_id = run.parent_run_id;
 			copy.resumed_from_run_id = run.resumed_from_run_id;

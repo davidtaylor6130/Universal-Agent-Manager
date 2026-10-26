@@ -917,14 +917,14 @@ describe('ManagedSubagentConversation UserRoot follow-up', () => {
     return (next: 'running' | 'completed') => { status = next }
   }
 
-  it('hides and explicitly reopens only empty idle managed input without reads, submissions or parent changes', async () => {
+  it('hides and explicitly reopens empty idle managed input without reads, submissions or parent changes', async () => {
     const f = await followupFixture()
     try {
       expect(host.querySelector('textarea')).toBeNull()
       const readsBefore = f.requests.length
       await openFollowup()
       expect(host.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
-      const hide = namedControl('Hide follow-up input')
+      const hide = namedControl('Hide input')
       expect(hide, 'Empty idle input must be closable without leaving the child').toBeDefined()
       expect(hide!.disabled).toBe(false)
       await act(async () => hide!.click())
@@ -936,6 +936,223 @@ describe('ManagedSubagentConversation UserRoot follow-up', () => {
       expect(document.activeElement).toBe(host.querySelector('textarea'))
       expect(f.requests).toHaveLength(readsBefore)
       expect(f.submissions).toHaveLength(0)
+      f.assertParent()
+    } finally { await f.cleanup() }
+  })
+
+  it('hides an authored idle draft and reopens its exact bytes without reads or delivery', async () => {
+    const f = await followupFixture()
+    try {
+      const { textarea } = await readyFollowup()
+      const reads = f.requests.length
+      const hide = namedControl('Hide input')
+      expect(hide, 'An authored idle draft must be hideable while reading this child').toBeDefined()
+      await act(async () => hide!.click())
+      expect(host.querySelector('form')).toBeNull()
+      expect(host.textContent).toContain('Draft kept in this child.')
+      expect(document.activeElement).toBe(host.querySelector('h3'))
+      await openFollowup()
+      const reopened = host.querySelector<HTMLTextAreaElement>('textarea')!
+      expect(reopened).not.toBe(textarea)
+      expect(reopened.value).toBe(rawText)
+      expect(document.activeElement).toBe(reopened)
+      expect(f.requests).toHaveLength(reads)
+      expect(f.submissions).toHaveLength(0)
+      f.assertParent()
+    } finally { await f.cleanup() }
+  })
+
+  it('opens a hidden retained draft while the child is busy without granting permission to send', async () => {
+    const f = await followupFixture()
+    try {
+      await readyFollowup()
+      expect(namedControl('Hide input')).toBeDefined()
+      await act(async () => namedControl('Hide input')!.click())
+      const projectStatus = projectDisclosureStatus('running')
+      f.row.status = 'running'
+      f.row.followup = { ...supported, canSend: false, code: 'busy' }
+      await act(async () => button('Refresh conversation').click())
+      expect(host.querySelector('form')).toBeNull()
+      const showDraft = namedControl('Show draft')
+      expect(showDraft, 'Inspecting retained text must not require messaging permission').toBeDefined()
+      expect(showDraft?.hasAttribute('aria-expanded')).toBe(false)
+      const reads = f.requests.length
+      await act(async () => showDraft!.click())
+      const field = host.querySelector<HTMLTextAreaElement>('textarea')!
+      expect(field.value).toBe(rawText)
+      expect(namedControl('Send follow-up')!.disabled).toBe(true)
+      await act(async () => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+      expect(f.submissions).toHaveLength(0)
+      expect(host.textContent).not.toContain('Enter nonblank follow-up work')
+      expect(f.requests).toHaveLength(reads)
+      projectStatus('completed')
+      f.assertParent()
+    } finally { await f.cleanup() }
+  })
+
+  it.each(['validated', 'refused'] as const)('retains the focused Hide input through a deferred busy poll and %s read', async outcome => {
+    vi.useFakeTimers()
+    const f = await followupFixture()
+    try {
+      await readyFollowup()
+      projectDisclosureStatus('running')
+      f.row.status = 'running'
+      f.row.followup = { ...supported, canSend: false, code: 'busy' }
+      await act(async () => button('Refresh conversation').click())
+      const hide = namedControl('Hide input')!
+      const field = host.querySelector<HTMLTextAreaElement>('textarea')!
+      const form = host.querySelector<HTMLFormElement>('form[aria-label="Send follow-up work"]')!
+      const header = [...host.querySelectorAll('nav[aria-label="Subagent lineage"] button')]
+      const expectSameHeader = () => {
+        const current = [...host.querySelectorAll('nav[aria-label="Subagent lineage"] button')]
+        expect(current).toHaveLength(header.length)
+        header.forEach((control, index) => expect(current[index]).toBe(control))
+      }
+      expect(hide).toBeDefined()
+      expect(field.value).toBe(rawText)
+      expect(namedControl('Send follow-up')?.disabled).toBe(true)
+      hide.focus()
+      const bridge = window.cefQuery!
+      const pending: Query[] = []
+      let holdRead = true
+      window.cefQuery = query => {
+        const wire = JSON.parse(query.request) as FollowupWire
+        if (holdRead && wire.action === 'getManagedAgentTranscript') {
+          expect(wire.payload).toEqual({ chatId: f.parentId, transcriptChatId: f.childId })
+          pending.push(query)
+        } else bridge(query)
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(pending).toHaveLength(1)
+      expect(namedControl('Hide input'), 'A background read must retain the same disclosure control').toBe(hide)
+      expect(document.activeElement).toBe(hide)
+      expectSameHeader()
+      expect(hide.disabled).toBe(false)
+      expect(hide.getAttribute('aria-disabled')).toBe('true')
+      await act(async () => {
+        hide.click()
+        field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      })
+      expect(host.querySelector('form')).toBe(form)
+      expect(field.value).toBe(rawText)
+      expect(document.activeElement).toBe(hide)
+      expect(f.submissions).toHaveLength(0)
+      holdRead = false
+      if (outcome === 'refused') {
+        await act(async () => pending[0].onFailure(403, 'Conversation read refused.'))
+        expect(namedControl('Hide input')).toBe(hide)
+        expect(document.activeElement).toBe(hide)
+        expectSameHeader()
+        expect(hide.getAttribute('aria-disabled')).toBe('true')
+        await act(async () => hide.click())
+        expect(host.querySelector('form')).toBe(form)
+        expect(field.value).toBe(rawText)
+        expect(f.submissions).toHaveLength(0)
+        await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      } else await act(async () => bridge(pending[0]))
+      expect(namedControl('Hide input')).toBe(hide)
+      expect(document.activeElement).toBe(hide)
+      expectSameHeader()
+      expect(hide.getAttribute('aria-disabled')).not.toBe('true')
+      expect(namedControl('Send follow-up')?.disabled).toBe(true)
+      await act(async () => hide.click())
+      expect(host.querySelector('form')).toBeNull()
+      expect(document.activeElement).toBe(host.querySelector('h3'))
+      await act(async () => namedControl('Show draft')!.click())
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(rawText)
+      expect(namedControl('Send follow-up')?.disabled).toBe(true)
+      expect(f.submissions).toHaveLength(0)
+      f.assertParent()
+    } finally { await f.cleanup() }
+  })
+
+  it.each(['saved', 'unbound'] as const)('does not advertise a withdrawn draft after a validated %s read, and retains its exact text', async outcome => {
+    vi.useFakeTimers()
+    const options = { lastReported: false }
+    const f = await followupFixture(options)
+    try {
+      await readyFollowup()
+      await act(async () => namedControl('Hide input')!.click())
+      projectDisclosureStatus('running')
+      f.row.status = 'running'
+      f.row.followup = { ...supported, canSend: false, code: 'busy' }
+      await act(async () => button('Refresh conversation').click())
+      expect(namedControl('Show draft')).toBeDefined()
+      expect(host.textContent).toContain('Draft kept in this child.')
+      if (outcome === 'saved') { options.lastReported = true; f.row.lastReported = true }
+      else f.row.followup = undefined
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(namedControl('Show draft')).toBeUndefined()
+      expect(host.querySelector('form')).toBeNull()
+      expect(host.textContent, 'No retained-draft hint may imply a currently available disclosure').not.toContain('Draft kept in this child.')
+      // Losing eligibility never discards text or revives input authority. Only a fresh exact read
+      // can expose the retained draft again, and a busy child still cannot send it.
+      options.lastReported = false; f.row.lastReported = false
+      f.row.followup = { ...supported, canSend: false, code: 'busy' }
+      await act(async () => button('Refresh conversation').click())
+      await act(async () => namedControl('Show draft')!.click())
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(rawText)
+      expect(namedControl('Send follow-up')?.disabled).toBe(true)
+      expect(f.submissions).toHaveLength(0)
+      f.assertParent()
+    } finally { await f.cleanup() }
+  })
+
+  it.each([
+    ['Hide input', true, false], ['Show draft', true, false],
+    ['Hide input', false, false], ['Show draft', true, true],
+  ] as const)('recovers a settled draft action only when its focus belongs to this active child (%s, autoFocus=%s, outside=%s)', async (action, autoFocus, outside) => {
+    vi.useFakeTimers()
+    const options = { lastReported: false }
+    const f = await followupFixture(options)
+    const external = document.createElement('button')
+    document.body.append(external)
+    try {
+      await readyFollowup()
+      if (action === 'Show draft') await act(async () => namedControl('Hide input')!.click())
+      projectDisclosureStatus('running')
+      f.row.status = 'running'
+      f.row.followup = { ...supported, canSend: false, code: 'busy' }
+      await act(async () => button('Refresh conversation').click())
+      await act(async () => root.render(<ManagedSubagentConversation {...f.selectedProps} autoFocus={autoFocus} />))
+      const control = namedControl(action)!
+      expect(control).toBeDefined()
+      control.focus()
+      expect(document.activeElement).toBe(control)
+      if (outside) external.focus()
+      options.lastReported = true; f.row.lastReported = true
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(control.isConnected).toBe(false)
+      expect(namedControl('Hide input')).toBeUndefined()
+      expect(namedControl('Show draft')).toBeUndefined()
+      expect(host.querySelector('form')).toBeNull()
+      expect(document.activeElement, 'Recover owned action focus without stealing focus from another pane').toBe(outside ? external : autoFocus ? host.querySelector('h3') : document.body)
+      expect(f.submissions).toHaveLength(0)
+      f.assertParent()
+    } finally { external.remove(); await f.cleanup() }
+  })
+
+  it('keeps pending and uncertain recovery visible after explicitly reopening a hidden draft', async () => {
+    const f = await followupFixture()
+    try {
+      await readyFollowup()
+      expect(namedControl('Hide input')).toBeDefined()
+      await act(async () => namedControl('Hide input')!.click())
+      await openFollowup()
+      await act(async () => namedControl('Send follow-up')!.click())
+      expect(f.submissions).toHaveLength(1)
+      expect(namedControl('Hide input')).toBeUndefined()
+      const original = f.submissions[0]
+      await act(async () => original.query.onFailure(0, 'Uncertain request after reopening.'))
+      expect(namedControl('Hide input')).toBeUndefined()
+      expect(namedControl('Retry same request')).toBeDefined()
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(rawText)
+      expect(f.submissions).toHaveLength(1)
+      await act(async () => namedControl('Retry same request')!.click())
+      expect(f.submissions).toHaveLength(2)
+      expect(f.submissions[1].wire.payload).toEqual(original.wire.payload)
+      await act(async () => f.submissions[1].query.onSuccess(JSON.stringify({ followup: accepted(f, original.wire.payload.clientRequestId) })))
       f.assertParent()
     } finally { await f.cleanup() }
   })
@@ -990,7 +1207,7 @@ describe('ManagedSubagentConversation UserRoot follow-up', () => {
     } finally { await f.cleanup() }
   })
 
-  it('keeps managed errors, drafts and pending or unknown requests visible, with only explicit same-UUID Retry', async () => {
+  it('keeps managed errors and pending or unknown requests visible while allowing idle drafts to hide', async () => {
     const f = await followupFixture()
     try {
       await openFollowup()
@@ -999,38 +1216,38 @@ describe('ManagedSubagentConversation UserRoot follow-up', () => {
       expect(f.submissions).toHaveLength(0)
       const feedback = host.querySelector('[role="alert"]')?.textContent
       expect(feedback).toBeTruthy()
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeUndefined()
       const projectStatus = projectDisclosureStatus('running')
       f.row.status = 'running'
       f.row.followup = { ...supported, canSend: false, code: 'busy' }
       await act(async () => button('Refresh conversation').click())
       expect(host.querySelector('form'), 'An active recovery/error must not be hidden with an empty draft').not.toBeNull()
       expect(host.querySelector('[role="alert"]')?.textContent).toBe(feedback)
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeUndefined()
       f.row.status = 'completed'; f.row.followup = supported; projectStatus('completed')
       await act(async () => button('Refresh conversation').click())
       field = host.querySelector<HTMLTextAreaElement>('textarea')!
       expect(field).not.toBeNull()
       act(() => setDisclosureInput(field, rawText))
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeDefined()
       await act(async () => namedControl('Send follow-up')!.click())
       expect(f.submissions).toHaveLength(1)
       const original = f.submissions[0]
       expect(host.querySelector('textarea')).toBe(field)
       expect(field.readOnly).toBe(true)
       expect(field.value).toBe(rawText)
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeUndefined()
       await act(async () => original.query.onFailure(0, 'Response lost; original request is uncertain.'))
       expect(field.value).toBe(rawText)
       expect(namedControl('Retry same request')).toBeDefined()
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeUndefined()
       const newerDraft = 'A newer exact child draft must not be cleared by the old acceptance.'
       act(() => setDisclosureInput(field, newerDraft))
       await act(async () => root.render(<div>Another pane is shown.</div>))
       await act(async () => f.render())
       field = host.querySelector<HTMLTextAreaElement>('textarea')!
       expect(field.value).toBe(newerDraft)
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeUndefined()
       expect(f.submissions).toHaveLength(1)
       await act(async () => namedControl('Retry same request')!.click())
       expect(f.submissions).toHaveLength(2)
@@ -1038,7 +1255,7 @@ describe('ManagedSubagentConversation UserRoot follow-up', () => {
       const reply = accepted(f, original.wire.payload.clientRequestId); reply.replayed = true
       await act(async () => f.submissions[1].query.onSuccess(JSON.stringify({ followup: reply })))
       expect(host.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(newerDraft)
-      expect(namedControl('Hide follow-up input')).toBeUndefined()
+      expect(namedControl('Hide input')).toBeDefined()
       expect(f.submissions).toHaveLength(2)
       f.assertParent()
     } finally { await f.cleanup() }
@@ -1345,7 +1562,16 @@ describe('ManagedSubagentConversation root revision wakeup', () => {
       sendAcpPrompt: send, openSubAgentSession: open, branchFromMessage: branch, retryFailedMessage: retry })
     const messages = useAppStore.getState().messages
     const queries: Query[] = []
-    window.cefQuery = query => { queries.push(query) }
+    const listingWires: Array<{ action: string; payload: unknown }> = []
+    window.cefQuery = query => {
+      const wire = JSON.parse(query.request)
+      if (wire.action === 'listManagedSubagents') {
+        // Active inspectors now discover Stop independently of follow-up; no cancellation is granted here.
+        listingWires.push(wire)
+        query.onSuccess(JSON.stringify({ chatId: parent.id, controlScopeId: 'revision-read-scope', offset: 0, nextOffset: null, totalCount: 1,
+          runs: [{ runId: props.runId, transcriptChatId: props.transcriptChatId, providerId: 'claude-cli', status: 'running', canCancel: false }] }))
+      } else queries.push(query)
+    }
     const cleanup = async () => {
       await act(async () => root.render(<div />))
       useAppStore.setState(saved, true)
@@ -1367,6 +1593,8 @@ describe('ManagedSubagentConversation root revision wakeup', () => {
       })))
       expect(envelopes.every(envelope => envelope.requestId.length > 0)).toBe(true)
       expect(new Set(envelopes.map(envelope => envelope.requestId)).size).toBe(queries.length)
+      expect(listingWires.every(wire => wire.action === 'listManagedSubagents')).toBe(true)
+      for (const wire of listingWires) expect(wire.payload).toEqual({ chatId: parent.id, runId: props.runId, offset: 0, limit: 100 })
       expect(useAppStore.getState().activeSessionId).toBe(parent.id)
       expect(useAppStore.getState().messages).toBe(messages)
       for (const action of [send, open, branch, retry]) expect(action).not.toHaveBeenCalled()
@@ -1375,7 +1603,7 @@ describe('ManagedSubagentConversation root revision wakeup', () => {
     try {
       await act(async () => root.render(<ManagedSubagentConversation {...props} navigationKey="revision-owned-visit" />))
       expect(queries).toHaveLength(1)
-      return { parent, queries, revise, reply, assertReadOnly, cleanup }
+      return { parent, queries, listingWires, revise, reply, assertReadOnly, cleanup }
     } catch (cause) { await cleanup(); throw cause }
   }
 
@@ -1392,6 +1620,8 @@ describe('ManagedSubagentConversation root revision wakeup', () => {
       expect(f.queries, 'a current root revision wakes the terminal inspector').toHaveLength(2)
       await f.reply(1, 'Externally accepted follow-up is running', { status: 'running' })
       expect(host.textContent).toContain('Externally accepted follow-up is running')
+      expect(f.listingWires).toHaveLength(1)
+      expect(button('Stop child')).toBeUndefined()
       await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
       expect(f.queries).toHaveLength(3)
       await f.reply(2, 'Follow-up completed answer')
