@@ -70,8 +70,25 @@ const CUSTOM_CSS_PROPERTIES: Record<keyof ThemeColors, string> = {
 const DERIVED_CSS_PROPERTIES = [
   '--window-bg', '--surface-high', '--border', '--border-bright', '--text-2', '--text-3', '--accent-dim',
   '--accent-glow', '--sidebar-item-hover', '--sidebar-item-active', '--success-dim', '--warning-dim',
-  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection',
+  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection', '--on-accent',
 ]
+
+const relativeLuminance = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((index) => {
+    const channel = Number.parseInt(hex.slice(index, index + 2), 16) / 255
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/** WCAG 2 contrast ratio between two #rrggbb colours. */
+export function contrastRatio(first: string, second: string): number {
+  const [light, dark] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a)
+  return (light + 0.05) / (dark + 0.05)
+}
+
+/** Black or white, whichever reads better on the accent; one of them always reaches 4.5:1. */
+export const onAccentFor = (accent: string) => contrastRatio(accent, '#ffffff') >= contrastRatio(accent, '#000000') ? '#ffffff' : '#000000'
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
   if (value === 'mono') return 'focus'
@@ -159,6 +176,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-fg': text,
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
+        '--on-accent': onAccentFor(accent),
       }
       Object.assign(desiredProperties, derived)
     }

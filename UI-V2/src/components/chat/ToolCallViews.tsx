@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { EXIT_MS, IconButton } from '../ui'
+import { EXIT_MS, IconButton, motionAllowed } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -435,7 +435,7 @@ function ToolCallDetails({
   const [closing, setClosing] = useState(false)
   // Play the exit animation before the parent unmounts the dialog.
   const requestClose = useCallback(() => {
-    if (typeof window.matchMedia !== 'function' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { onClose(); return }
+    if (!motionAllowed()) { onClose(); return }
     setClosing(true)
     window.setTimeout(onClose, EXIT_MS)
   }, [onClose])

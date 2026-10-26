@@ -5,7 +5,7 @@ import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './Data
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -175,7 +175,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
       {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save voice settings'}</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
       </div>
     </SettingsSection>
     {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
@@ -223,7 +223,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
       {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider settings'}</Button></div>
+        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
     {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
   </>
 })

@@ -202,6 +202,29 @@ describe('FolderTree', () => {
     }
   })
 
+  it('keeps workspace headers keyboard reachable while searching, without nesting the actions button', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="Chat" />))
+      const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+      expect((host.querySelector('[data-testid="folder-row-project"]') as HTMLElement).draggable).toBe(false)
+      expect(header.tabIndex).toBe(0)
+      expect(header.getAttribute('role')).toBe('button')
+      expect(header.getAttribute('aria-expanded')).toBe('true')
+      expect(header.hasAttribute('aria-pressed')).toBe(false)
+      expect(header.querySelector('button, [tabindex="0"]')).toBeNull()
+      const actions = host.querySelector<HTMLButtonElement>('button[aria-label="Folder actions"]')!
+      expect(header.contains(actions)).toBe(false)
+      expect(actions.closest('.group')?.contains(header)).toBe(true)
+      expect(actions.parentElement?.closest('[class*="group-focus-within:opacity-100"]')).toBeTruthy()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('does not enable desktop folder dragging in the companion chat list', () => {
     window.history.replaceState(null, '', '/companion')
     const setActiveSession = vi.fn()
@@ -242,7 +265,7 @@ describe('FolderTree', () => {
       window.history.replaceState(null, '', '/companion')
       act(() => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder })) })))
       expect(host.querySelector('[aria-label="Delete 3 selected workspaces"]')).toBeNull()
-      expect(Array.from(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]'))).toHaveLength(0)
+      expect(Array.from(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]'))).toHaveLength(0)
       const menu = document.body.querySelector('[role="menu"][aria-label="a actions"]')
       expect(menu?.textContent).toContain('New chat')
       expect(menu?.textContent).not.toContain('Rename folder')
@@ -251,7 +274,7 @@ describe('FolderTree', () => {
 
       act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-b"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
       expect(host.querySelector('[aria-label="Delete 2 selected workspaces"]')).toBeNull()
-      expect(host.querySelector('[data-testid="folder-header-b"]')?.getAttribute('aria-pressed')).toBe('false')
+      expect(host.querySelector('[data-testid="folder-header-b"]')?.getAttribute('aria-label')).toBe('b')
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -1683,7 +1706,7 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
     const openDelete = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click()
     const dialogButton = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
     act(openDelete)
@@ -1694,12 +1717,12 @@ describe('FolderTree', () => {
     await act(async () => dialogButton('Delete workspaces').click())
     expect(deleteFolders).toHaveBeenCalledWith(['a', 'b', 'c'])
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('Remote stop could not be confirmed.')
-    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
     deleteFolders.mockResolvedValue(true)
     await act(async () => dialogButton('Delete workspaces').click())
     expect(deleteFolders).toHaveBeenCalledTimes(2)
     expect(host.querySelector('[role="alertdialog"]')).toBeNull()
-    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(0)
+    expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(0)
     act(() => root.unmount())
     host.remove()
   })
@@ -1715,18 +1738,18 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-b"]')!.click())
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', shiftKey: true })))
-    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
+    expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click())
     await act(async () => {
       useAppStore.setState({ resourceCollections: [{ ...useAppStore.getState().resourceCollections[0], collapsed: true }] })
       await Promise.resolve()
     })
-    expect(host.querySelector('[data-workspace-id="b"]')?.getAttribute('aria-pressed')).toBe('false')
+    expect(host.querySelector('[data-workspace-id="b"]')?.getAttribute('aria-label')).toBe('b')
     expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('2 workspaces')
     act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(host.querySelector('[role="alertdialog"]')).toBeNull()
     act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(0)
+    expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(0)
     act(() => root.unmount())
     host.remove()
   })

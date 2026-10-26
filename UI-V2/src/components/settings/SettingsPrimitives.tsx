@@ -1,5 +1,7 @@
+import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { cx } from '../ui'
+import { Button, cx } from '../ui'
+import type { ButtonProps } from '../ui'
 import './settings-shell.css'
 
 /**
@@ -33,6 +35,9 @@ export function SettingsSection({ title, description, actions, children, flush =
   )
 }
 
+const CONTROL_GROUPS = '[role="group"], [role="radiogroup"]'
+const DESCRIBED_CONTROLS = `input, select, textarea, button, ${CONTROL_GROUPS}`
+
 /** One setting: text on the left, its control on the right. Stacks on narrow widths. */
 export function SettingRow({ title, description, control, icon, children, htmlFor, status }: {
   title: ReactNode
@@ -47,20 +52,44 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
   status?: ReactNode
 }) {
   const Title = htmlFor ? 'label' : 'div'
+  const descriptionId = useId()
+  const statusId = useId()
+  const controlRef = useRef<HTMLDivElement>(null)
+  // Controls are arbitrary nodes, so the row links its description/status to each focusable control (or its group) after render.
+  useLayoutEffect(() => {
+    const ids = [description ? descriptionId : '', status ? statusId : ''].filter(Boolean)
+    const host = controlRef.current
+    if (!host || !ids.length) return
+    for (const element of host.querySelectorAll<HTMLElement>(DESCRIBED_CONTROLS)) {
+      const group = element.parentElement?.closest(CONTROL_GROUPS)
+      if (group && host.contains(group)) continue
+      const current = element.getAttribute('aria-describedby')?.split(/\s+/).filter(Boolean) ?? []
+      const next = [...new Set([...current, ...ids])].join(' ')
+      if (next !== current.join(' ')) element.setAttribute('aria-describedby', next)
+    }
+  })
   return (
     <div className="uam-set-row">
       <div className="uam-set-row__main">
         {icon && <span className="uam-set-row__icon">{icon}</span>}
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
-          {description && <div className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
-          {status && <div className="uam-set-row__status">{status}</div>}
+          {description && <div id={descriptionId} className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
+          {status && <div id={statusId} className="uam-set-row__status">{status}</div>}
         </div>
-        {control && <div className="uam-set-row__control">{control}</div>}
+        {control && <div ref={controlRef} className="uam-set-row__control">{control}</div>}
       </div>
       {children && <div className="uam-set-row__extra">{children}</div>}
     </div>
   )
+}
+
+/** Settings save action: busy while pending, with the pending label announced politely. */
+export function SaveButton({ saving, pendingLabel = 'Saving…', variant = 'primary', size = 'sm', children, ...props }: ButtonProps & { saving: boolean; pendingLabel?: string }) {
+  return <>
+    <Button variant={variant} size={size} aria-busy={saving || undefined} {...props}>{saving ? pendingLabel : children}</Button>
+    <span className="sr-only" role="status" aria-live="polite">{saving ? pendingLabel : ''}</span>
+  </>
 }
 
 /** Label above a wide input (paths, text areas, multi-column forms). */
