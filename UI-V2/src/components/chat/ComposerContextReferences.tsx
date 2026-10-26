@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { LoaderCircle, X } from 'lucide-react'
 import type { ContextReference } from '../../types/contextReference'
 import { readChatComposerDraft, subscribeChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
-import { captureWorkspaceFileReference, draftFileMentions } from '../../utils/fileContextReferences'
+import { captureWorkspaceFileReference } from '../../utils/fileContextReferences'
 import { captureRepositoryContextReference, type RepositoryReferenceKind } from '../../utils/repositoryContextReferences'
 import { getTopmostModal } from '../../utils/modalFocus'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, Overlay, Tooltip } from '../ui'
+import { IconButton, Overlay } from '../ui'
 import { ContextChip } from './ContextChip'
 
 function capturedTime(value: string) {
@@ -60,104 +60,139 @@ function SnapshotDialog({ snapshot, label, onClose }: { snapshot: ContextReferen
   </Overlay>
 }
 
-export function ComposerContextReferences({ chatId, draft, disabled, onBusyChange }: {
-  chatId: string; draft: string; disabled: boolean; onBusyChange: (busy: boolean) => void
+type CaptureKey = string | `repository:${RepositoryReferenceKind}`
+
+/**
+ * Reference snapshot state for one composer. Captures start from the composer's `@` list in ChatView;
+ * the captured snapshots render as chips above the input (ComposerReferenceChips).
+ */
+export function useComposerReferences({ chatId, ownerKey, disabled, onBusyChange }: {
+  chatId: string; ownerKey: string; disabled: boolean; onBusyChange: (busy: boolean) => void
 }) {
   const [references, setReferences] = useState(() => readChatComposerDraft(chatId).references ?? [])
-  const [pending, setPending] = useState<string | null>(null)
+  const [pending, setPending] = useState<CaptureKey | null>(null)
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState<{ snapshot: ContextReference; label: string } | null>(null)
-  const mounted = useRef(false)
+  // Each chat incarnation gets a generation; a capture finishing after a switch is discarded.
+  const generation = useRef(0)
   const busy = useRef(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const removedFocusTarget = useRef<HTMLElement | null | undefined>(undefined)
   const worktreeConfigured = useAppStore((state) => state.sessions.some((chat) => chat.id === chatId &&
     chat.workspaceIsolationKind?.trim() === 'gitWorktree' && Boolean(chat.workspaceWorktreeDirectory?.trim())))
-  const worktreeHintId = useId()
-  const closeSnapshot = useCallback(() => setSelected(null), [])
+  // Layout effect: a previous chat's chips must not paint for a frame after a switch.
   useLayoutEffect(() => {
-    if (removedFocusTarget.current === undefined) return
-    const target = removedFocusTarget.current
-    removedFocusTarget.current = undefined
-    if (target?.isConnected) target.focus()
-    else (rootRef.current?.querySelector<HTMLElement>('[data-reference-action]:not(:disabled):not([aria-disabled="true"])') ?? rootRef.current)?.focus()
-  }, [references])
-  useEffect(() => {
-    mounted.current = true
+    const owned = ++generation.current
+    busy.current = false; setPending(null); setError('')
+    setReferences(readChatComposerDraft(chatId).references ?? [])
     const unsubscribe = subscribeChatComposerDraft((id) => {
       if (id === chatId) setReferences(readChatComposerDraft(chatId).references ?? [])
     })
-    return () => { mounted.current = false; unsubscribe(); onBusyChange(false) }
-  }, [chatId, onBusyChange])
-  const capture = async (key: string, read: () => Promise<ContextReference>) => {
+    return () => { if (generation.current === owned) generation.current++; unsubscribe(); onBusyChange(false) }
+  }, [chatId, ownerKey, onBusyChange])
+  const capture = async (key: CaptureKey, read: () => Promise<ContextReference>) => {
     if (disabled || busy.current) return
+    const owned = generation.current
+    const current = () => generation.current === owned
     busy.current = true; setPending(key); setError(''); onBusyChange(true)
     try {
       const snapshot = await read()
-      if (!mounted.current) return
-      const current = readChatComposerDraft(chatId)
-      if ((current.references?.length ?? 0) >= CONTEXT_REFERENCE_MAX_COUNT) throw new Error('Remove a reference before adding another (maximum four).')
-      writeChatComposerDraft(chatId, { ...current, references: [...(current.references ?? []), snapshot] })
+      if (!current()) return
+      const saved = readChatComposerDraft(chatId)
+      if ((saved.references?.length ?? 0) >= CONTEXT_REFERENCE_MAX_COUNT) throw new Error('Remove a reference before adding another (maximum four).')
+      writeChatComposerDraft(chatId, { ...saved, references: [...(saved.references ?? []), snapshot] })
     } catch (reason) {
-      if (mounted.current) setError(reason instanceof Error ? reason.message : 'Could not capture this context.')
+      if (current()) setError(reason instanceof Error ? reason.message : 'Could not capture this context.')
     } finally {
-      busy.current = false
-      if (mounted.current) { setPending(null); onBusyChange(false) }
+      if (current()) { busy.current = false; setPending(null); onBusyChange(false) }
     }
   }
   const snapshots = references.filter((reference) => reference.kind === 'file' || reference.kind === 'branch' || reference.kind === 'worktree')
+  const unavailableReason = references.length >= CONTEXT_REFERENCE_MAX_COUNT ? 'Four references selected. Remove one to add another.'
+    : pending !== null ? 'Wait for the current capture to finish.' : 'References are unavailable while this message is sending.'
+  return {
+    chatId, snapshots, unavailableReason, pending, error, worktreeConfigured,
+    atCapacity: references.length >= CONTEXT_REFERENCE_MAX_COUNT,
+    actionsDisabled: disabled || pending !== null || references.length >= CONTEXT_REFERENCE_MAX_COUNT,
+    dismissError: () => setError(''),
+    fileCaptured: (path: string) => snapshots.some((reference) => reference.kind === 'file' && reference.sourcePath && mentionSpelling(reference.sourcePath) === mentionSpelling(path)),
+    captureFile: (path: string) => void capture(path, () => captureWorkspaceFileReference(chatId, path)),
+    captureRepository: (kind: RepositoryReferenceKind) => {
+      if (kind === 'worktree' && !worktreeConfigured) return
+      void capture(`repository:${kind}`, () => captureRepositoryContextReference(chatId, kind))
+    },
+  }
+}
+
+export type ComposerReferences = ReturnType<typeof useComposerReferences>
+
+function displayLabelsFor(snapshots: ContextReference[]) {
   // Reserve literal labels so a generated suffix cannot impersonate another captured filename.
   const literalLabels = new Set(snapshots.map((snapshot) => snapshot.label))
   const usedLabels = new Set<string>()
   // Number duplicates 1..n by occurrence; the number also appears in the non-truncating meta text.
   const occurrence = new Map<string, number>()
-  const duplicateNumbers = snapshots.map((snapshot) => {
+  const numbers = snapshots.map((snapshot) => {
     if (snapshots.filter((candidate) => candidate.label === snapshot.label).length < 2) return 0
     const next = (occurrence.get(snapshot.label) ?? 0) + 1
     occurrence.set(snapshot.label, next)
     return next
   })
-  const displayLabels = snapshots.map((snapshot, index) => {
+  const labels = snapshots.map((snapshot, index) => {
     let label = snapshot.label
-    if (duplicateNumbers[index]) {
-      let position = duplicateNumbers[index]
+    if (numbers[index]) {
+      let position = numbers[index]
       do { label = `${snapshot.label} (${position})` } while ((literalLabels.has(label) || usedLabels.has(label)) && ++position)
-      duplicateNumbers[index] = position // Meta shows the suffix actually chosen.
+      numbers[index] = position // Meta shows the suffix actually chosen.
     }
     usedLabels.add(label)
     return label
   })
-  const candidates = draftFileMentions(draft).filter((path) => !snapshots.some((reference) => reference.kind === 'file' && reference.sourcePath && mentionSpelling(reference.sourcePath) === mentionSpelling(path)))
-  return <div ref={rootRef} role="group" aria-label="Reference context" tabIndex={-1} className="px-3 pt-3">
-    <div className="flex flex-wrap gap-2">
+  return { labels, numbers }
+}
+
+const PENDING_COPY = (pending: CaptureKey) => pending === 'repository:branch' ? 'Capturing branch…'
+  : pending === 'repository:worktree' ? 'Capturing worktree…' : `Reading ${pending}…`
+
+/** Captured snapshots as chips above the input. Renders nothing when there is nothing to show. */
+export function ComposerReferenceChips({ references }: { references: ComposerReferences }) {
+  const { chatId, snapshots, pending, error } = references
+  const [selected, setSelected] = useState<{ snapshot: ContextReference; label: string } | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const removedFocusTarget = useRef<HTMLElement | null | undefined>(undefined)
+  const closeSnapshot = useCallback(() => setSelected(null), [])
+  const noteId = useId()
+  useLayoutEffect(() => {
+    if (removedFocusTarget.current === undefined) return
+    const target = removedFocusTarget.current
+    removedFocusTarget.current = undefined
+    if (target?.isConnected) target.focus()
+  }, [snapshots.length])
+  // The status region stays mounted so screen readers announce capture progress when it starts.
+  const status = <span aria-live="polite" data-reference-status="" className="sr-only">{pending ? PENDING_COPY(pending) : ''}</span>
+  if (snapshots.length === 0 && !pending && !error && !selected) return status
+  const { labels, numbers } = displayLabelsFor(snapshots)
+  return <>{status}<div ref={rootRef} role="group" aria-label="Reference context" aria-describedby={snapshots.length ? noteId : undefined} tabIndex={-1} className="px-3 pt-3">
+    <span id={noteId} hidden>Snapshots are included with your message when you press Send.</span>
+    {(snapshots.length > 0 || pending) && <div className="flex flex-wrap items-center gap-2">
       {snapshots.map((snapshot, index) => {
-        const label = displayLabels[index]
+        const label = labels[index]
         return <ContextChip key={snapshot.id} kind={snapshot.kind === 'branch' ? 'branch' : snapshot.kind === 'worktree' ? 'worktree' : 'file'} name={label} partial={snapshot.truncated}
-        meta={`${snapshot.truncated ? 'partial ' : ''}${snapshot.kind === 'file' ? '' : snapshot.kind + ' '}snapshot${duplicateNumbers[index] ? ` · ${duplicateNumbers[index]}` : ''}`}
-        detail={`Source: ${snapshot.sourcePath ?? snapshot.worktreeDirectory ?? snapshot.branchName}\nHost: ${snapshot.executionHostId}\nWorkspace: ${snapshot.workspaceDirectory}\nCaptured: ${capturedTime(snapshot.capturedAt)}\nSource chat: ${snapshot.sourceChatId}${snapshot.sourceChatCreatedAt ? '\nCreated: ' + capturedTime(snapshot.sourceChatCreatedAt) : ''}`}
+        meta={`${snapshot.truncated ? 'partial ' : ''}${snapshot.kind === 'file' ? '' : snapshot.kind + ' '}snapshot${numbers[index] ? ` · ${numbers[index]}` : ''}`}
+        detail={`Included when you press Send\nSource: ${snapshot.sourcePath ?? snapshot.worktreeDirectory ?? snapshot.branchName}\nHost: ${snapshot.executionHostId}\nWorkspace: ${snapshot.workspaceDirectory}\nCaptured: ${capturedTime(snapshot.capturedAt)}\nSource chat: ${snapshot.sourceChatId}${snapshot.sourceChatCreatedAt ? '\nCreated: ' + capturedTime(snapshot.sourceChatCreatedAt) : ''}`}
         onInspect={() => setSelected({ snapshot, label })} onRemove={() => {
           const chips = rootRef.current?.querySelectorAll<HTMLElement>('.uam-context-chip__body')
-          removedFocusTarget.current = chips?.[index + 1] ?? chips?.[index - 1] ?? null
+          // Falls back to the composer input, where @ offers more references (this group unmounts when empty).
+          removedFocusTarget.current = chips?.[index + 1] ?? chips?.[index - 1] ?? rootRef.current?.closest('.uam-composer-surface')?.querySelector<HTMLElement>('textarea') ?? null
           const current = readChatComposerDraft(chatId)
           writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => reference.id !== snapshot.id) })
         }} removeLabel={`Remove ${label} reference`} />
       })}
-      {candidates.map((path) => <Tooltip key={path} label={<span style={{ fontFamily: 'var(--font-mono)' }}>{path}</span>}>
-        <Button data-reference-action type="button" size="sm" variant="ghost" className="min-w-0 max-w-full" loading={pending === path} disabled={disabled || pending !== null || references.length >= CONTEXT_REFERENCE_MAX_COUNT}
-          onClick={() => void capture(path, () => captureWorkspaceFileReference(chatId, path))}><span className="max-w-[260px] truncate">{pending === path ? 'Reading file…' : `Reference @${path}`}</span></Button>
-      </Tooltip>)}
-      {(['branch', 'worktree'] as RepositoryReferenceKind[]).map((kind) => <Tooltip key={kind} label={kind === 'worktree' && !worktreeConfigured ? 'Worktree references require a configured worktree for this chat.' : `Capture the current ${kind} as quoted context; this does not change the workspace.`}>
-        <Button data-reference-action type="button" size="sm" variant="ghost" loading={pending === `repository:${kind}`} disabled={disabled || pending !== null || references.length >= CONTEXT_REFERENCE_MAX_COUNT}
-          // Focusable when only unconfigured, so keyboard and screen-reader users can reach the reason. Spread only
-          // then: an explicit undefined aria-describedby would replace the tooltip's description through Radix Slot.
-          {...(kind === 'worktree' && !worktreeConfigured ? { 'aria-disabled': true, 'aria-describedby': worktreeHintId } : {})}
-          onClick={() => { if (kind !== 'worktree' || worktreeConfigured) void capture(`repository:${kind}`, () => captureRepositoryContextReference(chatId, kind)) }}>Reference {kind}</Button>
-      </Tooltip>)}
-    </div>
-    {!worktreeConfigured && <span id={worktreeHintId} hidden>Worktree references require a configured worktree for this chat.</span>}
-    {references.length >= CONTEXT_REFERENCE_MAX_COUNT && <p className="pt-2 text-xs" style={{ color: 'var(--text-2)' }}>Four references selected. Remove one to add another.</p>}
-    {snapshots.length > 0 && <p className="pt-2 text-xs" style={{ color: 'var(--text-2)' }}>Snapshots are included with your message when you press Send.</p>}
-    {error && <p role="alert" className="pt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+      {pending && <span aria-hidden className="inline-flex h-6 min-w-0 max-w-[260px] items-center gap-1.5 px-2 text-xs" style={{ color: 'var(--text-2)' }}>
+        <LoaderCircle size={12} className="uam-reference-pending__spinner" /><span className="truncate">{PENDING_COPY(pending)}</span>
+      </span>}
+    </div>}
+    {error && <div role="alert" className="flex items-center gap-2 pt-2 text-xs" style={{ color: 'var(--error)' }}>
+      <span className="min-w-0 flex-1">{error}</span>
+      <IconButton icon={<X size={12} />} label="Dismiss reference error" size="sm" onClick={references.dismissError} />
+    </div>}
     {selected && <SnapshotDialog snapshot={selected.snapshot} label={selected.label} onClose={closeSnapshot} />}
-  </div>
+  </div></>
 }

@@ -1323,6 +1323,13 @@ summary,
   .uam-working-ring { animation: none; }
 }
 
+/* Reference capture in progress: the spinner turns while reading; the text alone carries the state without motion. */
+.uam-reference-pending__spinner { flex-shrink: 0; color: var(--text-3); animation: uam-status-spin 1s linear infinite; }
+[data-motion="off"] .uam-reference-pending__spinner { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-reference-pending__spinner { animation: none; }
+}
+
 @keyframes uam-status-spin {
   to { transform: rotate(360deg); }
 }

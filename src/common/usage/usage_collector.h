@@ -3,6 +3,8 @@
 #include "common/usage/usage_history_service.h"
 #include "common/usage/usage_store.h"
 #include "common/usage/usage_pricing_cache.h"
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -14,8 +16,10 @@ namespace uam::usage
 	class Collector
 	{
 	public:
-		explicit Collector(std::filesystem::path data_root, bool export_accounting = false);
-		Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates = {}, bool export_accounting = false);
+		/// <summary>A positive idle_after parks collection once no export has been requested for that long; the next export resumes it.</summary>
+		explicit Collector(std::filesystem::path data_root, bool export_accounting = false, std::chrono::milliseconds idle_after = {});
+		Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates = {}, bool export_accounting = false,
+		          std::chrono::milliseconds idle_after = {}, std::chrono::milliseconds pass_interval = std::chrono::seconds(30));
 		~Collector();
 		nlohmann::json Query(int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		/// <summary>Returns immutable bounded wire chunks; never reads provider files or accounting storage.</summary>
@@ -30,9 +34,13 @@ namespace uam::usage
 
 	private:
 		void Run(std::stop_token stop);
+		void NoteDemand() const;
 		bool Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled);
 		const std::filesystem::path m_dataRoot;
 		const bool m_exportAccounting;
+		const std::chrono::milliseconds m_idleAfter;
+		const std::chrono::milliseconds m_passInterval;
+		mutable std::atomic<std::int64_t> m_lastDemandMs;
 		Store m_store;
 		HistoryService m_history;
 		PricingCache m_pricing;
@@ -48,8 +56,8 @@ namespace uam::usage
 		nlohmann::json m_metadata;
 		std::string m_error;
 		bool m_collecting = true;
-		std::mutex m_waitMutex;
-		std::condition_variable_any m_wake;
+		mutable std::mutex m_waitMutex;
+		mutable std::condition_variable_any m_wake;
 		std::jthread m_worker;
 	};
 }

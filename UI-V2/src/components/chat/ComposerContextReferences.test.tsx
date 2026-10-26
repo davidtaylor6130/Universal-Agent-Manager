@@ -1,8 +1,8 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { ComposerContextReferences } from './ComposerContextReferences'
-import { captureWorkspaceFileReference } from '../../utils/fileContextReferences'
+import { ComposerReferenceChips, useComposerReferences } from './ComposerContextReferences'
+import { captureWorkspaceFileReference, draftFileMentions } from '../../utils/fileContextReferences'
 import { captureContextReference } from '../../utils/contextReferences'
 import { captureRepositoryContextReference } from '../../utils/repositoryContextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
@@ -10,7 +10,21 @@ import { useAppStore } from '../../store/useAppStore'
 
 vi.mock('../../utils/fileContextReferences', async (original) => ({ ...await original<typeof import('../../utils/fileContextReferences')>(), captureWorkspaceFileReference: vi.fn() }))
 vi.mock('../../utils/repositoryContextReferences', () => ({ captureRepositoryContextReference: vi.fn() }))
+
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+// The capture actions are offered by ChatView's @ palette; these buttons stand in for its selections.
+function ComposerContextReferences({ chatId, draft, disabled, onBusyChange }: { chatId: string; draft: string; disabled: boolean; onBusyChange: (busy: boolean) => void }) {
+  const references = useComposerReferences({ chatId, ownerKey: chatId, disabled, onBusyChange })
+  const candidates = draftFileMentions(draft).filter((path) => !references.fileCaptured(path))
+  return <div className="uam-composer-surface">
+    {candidates.map((path) => <button key={path} type="button" disabled={references.actionsDisabled} onClick={() => references.captureFile(path)}>{`Reference @${path}`}</button>)}
+    <button type="button" disabled={references.actionsDisabled} onClick={() => references.captureRepository('branch')}>Reference branch</button>
+    <button type="button" disabled={references.actionsDisabled} onClick={() => references.captureRepository('worktree')}>Reference worktree</button>
+    <ComposerReferenceChips references={references} />
+    <textarea aria-label="Composer input" />
+  </div>
+}
 const snapshot = captureContextReference({ kind: 'file', id: 'captured-file', sourceChatId: 'file-chip', sourcePath: '/work/readme.md',
   executionHostId: 'local', workspaceDirectory: '/work', capturedAt: '2026-10-23T12:00:00Z', label: 'readme.md', text: 'Captured text, not a current read.' })!
 beforeEach(() => {
@@ -95,7 +109,7 @@ it('keeps the draft after a refused file read and displays a recoverable error',
   } finally { act(() => root.unmount()); host.remove() }
 })
 
-it('keeps duplicate snapshots distinguishable and moves removal focus to the next chip then an available action', () => {
+it('keeps duplicate snapshots distinguishable and moves removal focus to the next chip then the composer input', () => {
   const other = { ...snapshot, id: 'other-same-label', sourcePath: '/other/readme.md' }
   writeChatComposerDraft('file-chip', { text: '', attachments: [], references: [snapshot, other] })
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
@@ -108,7 +122,7 @@ it('keeps duplicate snapshots distinguishable and moves removal focus to the nex
     expect(document.activeElement).toBe(host.querySelector('.uam-context-chip__body'))
     expect(readChatComposerDraft('file-chip').references).toEqual([other])
     act(() => host.querySelector<HTMLButtonElement>('.uam-context-chip__remove')!.click())
-    expect(document.activeElement?.textContent).toBe('Reference branch')
+    expect(document.activeElement).toBe(host.querySelector('textarea'))
   } finally { act(() => root.unmount()); host.remove() }
 })
 
@@ -157,23 +171,20 @@ it('names the captured text region and preserves chip focus when the backdrop di
   } finally { act(() => root.unmount()); host.remove() }
 })
 
-it('requires a projected configured worktree before offering its capture and suppresses a canonical dot-prefix file spelling', () => {
+it('requires a projected configured worktree before offering its capture and suppresses a canonical dot-prefix file spelling', async () => {
   useAppStore.setState((state) => ({ sessions: state.sessions.map((chat) => ({ ...chat, workspaceIsolationKind: undefined, workspaceWorktreeDirectory: undefined })) }))
   writeChatComposerDraft('file-chip', { text: '@./docs/readme.md', attachments: [], references: [{ ...snapshot, sourcePath: 'docs/readme.md' }] })
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
   try {
     act(() => root.render(<ComposerContextReferences chatId="file-chip" draft="@./docs/readme.md" disabled={false} onBusyChange={() => {}} />))
     const worktree = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Reference worktree')!
-    // Unconfigured stays focusable so the described reason is reachable.
-    expect(worktree.getAttribute('aria-disabled')).toBe('true')
-    expect(document.getElementById(worktree.getAttribute('aria-describedby')!)!.textContent).toContain('require a configured worktree')
     act(() => worktree.click())
     expect(captureRepositoryContextReference).not.toHaveBeenCalled()
     expect(host.textContent).not.toContain('Reference @')
     expect(host.textContent).toContain('Snapshots are included with your message')
     act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((chat) => ({ ...chat, workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/configured/worktree' })) })))
-    expect(worktree.disabled).toBe(false)
-    expect(worktree.hasAttribute('aria-disabled')).toBe(false)
+    await act(async () => worktree.click())
+    expect(captureRepositoryContextReference).toHaveBeenCalledWith('file-chip', 'worktree')
   } finally { act(() => root.unmount()); host.remove() }
 })
 
@@ -192,15 +203,22 @@ it('numbers duplicates by occurrence in shrink-safe meta text, names the dialog 
   } finally { act(() => root.unmount()); host.remove() }
 })
 
-it('keeps the tooltip description on reference actions that are not unconfigured', async () => {
-  writeChatComposerDraft('file-chip', { text: '', attachments: [], references: [] })
+
+it('discards a capture that finishes after the composer switches to another chat in place', async () => {
+  let finish!: (value: typeof snapshot) => void
+  vi.mocked(captureWorkspaceFileReference).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+  useAppStore.setState((state) => ({ sessions: [...state.sessions, { ...state.sessions[0], id: 'other-chat' }] }))
+  writeChatComposerDraft('other-chat', { text: '', attachments: [], references: [] })
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
   try {
-    act(() => root.render(<ComposerContextReferences chatId="file-chip" draft="" disabled={false} onBusyChange={() => {}} />))
-    const branch = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Reference branch')!
-    await act(async () => { branch.focus(); branch.dispatchEvent(new FocusEvent('focus')) })
-    const describedBy = branch.getAttribute('aria-describedby')
-    expect(describedBy).toBeTruthy()
-    expect(document.getElementById(describedBy!)?.textContent).toContain('does not change the workspace')
+    act(() => root.render(<ComposerContextReferences chatId="file-chip" draft="@readme.md" disabled={false} onBusyChange={() => {}} />))
+    await act(async () => host.querySelector<HTMLButtonElement>('button')!.click())
+    expect(host.querySelector('[data-reference-status]')?.textContent).toContain('Reading readme.md')
+    act(() => root.render(<ComposerContextReferences chatId="other-chat" draft="" disabled={false} onBusyChange={() => {}} />))
+    expect(host.querySelector('[data-reference-status]')?.textContent).toBe('')
+    await act(async () => { finish(snapshot); await Promise.resolve() })
+    expect(readChatComposerDraft('file-chip').references).toBeUndefined()
+    expect(readChatComposerDraft('other-chat').references ?? []).toEqual([])
+    expect(host.querySelector('.uam-context-chip')).toBeNull()
   } finally { act(() => root.unmount()); host.remove() }
 })

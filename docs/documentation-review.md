@@ -57,6 +57,14 @@ The prior [ChatView](../UI-V2/src/components/views/ChatView.tsx) implementation 
 
 The source patch uses a shared captured submission, refuses a changed target chat/birth/provider/host/workspace before delayed dispatch, and clears only unchanged submitted references for the same chat birth after admission. The [regressions](../UI-V2/src/components/views/ChatView.test.tsx) now assert the authorized initial-send rule across goal and all three Claude choices, including references added during goal/mode waits; the generated-action exclusion tests remain. Frontend regressions and the synthetic component fixture have been exercised; linked native CEF integration, real runtime/provider verification, scoped Claude review and David's implementation acceptance remain pending in the [V5 log](<../V5 Improvement Change log.md>).
 
+## Composer actions, voice mode and terminology
+
+**Decided by David, 2026-10-26.** He rejected the rows of plain-text buttons above the composer input ("Reference branch · Reference worktree" and "Start voice mode · Read response"). His decisions:
+
+- No new composer GUI for these actions: `/` types commands and skills, and `@` types context references to files, the chat worktree and the current branch.
+- Voice mode and read-aloud playback are removed; composer dictation remains. The frontend hook, Voice settings section and bridge wrappers are removed; the native speech-output services and their CEF handlers remain as a backend follow-up to delete.
+- **Chips** are the clickable in-chat pills that open files and similar content in the app; **tabs** are the labels on the composer's top edge used by side chats and workspace actions. [Interaction](ui/interaction.md) owns these definitions.
+
 ## Known gaps retained
 
 | Area | Current limit | Record to consult |
