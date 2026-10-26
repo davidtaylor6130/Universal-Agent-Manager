@@ -62,7 +62,7 @@ namespace uam::platform
 		std::filesystem::path RootPath() const;
 		bool Scan(Inventory& entries, std::string& error) const;
 		bool MakeDirectory(const std::filesystem::path& relative, std::string& error) const;
-		bool CopyFile(const Entry& entry, const DataFolderTree& destination, std::string& error) const;
+		bool CopyEntry(const Entry& entry, const DataFolderTree& destination, std::string& error) const;
 		bool Read(const std::filesystem::path& relative, std::size_t limit, std::string& bytes, std::string& error, std::shared_ptr<const ReadWitness>* retained = nullptr) const;
 		Publication Publish(const std::filesystem::path& relative, const std::string& bytes, const WriteGate& gate = {}) const;
 		static std::string Digest(const Inventory& entries);

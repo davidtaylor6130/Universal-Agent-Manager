@@ -525,8 +525,8 @@ UAM_TEST(DataFolderTransferPreservesModificationTimeAuthority)
 	TransferFixture fixture;
 	const auto base = fs::file_time_type::clock::now() - std::chrono::hours(48);
 	const fs::path primary = "chats/synthetic.json", summary = "chat-summaries/synthetic.json", queue = "queue-outboxes/synthetic.json";
-	fs::last_write_time(fixture.source / primary, base + std::chrono::nanoseconds(1234567));
-	fs::last_write_time(fixture.source / summary, base + std::chrono::seconds(3) + std::chrono::nanoseconds(7654321));
+	fs::last_write_time(fixture.source / primary, base + std::chrono::duration_cast<fs::file_time_type::duration>(std::chrono::nanoseconds(1234567)));
+	fs::last_write_time(fixture.source / summary, base + std::chrono::duration_cast<fs::file_time_type::duration>(std::chrono::seconds(3) + std::chrono::nanoseconds(7654321)));
 	const auto before = FrozenInventory(fixture.source);
 	UAM_ASSERT(fixture.Activate() && fixture.transaction->ConfirmDestinationOwner(fixture.error));
 	for (const auto& path : {primary, summary, queue})

@@ -800,7 +800,7 @@ bool uam::DataFolderTransition::ActivateStopped(bool confirmed_normal_exit, std:
 	{
 		if (fault && !fault("copy", io::AtomicWriteStage::BeforeReplace))
 			return Hold(error, "The passive copy was interrupted; source and destination remain held.");
-		if (entry.directory ? !m_destination->MakeDirectory(entry.relative, error) : !m_source->CopyFile(entry, *m_destination, error))
+		if (entry.directory ? !m_destination->MakeDirectory(entry.relative, error) : !m_source->CopyEntry(entry, *m_destination, error))
 			return Hold(error, error);
 	}
 	Tree::Inventory source_after, copied;

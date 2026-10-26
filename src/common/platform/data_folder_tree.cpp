@@ -491,7 +491,7 @@ bool uam::platform::DataFolderTree::Read(const fs::path& relative, std::size_t l
 	}
 	return true;
 }
-bool uam::platform::DataFolderTree::CopyFile(const Entry& entry, const DataFolderTree& destination, std::string& error) const
+bool uam::platform::DataFolderTree::CopyEntry(const Entry& entry, const DataFolderTree& destination, std::string& error) const
 {
 	auto source = m_impl->File(entry.relative, false);
 	if (!source || Stamp(*source, false) != entry.object)
