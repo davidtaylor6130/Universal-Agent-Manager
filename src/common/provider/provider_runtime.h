@@ -158,6 +158,12 @@ class IProviderRuntime
 	virtual bool SupportsTextWorkers() const { return true; }
 	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
 	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
+	/// <summary>Checks structured protocol compatibility for a checked executing-host CLI version, separately from installation policy.</summary>
+	virtual std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr) const { return {}; }
+	virtual bool RequiresStructuredCliVersion(const ProviderProfile&) const { return false; }
+	/// Provider-owned generation selection after captured setup, before process creation.
+	virtual bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,
+	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string&) const { return true; }
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
 	virtual bool IsEnabled() const { return true; }
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>
@@ -167,6 +173,8 @@ class IProviderRuntime
 	virtual std::vector<std::string> BuildNativeDiscoveryArgv(const ProviderProfile&) const { return {}; }
 	/// Returns a direct native transcript export command, or empty when unsupported.
 	virtual std::vector<std::string> BuildNativeExportArgv(const ProviderProfile&, const ChatSession&) const { return {}; }
+	virtual std::vector<std::string> BuildLocalNativeDiscoveryArgv(const ProviderProfile& profile) const { return BuildNativeDiscoveryArgv(profile); }
+	virtual std::vector<std::string> BuildLocalNativeExportArgv(const ProviderProfile& profile, const ChatSession& chat) const { return BuildNativeExportArgv(profile, chat); }
 	virtual std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const = 0;
 	/// <summary>Validates provider-specific terminal options before runtime handoff.</summary>
 	virtual std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const;
@@ -287,6 +295,12 @@ class IProviderRuntime
 
 	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
 	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
+	/// Selects the checked local route before writing generation-specific isolation.
+	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr) const
+	{
+		if (private_isolation) *private_isolation = false;
+		return true;
+	}
 
 	/// <summary>Builds the argv that launches the provider's structured (ACP/app-server) process over stdio.</summary>
 	virtual std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const = 0;
@@ -352,9 +366,17 @@ class IProviderRuntime
 	virtual bool OnAcpHandleResult(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const std::string&, const std::string&, const nlohmann::json&) const { return false; }
 
+	/// <summary>Observes a correlated cancelled prompt's result without ordinary completion or input admission.</summary>
+	virtual void OnAcpObserveCancelledPromptResult(uam::AppState&, uam::AcpSessionState&,
+	    ChatSession&, const nlohmann::json&) const {}
+
 	/// <summary>Handles provider-specific response failures after shared diagnostics; false uses common recovery.</summary>
 	virtual bool OnAcpHandleError(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const uam::acp_detail::AcpResponseFailureDetails&) const { return false; }
+
+	/// <summary>Retires ambiguous owned input without automatic reconnect/replay. False keeps legacy recovery.</summary>
+	virtual bool OnAcpHoldUnconfirmedInput(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const std::string&, std::optional<int> = std::nullopt) const { return false; }
 
 	/// <summary>Projects provider-owned child activity; managed UAM child runs are counted separately.</summary>
 	virtual std::size_t AcpBackgroundTaskCount(const uam::AcpSessionState& session) const;
