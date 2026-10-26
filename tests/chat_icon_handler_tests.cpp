@@ -3812,7 +3812,8 @@ UAM_TEST(NativeChildLineageHandlerGeminiShortReadableRefreshPreservesSavedOrigin
 	UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 	UAM_ASSERT_EQ(callback->successes, 0); // Intended actual R9 RED after all genuine reader/import prerequisites.
 	UAM_ASSERT_EQ(callback->failures, 1);
-	UAM_ASSERT(!callback->body.empty());
+	const std::string expected_refusal = "Native child history is shorter than the saved conversation. Saved history was retained for reading. Refresh can succeed when this child's complete native history is available; the same shorter source cannot replace it.";
+	UAM_ASSERT_EQ(callback->body, expected_refusal);
 	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
 	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.reference), primary_revision);
 	UAM_ASSERT_EQ(ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, fixture.reference), summary_revision);
@@ -3825,6 +3826,22 @@ UAM_TEST(NativeChildLineageHandlerGeminiShortReadableRefreshPreservesSavedOrigin
 	UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 	UAM_ASSERT(fixture.app.branch_preparations.empty());
 	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
+	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
+
+	// Repeating refresh cannot repair the source or discard saved originals.
+	const auto repeated = fixture.Open(*handler_owner, true);
+	UAM_ASSERT_EQ(repeated->successes, 0); UAM_ASSERT_EQ(repeated->failures, 1);
+	UAM_ASSERT_EQ(repeated->body, expected_refusal);
+	UAM_ASSERT_EQ(ReadFile(primary_path), primary); UAM_ASSERT_EQ(ReadFile(summary_path), summary);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.reference), primary_revision);
+	UAM_ASSERT_EQ(ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, fixture.reference), summary_revision);
+	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
+
+	// A normal reopen still reads saved history while the genuine source remains
+	// short. The ordinary reopen may save metadata; refusal checks above compare
+	// the original bytes and revisions before that separate successful operation.
+	const auto reopened = fixture.Open(*handler_owner, false);
+	UAM_ASSERT_EQ(reopened->successes, 1); UAM_ASSERT_EQ(reopened->failures, 0);
 	UAM_ASSERT_EQ(fixture.AssertSaved(true), keys);
 
 	// Restore the exact original journal, then issue a NEW public refresh. A
