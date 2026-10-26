@@ -41,6 +41,12 @@ describe('motionStorage', () => {
     const reduced = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce) {\n  *, *::before'))
     expect(reduced).toMatch(settleRule('\\*, \\*::before, \\*::after'))
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ :root \{ --motion-scale: 0; \} \}/)
+    expect(styles.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before/g)).toHaveLength(1)
+    // Fallbacks that keep working state visible without movement apply to Motion Off too.
+    const conversation = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
+    expect(conversation).toContain(':root[data-motion="off"] .status-scene__box { opacity: .85; }')
+    const sidebar = readFileSync(resolve(process.cwd(), 'src/components/sidebar/sidebar.css'), 'utf8')
+    expect(sidebar).toContain(':root[data-motion="off"] .uam-sb-progress > span { animation: none; transform: translateX(40%); }')
   })
 
   it('stops JS-driven exit motion when Appearance Motion is Off', () => {

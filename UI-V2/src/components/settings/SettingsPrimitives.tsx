@@ -59,13 +59,16 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
   useLayoutEffect(() => {
     const ids = [description ? descriptionId : '', status ? statusId : ''].filter(Boolean)
     const host = controlRef.current
-    if (!host || !ids.length) return
+    if (!host) return
     for (const element of host.querySelectorAll<HTMLElement>(DESCRIBED_CONTROLS)) {
       const group = element.parentElement?.closest(CONTROL_GROUPS)
       if (group && host.contains(group)) continue
       const current = element.getAttribute('aria-describedby')?.split(/\s+/).filter(Boolean) ?? []
-      const next = [...new Set([...current, ...ids])].join(' ')
-      if (next !== current.join(' ')) element.setAttribute('aria-describedby', next)
+      // Keep the control's own ids; replace this row's ids so a removed status line is not left referenced.
+      const next = [...new Set([...current.filter((id) => id !== descriptionId && id !== statusId), ...ids])].join(' ')
+      if (next === current.join(' ')) continue
+      if (next) element.setAttribute('aria-describedby', next)
+      else element.removeAttribute('aria-describedby')
     }
   })
   return (
@@ -84,10 +87,10 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
   )
 }
 
-/** Settings save action: busy while pending, with the pending label announced politely. */
+/** Settings save action: busy while pending, with the pending label announced politely. A `loading` spinner keeps the label visible. */
 export function SaveButton({ saving, pendingLabel = 'Saving…', variant = 'primary', size = 'sm', children, ...props }: ButtonProps & { saving: boolean; pendingLabel?: string }) {
   return <>
-    <Button variant={variant} size={size} aria-busy={saving || undefined} {...props}>{saving ? pendingLabel : children}</Button>
+    <Button variant={variant} size={size} aria-busy={saving || undefined} {...props}>{saving && !props.loading ? pendingLabel : children}</Button>
     <span className="sr-only" role="status" aria-live="polite">{saving ? pendingLabel : ''}</span>
   </>
 }

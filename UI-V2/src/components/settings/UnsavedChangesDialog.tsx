@@ -1,4 +1,5 @@
 import { Button } from '../ui'
+import { SaveButton } from './SettingsPrimitives'
 
 /** Stay / Discard / Save prompt shown when leaving a settings page with unsaved edits. Escape stays. */
 export function UnsavedChangesDialog({ title, label, detail, busy = false, saveDisabled = false, error, onStay, onDiscard, onSave }: {
@@ -24,7 +25,7 @@ export function UnsavedChangesDialog({ title, label, detail, busy = false, saveD
       <div className="flex justify-end gap-2 px-5 pb-5 pt-2">
         <Button size="sm" autoFocus disabled={busy} onClick={onStay}>Keep editing</Button>
         <Button size="sm" variant="danger" disabled={busy} onClick={onDiscard}>Discard</Button>
-        {onSave && <Button size="sm" variant="primary" loading={busy} disabled={saveDisabled} onClick={onSave}>Save and leave</Button>}
+        {onSave && <SaveButton saving={Boolean(busy)} loading={busy} disabled={saveDisabled} onClick={onSave}>Save and leave</SaveButton>}
       </div>
     </div>
   </div>

@@ -218,7 +218,8 @@ describe('FolderTree', () => {
       const actions = host.querySelector<HTMLButtonElement>('button[aria-label="Folder actions"]')!
       expect(header.contains(actions)).toBe(false)
       expect(actions.closest('.group')?.contains(header)).toBe(true)
-      expect(actions.parentElement?.closest('[class*="group-focus-within:opacity-100"]')).toBeTruthy()
+      expect(actions.parentElement?.closest('[class*="group-has-[:focus-visible]:opacity-100"]')).toBeTruthy()
+      expect(header.getAttribute('aria-keyshortcuts')).not.toContain('ArrowUp')
     } finally {
       act(() => root.unmount())
       host.remove()

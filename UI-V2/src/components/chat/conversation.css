@@ -270,6 +270,13 @@
   .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
   .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
 }
+/* Appearance Motion Off keeps the same still working picture as OS reduced motion. */
+:root[data-motion="off"] .chat-status-strip[data-state="closed"] { display: none; }
+:root[data-motion="off"] .status-scene__box { opacity: .85; }
+:root[data-motion="off"] .status-scene__box--1 { transform: translateX(4px); }
+:root[data-motion="off"] .status-scene__box--2 { transform: translateX(21px) scaleY(.45); }
+:root[data-motion="off"] .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
+:root[data-motion="off"] .status-bed__z--1, :root[data-motion="off"] .status-agent--asleep .status-agent__z { opacity: .8; }
 
 /* Undelivered direct input keeps its transcript slot: dotted grey until native delivery state changes. */
 .conversation-turn[data-delivery] > .conversation-turn__body {

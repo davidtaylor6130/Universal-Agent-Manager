@@ -23,6 +23,9 @@ it('associates row descriptions and status with each control or control group', 
   expect(describedText(host.querySelector('[role="radiogroup"]')!)).toBe('Applies to new chats.')
   expect(host.querySelector('[role="radio"]')!.hasAttribute('aria-describedby')).toBe(false)
   expect(describedText(host.querySelector('input[aria-label="Base"]')!)).toBe('Own hint | Empty uses HEAD.')
+
+  act(() => root.render(<SettingRow title="Git" description="Uses the local repository." control={<Switch hideLabel label="Enable Git" />} />))
+  expect(describedText(host.querySelector('[aria-label="Enable Git"]')!)).toBe('Uses the local repository.')
 })
 
 it('marks a pending save busy and announces it in a polite live region', () => {
@@ -38,4 +41,8 @@ it('marks a pending save busy and announces it in a polite live region', () => {
   const button = host.querySelector('button')!
   expect(button.getAttribute('aria-busy')).toBe('true')
   expect(button.textContent).toBe('Saving…')
+
+  act(() => root.render(<SaveButton saving loading>Save routing</SaveButton>))
+  expect(host.querySelector('button')!.textContent).toBe('Save routing')
+  expect(host.querySelector('[role="status"]')!.textContent).toBe('Saving…')
 })

@@ -1540,7 +1540,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
@@ -3170,7 +3170,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {customExplorer && <div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
                 <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setOpenWithError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
-                <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
+                <SaveButton saving={editorSaving} disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</SaveButton>
               </div>}
             </SettingRow>
             {isWindows && <SettingRow
@@ -3348,7 +3348,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
               <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
+              <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</SaveButton>
             </div>
           </div>
         </Overlay>}

@@ -75,6 +75,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-sb-progress > span { animation: none; transform: translateX(40%); }
 }
+:root[data-motion="off"] .uam-sb-progress > span { animation: none; transform: translateX(40%); }
 /* Determinate: scaleX from the left edge, inline transform carries the value. */
 .uam-sb-progress--determinate > span {
   width: 100%;

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { applyDocumentTheme, BUILT_IN_THEMES, contrastRatio, onAccentFor } from './utils/themeStorage'
@@ -49,6 +49,13 @@ describe('on-accent contrast', () => {
 
   it('uses the on-accent token instead of fixed white or page colours on accent fills', () => {
     expect(styles).toMatch(/\.uam-btn--primary \{\s*background: var\(--accent\);\s*color: var\(--on-accent\);/)
-    expect(styles).not.toMatch(/background: var\(--accent\); color: (#fff|white|var\(--bg\))/)
+    const sheets = (readdirSync(resolve(process.cwd(), 'src'), { recursive: true }) as string[]).filter((file) => file.endsWith('.css'))
+    expect(sheets.length).toBeGreaterThan(10)
+    for (const sheet of sheets) {
+      const rules = readFileSync(resolve(process.cwd(), 'src', sheet), 'utf8').match(/[^{}]*\{[^}]*\}/g) ?? []
+      for (const rule of rules.filter((body) => /background:\s*var\(--accent\)\s*;/.test(body))) {
+        expect(rule, sheet).not.toMatch(/(^|[^-])color:\s*(#fff\b|#ffffff|white|var\(--bg\))/)
+      }
+    }
   })
 })

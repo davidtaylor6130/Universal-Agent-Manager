@@ -3,7 +3,7 @@ import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence } from '../ui'
-import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 
@@ -258,7 +258,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
     <div className="flex items-center justify-end gap-3">
       {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
-      <Button size="sm" variant="primary" loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</Button>
+      <SaveButton saving={busy} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>
     </div>
 
     <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
@@ -324,7 +324,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
                 ? <Button size="sm" onClick={closeEditor}>Close</Button>
                 : <>
                   <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
-                  <Button size="sm" variant="primary" loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</Button>
+                  <SaveButton saving={busy} loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
                 </>}
             </footer>
           </div>

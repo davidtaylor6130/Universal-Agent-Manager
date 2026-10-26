@@ -1976,7 +1976,7 @@ const FolderRow = memo(function FolderRow({
         tabIndex={0}
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
-        aria-keyshortcuts="ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space"
+        aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
         className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
         style={{
           background: selected ? 'var(--accent-dim)' : 'transparent',
@@ -2023,7 +2023,7 @@ const FolderRow = memo(function FolderRow({
         )}
         {/* Count */}
         <span
-          className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 group-focus-within:opacity-0 transition-opacity duration-100"
+          className="text-xs flex-shrink-0 rounded px-1 group-hover:opacity-0 group-has-[:focus-visible]:opacity-0 transition-opacity duration-100"
           style={{ fontSize: 10, background: 'var(--surface-high)', color: 'var(--text-3)' }}
         >
           {sessionIds.length}
@@ -2031,7 +2031,7 @@ const FolderRow = memo(function FolderRow({
       </div>
         {/* Overflow menu trigger: revealed on hover and whenever keyboard focus is in the row. */}
         <div
-          className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+          className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
           {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
             <button
