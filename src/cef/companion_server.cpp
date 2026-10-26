@@ -377,6 +377,9 @@ void UamCompanionServer::DrainProxy(std::stop_token stop_token)
 	std::string stderr_tail;
 	while (!stop_token.stop_requested())
 	{
+		// Observe exit before reading so the proxy's final diagnostic reaches the log.
+		int exit_code = 0;
+		const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(m_proxy_process, &exit_code);
 		bool read_any = false;
 		for (const bool stderr_stream : {false, true})
 		{
@@ -393,8 +396,7 @@ void UamCompanionServer::DrainProxy(std::stop_token stop_token)
 				}
 			}
 		}
-		int exit_code = 0;
-		if (PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(m_proxy_process, &exit_code))
+		if (exited && !read_any)
 		{
 			m_proxy_running = false;
 			m_proxy_exited = true;

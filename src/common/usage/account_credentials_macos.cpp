@@ -74,6 +74,8 @@ function run(argv)
 		std::string output; std::array<char, 8192> bytes{}; int exit_code = -1; bool exited = false;
 		while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
 		{
+			// Observe exit before the final read: output written before exit is already in the pipe.
+			const bool exit_observed = process_service.PollStdioProcessExited(process, &exit_code);
 			const auto read = process_service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), nullptr);
 			if (read == -1) return Failure("macOS account storage response could not be read.");
 			if (read > 0)
@@ -83,7 +85,7 @@ function run(argv)
 			}
 			// This stream can contain interpreter diagnostics, so it is never exposed or logged.
 			(void)process_service.ReadStdioProcessStderr(process, bytes.data(), bytes.size(), nullptr);
-			if (read <= 0 && process_service.PollStdioProcessExited(process, &exit_code)) { exited = true; break; }
+			if (read <= 0 && exit_observed) { exited = true; break; }
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		if (stop.stop_requested()) return Failure("macOS account access was canceled.");

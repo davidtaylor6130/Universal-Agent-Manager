@@ -539,6 +539,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Platform and diagnostics | Bugfix | macOS Quit Routing | Quit exits an owned picker modal loop before deferring CEF closure, including ignored cancellation and repeated requests. | Claude Review; Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Caps Lock Quit | Command-Q works with Caps Lock enabled. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Reaped Exit Status | macOS retains process exit status while remaining output is drained. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Process Exit Output Drain | Remote setup, account-allowance, keychain, Codex profile, Computer Use helper, OpenCode session and companion proxy readers observe child exit before their final read, so output written just before exit is kept. | Implemented; Windows Five Fake-child Regressions Fail Before And Pass After; Windows Related Native170/170 PASS; macOS Native Run Left To CI; Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Performance | Background Diagnostic Logging | Diagnostic logging uses a bounded background worker. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Oversized Log Recovery | Startup safely recovers oversized diagnostic logs. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Special Log Path Rejection | Startup rejects special diagnostic paths before opening them. | Un-Reviewed; Not User Tested |
@@ -931,6 +932,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Platform and diagnostics | Bugfix | Process Exit Output Drain | Live SSH setup, provider account reads and companion proxy exits remain to be confirmed with the exit-before-drain fix on macOS and Windows hosts. | Implemented; Live Acceptance Pending; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Bugfix | Windows Desktop Start-up Crash | Windows launches in a signed-in desktop session crashed in CEF because the manifest lacked Windows 10 support; the manifest fix awaits David's test. | Implemented; Signed-in Session Launch Verified; Independently Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Misc | Windows Smoke Detects Child Crashes | The packaged Windows smoke test only checks that the launched process survives 5 seconds, which the crash supervisor satisfies while the GUI child crash-loops. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Native verification | Misc | Real-time Budget Flakes On Hosted CI | Cold-poll 100 ms, remote lease 250 ms and exit-time Stop 500 ms cases fail intermittently on shared CI runners and rely on the CI single retry and the tests/ci_quarantine.txt list (#510, #526, #527, #531, #532); fix their timing sensitivity. | Not Started; Un-Reviewed; Not User Tested | Unassigned |

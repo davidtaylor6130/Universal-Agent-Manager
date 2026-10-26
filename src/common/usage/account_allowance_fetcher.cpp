@@ -324,6 +324,8 @@ namespace uam::usage
 		{
 			if (stop.stop_requested()) return Failure("Account allowance refresh was cancelled.");
 			if (std::chrono::steady_clock::now() >= deadline) return Failure("Account allowance refresh timed out.");
+			// A response written just before exit is still read.
+			const bool exit_observed = service.PollStdioProcessExited(process);
 			bool progress = false;
 			for (bool stderr_stream : {false, true})
 			{
@@ -366,7 +368,7 @@ namespace uam::usage
 			}
 			if (!progress)
 			{
-				if (service.PollStdioProcessExited(process)) return Failure("The provider account reader exited before returning allowances.");
+				if (exit_observed) return Failure("The provider account reader exited before returning allowances.");
 				std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			}
 		}
