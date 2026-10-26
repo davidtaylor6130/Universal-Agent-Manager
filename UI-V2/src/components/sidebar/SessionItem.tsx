@@ -413,6 +413,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return Boolean(source && !source.importedReadOnly && source.workspaceIsolationKind === 'gitWorktree' && source.workspaceWorktreeDirectory && source.folderId && (source.executionHostId || 'local') === 'local')
   })
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  // Resting row text (wake time, age, status) gives way whenever the hover actions show, so they never overlap.
+  const restingFade = menuPos ? 'transition-opacity duration-100 opacity-0' : HOVER_FADE
   const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
   const snoozeRef = useRef<HTMLDivElement>(null)
   const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
@@ -793,12 +795,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         {!editing && (
           <>
             {!activityLayout && isSnoozed && (
-              <span className="inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }} title={`Wakes ${new Date(snoozedUntilMs).toLocaleString()}`}>
+              <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums ${restingFade}`} style={{ color: 'var(--text-3)' }} title={`Wakes ${new Date(snoozedUntilMs).toLocaleString()}`}>
                 <Clock size={11} aria-hidden />
                 until {formatWakeTime(snoozedUntilMs)}
               </span>
             )}
-            {!activityLayout && <div className={`ml-auto flex items-center gap-1 ${HOVER_FADE}`}>
+            {!activityLayout && <div className={`ml-auto flex items-center gap-1 ${restingFade}`}>
               {lastOpenedLabel && (
                 <span
                   className={`${activityLayout ? 'max-w-[100px]' : `max-w-[58px] ${HOVER_FADE}`} truncate text-[10px] tabular-nums`}
@@ -840,7 +842,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 <IconButton
                   size="sm"
                   label={`Unsnooze ${sessionName}`}
-                  tooltip="Wake chat now"
+                  tooltip={`Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
                   icon={<AlarmClockOff size={13} aria-hidden />}
                   onClick={(e) => {
                     e.stopPropagation()

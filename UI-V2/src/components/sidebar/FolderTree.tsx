@@ -6,7 +6,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -183,7 +183,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const rescanFolderChats    = useAppStore((s) => s.rescanFolderChats)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
-  const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
   const reorderFolders = useAppStore((s) => s.reorderFolders)
   const reorderResourceReferences = useAppStore((s) => s.reorderResourceReferences)
   const createResourceCollection = useAppStore((s) => s.createResourceCollection)
@@ -772,7 +771,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       onCancelEdit={() => setEditingFolderId(null)}
       onChooseDirectory={() => void chooseEditFolderDirectory()}
       onCreateChat={() => setNewChatModalOpen(true, folder.id)}
-      onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
       sessionsById={sessionsById}
       familySessionIdsByRootId={familySessionIdsByRootId}
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
@@ -1841,7 +1839,6 @@ interface FolderRowProps {
   onCancelEdit: () => void
   onChooseDirectory: () => void
   onCreateChat: () => void
-  onOpenMemory: () => void
   sessionsById: Map<string, Session>
   familySessionIdsByRootId: Map<string, string[]>
   selectedSessionIds: Set<string>
@@ -1878,7 +1875,6 @@ const FolderRow = memo(function FolderRow({
   onCancelEdit,
   onChooseDirectory,
   onCreateChat,
-  onOpenMemory,
   sessionsById,
   familySessionIdsByRootId,
   selectedSessionIds,
@@ -2073,7 +2069,6 @@ const FolderRow = memo(function FolderRow({
           onClick={(e) => e.stopPropagation()}
         >
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
-          <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
