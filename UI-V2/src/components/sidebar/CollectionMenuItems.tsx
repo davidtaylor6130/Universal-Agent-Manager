@@ -3,7 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
 import { reportAppFailure } from '../../utils/appFailure'
 import { RowSubmenu } from './RowSubmenu'
-import { runForEach, type BulkTarget } from './bulkActions'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {

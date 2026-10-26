@@ -2,29 +2,12 @@ import { createContext, useId, useState, type ReactNode } from 'react'
 import { Copy } from 'lucide-react'
 import { Tooltip } from '../ui'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { reportAppFailure } from '../../utils/appFailure'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { useAppStore } from '../../store/useAppStore'
-
-export type BulkTarget = { id: string; label: string }
 
 /** FolderTree's chat multi-selection, read when a selected row opens its menu, so selection changes never re-render rows. */
 export type ChatSelection = { selectedIds: () => string[]; deleteSelected: () => void }
 export const ChatSelectionContext = createContext<ChatSelection | null>(null)
-
-/** Runs the action for every target in order; every failure is reported by name in one shared notification. Returns succeeded ids. */
-export async function runForEach(targets: BulkTarget[], action: (target: BulkTarget) => Promise<string | null>, failureMessage: string): Promise<string[]> {
-  const succeeded: string[] = []
-  const failed: string[] = []
-  for (const target of targets) {
-    let error: string | null
-    try { error = await action(target) }
-    catch (cause) { error = cause instanceof Error && cause.message.trim() ? cause.message : 'The request failed.' }
-    if (error === null) succeeded.push(target.id)
-    else failed.push(`“${target.label}”: ${error}`)
-  }
-  if (failed.length > 0) reportAppFailure(`${failureMessage} (${failed.length} of ${targets.length})`, failed.join(' · '))
-  return succeeded
-}
 
 export type SelectionNoun = 'chat' | 'workspace' | 'collection'
 
@@ -55,7 +38,7 @@ const chatTargets = (ids: string[]) => {
 /** Pins or unpins every listed chat that is not already in that state. */
 export function setChatsPinned(ids: string[], pin: boolean) {
   return runForEach(chatTargets(ids).filter((chat) => (chat.isPinned ?? false) !== pin).map((chat) => ({ id: chat.id, label: chat.name })),
-    async ({ id }) => await useAppStore.getState().setSessionPinned(id, pin) ? null : 'The pin could not be saved.', pin ? 'Could not pin chats' : 'Could not unpin chats')
+    async ({ id }) => await useAppStore.getState().setSessionPinned(id, pin, { quiet: true }) ? null : 'The pin could not be saved.', pin ? 'Could not pin chats' : 'Could not unpin chats')
 }
 
 /** Wakes every listed chat that is snoozed. */
@@ -70,7 +53,9 @@ export function wakeChats(ids: string[]) {
 
 /** Marks every listed chat done, acknowledging its current attention first. */
 export function markChatsDone(ids: string[]) {
-  return runForEach(chatTargets(ids).map((chat) => ({ id: chat.id, label: chat.name })), async ({ id }) => {
+  // Working chats offer no Done action, so they are left running.
+  const working = useAppStore.getState().acpBindingBySessionId
+  return runForEach(chatTargets(ids).filter((chat) => !working[chat.id]?.processing).map((chat) => ({ id: chat.id, label: chat.name })), async ({ id }) => {
     const state = useAppStore.getState()
     const revision = state.sessions.find((chat) => chat.id === id)?.attentionRevision
     if (revision) await state.acknowledgeChatAttention(id, revision)

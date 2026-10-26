@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { isSingleIconText, lucideIconName, lucideIconValue, resolveCustomIcon, type CustomIcon as Icon, type CustomIconInput, type CustomIconTarget } from '../../types/customIcon'
 import { rememberRecentLucideIcon } from '../../utils/lucideIconLibrary'
 import { Button } from '../ui'
-import { runForEach, type BulkTarget } from '../sidebar/bulkActions'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 // The Lucide grid and per-icon loaders are a separate chunk; they load on first use only.
 const LazyLucideGlyph = lazy(() => import('./LucideIcons').then((module) => ({ default: module.LucideGlyph })))

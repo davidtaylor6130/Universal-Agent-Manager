@@ -4,7 +4,7 @@ import { AlarmClockOff } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
-import { runForEach, type BulkTarget } from './bulkActions'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE

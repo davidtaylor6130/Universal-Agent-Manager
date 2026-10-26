@@ -26,7 +26,8 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
-import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, markChatsDone, runForEach, setChatsPinned, wakeChats, type BulkTarget, type CopyDetail } from './bulkActions'
+import { ChatSelectionContext, CopyDetailItems, MenuDivider, SingleOnlyMenuItem, markChatsDone, setChatsPinned, wakeChats, type CopyDetail } from './bulkActions'
+import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
@@ -159,7 +160,8 @@ interface SessionItemProps {
   sessionId: string
   session?: Session
   familySessionIds?: string[]
-  selected?: boolean
+  /** `multi` while the row is one of several selected rows. */
+  selected?: boolean | 'multi'
   activityLayout?: boolean
   /** Activity card context: workspace folder, its icon and the machine it runs on. */
   activityFolderName?: string
@@ -403,6 +405,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     if (ids.length > 0) void setChatsPinned(ids, pinned)
     else void setSessionPinned(sessionId, pinned)
   }
+  const multiSelected = selected === 'multi'
   const openMenu = (point: { x: number; y: number }) => {
     setMenuSelectionIds(selectionIds())
     setMenuPos(point)
@@ -583,7 +586,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         aria-label={`Open chat ${sessionName}`}
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
-        data-selected={selected}
+        data-selected={Boolean(selected)}
         className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
@@ -657,7 +660,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
                       <button
                         type="button"
-                        aria-label={selected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
+                        aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                         style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
                         onClick={(e) => {
@@ -674,8 +677,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                       </button>
                       <IconButton
                         size="sm"
-                        label={selected ? 'Snooze selected chats' : `Snooze ${sessionName}`}
-                        tooltip={selected ? 'Snooze selected chats' : 'Snooze'}
+                        label={multiSelected ? 'Snooze selected chats' : `Snooze ${sessionName}`}
+                        tooltip={multiSelected ? 'Snooze selected chats' : 'Snooze'}
                         icon={<Clock size={12} aria-hidden />}
                         aria-haspopup="menu"
                         aria-expanded={snoozePos !== null}
@@ -741,8 +744,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         {!editing && isPinned && (
           <button
             type="button"
-            aria-label={selected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
-            title={selected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
+            aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
+            title={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
             draggable={false}
             className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
             style={{ color: 'var(--accent)' }}
@@ -840,8 +843,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               {isSnoozed && (
                 <IconButton
                   size="sm"
-                  label={selected ? 'Wake selected chats' : `Unsnooze ${sessionName}`}
-                  tooltip={selected ? 'Wake selected chats now' : `Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
+                  label={multiSelected ? 'Wake selected chats' : `Unsnooze ${sessionName}`}
+                  tooltip={multiSelected ? 'Wake selected chats now' : `Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
                   icon={<AlarmClockOff size={13} aria-hidden />}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -854,10 +857,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   onDoubleClick={(e) => e.stopPropagation()}
                 />
               )}
-              <Tooltip label={`${isPinned ? 'Unpin' : 'Pin'} ${selected ? 'selected chats' : 'chat'}`} side="top">
+              <Tooltip label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`} side="top">
                 <button
                   type="button"
-                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${selected ? 'selected chats' : 'chat'}`}
+                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`}
                   className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
                   style={{
                     width: 20,

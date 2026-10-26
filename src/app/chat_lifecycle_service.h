@@ -21,13 +21,13 @@ namespace uam
 		bool unresolved_session = false;
 	};
 
-	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
 	struct DeletionRejection
 	{
 		std::string id;
 		std::string error;
 	};
 
+	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
 	struct WorkspaceDeletionTask
 	{
 		AppState snapshot;

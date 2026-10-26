@@ -1555,7 +1555,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }))
     },
 
-    setSessionPinned: async (id: string, pinned: boolean): Promise<boolean> => {
+    setSessionPinned: async (id: string, pinned: boolean, options?: { quiet?: boolean }): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
       if (!previousSession) {
         return false
@@ -1619,7 +1619,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               s.id === id ? { ...s, isPinned: pinChanges.confirmedPinned } : s
             ),
           }))
-          reportAppFailure('Could not save the pin change.', 'The chat was returned to its previous state. Try again.')
+          if (!options?.quiet) reportAppFailure('Could not save the pin change.', 'The chat was returned to its previous state. Try again.')
         }
 
         return false

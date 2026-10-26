@@ -260,8 +260,8 @@ describe('workspace multi-selection actions', () => {
 
 describe('collection multi-selection actions', () => {
   it('disables rename with an explanation and deletes every selected collection after one confirmation', async () => {
-    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-pressed]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-pressed]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-label="Archive"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     expect(host.textContent).toContain('2 collections selected')
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
     const rename = item('Rename')
@@ -277,7 +277,7 @@ describe('collection multi-selection actions', () => {
   })
 
   it('keeps a plain click as expand or collapse without selecting', async () => {
-    await act(async () => { host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-pressed]')!.click(); await flush() })
+    await act(async () => { host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.click(); await flush() })
     expect(sent('toggleResourceCollection')).toEqual([{ collectionId: 'col' }])
     expect(host.textContent).not.toContain('collections selected')
   })
