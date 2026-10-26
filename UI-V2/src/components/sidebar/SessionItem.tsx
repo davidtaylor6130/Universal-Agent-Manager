@@ -841,7 +841,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 <IconButton
                   size="sm"
                   label={`Unsnooze ${sessionName}`}
-                  tooltip="Wake chat now"
+                  tooltip={`Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
                   icon={<AlarmClockOff size={13} aria-hidden />}
                   onClick={(e) => {
                     e.stopPropagation()

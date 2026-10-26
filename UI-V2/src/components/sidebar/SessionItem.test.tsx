@@ -1184,6 +1184,25 @@ describe('SessionItem snooze actions', () => {
     }
   })
 
+  it('keeps the wake time readable in the Unsnooze tooltip while the row text is hidden', async () => {
+    const wakeAt = new Date(); wakeAt.setHours(23, 45, 0, 0)
+    const session = { ...makeSession(), snoozedUntilMs: Math.max(wakeAt.getTime(), Date.now() + 60_000) }
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      const shown = host.querySelector<HTMLElement>('[title^="Wakes "]')!.textContent!.replace('until ', '').trim()
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Unsnooze Chat 1"]')!.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(`snoozed until ${shown}`)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('hides the wake time whenever the hover actions show so the two never overlap', () => {
     const session = { ...makeSession(), snoozedUntilMs: Date.now() + 3_600_000 }
     const host = document.createElement('div')

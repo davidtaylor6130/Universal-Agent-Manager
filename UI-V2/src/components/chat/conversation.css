@@ -126,7 +126,7 @@
   content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; pointer-events: none;
   background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 72%, transparent), transparent);
   transform: translateX(-100%);
-  animation: conversation-processing-sweep 1.8s var(--ease) infinite;
+  animation: conversation-processing-sweep calc(1.8s * var(--motion-scale, 1)) var(--ease) infinite;
 }
 @keyframes conversation-processing-sweep { 0%, 18% { transform: translateX(-100%); } 72%, 100% { transform: translateX(250%); } }
 [data-motion="off"] [data-processing-step="true"] .conversation-work__tool-title::after,
