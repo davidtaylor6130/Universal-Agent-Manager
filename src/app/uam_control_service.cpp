@@ -1479,7 +1479,7 @@ namespace uam
 			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
-			return nlohmann::json::array({
+			nlohmann::json tools = nlohmann::json::array({
 			    std::move(agent_wait),
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
@@ -1495,6 +1495,17 @@ namespace uam
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
 			                       {"required", nlohmann::json::array({"reason"})}, {"additionalProperties", false}}} },
 			});
+			// Standard MCP hint: providers may run these in Plan/read-only mode without a prompt. They change no
+			// workspace, chat, run or goal state (only audit and pending-request bookkeeping; user_question reads
+			// the user's answer). The server still enforces every ceiling.
+			for (nlohmann::json& tool : tools)
+			{
+				const std::string name = tool.value("name", "");
+				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
+				    name == "skill_read" || name == "goal_get" || name == "user_question")
+					tool["annotations"] = {{"readOnlyHint", true}};
+			}
+			return tools;
 		}
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
