@@ -162,7 +162,7 @@ React/UI changes follow `docs/ui/design-language.md`; settings pages also follow
 - Computer use: `src/computer_use/` (MCP server and macOS/Windows platform layers)
 - Phone companion: `src/cef/companion_server.cpp`, protocol in `src/common/companion/`, browser UI in `UI-V2/src/components/companion/`, iOS client in `Mobile/iOS/`
 - Remote runner (`uam_runner`): `src/remote/`
-- Markdown store: `src/app/markdown_store_service.cpp`; bundled entries in `markdown-store/`
+- Markdown store: `src/app/markdown_store_service.cpp`; shipped entries in `markdown-store/bundled/` (top-level `markdown-store/*.uam` are maintainer-local)
 - Memory service: `src/app/memory_service.cpp`
 - Data storage: `<data-root>/chats/` JSON files plus optional `<data-root>/memory/`
 
