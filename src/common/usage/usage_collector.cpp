@@ -13,19 +13,31 @@ namespace uam::usage
 			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 		}
 
+		std::int64_t SteadyNow()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
 	}
 
-	Collector::Collector(std::filesystem::path data_root, bool export_accounting)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, bool export_accounting, std::chrono::milliseconds idle_after)
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(std::chrono::seconds(30)), m_lastDemandMs(SteadyNow()), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
-	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting, std::chrono::milliseconds idle_after, std::chrono::milliseconds pass_interval)
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_idleAfter(idle_after), m_passInterval(pass_interval), m_lastDemandMs(SteadyNow()), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::~Collector()
 	{
 		m_worker.request_stop();
 		m_wake.notify_all();
 		if (m_worker.joinable()) m_worker.join();
+	}
+
+	void Collector::NoteDemand() const
+	{
+		m_lastDemandMs.store(SteadyNow(), std::memory_order_release);
+		{ std::lock_guard<std::mutex> lock(m_waitMutex); }
+		m_wake.notify_all();
 	}
 
 	bool Collector::Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled)
@@ -134,7 +146,10 @@ namespace uam::usage
 					std::lock_guard<std::mutex> lock(m_mutex); m_catalog = m_pricing.Catalog(); m_aliases = m_pricing.Aliases(); m_pricingMetadata = m_pricing.Metadata(Now());
 				}
 				std::unique_lock<std::mutex> wait_lock(m_waitMutex);
-				m_wake.wait_for(wait_lock, stop, std::chrono::seconds(30), [] { return false; });
+				m_wake.wait_for(wait_lock, stop, m_passInterval, [] { return false; });
+				// Every pass rescans all history and rewrites the receipts; an unread helper must not keep doing that.
+				if (m_idleAfter.count() > 0)
+					m_wake.wait(wait_lock, stop, [this] { return SteadyNow() - m_lastDemandMs.load(std::memory_order_acquire) < m_idleAfter.count(); });
 			}
 		}
 		catch (const std::exception&) { std::lock_guard<std::mutex> lock(m_mutex); m_error = "Usage collection failed. Background collection will restart with UAM."; m_collecting = false; }
@@ -142,6 +157,7 @@ namespace uam::usage
 
 	nlohmann::json Collector::ExportAccounting(std::size_t offset, std::string_view fingerprint) const
 	{
+		NoteDemand();
 		std::shared_ptr<const std::string> bytes;
 		std::string current_fingerprint;
 		{
@@ -169,6 +185,7 @@ namespace uam::usage
 
 	nlohmann::json Collector::ExportReceipts(std::uint64_t offset, std::string_view fingerprint) const
 	{
+		NoteDemand();
 		std::shared_ptr<const ReceiptSnapshot> snapshot;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
