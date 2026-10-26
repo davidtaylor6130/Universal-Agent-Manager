@@ -15,6 +15,7 @@
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/branch_native_assets.h"
+#include "common/chat/chat_branching.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/chat/native_media_chat_save.h"
@@ -1183,6 +1184,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 		std::filesystem::path root;
 		std::vector<Message> messages;
 		std::optional<ChatSession> candidate, retired;
+		std::optional<std::tuple<std::string, std::string, int>> saved_lineage;
 		std::unique_ptr<uam::PreparedNativeMediaChatSave> prepared;
 		std::string error, ack_error;
 		bool acknowledgement_finished = false;
@@ -1212,7 +1214,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	};
 
 	// Reserve before stopping another request or retaining a transcript/payload.
-	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
+	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>();
 	if (!work) { cb->Failure(503, "Native history refresh is busy. Retry shortly."); return; }
 	const auto root = m_app.data_root;
 	const auto revision = ChatRepository::ChatStorageRevision(root, chat.id);
@@ -1232,6 +1234,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	const auto birth = chat.created_at;
 	const auto native_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
 	const auto original_digest = uam::StateSerializer::MessageDigest(chat, false);
+	const auto lineage = std::make_tuple(chat.parent_chat_id, chat.branch_root_chat_id, chat.branch_from_message_index);
 	const auto resolved = m_app.resolved_native_sessions_by_chat_id.find(id);
 	const std::optional<std::string> resolved_session = resolved == m_app.resolved_native_sessions_by_chat_id.end()
 	    ? std::nullopt : std::optional<std::string>(resolved->second);
@@ -1295,12 +1298,19 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	try
 	{
 		queued = DispatchNativeMediaRefresh(cb,
-		    [work, root, id, revision, summary_revision, metadata, original_digest, incarnation, parse_identity, host, request, reader = m_remoteNativeHistoryReaderForTests]()
+		    [work, root, id, revision, summary_revision, metadata, original_digest, lineage, incarnation, parse_identity, host, request, reader = m_remoteNativeHistoryReaderForTests]()
 		    {
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
 			    if (ChatRepository::ChatStorageRevision(root, id) != revision || ChatRepository::ChatSummaryStorageRevision(root, id) != summary_revision)
 				    return AsyncFailure(409, "Saved remote history changed before loading.");
 			    work->candidate = ChatRepository::LoadLocalChat(root, id, true, &work->error, false);
+			    if (work->candidate)
+			    {
+				    // Normalize can rewrite legacy lineage in live state only. Compare and
+				    // publish the live lineage; the controller verifies the saved alias.
+				    auto saved = std::tie(work->candidate->parent_chat_id, work->candidate->branch_root_chat_id, work->candidate->branch_from_message_index);
+				    if (saved != lineage) { work->saved_lineage = saved; saved = lineage; }
+			    }
 			    if (!work->candidate || !work->candidate->messages_loaded || work->candidate->imported_read_only ||
 			        RemoteNativeMediaMetadata(root, *work->candidate) != metadata ||
 			        uam::StateSerializer::MessageDigest(*work->candidate, false) != original_digest ||
@@ -1320,6 +1330,12 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 			    auto* current = admitted();
 			    if (!current) { response = AsyncFailure(409, "Remote chat changed while its native history was loading. Retry to refresh it."); return; }
 			    if (!response.ok) return;
+			    if (work->saved_lineage && !ChatBranching::SavedLineageNormalizesToCurrent(m_app.chats, id,
+			            std::get<0>(*work->saved_lineage), std::get<1>(*work->saved_lineage), std::get<2>(*work->saved_lineage)))
+			    {
+				    response = AsyncFailure(409, "The saved remote conversation differs from its current view. Save or reload it before refreshing.");
+				    return;
+			    }
 			    if (!work->candidate || work->messages.size() < work->candidate->messages.size())
 			    {
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {}, ChatDomainService().SelectedChatId(m_app) == id);

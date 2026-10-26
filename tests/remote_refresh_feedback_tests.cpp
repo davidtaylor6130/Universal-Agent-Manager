@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "cef_handler_fixture.h"
 #include "cef/uam_query_handler_async.h"
+#include "common/chat/chat_branching.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "app/transcript_retention_service.h"
@@ -155,7 +156,7 @@ namespace
 		{
 			pending.clear(); handler.reset();
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-			while (uam::native_history::detail::refresh_owners.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+			while (Owners() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
 		}
 		ChatSession& Chat() { return app.chats.front(); }
 		fs::path Primary() const { return AppPaths::UamChatFilePath(app.data_root, app.chats.front().id); }
@@ -180,8 +181,12 @@ namespace
 		void AwaitRetirement() const
 		{
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-			while (uam::native_history::detail::refresh_owners.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
-			UAM_ASSERT_EQ(uam::native_history::detail::refresh_owners.load(), 0u);
+			while (Owners() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+			UAM_ASSERT_EQ(Owners(), 0u);
+		}
+		static unsigned Owners()
+		{
+			return uam::native_history::detail::refresh_owners.load() + uam::native_history::detail::remote_refresh_owners.load();
 		}
 		void AssertPublished(CefRefPtr<FeedbackCallback> cb)
 		{
@@ -573,6 +578,91 @@ UAM_TEST(RemoteRefreshFeedbackPreviewCapacityRefusalCanRetrySameBoundImage)
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT(!fs::exists(fixture.Generation() / "published.receipt")); UAM_ASSERT_EQ(fixture.reads->load(), 1);
 	UAM_ASSERT_EQ(fixture.app.status_line, kPriorWarning); fixture.AssertDraft();
+}
+
+UAM_TEST(RemoteRefreshFeedbackLegacySavedLineagePublishesNormalizedLineage)
+{
+	enum class Saved { RootNamedByNativeId, ParentNamedByNativeId, ParentLiveDoesNotNormalizeTo };
+	for (const auto saved_kind : {Saved::RootNamedByNativeId, Saved::ParentNamedByNativeId, Saved::ParentLiveDoesNotNormalizeTo})
+	{
+		FeedbackFixture fixture;
+		ChatSession parent;
+		parent.id = "chat-legacy-parent"; parent.provider_id = fixture.Chat().provider_id;
+		parent.native_session_id = "88888888-8888-4888-8888-888888888888";
+		parent.workspace_directory = fixture.Chat().workspace_directory; parent.execution_host_id = fixture.Chat().execution_host_id;
+		parent.branch_root_chat_id = parent.id;
+		fixture.app.chats.push_back(parent);
+		// Write the legacy saved lineage, then load live state the way startup does.
+		ChatSession legacy = fixture.Chat();
+		if (saved_kind == Saved::RootNamedByNativeId) legacy.branch_root_chat_id = legacy.native_session_id;
+		else if (saved_kind == Saved::ParentNamedByNativeId)
+		{
+			legacy.parent_chat_id = legacy.branch_root_chat_id = parent.native_session_id;
+			legacy.branch_from_message_index = 0;
+		}
+		else
+		{
+			legacy.parent_chat_id = legacy.branch_root_chat_id = parent.id;
+			legacy.branch_from_message_index = 0;
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, legacy));
+		const auto loaded = ChatRepository::LoadLocalChat(fixture.app.data_root, legacy.id, true);
+		UAM_ASSERT(loaded); fixture.Chat() = *loaded;
+		ChatBranching::Normalize(fixture.app.chats);
+		const bool alias = saved_kind != Saved::ParentLiveDoesNotNormalizeTo;
+		if (!alias)
+		{
+			// Live state the saved parent cannot normalize to must still refuse.
+			fixture.Chat().parent_chat_id.clear(); fixture.Chat().branch_root_chat_id = fixture.Chat().id; fixture.Chat().branch_from_message_index = -1;
+		}
+		const auto live = std::make_tuple(fixture.Chat().parent_chat_id, fixture.Chat().branch_root_chat_id, fixture.Chat().branch_from_message_index);
+		UAM_ASSERT(saved_kind == Saved::ParentNamedByNativeId
+		    ? live == std::make_tuple(parent.id, parent.id, 0) : live == std::make_tuple(std::string(), fixture.Chat().id, -1));
+		const auto primary = ReadFile(fixture.Primary()), summary = ReadFile(fixture.Summary());
+		const auto cb = fixture.Start(); fixture.Complete(0);
+		if (!alias)
+		{
+			UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
+			UAM_ASSERT(cb->error.find("differs from its current view") != std::string::npos);
+			UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+			UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
+			fixture.AssertDraft();
+			continue;
+		}
+		fixture.Complete(1); fixture.Complete(2);
+		fixture.AssertPublished(cb);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, legacy.id, false);
+		UAM_ASSERT(saved);
+		UAM_ASSERT(std::make_tuple(saved->parent_chat_id, saved->branch_root_chat_id, saved->branch_from_message_index) == live);
+		UAM_ASSERT(std::make_tuple(fixture.Chat().parent_chat_id, fixture.Chat().branch_root_chat_id, fixture.Chat().branch_from_message_index) == live);
+	}
+}
+
+UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
+{
+	FeedbackFixture fixture;
+	const unsigned shared = uam::native_history::detail::refresh_owners.load();
+	UAM_ASSERT_EQ(shared, 0u);
+	// Two explicit refreshes held at their remote read fill only the remote budget.
+	const auto superseded = fixture.Start(); const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
+	UAM_ASSERT_EQ(uam::native_history::detail::remote_refresh_owners.load(), 2u);
+	UAM_ASSERT_EQ(uam::native_history::detail::refresh_owners.load(), shared);
+	const auto busy = fixture.Start();
+	UAM_ASSERT_EQ(busy->status, 503); UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
+	// Branch, managed-run and metadata preparation reserve shared capacity through this gate.
+	auto first = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
+	auto second = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
+	UAM_ASSERT(first && second);
+	first.reset(); second.reset();
+	fixture.Complete(0); UAM_ASSERT_EQ(superseded->status, 409);
+	fixture.Complete(1); fixture.Complete(2); fixture.Complete(3);
+	fixture.AssertPublished(cb);
+	// Read, preparation and acknowledgement all ran. Moved-from queued tasks can keep
+	// small-buffer copies of their captures, so drop them before counting owners.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{4});
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
 }
 
 UAM_TEST(RemoteRefreshFeedbackCommittedAckFailureKeepsOriginalWarningAndHistory)
