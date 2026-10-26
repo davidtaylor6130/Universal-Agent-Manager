@@ -5,14 +5,14 @@ import { MessageNavigationRail, currentVisibleMessage, markAtOrBefore, messageIn
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-type Observed = { callback: IntersectionObserverCallback; targets: Set<Element> }
+type Observed = { callback: IntersectionObserverCallback; targets: Set<Element>; options?: IntersectionObserverInit }
 
 /** jsdom has no IntersectionObserver; this stand-in lets a test say which rows are on screen. */
 function stubIntersectionObserver() {
   const observers: Observed[] = []
   vi.stubGlobal('IntersectionObserver', class {
     private entry: Observed
-    constructor(callback: IntersectionObserverCallback) { this.entry = { callback, targets: new Set() }; observers.push(this.entry) }
+    constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) { this.entry = { callback, targets: new Set(), options }; observers.push(this.entry) }
     observe(target: Element) { this.entry.targets.add(target) }
     unobserve(target: Element) { this.entry.targets.delete(target) }
     disconnect() { this.entry.targets.clear() }
@@ -113,7 +113,34 @@ describe('Message navigation rail', () => {
     } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
   })
 
-  it('steps to the previous and next user message with keyboard-reachable buttons', () => {
+  it('does not count rows hidden under the floating composer as on screen', () => {
+    const { observers, show } = stubIntersectionObserver()
+    let resized: (() => void) | undefined
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resized = callback } observe() {}; unobserve() {}; disconnect() {} })
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const style = window.getComputedStyle
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => element.classList.contains('conversation-rail')
+      ? { bottom: '216px' } as CSSStyleDeclaration : style(element))
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={3} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      expect(observers).toHaveLength(1)
+      expect(observers[0].options?.rootMargin).toBeUndefined()
+      act(() => resized!())
+      // A 200px composer (rail bottom 216px minus its 16px gap) shrinks the visible band; every row is observed again.
+      expect(observers).toHaveLength(2)
+      expect(observers[1].options).toMatchObject({ root: viewport, rootMargin: '0px 0px -200px 0px' })
+      expect([...observers[1].targets]).toEqual(rows)
+      act(() => show([rows[0], rows[1]]))
+      expect(host.querySelector('[role="slider"]')!.getAttribute('aria-valuenow')).toBe('1')
+      act(() => resized!())
+      expect(observers).toHaveLength(2)
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals() }
+  })
+
+  it('steps to the previous and next user message with keyboard-reachable buttons that keep focus while busy', () => {
     const { show } = stubIntersectionObserver()
     // Keyboard focus opens the Radix tooltip, which measures itself.
     vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
@@ -127,26 +154,100 @@ describe('Message navigation rail', () => {
     try {
       act(() => render(false))
       act(() => show([rows[2]]))
-      const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous message"]')!
-      const next = host.querySelector<HTMLButtonElement>('button[aria-label="Next message"]')!
+      const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!
+      const next = host.querySelector<HTMLButtonElement>('button[aria-label="Next user message"]')!
       const slider = host.querySelector<HTMLElement>('[role="slider"]')!
       // Tab order runs previous, marks, next.
       expect(previous.compareDocumentPosition(slider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(slider.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(previous.type).toBe('button')
-      act(() => previous.focus())
-      expect(document.activeElement).toBe(previous)
-      act(() => previous.click())
-      expect(onNavigate).toHaveBeenLastCalledWith(0)
+      act(() => next.focus())
+      expect(document.activeElement).toBe(next)
       act(() => next.click())
       expect(onNavigate).toHaveBeenLastCalledWith(4)
-      act(() => show([rows[4]], [rows[2]]))
-      expect(next.disabled).toBe(true)
-      expect(previous.disabled).toBe(false)
-      act(() => show([rows[0]], [rows[4]]))
-      expect(previous.disabled).toBe(true)
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      // The parent marks the jump busy; the button stays focused (a disabled button would drop focus) but inert.
       act(() => render(true))
-      expect(next.disabled).toBe(true)
+      expect(document.activeElement).toBe(next)
+      expect(next.disabled).toBe(false)
+      expect(next.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenCalledTimes(1)
+      act(() => render(false))
+      expect(next.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(2)
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(0)
+      expect(previous.getAttribute('aria-disabled')).toBe('true')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenCalledTimes(3)
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('keeps a jump target selected near the end until the reader scrolls, so Previous never stalls', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const onNavigate = vi.fn()
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5} viewportRef={viewportRef} busy={false} onNavigate={onNavigate} />))
+      const slider = host.querySelector('[role="slider"]')!
+      const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!
+      act(() => show([rows[2], rows[3], rows[4], rows[5]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(2)
+      // The target scrolls into view but the end stays on screen; the jump target still holds the selection.
+      act(() => show([rows[1]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      act(() => previous.click())
+      expect(onNavigate).toHaveBeenLastCalledWith(0)
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      // Reader input hands selection back to what is on screen.
+      act(() => { viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: 40 })) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('releases a seen jump target once it leaves the screen', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      act(() => show([rows[0], rows[1]]))
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+      act(() => slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true })))
+      act(() => show([rows[3], rows[4]], [rows[0], rows[1]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      act(() => show([rows[2], rows[3]], [rows[4]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
+  it('treats the end of an older loaded page as mid-chat and drops rows that lose their index', async () => {
+    const { observers, show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      // The full history has a later user message (index 40) that this page does not contain.
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 2, 40]} startIndex={0} messages={messages} currentIndex={3}
+        viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => show([rows[0], rows[1], rows[2], rows[3]]))
+      expect(slider.getAttribute('aria-valuenow')).toBe('1')
+      await act(async () => { rows[0].removeAttribute('data-message-index'); await new Promise((resolve) => requestAnimationFrame(resolve)) })
+      expect(observers[0].targets.has(rows[0])).toBe(false)
+      expect([...host.querySelectorAll<HTMLElement>('[data-rail-visible]')].map((mark) => mark.dataset.railVisible)).toEqual(['1'])
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
     } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
   })
 

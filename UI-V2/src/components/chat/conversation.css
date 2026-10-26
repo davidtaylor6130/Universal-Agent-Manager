@@ -191,9 +191,9 @@
 .conversation-rail-preview__hint { margin-top: 2px; color: var(--text-3); }
 .conversation-rail-preview__text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 /* Previous/next stay in layout so the marks never shift; they fade in while the rail is hovered or the button has keyboard focus. */
-.uam-iconbtn.conversation-rail-step { flex-shrink: 0; width: 20px; height: 20px; margin-left: 3px; opacity: 0; transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
-.conversation-rail:hover .conversation-rail-step:not(:disabled), .conversation-rail-step:focus-visible { opacity: 1; }
-.conversation-rail:hover .conversation-rail-step:disabled { opacity: .45; }
+.conversation-rail .uam-iconbtn.conversation-rail-step { flex-shrink: 0; width: 20px; height: 20px; margin-left: 3px; opacity: 0; transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.conversation-rail:is(:hover, :focus-within) .uam-iconbtn.conversation-rail-step { opacity: 1; }
+.conversation-rail:is(:hover, :focus-within) .uam-iconbtn.conversation-rail-step[aria-disabled="true"] { opacity: .45; cursor: not-allowed; background: none; }
 /* A fixed hairline to the right of the resting marks, beneath every mark; it never moves with hover or scrolling. */
 .conversation-rail-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 24px; width: 1px; background: var(--border-bright); pointer-events: none; }
 .conversation-rail-lit { animation: conversation-rail-lit-in var(--dur-fast) var(--ease-out-soft) backwards; }
