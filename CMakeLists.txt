@@ -27,9 +27,15 @@ endif()
 if(CMAKE_GENERATOR MATCHES "Makefiles|Ninja")
   find_program(UAM_CCACHE_EXECUTABLE NAMES ccache)
   if(UAM_CCACHE_EXECUTABLE)
+    # ccache 4.8+ accepts settings inline: relative paths let worktrees share hits, sloppiness caches PCH users.
+    set(_uam_ccache_launcher "${UAM_CCACHE_EXECUTABLE}")
+    execute_process(COMMAND "${UAM_CCACHE_EXECUTABLE}" --version OUTPUT_VARIABLE _uam_ccache_version)
+    if(_uam_ccache_version MATCHES "version ([0-9]+\\.[0-9]+)" AND CMAKE_MATCH_1 VERSION_GREATER_EQUAL 4.8)
+      list(APPEND _uam_ccache_launcher "base_dir=${CMAKE_SOURCE_DIR}" "sloppiness=pch_defines,time_macros")
+    endif()
     foreach(_language IN ITEMS C CXX OBJCXX)
       if(NOT DEFINED CMAKE_${_language}_COMPILER_LAUNCHER)
-        set(CMAKE_${_language}_COMPILER_LAUNCHER "${UAM_CCACHE_EXECUTABLE}")
+        set(CMAKE_${_language}_COMPILER_LAUNCHER "${_uam_ccache_launcher}")
       endif()
     endforeach()
     message(STATUS "Compiler cache available: ${UAM_CCACHE_EXECUTABLE}")
@@ -369,13 +375,14 @@ set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_native_attachment_assets.cpp
   src/common/platform/platform_incremental_sha256.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
+# Connected handler fixtures replace the PTY, so it stays out of the shared objects.
 if(WIN32)
+  set(UAM_PTY_SOURCES src/common/platform/platform_pty_windows.cpp)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
   # Ninja only tracks #include in .rc files, so name the ICON file or incremental builds keep the old icon.
   set_source_files_properties(src/uam.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.ico")
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_services_windows_impl.cpp
-    src/common/platform/platform_pty_windows.cpp
     src/common/platform/platform_process_windows.cpp
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
@@ -386,11 +393,11 @@ if(WIN32)
     src/computer_use/computer_use_platform_windows.cpp
   )
 elseif(APPLE)
+  set(UAM_PTY_SOURCES src/common/platform/platform_pty_macos.cpp)
   list(APPEND UAM_PLATFORM_IMPL_SOURCES
     src/common/platform/platform_application_macos.mm
     src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_services_macos_impl.cpp
-    src/common/platform/platform_pty_macos.cpp
     src/common/platform/platform_process_macos.cpp
     src/common/platform/platform_dialogs_macos.cpp
     src/common/platform/platform_paths_macos.cpp
@@ -538,24 +545,20 @@ elseif(WIN32)
   set(UAM_EXECUTABLE_KIND WIN32)
 endif()
 
-add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
-  ${UAM_PLATFORM_SOURCES}
+# Shared objects compile once for the app, core tests and connected handler fixtures.
+add_library(uam_core_objects OBJECT
   src/app/attachment_preview_service.cpp
   ${UAM_ATTACHMENT_PREVIEW_PLATFORM}
   ${UAM_PLATFORM_IMPL_SOURCES}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
-  src/main.cpp
-  src/common/platform/app_crash_supervisor.cpp
-	  src/computer_use/computer_use_mcp_config.cpp
-  ${UAM_FEATURE_APP_SOURCES}
-	  src/app/agent_definition_service.cpp
-	  src/app/agent_run_ledger.cpp
-	  src/app/agent_run_scheduler.cpp
-	  src/app/managed_parent_continuation_service.cpp
-	    src/app/managed_subagent_control_service.cpp
-	    src/app/managed_subagent_followup_service.cpp
-	  src/app/uam_control_service.cpp
-  src/app/application.cpp
+  src/computer_use/computer_use_mcp_config.cpp
+  src/app/agent_definition_service.cpp
+  src/app/agent_run_ledger.cpp
+  src/app/agent_run_scheduler.cpp
+  src/app/managed_parent_continuation_service.cpp
+  src/app/managed_subagent_control_service.cpp
+  src/app/managed_subagent_followup_service.cpp
+  src/app/uam_control_service.cpp
   src/common/utils/diagnostic_log.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
@@ -585,8 +588,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
   src/app/resource_collection_service.cpp
-    src/app/provider_worker_command.cpp
-    src/app/chat_title_service.cpp
+  src/app/provider_worker_command.cpp
+  src/app/chat_title_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/native_agent_history_service.cpp
@@ -596,41 +599,13 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
   src/app/vcs_commit_service.cpp
-  src/common/discovery/management_discovery.cpp
   src/app/workspace_vcs_context_service.cpp
   src/app/svn_branch_service.cpp
   src/app/svn_branch_process.cpp
-  src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
-  src/cef/uam_cef_client.cpp
   src/cef/uam_bridge_request.cpp
-  src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
-  src/cef/chat_title_handlers.cpp
-  src/cef/chat_handlers.cpp
-  src/cef/organization_handlers.cpp
-  src/cef/chat_receipt_handlers.cpp
-  src/cef/startup_native_import_handlers.cpp
-  src/cef/chat_config_handlers.cpp
-  src/cef/managed_subagent_handlers.cpp
-  src/cef/settings_handlers.cpp
-  src/cef/local_chat_bundle_handlers.cpp
-  src/cef/theme_handlers.cpp
-  src/cef/shell_action_handlers.cpp
-  src/cef/markdown_handlers.cpp
-  src/cef/folder_handlers.cpp
-  src/cef/chat_branch_handlers.cpp
-  src/cef/resource_collection_handlers.cpp
-  src/cef/memory_handlers.cpp
-  src/cef/workspace_handlers.cpp
-  src/cef/vcs_handlers.cpp
-  src/cef/terminal_handlers.cpp
-  src/cef/dictation_handlers.cpp
-  src/cef/attachment_preview_handlers.cpp
-  src/cef/usage_handlers.cpp
-  src/cef/acp_handlers.cpp
-  src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
@@ -642,7 +617,6 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
   src/common/usage/transcript_usage.cpp
-  ${UAM_RUNNER_PROVIDER_SOURCES}
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
   src/common/usage/usage_history_service.cpp
@@ -650,9 +624,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/usage_store.cpp
   src/common/usage/usage_collector.cpp
   src/common/usage/multi_host_history.cpp
-    src/common/usage/account_allowance_fetcher.cpp
-    src/common/usage/account_allowance_service.cpp
-    src/common/usage/account_credentials_macos.cpp
+  src/common/usage/account_allowance_fetcher.cpp
+  src/common/usage/account_allowance_service.cpp
+  src/common/usage/account_credentials_macos.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
@@ -696,12 +670,52 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/runtime/terminal/terminal_identity.cpp
   src/common/runtime/terminal/terminal_lifecycle.cpp
   ${UAM_PROVIDER_SOURCES}
-  ${UAM_PROVIDER_APP_SOURCES}
   src/common/runtime/provider_cli_compatibility_service.cpp
   src/remote/runner_client.cpp
-  src/remote/runner_proxy.cpp
   src/common/platform/platform_services.cpp
+  ${UAM_PROVIDER_APP_SOURCES}
+  ${UAM_RUNNER_PROVIDER_SOURCES}
 )
+add_library(uam_app_objects OBJECT
+  src/common/platform/app_crash_supervisor.cpp
+  ${UAM_FEATURE_APP_SOURCES}
+  src/app/application.cpp
+  src/common/discovery/management_discovery.cpp
+  src/cef/uam_cef_app.cpp
+  src/cef/uam_cef_client.cpp
+  src/cef/uam_query_handler.cpp
+  src/cef/chat_title_handlers.cpp
+  src/cef/chat_handlers.cpp
+  src/cef/organization_handlers.cpp
+  src/cef/chat_receipt_handlers.cpp
+  src/cef/startup_native_import_handlers.cpp
+  src/cef/chat_config_handlers.cpp
+  src/cef/managed_subagent_handlers.cpp
+  src/cef/settings_handlers.cpp
+  src/cef/local_chat_bundle_handlers.cpp
+  src/cef/theme_handlers.cpp
+  src/cef/shell_action_handlers.cpp
+  src/cef/markdown_handlers.cpp
+  src/cef/folder_handlers.cpp
+  src/cef/chat_branch_handlers.cpp
+  src/cef/resource_collection_handlers.cpp
+  src/cef/memory_handlers.cpp
+  src/cef/workspace_handlers.cpp
+  src/cef/vcs_handlers.cpp
+  src/cef/terminal_handlers.cpp
+  src/cef/dictation_handlers.cpp
+  src/cef/attachment_preview_handlers.cpp
+  src/cef/usage_handlers.cpp
+  src/cef/acp_handlers.cpp
+  src/cef/goal_handlers.cpp
+)
+add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
+  ${UAM_PLATFORM_SOURCES}
+  ${UAM_PTY_SOURCES}
+  src/main.cpp
+  src/remote/runner_proxy.cpp
+)
+target_link_libraries(universal_agent_manager PRIVATE uam_core_objects uam_app_objects)
 
 set_target_properties(universal_agent_manager PROPERTIES
   CXX_STANDARD 20
@@ -1288,7 +1302,7 @@ foreach(_disabled_feature IN ITEMS COMPUTER_USE SSH MOBILE_COMPANION)
 endforeach()
 
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/uam-build-manifest-$<CONFIG>.txt"
-  CONTENT "COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}\nSSH=${UAM_ENABLE_SSH}\nMOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}\nSOURCES\n$<JOIN:$<TARGET_GENEX_EVAL:universal_agent_manager,$<TARGET_PROPERTY:universal_agent_manager,SOURCES>>,\n>\n")
+  CONTENT "COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}\nSSH=${UAM_ENABLE_SSH}\nMOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}\nSOURCES\n$<JOIN:$<TARGET_GENEX_EVAL:universal_agent_manager,$<TARGET_PROPERTY:universal_agent_manager,SOURCES>>;$<TARGET_GENEX_EVAL:uam_core_objects,$<TARGET_PROPERTY:uam_core_objects,SOURCES>>;$<TARGET_GENEX_EVAL:uam_app_objects,$<TARGET_PROPERTY:uam_app_objects,SOURCES>>,\n>\n")
 
 # ---------------------------------------------------------------------------
 # Platform-specific settings
@@ -1315,6 +1329,18 @@ if(APPLE)
     )
   endif()
 endif()
+
+# Shared objects use the app's final compile settings so every consumer links identical code.
+foreach(_uam_objects IN ITEMS uam_core_objects uam_app_objects)
+  foreach(_uam_property IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS CXX_STANDARD CXX_STANDARD_REQUIRED CXX_EXTENSIONS MSVC_RUNTIME_LIBRARY)
+    get_target_property(_uam_value universal_agent_manager ${_uam_property})
+    if(NOT _uam_value STREQUAL "_uam_value-NOTFOUND")
+      set_property(TARGET ${_uam_objects} PROPERTY ${_uam_property} "${_uam_value}")
+    endif()
+  endforeach()
+  target_link_libraries(${_uam_objects} PRIVATE nlohmann_json::nlohmann_json libcef_dll_wrapper uam_sqlite ZLIB::ZLIB)
+  set_target_properties(${_uam_objects} PROPERTIES FOLDER "App")
+endforeach()
 
 foreach(_cmake_target IN ITEMS ALL_BUILD ZERO_CHECK RUN_TESTS Experimental Nightly NightlyMemoryCheck Continuous)
   uam_set_target_folder(${_cmake_target} "_CMake")
@@ -1432,6 +1458,27 @@ if(UAM_BUILD_TESTS)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
+
+  # Provider files whose build flag is OFF are not in the shared objects, so core tests compile them.
+  set(UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES
+    src/app/copilot_agent_history_service.cpp
+    src/app/opencode_native_activity_service.cpp
+    src/common/provider/opencode/cli/opencode_terminal_activity.cpp
+    src/app/opencode_compaction_sync_service.cpp
+    src/app/opencode_compaction_history.cpp
+    src/common/usage/antigravity_accounting.cpp
+    src/common/usage/antigravity_history_scan.cpp
+    src/common/usage/opencode_history_scan.cpp
+    src/common/usage/google_account_allowance.cpp
+    src/common/usage/claude_account_allowance.cpp
+    src/common/provider/opencode/cli/opencode_native_http.cpp
+    src/common/provider/claude/cli/claude_acp_message_handlers.cpp
+    src/common/provider/codex/cli/codex_acp_message_handlers.cpp
+    src/common/runtime/acp/claude_quota_continuation.cpp
+    src/app/opencode_import_stream.cpp
+    src/core/gemini_cli_compat.cpp
+  )
+  list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
     tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
@@ -1560,7 +1607,6 @@ if(UAM_BUILD_TESTS)
     tests/attached_skill_discovery_tests.cpp
     tests/uam_control_transport_tests.cpp
     tests/uam_control_mailbox_response_tests.cpp
-    src/common/utils/diagnostic_log.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
@@ -1605,152 +1651,13 @@ if(UAM_BUILD_TESTS)
     tests/provider_child_activity_tests.cpp
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
-    src/app/attachment_preview_service.cpp
-    ${UAM_ATTACHMENT_PREVIEW_PLATFORM}
-    ${UAM_PLATFORM_IMPL_SOURCES}
-	    ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
-	    src/computer_use/computer_use_mcp_config.cpp
 	    src/computer_use/computer_use_mcp_server.cpp
-	    src/app/agent_definition_service.cpp
-	    src/app/agent_run_ledger.cpp
-	    src/app/agent_run_scheduler.cpp
-	  src/app/managed_parent_continuation_service.cpp
-	    src/app/managed_subagent_control_service.cpp
-	    src/app/managed_subagent_followup_service.cpp
-	    src/app/uam_control_service.cpp
-    src/app/chat_domain_service.cpp
-    src/app/chat_lifecycle_service.cpp
-    src/app/computer_use_service.cpp
-    src/app/git_worktree_service.cpp
-    src/app/worktree_retention_service.cpp
-    src/app/storage_retention_service.cpp
-    src/app/data_folder_preflight.cpp
-    src/app/data_folder_settings_service.cpp
-    src/app/data_folder_transition.cpp
-    src/common/platform/data_folder_tree.cpp
-    src/app/worktree_launch_preparation_service.cpp
-    src/app/local_chat_bundle_service.cpp
-    src/app/markdown_store_service.cpp
-    src/common/memory/memory_library_store.cpp
-  src/app/memory_library_service.cpp
-    src/app/memory_service.cpp
-    src/app/goal_service.cpp
-    src/app/native_session_link_service.cpp
-    src/app/persistence_coordinator.cpp
-    src/app/provider_resolution_service.cpp
-    src/app/chat_file_change_receipt_service.cpp
-    src/app/organization_service.cpp
-    src/app/transcript_retention_service.cpp
-    src/app/chat_search_service.cpp
-    src/app/execution_routing_service.cpp
-  src/app/repository_route_match_service.cpp
-    src/app/execution_routing_integration.cpp
-    src/app/resource_collection_service.cpp
-  src/app/provider_worker_command.cpp
-    src/app/chat_title_service.cpp
-    src/app/provider_profile_migration_service.cpp
-    src/app/provider_model_catalog_service.cpp
-  src/app/copilot_agent_history_service.cpp
-  src/app/native_agent_history_service.cpp
-  src/app/opencode_native_activity_service.cpp
-  src/common/provider/opencode/cli/opencode_terminal_activity.cpp
-    src/app/runtime_orchestration_services.cpp
-    src/app/startup_native_import_service.cpp
-    src/app/opencode_compaction_sync_service.cpp
-  src/app/opencode_compaction_history.cpp
-    src/app/model_discovery_service.cpp
-    src/app/shell_action_service.cpp
-    src/app/theme_service.cpp
-    src/app/vcs_commit_service.cpp
-  src/app/workspace_vcs_context_service.cpp
-  src/app/svn_branch_service.cpp
-  src/app/svn_branch_process.cpp
-    src/cef/uam_cef_command_line_config.cpp
-    src/cef/uam_bridge_request.cpp
-    src/cef/cef_push.cpp
-    src/cef/state_serializer.cpp
-    src/common/models/app_models.cpp
-    src/common/paths/app_paths.cpp
-    src/common/chat/chat_folder_store.cpp
-    src/common/config/frontend_actions.cpp
-    src/common/utils/command_line_words.cpp
-    src/common/chat/chat_repository.cpp
-    src/common/provider/native_session_storage_normalization.cpp
-  src/common/chat/native_media_chat_save.cpp
-  src/common/chat/branch_native_assets.cpp
-    src/common/chat/chat_message_page_index.cpp
-    src/common/chat/chat_branching.cpp
-    src/common/chat/native_chat_identity.cpp
-    src/common/usage/transcript_usage.cpp
-    src/common/usage/antigravity_accounting.cpp
-    src/common/usage/antigravity_history_scan.cpp
-    src/common/usage/usage_aggregation.cpp
-    src/common/usage/transcript_scan.cpp
-    src/common/usage/opencode_history_scan.cpp
-    src/common/usage/usage_history_service.cpp
-    src/common/usage/usage_ledger.cpp
-    src/common/usage/usage_store.cpp
-    src/common/usage/usage_collector.cpp
-    src/common/usage/multi_host_history.cpp
-    src/common/usage/account_allowance_fetcher.cpp
-    src/common/usage/account_allowance_service.cpp
-    src/common/usage/account_credentials_macos.cpp
-    src/common/usage/google_account_allowance.cpp
-    src/common/usage/claude_account_allowance.cpp
-    src/common/usage/usage_pricing.cpp
-    src/common/usage/usage_pricing_cache.cpp
-    src/common/provider/provider_profile.cpp
-    src/common/provider/runtime/provider_runtime_facade.cpp
-    src/common/provider/runtime/provider_runtime_registry.cpp
-    src/common/provider/runtime/provider_acp_strategy.cpp
-  src/common/provider/structured_attachments.cpp
-  src/common/provider/opencode/cli/opencode_native_http.cpp
-    src/common/provider/claude/cli/claude_acp_message_handlers.cpp
-    src/common/provider/codex/cli/codex_acp_message_handlers.cpp
-    src/common/runtime/acp/acp_content_text.cpp
-    src/common/runtime/acp/acp_diagnostics.cpp
-    src/common/runtime/acp/acp_goal_helpers.cpp
-    src/common/runtime/acp/acp_goal_loop.cpp
-    src/common/runtime/acp/acp_message_sync.cpp
-    src/common/runtime/acp/acp_permission_handlers.cpp
-    src/common/runtime/acp/acp_polling.cpp
-    src/common/runtime/acp/acp_replay_state.cpp
-    src/common/runtime/acp/acp_response_handlers.cpp
-    src/common/runtime/acp/acp_session_lifecycle.cpp
-    src/common/runtime/acp/acp_session_update_handler.cpp
-    src/common/runtime/acp/acp_tool_call_state.cpp
-    src/common/runtime/acp/acp_turn_events.cpp
-    src/common/runtime/acp/acp_json_helpers.cpp
-    src/common/runtime/acp/acp_launch.cpp
-    src/common/runtime/acp/acp_message_detail.cpp
-    src/common/runtime/acp/acp_request_builders.cpp
-    src/common/runtime/acp/acp_resume_rules.cpp
-  src/common/runtime/acp/claude_quota_continuation.cpp
-    src/common/provider/attached_skill_resources.cpp
-    src/common/runtime/acp/acp_session_runtime.cpp
-    src/common/runtime/acp/acp_wait_state.cpp
-    src/common/runtime/json_runtime.cpp
-    src/common/runtime/terminal_polling.cpp
-    src/common/runtime/terminal/terminal_chat_sync.cpp
-    src/common/runtime/terminal/terminal_debug_diagnostics.cpp
-    src/common/runtime/terminal/terminal_provider_cli.cpp
-    src/common/runtime/terminal/terminal_idle_classifier.cpp
-    src/common/runtime/terminal/terminal_identity.cpp
-    src/common/runtime/terminal/terminal_lifecycle.cpp
-    src/common/runtime/provider_cli_compatibility_service.cpp
-    src/core/chat_import_utils.cpp
-    src/app/opencode_import_stream.cpp
-    src/core/gemini_cli_compat.cpp
-    ${UAM_PROVIDER_SOURCES}
-    src/common/config/settings_store.cpp
-    src/common/config/settings_store_data_folder.cpp
-    src/common/chat/chat_folder_data_folder.cpp
     src/remote/runner_protocol.cpp
     src/remote/runner_bootstrap.cpp
-    src/remote/runner_client.cpp
     src/remote/runner_proxy.cpp
     src/remote/runner_state.cpp
-    src/common/platform/platform_services.cpp
+    ${UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES}
+    ${UAM_PTY_SOURCES}
   )
   set_target_properties(uam_core_tests PROPERTIES
     CXX_STANDARD 20
@@ -1758,7 +1665,7 @@ if(UAM_BUILD_TESTS)
     CXX_EXTENSIONS OFF
   )
 
-  target_link_libraries(uam_core_tests PRIVATE uam_sqlite)
+  target_link_libraries(uam_core_tests PRIVATE uam_core_objects uam_sqlite)
   target_include_directories(uam_core_tests
     PRIVATE
       src
@@ -1827,6 +1734,13 @@ if(UAM_BUILD_TESTS)
     )
   endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
+  # Every core test includes the harness; its ~120 headers otherwise dominate each test compile.
+  target_precompile_headers(uam_core_tests PRIVATE tests/test_harness.h)
+  set_source_files_properties(src/computer_use/computer_use_mcp_server.cpp src/remote/runner_protocol.cpp
+    src/remote/runner_bootstrap.cpp src/remote/runner_proxy.cpp src/remote/runner_state.cpp
+    src/remote/runner_service_posix.cpp src/remote/runner_service_windows.cpp
+    ${UAM_PTY_SOURCES} ${UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES}
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
   add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
   add_custom_target(uam_check_core
