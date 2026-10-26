@@ -4134,6 +4134,27 @@ UAM_TEST(CefInteractiveBridgeAndClipboardStayBounded)
 
 }
 
+UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
+{
+	// History pages are user-blocking; live opening of a huge chat waited ~300 ms behind equal-priority Git status reads.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string vcs = ReadFile(source_root / "src/cef/vcs_handlers.cpp");
+	UAM_ASSERT(vcs.find("constexpr CefThreadId kVcsStatusThread = TID_FILE_USER_VISIBLE;") != std::string::npos);
+	for (const char* handler : {"HandleGetVcsCommitStatus(", "HandleGetChatWorktreeStatus(", "HandleCaptureChatReferenceContext("})
+	{
+		const std::size_t begin = vcs.find(std::string("void UamQueryHandler::") + handler);
+		UAM_ASSERT(begin != std::string::npos);
+		const std::size_t end = vcs.find("\nvoid UamQueryHandler::", begin + 1);
+		const std::string body = vcs.substr(begin, end - begin);
+		UAM_ASSERT(body.find("kVcsStatusThread)") != std::string::npos);
+		UAM_ASSERT(body.find("TID_FILE_USER_BLOCKING") == std::string::npos);
+	}
+	const std::string chats = ReadFile(source_root / "src/cef/chat_handlers.cpp");
+	const std::size_t history = chats.find("void UamQueryHandler::HandleGetChatMessages(");
+	UAM_ASSERT(history != std::string::npos);
+	UAM_ASSERT(chats.find("TID_FILE_USER_BLOCKING", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
+}
+
 UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
