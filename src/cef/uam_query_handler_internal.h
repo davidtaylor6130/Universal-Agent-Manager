@@ -282,7 +282,7 @@ inline void RollbackCreatedChat(uam::AppState& app, const std::string& chat_id, 
 
 	if (delete_storage)
 	{
-		ChatRepository::DeleteChatStorageFiles(app.data_root, chat_id);
+		ChatRepository::DeleteChatStorageFiles(app.data_root, chat_id, "create_rollback");
 	}
 
 	ChatDomainService().SelectChatById(app, previous_selected_chat_id);
