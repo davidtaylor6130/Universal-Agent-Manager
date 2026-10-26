@@ -274,7 +274,10 @@ int main(int argc, char** argv)
 	expected += 2; // Genuine pure/mixed four-slot version-wait admission controls.
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI && defined(__APPLE__)
-	expected += 7; // Prior six Codex controls plus ordinary public MCP delegation/result.
+	expected += 9; // Prior six Codex controls plus public MCP delegation, child wake and exact RPC receipt.
+#endif
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	expected += 8; // Native-refresh and cold direct-receipt handler controls use this provider-only guard.
 #endif
 #if UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && defined(__APPLE__)
 	expected += 10; // Prior Copilot cases plus the actual parent MCP delegation/child result journey.
@@ -293,7 +296,7 @@ int main(int argc, char** argv)
 #endif
 
 #if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	++expected; // Actual offline Gemini ordinary agent_delegate lifecycle.
+	expected += 3; // Ordinary Gemini delegation plus initial binding and raw-proof refusal controls.
 #endif
 	std::cout << passed << '/' << selected << " selected managed handler cases passed\n";
 	if (requested.empty())
