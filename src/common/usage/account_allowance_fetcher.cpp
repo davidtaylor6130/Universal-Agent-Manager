@@ -1,4 +1,5 @@
 #include "account_allowance_fetcher.h"
+#include "common/provider/provider_ids.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/usage/transcript_usage.h"
@@ -197,14 +198,14 @@ namespace uam::usage
 		AccountAllowanceCommand result;
 		result.error = "Independent account allowances are unavailable for this custom provider command; use the standard provider launcher without prompts, wrappers or account overrides.";
 		std::string_view expected;
-		if (provider_id == "codex-cli") expected = "codex";
-		else if (provider_id == "claude-cli") expected = "claude";
-		else if (provider_id == "copilot-cli") expected = "copilot";
-		else if (provider_id == "gemini-cli") expected = "gemini";
-		else if (provider_id == "antigravity-cli") expected = "agy";
+		if (provider_id == uam::provider_ids::kCodexCli) expected = "codex";
+		else if (provider_id == uam::provider_ids::kClaudeCli) expected = "claude";
+		else if (provider_id == uam::provider_ids::kCopilotCli) expected = "copilot";
+		else if (provider_id == uam::provider_ids::kGeminiCli) expected = "gemini";
+		else if (provider_id == uam::provider_ids::kAntigravityCli) expected = "agy";
 		else return result;
 		if (command.empty() || command.front().empty() || command.front().size() > 4096 || command.front().find('\0') != std::string::npos) return result;
-		if (command.size() != 1 && !(provider_id == "codex-cli" && command.size() == 2 && command[1] == "--no-alt-screen")) return result;
+		if (command.size() != 1 && !(provider_id == uam::provider_ids::kCodexCli && command.size() == 2 && command[1] == "--no-alt-screen")) return result;
 		const std::string& executable = command.front();
 		const auto separator = executable.find_last_of("/\\");
 		if (separator != std::string::npos)
@@ -284,8 +285,8 @@ namespace uam::usage
 	    std::string_view provider_id, const std::vector<std::string>& command, const std::filesystem::path& working_directory,
 	    std::stop_token stop, std::chrono::milliseconds timeout)
 	{
-		const bool codex = provider_id == "codex-cli";
-		const bool copilot = provider_id == "copilot-cli";
+		const bool codex = provider_id == uam::provider_ids::kCodexCli;
+		const bool copilot = provider_id == uam::provider_ids::kCopilotCli;
 		if (!codex && !copilot) return Failure("Independent account allowance acquisition is not available for this provider.");
 		const auto validated = ValidateAccountAllowanceCommand(provider_id, command);
 		if (!validated.error.empty()) return Failure(validated.error.c_str());

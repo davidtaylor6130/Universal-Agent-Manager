@@ -9,6 +9,8 @@ import {
   readCachedUpdateCatalog,
   type LatestUpdateCatalog,
 } from '../services/updateCatalog'
+import { isSshHost } from '../utils/remoteWorkspace'
+import { SSH_ENABLED } from '../config/buildFeatures'
 
 function updateCheckErrorIdentity(message: string): string {
   // ponytail: 64-bit FNV-1a keeps settings bounded; collisions are negligible for UI dismissal state.
@@ -109,7 +111,7 @@ export function useUpdateMonitor() {
 
   const applyRemoteHelperUpdate = useCallback(async (hostId: string): Promise<CEFResponse> => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)
-    if (!host || host.transport !== 'ssh' || remoteHelperUpdatingId) return { ok: false }
+    if (!host || !isSshHost(host) || remoteHelperUpdatingId) return { ok: false }
     setRemoteHelperUpdatingId(hostId)
     try {
       const response = await sendToCEF({ action: 'installRemoteHost', payload: host })
@@ -177,7 +179,7 @@ export function useUpdateMonitor() {
     if (!automaticProviderUpdates || !cefStateHydrated || checking) return
     const targets: { providerId: string; version: string; executionHostId?: string }[] = []
     for (const update of updates) {
-      if (!update.providerId || !update.installable || update.remoteHostId) continue
+      if (!update.providerId || !update.installable || (SSH_ENABLED && update.remoteHostId)) continue
       const state = providerStates.find((entry) => entry.providerId === update.providerId &&
         (entry.executionHostId || 'local') === (update.executionHostId || 'local'))
       if (!state || state.running || state.lastInstallStatus === 'awaiting-verification' || state.blockingChatIds?.length || state.checkError) continue
@@ -241,7 +243,7 @@ export function useUpdateMonitor() {
     }]
   }), [providers, providerStates])
   const allProviderCheckErrors = useMemo(() => (versionManager.remoteProviders ?? []).flatMap((state) => {
-    const host = executionHosts.find((candidate) => candidate.id === state.executionHostId && candidate.transport === 'ssh')
+    const host = executionHosts.find((candidate) => candidate.id === state.executionHostId && isSshHost(candidate))
     if (!host || state.running || !state.checkError) return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
     return [{

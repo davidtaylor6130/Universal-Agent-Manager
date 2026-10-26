@@ -2,6 +2,8 @@
 #include <cmath>
 #include <utility>
 #include "common/runtime/acp/claude_quota_continuation.h"
+// Builds without this provider use the inline stubs in the header; test targets may still list this file.
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 
 #include "app/chat_domain_service.h"
 #include "app/execution_routing_integration.h"
@@ -311,3 +313,4 @@ namespace uam::acp_detail
 		return changed;
 	}
 }
+#endif // UAM_ENABLE_RUNTIME_CLAUDE_CLI

@@ -185,7 +185,7 @@ namespace uam::remote
 	try
 	{
 		if (stop_token.stop_requested()) return false;
-		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "SSH remote execution is disabled in this build."; return false; }
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
 		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
 		if (m_connected) return true;
 		if (m_bridgeArgv.empty())

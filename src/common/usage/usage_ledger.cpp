@@ -233,6 +233,7 @@ namespace uam::usage
 		for (const nlohmann::json& row : payload["rows"])
 		{
 			if (!row.is_array() || row.size() != 15) return std::nullopt;
+			if (SkipsExcludedProvider(row[0])) continue;
 			Record record;
 			std::int64_t count = 0, unidentified = 0;
 			if (!Text(row[0], record.provider_id, 160) || !provider_ids::IsKnownCliProviderId(record.provider_id) || !Text(row[1], record.model_id, 512) || record.model_id.empty() ||

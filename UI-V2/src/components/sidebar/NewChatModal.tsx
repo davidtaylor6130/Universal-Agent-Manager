@@ -3,7 +3,7 @@ import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
 import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { SSH_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -12,11 +12,11 @@ import type { Provider } from '../../types/provider'
 import { SelectionGrid } from '../shared/SelectionGrid'
 import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
-import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { ModelPickerContent } from '../chat/ModelPickerContent'
-import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
+import { isAbsoluteRemoteWorkspace, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { NewChatBranchPicker } from './NewChatBranchPicker'
 
@@ -274,7 +274,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const modelOptions = buildModelOptions(cachedAcp, modelId, selectedProvider ?? undefined, providerId, true, providerChatDefaults[providerId]).filter((option) => !option.disabled)
 	const selectedModelId = modelOptionFor(modelOptions, modelId).id
   useEffect(() => {
-    if (providerId === 'opencode-cli' && selectedModelId !== modelId) setModelId(selectedModelId)
+    if (providerId === OPENCODE_CLI_PROVIDER_ID && selectedModelId !== modelId) setModelId(selectedModelId)
   }, [providerId, selectedModelId, modelId])
 	const runtimeSupportsReasoning = (selectedRuntimeModel(cachedAcp, selectedModelId)?.supportedReasoningEfforts?.length ?? 0) > 0
 	const capabilities = providerCapabilities(providerId, selectedProvider ?? undefined)
@@ -399,14 +399,14 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <SelectionGrid
             label="Runs on"
             value={routingMode === 'automatic' ? AUTOMATIC_HOST_OPTION : executionHostId}
-            options={[...(SSH_ENABLED ? [{ id: AUTOMATIC_HOST_OPTION, label: 'Automatic', icon: <Monitor size={18} aria-hidden />, disabled: creatingChat || !automaticAvailable, issues: automaticAvailable ? [] : ['Configure routing and map this workspace for the selected provider.'] }] : []), ...executionHosts.filter((host) => SSH_ENABLED || host.transport !== 'ssh').map((host) => ({
+            options={[...(SSH_ENABLED ? [{ id: AUTOMATIC_HOST_OPTION, label: 'Automatic', icon: <Monitor size={18} aria-hidden />, disabled: creatingChat || !automaticAvailable, issues: automaticAvailable ? [] : ['Configure routing and map this workspace for the selected provider.'] }] : []), ...executionHosts.filter((host) => SSH_ENABLED || !isSshHost(host)).map((host) => ({
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,
-              detail: host.transport === 'ssh' ? host.sshAlias : undefined,
-              tone: host.transport === 'ssh' ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
-              disabled: creatingChat || (host.transport === 'ssh' && host.runnerStatus !== 'ready'),
-              issues: host.transport === 'ssh' && host.runnerStatus !== 'ready'
+              detail: isSshHost(host) ? host.sshAlias : undefined,
+              tone: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
+              disabled: creatingChat || (isSshHost(host) && host.runnerStatus !== 'ready'),
+              issues: isSshHost(host) && host.runnerStatus !== 'ready'
                 ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
             }))]}
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
@@ -483,7 +483,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 )}
               </div>
 			  <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
-				{selectedFolder ? 'Owned by the selected workspace.' : `Read only by ${selectedExecutionHost?.label}.`} Computer Use is off for remote chats.
+				{selectedFolder ? 'Owned by the selected workspace.' : `Read only by ${selectedExecutionHost?.label}.`}{COMPUTER_USE_ENABLED && ' Computer Use is off for remote chats.'}
               </p>
             </div>
           )}
@@ -603,7 +603,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             {creatingChat ? 'Creating…' : 'Create chat'}
           </Button>
         </div>
-      {routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}
+      {SSH_ENABLED && routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}
       </div>
     </div>
   )

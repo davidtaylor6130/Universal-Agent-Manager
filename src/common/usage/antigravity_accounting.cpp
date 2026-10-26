@@ -1,4 +1,6 @@
 #include "common/usage/antigravity_accounting.h"
+// Builds without this provider use the inline stubs in the header; test targets may still list this file.
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 #include "common/utils/string_utils.h"
 #include <algorithm>
 #include <functional>
@@ -349,3 +351,4 @@ namespace uam::usage
 		catch (const std::exception&) { return false; }
 	}
 }
+#endif // UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI

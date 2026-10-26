@@ -40,6 +40,7 @@
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
@@ -502,8 +503,13 @@ void Application::PollTick()
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
 	const bool opencode_native_changed = m_app.opencode_native_activity && m_app.opencode_native_activity->Poll(m_app);
+#else
+	constexpr bool compaction_sync_changed = false;
+	constexpr bool opencode_native_changed = false;
+#endif
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
@@ -788,6 +794,13 @@ bool Application::InitializeState()
 		return false;
 	}
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
+#if !UAM_ALL_PROVIDERS_INCLUDED
+	{
+		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
+		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+	}
+#endif
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
 	m_app.agent_runs = std::move(agent_runs.runs);
@@ -856,6 +869,7 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 	m_app.provider_model_catalog->SetExecutionHostContext(m_app.settings.execution_hosts);
 	m_app.provider_model_catalog->MaybeStartRefresh();
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	m_openCodeCompactionSync = std::make_shared<uam::OpenCodeCompactionSyncService>();
 	m_app.opencode_native_activity = std::make_shared<uam::OpenCodeNativeActivityService>();
 	const std::weak_ptr<uam::OpenCodeCompactionSyncService> compaction_sync = m_openCodeCompactionSync;
@@ -870,6 +884,7 @@ bool Application::InitializeState()
 		if (!service) { error = "Native compaction synchronization is stopping."; return uam::OpenCodeCompactionGateState::Failed; }
 		return service->BeforeDispatch(*app, session, chat, error);
 	};
+#endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
@@ -1001,6 +1016,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)
 		m_app.opencode_native_activity->Stop();
 	m_app.opencode_native_activity.reset();
@@ -1008,6 +1024,7 @@ void Application::Shutdown()
 	m_app.opencode_compaction_before_dispatch = {};
 	if (m_openCodeCompactionSync) m_openCodeCompactionSync->Stop();
 	m_openCodeCompactionSync.reset();
+#endif
 	m_worktreeRetention.Stop();
 	if (m_app.storage_retention_service != nullptr) m_app.storage_retention_service->Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();

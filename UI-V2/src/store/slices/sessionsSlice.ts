@@ -19,15 +19,19 @@ import type { MemoryLevel } from '../../types/memory'
 import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
   providerCapabilities,
+  providerMetadataForId,
 } from '../../utils/providerMetadata'
 import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
@@ -92,7 +96,7 @@ const initialFolders = [
 const initialSessions: Session[] = [
   {
     id: 's1',
-    name: 'Gemini CLI',
+    name: providerMetadataForId(DEFAULT_PROVIDER_ID).name,
     viewMode: 'chat',
     folderId: 'default',
     createdAt: new Date(),
@@ -110,7 +114,7 @@ const initialProviders: Provider[] = [
   initialProvider(CLAUDE_CLI_PROVIDER_ID, '#7c3aed'),
   initialProvider(OPENCODE_CLI_PROVIDER_ID, '#14b8a6'),
   initialProvider(COPILOT_CLI_PROVIDER_ID, '#22c55e'),
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let sessionCounter = 10
 
@@ -508,7 +512,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     permissionReviewerModelId: '',
     memoryActivity: { ...emptyMemoryActivity } as MemoryActivity,
     cliVersionManager: { ...emptyCliVersionManager } as CliVersionManager,
-    defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: DEFAULT_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
     fileExplorerApplication: '',
     windowsPowerShell: 'auto' as WindowsPowerShellPreference,
@@ -847,7 +851,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ? normalizedProviderId
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
-          : GEMINI_CLI_PROVIDER_ID
+          : DEFAULT_PROVIDER_ID
       if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
       const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
@@ -1432,7 +1436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     getWorkspaceFilePreview: async (id: string, path: string) => {
-      if (!isCefContext()) throw new Error('File inspection requires the desktop app or its connected companion.')
+      if (!isCefContext()) throw new Error(MOBILE_COMPANION_ENABLED ? 'File inspection requires the desktop app or its connected companion.' : 'File inspection requires the desktop app.')
       const response = await sendToCEF({ action: 'getWorkspaceFilePreview', payload: { chatId: id, path } }, false)
       if (!response.ok) throw new Error(response.error || 'Could not load this file.')
       const file = filePreviewResponse(response.data)
@@ -1637,7 +1641,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return false
       }
 
-      if ((previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) === requestedProviderId) {
+      if ((previousSession.providerId ?? DEFAULT_PROVIDER_ID) === requestedProviderId) {
         return true
       }
 
@@ -1847,7 +1851,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 	  const acp = get().acpBindingBySessionId[id]
 	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
-	  const providerId = previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID
+	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
 	  const runtimeModel = get().acpBindingBySessionId[id]?.availableModels.find((model) => model.id === (previousSession.modelId ?? ''))
@@ -2138,6 +2142,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setSessionComputerUseBackend: async (id: string, backend: ComputerUseBackend): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (session.computerUseEnabled) return computerUseFailure('Turn off computer use before changing its control method.')
@@ -2161,6 +2166,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
 	setSessionComputerUseEnabled: async (id: string, enabled: boolean): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (enabled && (session.computerUseEnabled ?? false)) return computerUseSuccess
@@ -2184,6 +2190,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setSessionComputerUseControl: async (id: string, controlState: ComputerUseControlState): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (!session.computerUseEnabled || (session.computerUseEffectiveBackend ?? 'uam') !== 'uam') return computerUseFailure()
@@ -2539,7 +2546,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     refreshCliProviderVersion: async (providerId?: string, executionHostId?: string): Promise<boolean> => {
-      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? GEMINI_CLI_PROVIDER_ID)
+      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? DEFAULT_PROVIDER_ID)
       if (!targetProviderId) return false
 
       if (isCefContext()) {
@@ -2768,8 +2775,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               [sessionId]: {
                 ...(state.acpBindingBySessionId[sessionId] ?? {
                   sessionId: '',
-                  providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-                  protocolKind: inputRecorded ? '' : 'gemini-acp',
+                  providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+                  protocolKind: inputRecorded ? '' : providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
                   threadId: '',
                   running: false,
                   lifecycleState: (inputRecorded ? 'stopped' : 'error') as AcpLifecycleState,
@@ -2886,8 +2893,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: {
             ...(state.acpBindingBySessionId[sessionId] ?? {}),
             sessionId: state.acpBindingBySessionId[sessionId]?.sessionId ?? '',
-            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-            protocolKind: 'gemini-acp',
+            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+            protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
             threadId: state.acpBindingBySessionId[sessionId]?.threadId ?? '',
             running: false,
             lifecycleState: 'error',
@@ -3246,8 +3253,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: {
             ...(state.acpBindingBySessionId[sessionId] ?? {
               sessionId: 'dev-acp-session',
-              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-              protocolKind: 'gemini-acp',
+              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+              protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
               threadId: '',
               running: true,
               lifecycleState: 'ready' as AcpLifecycleState,

@@ -32,6 +32,7 @@
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -109,7 +110,8 @@ namespace
 
 	std::string FallbackCliVersionProviderId(const std::string& active_provider_id)
 	{
-		return uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		const std::string provider_id = uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		return provider_id == uam::provider_ids::kExcludedCliProviderId ? std::string{} : provider_id; // Antigravity-only builds manage no CLI versions.
 	}
 
 	std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
@@ -209,7 +211,7 @@ namespace
 	{
 		nlohmann::json bindings = nlohmann::json::object();
 		for (const auto& [id, binding] : value.memory_worker_bindings)
-			bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
+			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
 		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
@@ -380,6 +382,9 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("permissionReviewerProviderId", ""));
 		candidate.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
+		// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+		candidate.excluded_provider_selections.erase("permission_reviewer_provider_id");
+		m_app.settings.excluded_provider_selections.erase("permission_reviewer_provider_id");
 	}
 	if (payload.contains("permissionReviewerModelId"))
 	{
@@ -551,6 +556,8 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		{
 			if (scope.empty()) m_app.settings.default_new_chat_provider_id = provider->id;
 			else m_app.settings.host_scoped_settings[scope].default_new_chat_provider_id = provider->id;
+			// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+			m_app.settings.excluded_provider_selections.erase(scope.empty() ? std::string("default_new_chat_provider_id") : "host:" + scope);
 		}
 	}
 
@@ -818,6 +825,7 @@ void UamQueryHandler::ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser,
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	if (!payload.is_object() || !payload.empty())
@@ -898,6 +906,7 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 	catch (...) {}
 	cb->Success(response.dump());
 }
+#endif
 
 void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -981,6 +990,7 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 #if defined(__APPLE__)
@@ -1013,6 +1023,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
 #endif
 }
+#endif
 
 void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1103,6 +1114,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 		return;
 	}
 	const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
+	uam::central_configuration::KeepExcludedProviderOverrides(previous, configuration);
 	m_app.settings.central_provider_configuration = std::move(configuration);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
@@ -1114,6 +1126,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
+#if UAM_ENABLE_SSH
 void UamQueryHandler::HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	nlohmann::json confirmed_payload = payload;
@@ -1204,6 +1217,7 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+#endif
 
 void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1244,6 +1258,7 @@ void UamQueryHandler::HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, 
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	(void)browser;
@@ -1285,6 +1300,7 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
 	}
 }
+#endif
 
 namespace
 {

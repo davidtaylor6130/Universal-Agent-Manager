@@ -12,7 +12,8 @@ import { getTopmostModal } from '../../utils/modalFocus'
 import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import { normalizeCliLifecycleState, cliLifecycleIsProcessing, cliOutputMatchesBinding } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
-import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import { COPILOT_ENABLED } from '../../config/buildFeatures'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerMetadataForId } from '../../utils/providerMetadata'
 import { resolveDocumentTheme } from '../../utils/themeStorage'
 import { UserInputInlineCard } from '../chat/QuestionInput'
 import { useResolvedTheme } from '../../hooks/useTheme'
@@ -104,7 +105,7 @@ export function CLIView({ session }: CLIViewProps) {
     cliBinding?.lastError && cliBinding.lastError !== dismissedTerminalError
       ? cliBinding.lastError
       : ''
-  const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to Gemini CLI to use terminal mode.`
+  const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to use terminal mode.`
 
   useEffect(() => {
     const node = terminalRef.current
@@ -257,6 +258,7 @@ export function CLIView({ session }: CLIViewProps) {
         let bestKnownBoundChatId = session.id
         const retryCopilotAfterCompatibilityCheck = (error: string) => {
           if (
+            !COPILOT_ENABLED ||
             currentProviderId !== COPILOT_CLI_PROVIDER_ID ||
             !error.startsWith('Checking GitHub Copilot CLI compatibility.')
           ) {

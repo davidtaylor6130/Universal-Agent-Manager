@@ -24,7 +24,7 @@ import type { ConversationDelivery } from '../chat/ConversationTurn'
 import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
 import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -36,7 +36,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -898,7 +898,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
-  const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const remoteComputerUseDisabled = SSH_ENABLED && (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const workspaceFolders = useAppStore((s) => s.folders)
   const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
@@ -1937,7 +1937,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
+    : `${currentProviderName} is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
@@ -2286,12 +2286,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         session.reasoningEffort ?? '',
         isCopilotProvider(currentProvider, currentProviderId)
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
-          : currentProviderId === 'codex-cli' ? undefined : []
+          : currentProviderId === CODEX_CLI_PROVIDER_ID ? undefined : []
       )
     : [], [currentModel.id, currentProvider, currentProviderId, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
   const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
-    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === 'codex-cli')
+    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === CODEX_CLI_PROVIDER_ID)
     : [], [currentModel.id, currentProviderId, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
@@ -2438,7 +2438,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
-  const planActionsDisabledTitle = planActionBlockedByRuntime
+  const planActionsDisabledTitle = CODEX_ENABLED && planActionBlockedByRuntime
     ? 'Codex is still working.'
     : 'Plan action is unavailable.'
   const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
@@ -2560,6 +2560,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
+    if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
     if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
     return result
@@ -2621,9 +2622,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ] : []),
         ...(manualCompactionAvailable ? [{ id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
-        ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: CODEX_ENABLED ? 'Choose Codex reasoning' : 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: CODEX_ENABLED ? 'Choose Codex speed' : 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        ...(OPENCODE_ENABLED && providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
         ...(COMPUTER_USE_ENABLED ? [{ id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) }] : []),
@@ -3495,7 +3496,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   </>
                 )}
               >
-                YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.
+                {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
               </Notice>
             )}
             {rollbackConfirmation && (
@@ -3556,7 +3557,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </span>
               </div>
             )}
-            {claudePlanPrompt !== null && (
+            {CLAUDE_ENABLED && claudePlanPrompt !== null && (
               <Notice
                 tone="warning"
                 title="Claude Plan mode"
@@ -3811,11 +3812,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   className="overflow-hidden rounded-lg animate-fade-in"
                   style={{ width: composerTextareaRef.current?.getBoundingClientRect().width ?? 320, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : variantQuery !== undefined ? 'OpenCode variants' : 'Slash commands'}
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : 'Slash commands'}
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
                     {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
-                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : variantQuery !== undefined ? 'OpenCode variants' : 'Commands'}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
