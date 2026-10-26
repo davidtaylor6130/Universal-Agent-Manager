@@ -15,6 +15,7 @@ Import from `components/settings/SettingsPrimitives`:
 - `SettingRow`: title and concise consequence on the left, control on the right; observed state uses its status line and expanded details appear below.
 - `SettingsField`: label above a wide input for paths, multiline text or multi-field forms.
 - `SettingsLoading`: the shared loading skeleton.
+- Text inputs use the themed `uam-field` class (theme-token background, text and border), which dims and shows a not-allowed cursor while disabled.
 - Legacy `SectionCard` already uses the shared language; prefer the row and field primitives when extending it.
 
 [Settings layout](settings.md) owns how these are assembled. [Source](../../UI-V2/src/components/settings/SettingsPrimitives.tsx).

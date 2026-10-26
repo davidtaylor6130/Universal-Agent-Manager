@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
@@ -1254,4 +1256,21 @@ it('retains passive collapsed recorded launches without borrowing an enclosing p
     expect(select).not.toHaveBeenCalled()
     expect(host.textContent).not.toContain('Final recorded text')
   } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; useAppStore.setState(previous, true); vi.unstubAllGlobals() }
+})
+
+it('animates the running step side to side by transform only, with no idle, Motion Off or reduced-motion sweep', () => {
+  const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
+  const sweep = '[data-processing-step="true"] .conversation-work__tool-title::after'
+  const rule = css.slice(css.indexOf(sweep), css.indexOf('}', css.indexOf(sweep)))
+  expect(rule).toContain('animation: conversation-processing-sweep')
+  // The title shrinks to its text while running so the band crosses the label rather than the empty row.
+  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }')
+  const keyframes = css.slice(css.indexOf('@keyframes conversation-processing-sweep'))
+  expect(keyframes.slice(0, keyframes.indexOf('\n'))).toMatch(/transform: translateX\(-100%\).*transform: translateX\(250%\)/)
+  // Only the active step selector animates; a background-position text sweep repaints every frame.
+  expect(css.match(/animation: conversation-processing-sweep/g)).toHaveLength(1)
+  expect(css).not.toMatch(/conversation-processing-sweep[^}]*background-position/)
+  expect(css).toContain(`[data-motion="off"] ${sweep}`)
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf(sweep)))
+  expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(sweep)
 })

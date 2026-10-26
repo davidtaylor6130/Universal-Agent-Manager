@@ -1183,4 +1183,25 @@ describe('SessionItem snooze actions', () => {
       host.remove()
     }
   })
+
+  it('hides the wake time whenever the hover actions show so the two never overlap', () => {
+    const session = { ...makeSession(), snoozedUntilMs: Date.now() + 3_600_000 }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      const wake = host.querySelector<HTMLElement>('[title^="Wakes "]')!
+      // The hover actions are absolutely positioned over the row's right edge on hover and focus.
+      expect(wake.className).toContain('group-hover:opacity-0')
+      expect(wake.className).toContain('group-focus-within:opacity-0')
+      // An open row menu keeps the actions visible without hover, so the wake time stays hidden too.
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!.click())
+      expect(host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')!.className).toContain('opacity-100')
+      expect(wake.className.split(' ')).toContain('opacity-0')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
 })
