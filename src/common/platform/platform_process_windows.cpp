@@ -296,6 +296,7 @@ class WindowsProcessService final : public IPlatformProcessService
 	ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 	{
 		ProcessExecutionResult result;
+		RefreshProcessPathFromRegistry();
 		std::vector<wchar_t> environment_block;
 		if (!BuildEnvironmentBlock({}, environment_block, &result.error, true))
 		{

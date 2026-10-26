@@ -25864,6 +25864,33 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	UAM_ASSERT_EQ(state.install_method, std::string("winget"));
 }
 
+UAM_TEST(WindowsLaunchesAppendRegistryPathMissingFromStaleProcessPath)
+{
+	// A helper started before a CLI install keeps its old PATH; System32 stands in for the newly added registry entry.
+	TempDir temp("uam-win-stale-path");
+	const auto expect_registry_path_child = [&](const ProcessExecutionResult& result)
+	{
+		UAM_ASSERT(result.ok);
+		UAM_ASSERT_EQ(result.exit_code, 0);
+		UAM_ASSERT(uam::strings::ContainsCaseInsensitive(result.output, "\\cmd.exe"));
+		std::wstring path(32767, L'\0');
+		path.resize(GetEnvironmentVariableW(L"PATH", path.data(), static_cast<DWORD>(path.size())));
+		UAM_ASSERT(path.starts_with(temp.root.wstring() + L";"));
+	};
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		expect_registry_path_child(PlatformServicesFactory::Instance().process_service.ExecuteCommand("where.exe cmd", 10000));
+	}
+	{
+		ScopedEnvVar stale_path("PATH", temp.root.string());
+		uam::ProviderWorkerInvocation invocation;
+		invocation.direct_process = true;
+		invocation.argv = {"where.exe", "cmd"};
+		invocation.command_preview = "where.exe cmd";
+		expect_registry_path_child(uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 10000));
+	}
+}
+
 #endif
 
 #if defined(__APPLE__)
