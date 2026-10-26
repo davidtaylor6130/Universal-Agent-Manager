@@ -465,22 +465,36 @@ function configOptionsEquivalent(existing: AcpConfigOption[], next: AcpConfigOpt
   })
 }
 
+// Compare every field sanitizeTurnEvent keeps: shareTurnEvents reuses the prior object when this says equal.
+function turnEventEquivalent(event: AcpTurnEvent, other: AcpTurnEvent) {
+  if (event.type !== other.type) return false
+  if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&
+    (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
+    (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
+  if ('text' in event || 'text' in other) {
+    if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
+  }
+  return (
+    (event as { toolCallId?: string }).toolCallId === (other as { toolCallId?: string }).toolCallId &&
+    (event as { requestId?: string }).requestId === (other as { requestId?: string }).requestId
+  )
+}
+
 function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
-  if (existing.length !== next.length) return false
-  return existing.every((event, index) => {
-    const other = next[index]
-    if (event.type !== other.type) return false
-    if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&
-      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
-      (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
-    if ('text' in event || 'text' in other) {
-      if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
-    }
-    return (
-      (event as { toolCallId?: string }).toolCallId === (other as { toolCallId?: string }).toolCallId &&
-      (event as { requestId?: string }).requestId === (other as { requestId?: string }).requestId
-    )
+  return existing.length === next.length && existing.every((event, index) => turnEventEquivalent(event, next[index]))
+}
+
+/** Reuses unchanged previous event objects (and the array itself) so per-event and timeline memos hold while a turn grows. */
+export function shareTurnEvents(previous: AcpTurnEvent[] | undefined, next: AcpTurnEvent[]): AcpTurnEvent[] {
+  if (!previous || previous.length === 0) return next
+  let changed = previous.length !== next.length
+  const shared = next.map((event, index) => {
+    const prior = previous[index]
+    if (prior && turnEventEquivalent(prior, event)) return prior
+    changed = true
+    return event
   })
+  return changed ? shared : previous
 }
 
 function agentInfoEquivalent(existing: AcpAgentInfo | null, next: AcpAgentInfo | null) {
@@ -719,7 +733,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     modelsLoading: Boolean(acp?.modelsLoading),
     modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
-    turnEvents: Array.isArray(acp?.turnEvents) ? acp!.turnEvents : [],
+    turnEvents: shareTurnEvents(previous?.turnEvents, Array.isArray(acp?.turnEvents) ? acp!.turnEvents : []),
     turnUserMessageIndex: typeof acp?.turnUserMessageIndex === 'number' ? acp.turnUserMessageIndex : -1,
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,

@@ -185,7 +185,7 @@ void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
-	if (!uam::PrepareWorkspaceDeletion(m_app, folder_ids, *task))
+	if (!uam::PrepareWorkspaceDeletionBatch(m_app, folder_ids, *task))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
 		return;
@@ -201,7 +201,7 @@ void UamQueryHandler::StartChatDeletion(CefRefPtr<CefBrowser> browser, const std
 		return;
 	}
 	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
-	if (!uam::PrepareChatDeletion(m_app, chat_ids, *task))
+	if (!uam::PrepareChatDeletionBatch(m_app, chat_ids, *task))
 	{
 		cb->Failure(409, m_app.status_line);
 		return;
@@ -286,8 +286,12 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 			    return;
 		    }
 		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
+		    nlohmann::json rejected = nlohmann::json::array();
+		    for (const uam::DeletionRejection& item : task->rejected) rejected.push_back({{"id", item.id}, {"error", item.error}});
 		    const std::string result_body = single_chat ? std::string("{}") : nlohmann::json{
 		        {"deletedChatIds", task->deleted_ids},
+		        {"deletedFolderIds", task->folder_ids},
+		        {"rejected", rejected},
 		        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}}.dump();
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 		    // Committed cleanup owns its lifetime even if the query or bridge closes.

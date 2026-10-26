@@ -50,7 +50,7 @@ void UamQueryHandler::RefreshAllowanceTargets()
 			providers.push_back({id, uam::command_line::SplitWords(profile->interactive_command)});
 	if (m_providerAllowances) { m_providerAllowances->SetProviders(std::move(providers)); return; }
 	m_providerAllowances = std::make_shared<uam::usage::AccountAllowanceService>(m_app.data_root, std::move(providers),
-	    [](const uam::usage::AccountAllowanceProviderConfig& config, const std::filesystem::path& root, std::stop_token stop)
+	    [](const uam::usage::AccountAllowanceProviderConfig& config, const std::filesystem::path& root, std::stop_token stop, bool manual)
 	    {
 		    const auto validated = uam::usage::ValidateAccountAllowanceCommand(config.provider_id, config.command);
 		    if (!validated.error.empty())
@@ -60,13 +60,13 @@ void UamQueryHandler::RefreshAllowanceTargets()
 			    return result;
 		    }
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		    if (config.provider_id == uam::provider_ids::kClaudeCli) return uam::usage::FetchClaudeAccountAllowance(root, stop);
+		    if (config.provider_id == uam::provider_ids::kClaudeCli) return uam::usage::FetchClaudeAccountAllowance(root, stop, manual);
 #endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		    if (config.provider_id == uam::provider_ids::kGeminiCli) return uam::usage::FetchGeminiAccountAllowance(root, stop);
 #endif
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-		    if (config.provider_id == uam::provider_ids::kAntigravityCli) return uam::usage::FetchAntigravityAccountAllowance(root, stop);
+		    if (config.provider_id == uam::provider_ids::kAntigravityCli) return uam::usage::FetchAntigravityAccountAllowance(root, stop, manual);
 #endif
 		    return uam::usage::FetchCliAccountAllowance(config.provider_id, validated.command, root, stop);
 	    });
@@ -76,12 +76,13 @@ void UamQueryHandler::HandleGetProviderAllowances(CefRefPtr<CefBrowser>, const n
 {
 	const auto host = payload.find("executionHostId");
 	if (host == payload.end() || !host->is_string() || host->get_ref<const std::string&>().empty() || host->get_ref<const std::string&>().size() > 128 ||
-	    (payload.contains("refresh") && !payload["refresh"].is_boolean())) { cb->Failure(400, "Account allowance request is invalid."); return; }
+	    (payload.contains("refresh") && !payload["refresh"].is_boolean()) || (payload.contains("allowKeychainPrompt") && !payload["allowKeychainPrompt"].is_boolean()))
+	{ cb->Failure(400, "Account allowance request is invalid."); return; }
 	const std::string id = host->get<std::string>();
 	if (!uam::execution_hosts::Find(m_app.settings.execution_hosts, id)) { cb->Failure(404, "Usage machine is no longer configured."); return; }
 	if (m_providerAllowances && m_providerAllowances->DataRoot() != m_app.data_root) { cb->Failure(409, "Account storage changed. Restart UAM to read this data root."); return; }
 	RefreshAllowanceTargets();
-	cb->Success(m_providerAllowances->Query(id, payload.value("refresh", false)).dump());
+	cb->Success(m_providerAllowances->Query(id, payload.value("refresh", false), payload.value("allowKeychainPrompt", false)).dump());
 }
 
 void UamQueryHandler::HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the production permission-request branch with counted native OS stubs."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -57,7 +58,7 @@ int main()
 }
 '''.replace("REQUEST_BRANCH", branch)
 compiler = shutil.which("clang++") or shutil.which("c++")
-json_include = next((ROOT / "Builds").glob("*/_deps/nlohmann_json-src/include"), None)
+json_include = os.environ.get("UAM_NLOHMANN_INCLUDE") or next((ROOT / "Builds").glob("*/_deps/nlohmann_json-src/include"), None)
 if compiler is None or json_include is None:
     raise SystemExit("C++ compiler or nlohmann include directory unavailable")
 with tempfile.TemporaryDirectory(prefix="uam-cu-global-permission-") as directory:

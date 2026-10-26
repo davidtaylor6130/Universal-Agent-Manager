@@ -31,6 +31,10 @@ struct CompanionConnectionHandlerTestAccess
 	{
 		handler.HandleRestartCompanion(nullptr, nlohmann::json::object(), callback);
 	}
+	static void InitialState(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleGetInitialState(nullptr, {{"summaryOnly", true}}, callback);
+	}
 	static void Stop(UamQueryHandler& handler)
 	{
 		if (handler.m_companion) handler.m_companion->Stop();
@@ -193,6 +197,25 @@ UAM_TEST(CompanionToggleReturnsCompleteObservedConnectionState)
 	UAM_ASSERT_EQ(callback->response["proxyRunning"], false);
 	UAM_ASSERT_EQ(callback->response["effectiveUrl"], "");
 	UAM_ASSERT_EQ(ReadFile(token_file), std::string(64, 'a'));
+}
+
+UAM_TEST(InitialStateLoadsWhenStateTextEndsMidCharacter)
+{
+	TempDir temporary("uam-initial-state-invalid-utf8");
+	uam::AppState app;
+	app.data_root = temporary.root;
+	ChatSession chat;
+	chat.id = "chat-invalid-utf8";
+	chat.provider_id = "codex-cli";
+	chat.title = std::string("Cut \xE2\x82", 6); // "Cut €" clipped inside the euro sign.
+	chat.created_at = chat.updated_at = "2026-10-26T00:00:00Z";
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///fixture/index.html");
+	CefRefPtr<ConnectionCallback> callback = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::InitialState(*handler_owner, callback);
+	UAM_ASSERT_EQ(callback->failure, 0);
+	UAM_ASSERT(callback->response.contains("bootId"));
+	UAM_ASSERT(callback->response.dump().find("Cut \xEF\xBF\xBD") != std::string::npos);
 }
 
 UAM_TEST(CompanionPairingTokenNeverPublishesAnUnreadySavedAddress)

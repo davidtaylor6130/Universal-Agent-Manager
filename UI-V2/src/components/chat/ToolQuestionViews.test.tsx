@@ -198,6 +198,38 @@ describe('production tool details', () => {
         expect(document.activeElement).toBe(trigger)
         trigger.remove()
     })
+
+    it('closes once after the exit animation, including when unmounted mid-exit', async () => {
+        vi.useFakeTimers()
+        vi.stubGlobal('matchMedia', () => ({ matches: false }))
+        const onClose = vi.fn()
+        await render(<ToolCallModal tool={{ ...tool, contentDeferred: false }} onClose={onClose} />)
+        act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+        await click('Close tool details')
+        act(() => { vi.advanceTimersByTime(1000) })
+        expect(onClose).toHaveBeenCalledOnce()
+
+        const unmounted = vi.fn()
+        await render(<ToolCallModal tool={{ ...tool, id: 'tool-2', contentDeferred: false }} onClose={unmounted} />)
+        await click('Close tool details')
+        await render(null)
+        expect(unmounted).toHaveBeenCalledOnce()
+        act(() => { vi.advanceTimersByTime(1000) })
+        expect(unmounted).toHaveBeenCalledOnce()
+    })
+
+    it('closes immediately with Motion Off instead of waiting for a 0 ms exit animation', async () => {
+        vi.stubGlobal('matchMedia', () => ({ matches: false }))
+        document.documentElement.setAttribute('data-motion', 'off')
+        try {
+            const onClose = vi.fn()
+            await render(<ToolCallModal tool={{ ...tool, contentDeferred: false }} onClose={onClose} />)
+            await click('Close tool details')
+            expect(onClose).toHaveBeenCalledOnce()
+        } finally {
+            document.documentElement.removeAttribute('data-motion')
+        }
+    })
 })
 
 describe('production sequential questions', () => {

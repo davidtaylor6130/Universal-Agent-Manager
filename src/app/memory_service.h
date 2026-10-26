@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class MemoryService
@@ -42,6 +43,8 @@ class MemoryService
 	static bool PollMemoryActivity(uam::AppState& app);
 	static std::string BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id);
 	static std::string BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index = -1);
+	/// <summary>Test-only fault injection called inside memory worker threads at "history" (saved-history read) and "output" (after the worker process returns); nullptr disables it.</summary>
+	static void SetWorkerFaultForTests(void (*fault)(std::string_view stage));
 	/// <summary>Captures extraction text from the requested scan start while retaining message positions and excluding unused payloads. Zero captures all text; negative uses the automatic overlap.</summary>
 	static ChatSession CaptureWorkerInput(const ChatSession& chat, int start_message_index = 0);
 	static std::vector<ManualScanCandidate> ListManualScanCandidates(const uam::AppState& app);

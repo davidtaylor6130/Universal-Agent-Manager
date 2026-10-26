@@ -5201,32 +5201,44 @@ bool ChatRepository::MatchesTemporaryChatSaveReceipt(const fs::path& data_root, 
 
 namespace
 {
-	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id)
+	const char* RemovalOutcome(bool removed, const std::error_code& error)
+	{
+		return error ? "error" : (removed ? "removed" : "absent");
+	}
+
+	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 	{
 		ChatStorageDeleteResult result;
 		if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
 		{
 			result.unsafe_chat_id = true;
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", unsafe chat id");
 			return result;
 		}
 
 		if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
 		{
 			result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) + ", queue directory is a link");
 			return result;
 		}
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
 		uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
 		const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
-		uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+		const bool primary_removed = uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
-		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
+		const bool backup_removed = uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
 		const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 		uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
 		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
 		    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
+		// Ids and outcomes only: the sole UAM path that removes a chat primary must leave an attributable record.
+		uam::diagnostics::Write("Chat storage delete: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) +
+		    ", primary=" + RemovalOutcome(primary_removed, result.metadata_file_error) +
+		    ", backup=" + RemovalOutcome(backup_removed, result.metadata_backup_file_error) +
+		    ", result=" + (result.Failed() ? "failed" : "ok"));
 		return result;
 	}
 
@@ -5239,13 +5251,13 @@ bool ChatRepository::DeleteTemporaryChatIfRevision(const fs::path& data_root, st
 		!MatchesTemporaryChatSaveReceipt(data_root, chat_id, expected_revision)) return false;
 	const std::optional<ChatSession> child = LoadLocalChat(data_root, std::string(chat_id), false);
 	if (!child || child->temporary_parent_chat_id != parent_id) return false;
-	return !DeleteChatStorageFilesLocked(data_root, chat_id).Failed();
+	return !DeleteChatStorageFilesLocked(data_root, chat_id, "temporary_side_chat").Failed();
 }
 
-ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id)
+ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 {
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
-	return DeleteChatStorageFilesLocked(data_root, chat_id);
+	return DeleteChatStorageFilesLocked(data_root, chat_id, reason);
 }
 
 ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
@@ -5793,7 +5805,8 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 		return false;
 	}
 
-	ChatSession hydrated = *loaded.chat;
+	// Move rather than copy: a second full transcript doubles peak hydration memory.
+	ChatSession hydrated = std::move(*loaded.chat);
 	if ((chat.imported_read_only || hydrated.imported_read_only) &&
 	    (chat.imported_read_only != hydrated.imported_read_only ||
 	     (chat.passive_queued_prompt_archive && !SamePassiveArchive(chat.passive_queued_prompt_archive, hydrated.passive_queued_prompt_archive))))
@@ -6133,14 +6146,14 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 		if (!primary_confirmed)
 		{
 			result.state = primary.allowed ? ChatPublicationState::Uncertain : ChatPublicationState::Rejected;
-			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : primary.written.error.substr(0, 1024);
+			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 			collect_evidence();
 			return result;
 		}
 		result.state = ChatPublicationState::Committed;
 		result.backup_degraded = primary.written.backup_degraded ||
 		    (!primary.written.success && prepared->m_mode == ChatPublicationMode::UpdateExisting);
-		if (!primary.written.error.empty()) result.error = primary.written.error.substr(0, 1024);
+		if (!primary.written.error.empty()) result.error = std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 		if (committed_chat != nullptr) committed_chat->acp_queue_full_save_revision = legacy.published_queue_full_revision;
 		AcknowledgePreparedHistory(legacy, committed_chat);
 
@@ -6153,7 +6166,7 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 			{
 				result.secondary_degraded = true;
 				if (result.error.empty()) result.error = outcome.written.error.empty() ?
-				    "Chat primary committed; secondary publication degraded." : outcome.written.error.substr(0, 1024);
+				    "Chat primary committed; secondary publication degraded." : std::string(uam::strings::Utf8Prefix(outcome.written.error, 1024));
 			}
 			return !outcome.allowed || outcome.confirmed; // Stop subsequent secondary writes after uncertainty.
 		};

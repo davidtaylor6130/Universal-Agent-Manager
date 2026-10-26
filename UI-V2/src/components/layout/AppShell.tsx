@@ -61,7 +61,6 @@ const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ Set
 const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
 const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
-const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
@@ -644,7 +643,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
           onClick={onToggleUpdates}
         />
         {runtimeUpdateCount > 0 && (
-          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} aria-hidden>
             {runtimeUpdateCount}
           </span>
         )}
@@ -661,7 +660,6 @@ export function AppShell() {
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
   const [usageOpen, setUsageOpen] = useState(false)
-  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
@@ -1063,7 +1061,6 @@ export function AppShell() {
 
       {/* Modals */}
       <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>
-      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryLibrary()}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMemoryScanModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryScanModal()}><Suspense fallback={null}><MemoryScanModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMarkdownStoreOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMarkdownStore()}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></InterfaceErrorBoundary></Presence>
     </div>

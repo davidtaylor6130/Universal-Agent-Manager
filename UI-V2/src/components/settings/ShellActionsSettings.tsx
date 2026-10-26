@@ -8,7 +8,7 @@ import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
 function newAction(): ShellAction {
   const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -176,7 +176,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
   const toolbar = <div className="flex items-center gap-2">
     {dirty && <StatusIndicator issues={['Unsaved shell action changes']} />}
-    <Button size="sm" variant="primary" leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</Button>
+    <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
   </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
   const renderEntries = (entries: ActionEntry[], renderAction: (action: ShellAction) => ReactNode): ReactNode[] => entries.map((entry, index) => {

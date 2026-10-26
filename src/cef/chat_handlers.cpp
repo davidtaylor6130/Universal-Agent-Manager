@@ -20,6 +20,7 @@
 #include "common/chat/native_media_chat_save.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include <type_traits>
+#include <utility>
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
@@ -29,6 +30,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/state/app_state.h"
@@ -199,7 +201,19 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
-	cb->Success(state.dump());
+	std::string body;
+	try
+	{
+		body = state.dump();
+	}
+	catch (const nlohmann::json::type_error&)
+	{
+		// Clipped native text must not stop the UI or phone companion loading. Log once per run: companion reloads repeat it.
+		static bool logged = false;
+		if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
+		body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+	cb->Success(body);
 }
 
 // Elapsed time stays outside state fingerprints so a phone timer does not
@@ -338,11 +352,12 @@ void UamQueryHandler::HandleReleaseChatMessages(CefRefPtr<CefBrowser>, const nlo
 
 void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const bool retry_reuses_saved_read = std::exchange(m_retryReusesSavedRead, false);
 	const std::string chat_id = payload.value("chatId", "");
 	m_transcriptRetention.Invalidate(chat_id);
 	const std::string known_digest = payload.value("messagesDigest", "");
 	const bool defer_tool_call_content = payload.value("deferToolCallContent", false);
-	const bool refresh_native = payload.value("refreshNative", false);
+	bool refresh_native = payload.value("refreshNative", false);
 	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
 	if (payload.contains("limit") || payload.contains("before"))
 	{
@@ -387,6 +402,13 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	if (chat == nullptr)
 	{
 		return;
+	}
+	// The next request serves a delivery-cancelled read's saved result instead of reading the provider again.
+	const bool reuse_saved_read = m_reusableNativeHistory.erase(chat_id) != 0 || retry_reuses_saved_read;
+	if (reuse_saved_read)
+	{
+		refresh_native = false;
+		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
 	if (!refresh_native && HandleReadUnconfirmedNativeMediaHistory(chat_id, known_digest, page, defer_tool_call_content, search_target, cb)) return;
 	if (!chat->messages_loaded && chat->persisted_message_count > 0 && !refresh_native)
@@ -584,7 +606,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id);
 	const bool hydrate_native_chat =
 	    (refresh_native ||
-	     (chat->messages.empty() && execution_host_id != uam::execution_hosts::kLocalHostId)) &&
+	     (chat->messages.empty() && execution_host_id != uam::execution_hosts::kLocalHostId && !reuse_saved_read)) &&
 	    !chat->imported_read_only &&
 	    !uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(m_app, *chat) &&
 	    !uam::strings::IsBlank(chat->native_session_id) &&
@@ -598,6 +620,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		else cb->Failure(result.status, result.error);
 		return;
 	}
+	// One provider read per chat: a newer request waits for it, then reuses its saved result.
+	if (AwaitNativeHistoryRead(chat_id, cb, [this, browser, payload, cb]() { HandleGetChatMessages(browser, payload, cb); })) return;
 
 	std::optional<ExecutionHost> host_snapshot;
 	if (execution_host_id != uam::execution_hosts::kLocalHostId)
@@ -646,10 +670,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat, ChatDomainService().SelectedChatId(m_app) == chat->id);
-	const auto previous_request = m_nativeHistoryRequests.find(chat_id);
-	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
-	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
-	m_nativeHistoryRequests[chat_id] = request;
+	const auto request = BeginNativeHistoryRead(chat_id, cb);
 	auto transcript = std::make_shared<NativeChatTranscript>();
 	if (!DispatchNativeMediaRefresh(cb,
 	    [chat_snapshot, host_snapshot, provider_id, transcript, request, profile_snapshot,
@@ -719,7 +740,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    response = uam::query_handler_async::AsyncFailure(409, "A newer history refresh was requested.");
 			    return;
 		    }
-		    m_nativeHistoryRequests.erase(pending);
+		    const auto complete = [&]()
+		    {
 		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_snapshot.id);
 		    if (current == nullptr)
 		    {
@@ -813,9 +835,14 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    response = uam::query_handler_async::AsyncFailure(500, "Failed to save the loaded chat history.");
 				    return;
 			    }
-			    uam::PushStateUpdateIfChanged(browser, m_app);
+			    request->cache_filled = true;
+			    if (!request->delivery_cancelled) uam::PushStateUpdateIfChanged(browser, m_app);
 		    }
 		    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
+		    };
+		    try { complete(); }
+		    catch (...) { FinishNativeHistoryRead(chat_snapshot.id, request); throw; }
+		    FinishNativeHistoryRead(chat_snapshot.id, request);
 	    }))
 	{
 		m_nativeHistoryRequests.erase(chat_id);
@@ -892,15 +919,9 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 	parse_identity.workspace_directory = chat.workspace_directory;
 	parse_identity.execution_host_id = chat.execution_host_id;
 	parse_identity.folder_id = chat.folder_id;
-	const auto request = std::make_shared<std::stop_source>();
-	const auto prior = m_nativeHistoryRequests.find(id);
-	if (prior != m_nativeHistoryRequests.end()) prior->second->request_stop();
-	m_nativeHistoryRequests[id] = request;
-	const auto finish = [this, id, request]()
-	{
-		const auto found = m_nativeHistoryRequests.find(id);
-		if (found != m_nativeHistoryRequests.end() && found->second == request) m_nativeHistoryRequests.erase(found);
-	};
+	// HandleGetChatMessages admits one read per chat, so no prior request remains here.
+	const auto request = BeginNativeHistoryRead(id, cb);
+	const auto finish = [this, id, request]() { FinishNativeHistoryRead(id, request); };
 	const auto admitted = [this, root, id, incarnation, birth, native_key, resolved_session, metadata,
 	    revision, summary_revision, original_digest, computer_state, computer_consent, request]() -> ChatSession*
 	{
@@ -950,6 +971,7 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 			    if (!response.ok) return;
 			    if (work->messages.size() < current->messages.size())
 			    {
+				    request->cache_filled = true; // Fuller saved history already reflects this read.
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {});
 				    return;
 			    }
@@ -967,7 +989,7 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 				        return work->prepared ? AsyncSuccess({{"ok", true}})
 				            : AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Native history could not be prepared without changing saved content."));
 			        },
-			        [browser, work, admitted, finish, known_digest, page, defer_tool_call_content, this](AsyncCefResult& result)
+			        [browser, work, request, admitted, finish, known_digest, page, defer_tool_call_content, this](AsyncCefResult& result)
 			        {
 				        RequestExit terminal{finish};
 				        ChatSession* target = admitted();
@@ -983,8 +1005,9 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 					        // This transient UI signal is independent of durable ownership metadata.
 					        work->retired->managed_subagent_revision = target->managed_subagent_revision;
 					        std::swap(*target, *work->retired);
-					        uam::PushStateUpdateIfChanged(browser, m_app);
+					        if (!request->delivery_cancelled) uam::PushStateUpdateIfChanged(browser, m_app);
 				        }
+				        request->cache_filled = true; // Published, or saved history already matched.
 				        result = SerializeGuardedChatMessagesResult(*target, known_digest, page, defer_tool_call_content, {}, ChatDomainService().SelectedChatId(m_app) == target->id);
 			        });
 			    if (!prepared_queued) { response = AsyncFailure(503, "The background task queue is unavailable."); return; }
@@ -1231,15 +1254,9 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	parse_identity.workspace_directory = chat.workspace_directory;
 	parse_identity.execution_host_id = chat.execution_host_id;
 	parse_identity.folder_id = chat.folder_id;
-	const auto request = std::make_shared<std::stop_source>();
-	const auto prior = m_nativeHistoryRequests.find(id);
-	if (prior != m_nativeHistoryRequests.end()) prior->second->request_stop();
-	m_nativeHistoryRequests[id] = request;
-	const auto finish = [this, id, request]()
-	{
-		const auto found = m_nativeHistoryRequests.find(id);
-		if (found != m_nativeHistoryRequests.end() && found->second == request) m_nativeHistoryRequests.erase(found);
-	};
+	// HandleGetChatMessages admits one read per chat, so no prior request remains here.
+	const auto request = BeginNativeHistoryRead(id, cb);
+	const auto finish = [this, id, request]() { FinishNativeHistoryRead(id, request); };
 	// This identity-only check also serves postcommit response admission. New
 	// authored content is serialized from current live state, never an old page.
 	const auto same_owner = [this, root, id, incarnation, birth, native_key, resolved_session, host, profile](bool require_loaded = true) -> ChatSession*
@@ -1308,6 +1325,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 			    if (!response.ok) return;
 			    if (!work->candidate || work->messages.size() < work->candidate->messages.size())
 			    {
+				    request->cache_filled = work->candidate.has_value(); // Fuller saved history already reflects this read.
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {}, ChatDomainService().SelectedChatId(m_app) == id);
 				    return; // A readable shorter snapshot never replaces fuller saved history.
 			    }
@@ -1357,6 +1375,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 				        work->retired->managed_subagent_revision = target->managed_subagent_revision;
 				        std::swap(*target, *work->retired); // The old live graph retires on the prearmed worker.
 				        m_unconfirmedNativeMediaHistory.erase(id);
+				        request->cache_filled = true;
 				        const auto complete_ack = [this, browser, work, root, id, request, same_owner, finish, known_digest, page, defer_tool_call_content](AsyncCefResult& ack)
 				        {
 					        RequestExit ack_exit{finish};
@@ -1368,7 +1387,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 						        if (!current || request->stop_requested() || pending == m_nativeHistoryRequests.end() || pending->second != request)
 						        {
 							        ack = AsyncFailure(409, "Remote history was already saved, but this view changed before the response. Reopen the chat to see its current history.");
-							        uam::PushStateUpdateIfChanged(browser, m_app);
+							        if (!request->delivery_cancelled) uam::PushStateUpdateIfChanged(browser, m_app);
 							        return; // Never redraw a cached page, republish or roll back committed history.
 						        }
 						        ack = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {}, ChatDomainService().SelectedChatId(m_app) == id);
@@ -1379,7 +1398,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 							        body["warning"] = warning; ack.body = body.dump();
 							        if (m_app.data_root == root) m_app.status_line = warning;
 						        }
-						        uam::PushStateUpdateIfChanged(browser, m_app);
+						        if (!request->delivery_cancelled) uam::PushStateUpdateIfChanged(browser, m_app);
 					        }
 					        catch (...)
 					        {
@@ -2677,7 +2696,8 @@ void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const 
 		return;
 	}
 	const std::string key = "side-context:" + parent_id;
-	const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator previous = m_nativeHistoryRequests.find(key);
+	// Side-chat context reads saved UAM files, not provider history; a newer request still stops it.
+	const auto previous = m_nativeHistoryRequests.find(key);
 	if (previous != m_nativeHistoryRequests.end())
 	{
 		previous->second->request_stop();
@@ -2713,7 +2733,7 @@ void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const 
 	const std::string workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *parent));
 	const std::filesystem::path data_root = m_app.data_root;
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
-	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
+	const auto request = std::make_shared<NativeHistoryRequest>();
 	m_nativeHistoryRequests[key] = request;
 	const std::shared_ptr<std::optional<uam::TemporarySideChatContext>> prepared = std::make_shared<std::optional<uam::TemporarySideChatContext>>();
 	const std::shared_ptr<ChatSession> child = std::make_shared<ChatSession>(std::move(*candidate));
@@ -2754,7 +2774,7 @@ void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const 
 	    },
 	    [this, browser, parent_id, identity, workspace, snapshot, data_root, context_loaded, key, request, prepared, child, receipt, cleanup](AsyncCefResult& result)
 	    {
-		    const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator current_request = m_nativeHistoryRequests.find(key);
+		    const auto current_request = m_nativeHistoryRequests.find(key);
 		    if (current_request == m_nativeHistoryRequests.end() || current_request->second != request || request->stop_requested())
 		    { cleanup(); result = AsyncFailure(409, "A newer side chat context was requested."); return; }
 		    m_nativeHistoryRequests.erase(current_request);

@@ -114,6 +114,29 @@
 .uam-thinking-block[data-active="true"] .uam-thinking-row__preview {
   color: var(--accent);
 }
+/* Running step: a page-coloured band sweeps side to side over the accent label. It moves by transform only
+   (a background-position text sweep repainted every frame and was removed for typing performance), runs only
+   on the one active step and stops for Motion Off and reduced motion. */
+[data-processing-step="true"] .conversation-work__tool-title,
+[data-processing-step="true"] .conversation-work__thought-label { position: relative; overflow: hidden; }
+/* Size the running title to its text so the sweep crosses the label, not the empty row; status stays right. */
+[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }
+[data-processing-step="true"] .conversation-work__tool-title::after,
+[data-processing-step="true"] .conversation-work__thought-label::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 72%, transparent), transparent);
+  transform: translateX(-100%);
+  animation: conversation-processing-sweep calc(1.8s * var(--motion-scale, 1)) var(--ease) infinite;
+}
+@keyframes conversation-processing-sweep { 0%, 18% { transform: translateX(-100%); } 72%, 100% { transform: translateX(250%); } }
+[data-motion="off"] [data-processing-step="true"] .conversation-work__tool-title::after,
+[data-motion="off"] [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
+/* The Working dot rests at full colour with Motion Off; reduced motion already settles it via the global rule. */
+[data-motion="off"] .conversation-work__live { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-processing-step="true"] .conversation-work__tool-title::after,
+  [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
+}
 
 .conversation-work__inline { font-size: 12px; line-height: 1.55; color: var(--text-3); }
 .conversation-work__thought-label { flex-shrink: 0; font-size: 11px; color: var(--text-3); }
@@ -167,12 +190,20 @@
 .conversation-rail-preview__title { color: var(--text); font-weight: 600; }
 .conversation-rail-preview__hint { margin-top: 2px; color: var(--text-3); }
 .conversation-rail-preview__text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+/* Previous/next stay in layout so the marks never shift; they fade in while the rail is hovered or the button has keyboard focus. */
+.conversation-rail .uam-iconbtn.conversation-rail-step { flex-shrink: 0; width: 20px; height: 20px; margin-left: 3px; opacity: 0; transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.conversation-rail:is(:hover, :has(:focus-visible)) .uam-iconbtn.conversation-rail-step { opacity: 1; }
+.conversation-rail:is(:hover, :has(:focus-visible)) .uam-iconbtn.conversation-rail-step[aria-disabled="true"] { opacity: .45; cursor: not-allowed; background: none; }
+/* A fixed hairline to the right of the resting marks, beneath every mark; it never moves with hover or scrolling. */
+.conversation-rail-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 24px; width: 1px; background: var(--border-bright); pointer-events: none; }
+.conversation-rail-lit { animation: conversation-rail-lit-in var(--dur-fast) var(--ease-out-soft) backwards; }
 
 .conversation-image-preview { animation: conversation-image-in var(--dur-base) var(--ease-out-soft) backwards; }
 
 @keyframes conversation-turn-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes conversation-work-in { from { opacity: 0; transform: translateY(-3px); } }
 @keyframes conversation-image-in { from { opacity: 0; } }
+@keyframes conversation-rail-lit-in { from { opacity: 0; } }
 @keyframes conversation-rail-in { from { opacity: 0; transform: translateY(-50%) translateX(-4px); } to { opacity: 1; transform: translateY(-50%); } }
 @keyframes conversation-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes conversation-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
@@ -260,6 +291,15 @@
 .status-bed__z--2 { animation-delay: 1.6s; font-size: 6.5px; }
 @keyframes scene-breathe { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.18); } }
 
+/* Refreshing history: a page whose three lines are read in turn, left to right. */
+.status-page__sheet { opacity: .8; }
+.status-page__line { transform-box: fill-box; transform-origin: left center; animation: scene-read 1.8s var(--ease) infinite; }
+.status-page__line--2 { animation-delay: .3s; }
+.status-page__line--3 { animation-delay: .6s; }
+/* Appearance > Motion Off stops the page; the title and time still state the work. */
+[data-motion="off"] .status-scene--refresh * { animation: none !important; }
+@keyframes scene-read { 0% { opacity: .25; transform: scaleX(.15); } 40%, 70% { opacity: 1; transform: scaleX(1); } 100% { opacity: .25; transform: scaleX(1); } }
+
 @media (prefers-reduced-motion: reduce) {
   .chat-status-strip, .chat-status-strip[data-state="closed"] { animation: none; }
   .chat-status-strip[data-state="closed"] { display: none; }
@@ -270,6 +310,13 @@
   .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
   .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
 }
+/* Appearance Motion Off keeps the same still working picture as OS reduced motion. */
+:root[data-motion="off"] .chat-status-strip[data-state="closed"] { display: none; }
+:root[data-motion="off"] .status-scene__box { opacity: .85; }
+:root[data-motion="off"] .status-scene__box--1 { transform: translateX(4px); }
+:root[data-motion="off"] .status-scene__box--2 { transform: translateX(21px) scaleY(.45); }
+:root[data-motion="off"] .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
+:root[data-motion="off"] .status-bed__z--1, :root[data-motion="off"] .status-agent--asleep .status-agent__z { opacity: .8; }
 
 /* Undelivered direct input keeps its transcript slot: dotted grey until native delivery state changes. */
 .conversation-turn[data-delivery] > .conversation-turn__body {

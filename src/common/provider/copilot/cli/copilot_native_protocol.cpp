@@ -426,14 +426,14 @@ void AutoRoutingError(nlohmann::json& routing, std::string_view method, const st
 		routing["providerDefault"] = AutoRoutingAbsent();
 	}
 	else routing["stateStatus"] = status;
-	routing["lastError"] = error.substr(0, 2048);
+	routing["lastError"] = std::string(uam::strings::Utf8Prefix(error, 2048));
 }
 
 void RecordAutoRoutingSwitchUnsupported(nlohmann::json& routing, const std::string& reason)
 {
 	// Observation freshness cannot establish a mutation method already rejected by this owner/lifetime.
 	routing["switchUnsupported"] = true;
-	routing["switchUnsupportedReason"] = reason.substr(0, 2048);
+	routing["switchUnsupportedReason"] = std::string(uam::strings::Utf8Prefix(reason, 2048));
 }
 
 void RetireAutoRoutingTransportRequest(AcpSessionState& session, const std::string& key, const std::string& method)
@@ -631,7 +631,7 @@ void RejectSavedImageEvidence(AcpSessionState& session, nlohmann::json& state, c
 			RetireAutoRoutingTransportRequest(session, it.key(), Text(*it, "method"));
 	requests = nlohmann::json::object();
 	state["phase"] = "rejected";
-	state["error"] = error.substr(0, 2048);
+	state["error"] = std::string(uam::strings::Utf8Prefix(error, 2048));
 }
 
 bool PollSavedImageEvidence(const AppState& app, AcpSessionState& session, const ChatSession& chat)

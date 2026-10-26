@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace uam::io { enum class AtomicWriteStage; }
 namespace uam::query_handler_async { struct AsyncCefResult; }
@@ -99,13 +100,41 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	};
 	std::unordered_map<std::string, std::shared_ptr<GoalMutationOperation>> m_goalMutations;
 	std::unordered_map<Callback*, ChatIconQueryIdentity> m_goalQueryIdentities;
+	// SSH helper setup runs for minutes on its own thread; query cancellation and shutdown stop it.
+	CefRefPtr<CefThread> m_remoteInstallQueries;
+	std::unordered_map<Callback*, ChatIconQueryIdentity> m_remoteInstallQueryIdentities;
+	std::vector<std::pair<ChatIconQueryIdentity, std::weak_ptr<std::stop_source>>> m_remoteInstallStops;
 	std::map<ChatIconQueryIdentity, std::weak_ptr<GoalMutationOperation>> m_goalQueryOperations;
 	void PersistGoalMutation(CefRefPtr<CefBrowser> browser, const std::string& chat_id,
 	    std::function<void()> rollback, std::function<bool(std::string*, std::function<bool()>, std::function<bool()>, std::function<void(bool, std::string)>)> execute,
 	    CefRefPtr<Callback> callback, std::string success = "{}");
 	std::shared_ptr<std::atomic<std::uint64_t>> m_searchGeneration = std::make_shared<std::atomic<std::uint64_t>>(0);
 	std::int64_t m_searchQueryId = -1;
-	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_nativeHistoryRequests;
+	// Cancelling a native history query withdraws delivery only (David, 2026-10-25):
+	// every history read finishes and is saved before anything is delivered. These
+	// reads use local or SSH native files only, never a model call or provider cache.
+	// The stop state is reserved for handler shutdown and ownership loss.
+	struct NativeHistoryRequest : std::stop_source
+	{
+		NativeHistoryRequest() = default;
+		explicit NativeHistoryRequest(const std::stop_source& shared) : std::stop_source(shared) {}
+		ChatIconQueryIdentity query{-1, "", -1};
+		bool delivery_cancelled = false;
+		bool cache_filled = false; // The read finished and saved history now reflects it.
+		struct Waiter { ChatIconQueryIdentity query; CefRefPtr<Callback> callback; std::function<void()> retry; };
+		std::vector<Waiter> waiters;
+	};
+	std::unordered_map<std::string, std::shared_ptr<NativeHistoryRequest>> m_nativeHistoryRequests;
+	// Saved results of delivery-cancelled reads, consumed by the next request for the same chat.
+	// ponytail: no expiry; the next request of any kind for that chat consumes it.
+	std::set<std::string> m_reusableNativeHistory;
+	bool m_retryReusesSavedRead = false; // Set only while a waiter retries after a finished read.
+	ChatIconQueryIdentity m_dispatchingQuery{-1, "", -1};
+	// Registers the read and wraps cb so a cancelled request receives no history.
+	std::shared_ptr<NativeHistoryRequest> BeginNativeHistoryRead(const std::string& key, CefRefPtr<Callback>& cb,
+	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());
+	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry);
+	void FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request);
 	// Unacknowledged remote publication keeps ordinary reads detached from the old live graph.
 	struct UnconfirmedNativeMediaHistory
 	{
@@ -163,7 +192,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	uam::query_handler_async::AsyncCefResult FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot = nullptr, bool native_snapshot_prepared = false, const std::string& expected_storage_revision = {});
+	uam::query_handler_async::AsyncCefResult FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot = nullptr, bool native_snapshot_prepared = false, const std::string& expected_storage_revision = {}, bool publish = true);
 	void HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCancelChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -203,6 +232,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::function<bool(uam::io::AtomicWriteStage)> m_nativeMediaPublicationStageGateForTests;
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_queuedPromptHistoryDispatcherForTests;
 	bool DispatchNativeMediaRefresh(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion, CefThreadId = TID_FILE_BACKGROUND);
+	bool DispatchRemoteInstallStage(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	std::function<bool(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion)> m_attachmentPreviewDispatcherForTests;
 	bool DispatchManagedSubagentQuery(CefRefPtr<Callback>, ManagedSubagentWorker, ManagedSubagentCompletion);
 	void HandleListManagedSubagents(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -223,9 +253,12 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleOpenComputerUseSystemSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetCompanionSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetCompanionKeychainPrompts(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& config);
 	nlohmann::json CompanionConnectionStatus(const nlohmann::json& config) const;
+	nlohmann::json CompanionTransportStatus(const nlohmann::json& config) const;
+	bool CompanionAllowsKeychainPrompts() const;
 	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAppPermissions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRequestAppPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
