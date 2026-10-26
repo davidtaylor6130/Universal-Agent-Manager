@@ -82,6 +82,9 @@ namespace uam::remote
 	/// <summary>Test seams: one setup step, or one guarded transaction request, through an injected process service.</summary>
 	bool RunBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
 	bool RunGuardedBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
+	/// <summary>PowerShell that stops and deregisters every other idle UAM helper under $uamHelperRoot, keeping $uamCurrent;
+	/// the caller sets $uamHelperRoot, $uamRunKey and $uamCurrent. Busy helpers refuse their own stop and are kept.</summary>
+	std::string WindowsHelperRetirementScript();
 	bool FinalizeBootstrapPlan(const BootstrapPlan& plan,
 	                           const BootstrapResult& result,
 	                           bool keep_new_runner,

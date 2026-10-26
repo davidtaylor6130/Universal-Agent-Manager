@@ -1147,10 +1147,8 @@ add_custom_command(TARGET universal_agent_manager POST_BUILD
     "-DUAM_UI_SOURCE=${UAM_UI_DIST_SRC}"
     "-DUAM_UI_DEST=${UAM_RESOURCE_DEST}/UI-V2/dist"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ui_dist.cmake"
+  # Only product skills ship; top-level markdown-store/*.uam are maintainer-local.
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store" "${UAM_RESOURCE_DEST}/markdown-store"
-  COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/markdown-store/skill-builder.uam"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store/bundled"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store/bundled" "${UAM_RESOURCE_DEST}/markdown-store/bundled"
   COMMENT "Copying UI-V2 and bundled Markdown Store entries"
   VERBATIM
@@ -1420,6 +1418,15 @@ if(UAM_BUILD_TESTS)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
+  if(NOT WIN32)
+    # Each compiles extracted Computer Use source with clang++/c++ in a few seconds.
+    foreach(computer_use_check capture_recovery global_permission scope)
+      add_test(NAME uam_computer_use_${computer_use_check}_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/computer_use_${computer_use_check}_check.py")
+      set_tests_properties(uam_computer_use_${computer_use_check}_check PROPERTIES
+        ENVIRONMENT "UAM_NLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include")
+    endforeach()
+  endif()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
   add_subdirectory(tests/svn-branch)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -1961,6 +1968,11 @@ endif()
     )
     add_test(NAME uam_macos_application_tests COMMAND uam_macos_application_tests)
   endif()
+  add_test(
+    NAME uam_packaged_markdown_store
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} "-DPACKAGED_STORE=${UAM_RESOURCE_DEST}/markdown-store"
+      -P ${CMAKE_SOURCE_DIR}/cmake/check_packaged_markdown_store.cmake
+  )
   add_test(
     NAME uam_platform_ifdef_guard
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_platform_ifdefs.cmake

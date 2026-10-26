@@ -1,7 +1,7 @@
 # Resource-only changes must still run POST_BUILD copying and signing.
 file(GLOB_RECURSE UAM_PACKAGE_INPUTS CONFIGURE_DEPENDS LIST_DIRECTORIES false
   "${CMAKE_SOURCE_DIR}/assets/*"
-  "${CMAKE_SOURCE_DIR}/markdown-store/*")
+  "${CMAKE_SOURCE_DIR}/markdown-store/bundled/*")
 if(UAM_PACKAGE_REMOTE_RUNNERS)
   file(GLOB_RECURSE UAM_REMOTE_PACKAGE_INPUTS CONFIGURE_DEPENDS LIST_DIRECTORIES false
     "${UAM_REMOTE_RUNNER_ARTIFACT_DIR}/*")

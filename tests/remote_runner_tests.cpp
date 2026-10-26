@@ -3,6 +3,7 @@
 #include "remote/runner_startup.h"
 #include "test_harness.h"
 #include "bootstrap_metadata/windows_command_assertions.h"
+#include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"
@@ -1937,6 +1938,8 @@ esac
 	std::istringstream command_lines(commands);
 	for (std::string command; std::getline(command_lines, command);)
 	{
+		// Windows OpenSSH runs each command through cmd.exe, which stops at 8191 characters.
+		UAM_ASSERT(command.size() < 8000);
 		const std::string marker = "-EncodedCommand ";
 		const std::size_t offset = command.find(marker);
 		if (offset != std::string::npos)
@@ -1960,6 +1963,8 @@ esac
 		decoded_commands.push_back('\n');
 	}
 	uam_test::bootstrap_command_checks::WindowsArtifact(plan, decoded_commands);
+	// Activation retires the host's other idle helpers and their login entries after the commit.
+	UAM_ASSERT(decoded_commands.find("Complete-UamTransaction $backup $marker $metadata; $uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; $uamCurrent=$installed; " + uam::remote::WindowsHelperRetirementScript()) != std::string::npos);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif
@@ -2475,6 +2480,110 @@ UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutd
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	UAM_ASSERT_EQ(runner_service_exit, 0);
 	second.Disconnect();
+}
+
+UAM_TEST(WindowsHelperActivationRetiresOnlyOtherIdleHelpersAndTheirLoginEntries)
+{
+	TempDir temp("uam-helper-retire");
+	// Process paths are long paths; an 8.3 TEMP spelling would make the script skip every helper unseen.
+	const fs::path root = fs::canonical(temp.root);
+	ScopedEnvVar no_namespace("UAM_RUNNER_SERVICE_NAMESPACE", "");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path built = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner.exe";
+	UAM_ASSERT(fs::exists(built));
+	const auto install = [&](const std::string& name)
+	{
+		const fs::path executable = root / name / "4.11.0" / "uam-runner.exe";
+		fs::create_directories(executable.parent_path());
+		fs::copy_file(built, executable);
+		return executable;
+	};
+	const fs::path current = install("current"), idle = install("idle"), busy = install("busy"), unregistered = install("unregistered");
+	// The current root's earlier version shares its Run value name, so the value is repointed, not removed.
+	const fs::path previous = root / "current" / "4.10.0" / "uam-runner.exe";
+	const fs::path gone = root / "gone" / "4.10.0" / "uam-runner.exe";
+	// The script exceeds cmd.exe's command-line limit as -EncodedCommand, so run it from a file.
+	int script_index = 0;
+	const auto powershell = [&](const std::string& script)
+	{
+		const fs::path file = temp.root / ("script-" + std::to_string(script_index++) + ".ps1");
+		// No assertion here: cleanup also calls this from a destructor.
+		if (!uam::io::WriteTextFile(file, script)) return ProcessExecutionResult{};
+		return service.ExecuteCommand("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + file.string() + "\"", 180000);
+	};
+	const auto runner = [&](const fs::path& executable, const std::string& command)
+	{ return service.ExecuteCommand("\"" + executable.string() + "\" " + command, 30000).exit_code; };
+	const std::string run_key = "HKCU:\\Software\\UAM-Tests\\" + service.GenerateUuid() + "\\Run";
+	struct Cleanup
+	{
+		std::function<void()> run;
+		~Cleanup() { run(); }
+	};
+	std::optional<uam::remote::RunnerClient> busy_client;
+	std::vector<uam::platform::StdioProcessPlatformFields> services(4);
+	Cleanup cleanup{[&]
+	{
+		// Runs during unwinding after a failed assertion, so nothing here may throw.
+		try {
+		// The busy helper refuses stop while it owns the waiting command, so release that first.
+		std::string ignored;
+		if (busy_client) { (void)busy_client->CloseProcessInput("retire-busy", &ignored); std::this_thread::sleep_for(std::chrono::milliseconds(500)); (void)busy_client->RemoveProcess("retire-busy", &ignored); busy_client->Disconnect(); }
+		for (const fs::path& executable : {current, idle, busy, unregistered}) (void)runner(executable, "stop");
+		for (auto& fields : services) { service.TerminateStdioProcess(fields, true); service.CloseStdioProcessHandles(fields); }
+		(void)powershell("Remove-Item -LiteralPath '" + fs::path(run_key).parent_path().string() + "' -Recurse -Force -ErrorAction SilentlyContinue");
+		} catch (...) {}
+	}};
+	UAM_ASSERT_EQ(powershell("$key='" + run_key + "'; New-Item -Path $key -Force | Out-Null; "
+	    "foreach ($entry in @(@('uam-runner-current','" + previous.string() + "'),@('uam-runner-idle','" + idle.string() + "'),"
+	    "@('uam-runner-busy','" + busy.string() + "'),@('uam-runner-gone','" + gone.string() + "'),@('Other','" + idle.string() + "'))) "
+	    "{ New-ItemProperty -LiteralPath $key -Name $entry[0] -Value ('\"'+$entry[1]+'\" start') | Out-Null }").exit_code, 0);
+	// ExecuteCommand's kill-on-close job forbids the breakaway `start` uses, so launch each service directly.
+	const std::array<fs::path, 4> executables{current, idle, busy, unregistered};
+	for (std::size_t index = 0; index < executables.size(); ++index)
+	{
+		std::string start_error;
+		UAM_ASSERT(service.StartStdioProcess(services[index], fs::temp_directory_path(), {executables[index].string(), "serve"}, &start_error));
+		service.CloseStdioProcessInput(services[index]);
+		bool ready = false;
+		for (int attempt = 0; attempt < 100 && !ready; ++attempt)
+		{
+			uam::remote::RunnerClient probe(service, {executables[index].string(), "bridge"});
+			ready = probe.Connect(&start_error);
+			if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+		UAM_ASSERT(ready);
+	}
+
+	// A helper that still owns a provider process refuses its own stop and must survive.
+	busy_client.emplace(service, std::vector<std::string>{busy.string(), "bridge"});
+	std::string error;
+	UAM_ASSERT(busy_client->Connect(&error));
+	UAM_ASSERT(busy_client->StartProcess("retire-busy", fs::temp_directory_path(),
+	    {"cmd.exe", "/d", "/v:on", "/s", "/c", "set /p value=& <nul set /p =!value!"}, {}, &error));
+
+	const ProcessExecutionResult retired = powershell("$uamHelperRoot='" + root.string() + "'; $uamRunKey='" + run_key +
+	    "'; $uamCurrent='" + current.string() + "'; " + uam::remote::WindowsHelperRetirementScript() +
+	    "; 'REMAINING:'+(((Get-Item -LiteralPath $uamRunKey).GetValueNames() | Sort-Object) -join ','); "
+	    "'CURRENT:'+(Get-Item -LiteralPath $uamRunKey).GetValue('uam-runner-current')");
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + idle.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + gone.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + previous.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("CURRENT:\"" + current.string() + "\" start") != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_KEPT_CHILDREN:" + busy.string()) != std::string::npos);
+	// A resident helper without a login entry is found from its serve process.
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + unregistered.string()) != std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIRED:" + current.string()) == std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_KEPT_BUSY:" + current.string()) == std::string::npos);
+	UAM_ASSERT(retired.output.find("UAM_HELPER_RETIREMENT_FAILED") == std::string::npos);
+	UAM_ASSERT(retired.output.find("REMAINING:Other,uam-runner-busy,uam-runner-current") != std::string::npos);
+	for (const fs::path& executable : {idle, unregistered})
+	{
+		uam::remote::RunnerClient stopped_client(service, {executable.string(), "bridge"});
+		UAM_ASSERT(!stopped_client.Connect(&error));
+	}
+	uam::remote::RunnerClient current_client(service, {current.string(), "bridge"});
+	UAM_ASSERT(current_client.Connect(&error));
+	current_client.Disconnect();
 }
 #endif
 

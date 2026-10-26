@@ -203,6 +203,21 @@ namespace uam
 		std::string last_error;
 	};
 
+	/// <summary>Recent native envelope identities. Past 4096 the oldest is forgotten, so a long session stays bounded.</summary>
+	struct RecentIdentitySet
+	{
+		static constexpr std::size_t kCapacity = 4096;
+		std::unordered_set<std::string> ids;
+		std::deque<std::string> order;
+		/// <summary>True for a new identity; false for one still remembered.</summary>
+		bool Insert(const std::string& id)
+		{
+			if (!ids.insert(id).second) return false;
+			order.push_back(id);
+			if (order.size() > kCapacity) { ids.erase(order.front()); order.pop_front(); }
+			return true;
+		}
+	};
 	struct AcpToolCallState
 	{
 		std::string id;
@@ -494,6 +509,7 @@ namespace uam
 		int64_t expires_at_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
+		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
@@ -912,9 +928,9 @@ namespace uam
 		/// Current-process protocol receipts only; saved tool history cannot create live activity.
 		std::unordered_map<std::string, OpenCodeChildActivity> opencode_child_activity_by_tool;
 		std::vector<AcpToolCallState> tool_calls;
-		std::unordered_set<std::string> claude_seen_child_messages;
+		RecentIdentitySet claude_seen_child_messages;
 		/// <summary>Native parent envelope identities prevent repeated delivery from appending twice.</summary>
-		std::unordered_set<std::string> claude_seen_parent_messages;
+		RecentIdentitySet claude_seen_parent_messages;
 		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
 		std::unordered_set<std::string> claude_live_background_task_ids;
 		std::vector<AcpPlanEntryState> plan_entries;

@@ -7,9 +7,10 @@ import { cx } from './cx'
 export const EXIT_MS = 170
 
 export function motionAllowed(): boolean {
-  // No matchMedia (jsdom) or reduced motion: unmount immediately.
+  // No matchMedia (jsdom), reduced motion or Motion Off (0 ms tokens, so no transitionend): change immediately.
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
-    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
+    document.documentElement.getAttribute('data-motion') !== 'off'
 }
 
 /**

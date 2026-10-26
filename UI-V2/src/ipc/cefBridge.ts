@@ -37,6 +37,8 @@ export interface CEFResponse<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  /** Native CEF failure code; absent for companion and transport failures. */
+  code?: number
   requestId?: string
 }
 
@@ -78,12 +80,12 @@ export async function sendToCEF<T = unknown>(
         redirect: 'error',
         cache: 'no-store',
       })
-      let data = await response.json()
       if (!response.ok) {
-        const error = data.error ?? `Request failed (${response.status}).`
+        const error = (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }
+      let data = await response.json()
       if (data?.uamTransfer) {
         const { id, totalBytes, chunkBytes } = data.uamTransfer
         if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
@@ -107,11 +109,11 @@ export async function sendToCEF<T = unknown>(
             redirect: 'error',
             cache: 'no-store',
           })
-          const chunk = await chunkResponse.json()
           if (!chunkResponse.ok) {
-            transferFailure = chunk.error || 'Could not load the rest of this response.'
+            transferFailure = (await chunkResponse.json().catch(() => null))?.error || 'Could not load the rest of this response.'
             throw new Error(transferFailure)
           }
+          const chunk = await chunkResponse.json()
           if (typeof chunk.base64 !== 'string') throw new Error('Invalid response chunk.')
           const decoded = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0))
           const expectedLength = Math.min(transferChunkBytes, totalBytes - offset)
@@ -160,7 +162,7 @@ export async function sendToCEF<T = unknown>(
         },
         onFailure: (code, message) => {
           if (logFailures) console.error(`[CEF] Error ${code}: ${message}`)
-          resolve({ ok: false, error: message, requestId })
+          resolve({ ok: false, error: message, code, requestId })
         },
       })
     }).catch((cause: unknown) => {
@@ -198,45 +200,4 @@ export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   return reportFailure({ ...response, error: 'The remote stop timed out.' })
-}
-
-export interface SpeechVoice {
-  id: string
-  name: string
-  language: string
-}
-
-export interface SpeechOutputOptions {
-  speechId: string
-  text: string
-  voiceId?: string
-  language?: string
-  /** Native playback speed, between 0.5 and 2. */
-  rate?: number
-  /** Native playback volume, between 0 and 1. */
-  volume?: number
-}
-
-export interface SpeechOutputState {
-  speechId: string
-  speaking: boolean
-  error: string
-}
-
-/** Enumerates installed native voices without activating input or playback. */
-export function listSpeechVoices(): Promise<CEFResponse<{ voices: SpeechVoice[] }>> {
-  return sendToCEF({ action: 'listSpeechVoices' })
-}
-
-/** Input must be stopped first; retain speechId for cancellation and state ownership. */
-export function startSpeechOutput(options: SpeechOutputOptions): Promise<CEFResponse<{ started: boolean; speechId: string }>> {
-  return sendToCEF({ action: 'startSpeechOutput', payload: options })
-}
-
-export function stopSpeechOutput(speechId: string): Promise<CEFResponse<{ stopped: boolean }>> {
-  return sendToCEF({ action: 'stopSpeechOutput', payload: { speechId } })
-}
-
-export function getSpeechOutputState(): Promise<CEFResponse<SpeechOutputState>> {
-  return sendToCEF({ action: 'getSpeechOutputState' })
 }

@@ -6,6 +6,7 @@ Colour — tokens only, never hard-coded hex (10 themes must work: dark, light, 
 - Surfaces: var(--bg) < var(--surface) < var(--surface-up) < var(--surface-high). Borders: var(--border), var(--border-bright) (hairline, 1px).
 - Text: var(--text), var(--text-2) secondary, var(--text-3) muted/meta.
 - ONE accent var(--accent) (orange), used sparingly: the single primary CTA, active/selected tint (var(--accent-dim)), focus ring. Never decorative.
+- Text and icons on an accent fill use var(--on-accent): each theme reuses one of its own colours with at least 4.5:1 contrast on its accent (the page background on dark themes, the text colour on Light, the surface on Paper). Custom themes use their background or text, whichever reads better, and fall back to black or white only when neither reaches 4.5:1.
 - Status only: var(--success)/--success-dim, var(--warning)/--warning-dim, var(--error)/--error-dim, var(--info)/--info-dim.
 - Token categories (usage split bars, legends, tooltips): var(--token-input), --token-cache-read, --token-cache-write, --token-output, --token-reasoning. Each is a distinct hue kept clear of provider, status and accent colours; never reuse them for anything else.
 

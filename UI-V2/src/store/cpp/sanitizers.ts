@@ -87,7 +87,6 @@ export const DEFAULT_MEMORY_RECALL_BUDGET_BYTES = 2048
 export const MIN_MEMORY_RECALL_BUDGET_BYTES = 512
 export const MAX_MEMORY_RECALL_BUDGET_BYTES = 8192
 export const DEFAULT_GOAL_MAX_LOOP_ITERATIONS = 200
-export const MIN_GOAL_MAX_LOOP_ITERATIONS = 1
 export const MAX_GOAL_MAX_LOOP_ITERATIONS = 200
 export const DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 600
 export const MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 60
@@ -523,11 +522,11 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
       })
       : undefined,
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
-		interrupted: booleanOr(value.interrupted),
-		acpPromptNotSent: booleanOr(value.acpPromptNotSent),
-		acpPromptDiscarded: value.acpPromptDiscarded === true,
-		prioritySteer: booleanOr(value.prioritySteer),
-		continuesTurn: booleanOr(value.continuesTurn),
+    interrupted: booleanOr(value.interrupted),
+    acpPromptNotSent: booleanOr(value.acpPromptNotSent),
+    acpPromptDiscarded: value.acpPromptDiscarded === true,
+    prioritySteer: booleanOr(value.prioritySteer),
+    continuesTurn: booleanOr(value.continuesTurn),
     stopReason: isString(value.stopReason) && KNOWN_STOP_REASONS.has(value.stopReason) ? value.stopReason : undefined,
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
     checkpointParentSha: isString(value.checkpointParentSha) ? value.checkpointParentSha : undefined,
@@ -1026,7 +1025,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     tokensUsed: finiteNumberOr(value.tokensUsed, 0),
     blockedTurnCount: finiteNumberOr(value.blockedTurnCount, 0),
     lastBlocker: isString(value.lastBlocker) ? value.lastBlocker : undefined,
-		lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
+    lastBlockerKind: isString(value.lastBlockerKind) ? value.lastBlockerKind : undefined,
     lastDiagnostic: isString(value.lastDiagnostic) ? value.lastDiagnostic : undefined,
     pendingContinuation: value.pendingContinuation === true,
     completedItems: Array.isArray(value.completedItems) ? value.completedItems.filter(isString) : undefined,
@@ -1038,10 +1037,10 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
     loopCount: finiteNumberOr(value.loopCount, 0),
     createdAt: stringOr(value.createdAt),
     updatedAt: stringOr(value.updatedAt),
-	executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
-	workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
-	reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
-	providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
+    executionOwner: value.executionOwner === 'provider' ? 'provider' : 'uam',
+    workerModelId: isString(value.workerModelId) ? value.workerModelId : '',
+    reviewerModelId: isString(value.reviewerModelId) ? value.reviewerModelId : '',
+    providerCommand: isString(value.providerCommand) ? value.providerCommand : '',
   }
 }
 
@@ -1189,7 +1188,7 @@ export function sanitizeCppProvider(value: unknown): CppProvider | null {
     structuredPermissionControl: value.structuredPermissionControl === 'uam' ? 'uam' : 'provider',
     terminalPermissionControl: 'provider',
     npmPackageName: isString(value.npmPackageName) ? value.npmPackageName.trim() : undefined,
-	nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
+    nativeGoalCommand: isString(value.nativeGoalCommand) ? value.nativeGoalCommand.trim() : undefined,
   }
 }
 
@@ -1241,7 +1240,7 @@ export function sanitizeGitWorktreeStatus(value: unknown): GitWorktreeStatus | n
   return {
     isGitRepository: booleanOr(value.isGitRepository),
     isSvnWorkspace: booleanOr(value.isSvnWorkspace),
-	managedRepository: booleanOr(value.managedRepository),
+    managedRepository: booleanOr(value.managedRepository),
     isolated: booleanOr(value.isolated),
     sourceDirty: booleanOr(value.sourceDirty),
     worktreeDirty: booleanOr(value.worktreeDirty),
@@ -1331,21 +1330,6 @@ export function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
 // CLI version manager sanitisers
 // ---------------------------------------------------------------------------
 
-export const emptyCliVersionProviderState: CliVersionProviderState = {
-  providerId: DEFAULT_PROVIDER_ID,
-  installedVersion: '',
-  selectedVersion: '',
-  availableVersions: [],
-  preferredVersion: '',
-  status: 'unknown',
-  message: '',
-  running: false,
-  installMethod: 'npm',
-  lastInstallStatus: 'none',
-  lastCommand: '',
-  lastOutput: '',
-}
-
 export const emptyCliVersionManager: CliVersionManager = {
   providers: [],
 }
@@ -1432,15 +1416,6 @@ export function sanitizeCliVersionManager(value: unknown): CliVersionManager | u
 
   const legacy = sanitizeCliVersionProviderState(value)
   return { providers: legacy ? [legacy] : [] }
-}
-
-export function upsertCliVersionProviderState(
-  providers: CliVersionProviderState[],
-  next: CliVersionProviderState
-): CliVersionProviderState[] {
-  const found = providers.some((provider) => provider.providerId === next.providerId)
-  if (!found) return [...providers, next]
-  return providers.map((provider) => provider.providerId === next.providerId ? next : provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -1826,7 +1801,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
           executionHostId: stringOr(entry.executionHostId),
           transport,
           command: stringOr(entry.command),
-		  args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
+          args: Array.isArray(entry.args) ? entry.args.filter((arg): arg is string => typeof arg === 'string') : [],
           url: stringOr(entry.url),
           environment: references(entry.environment),
           headers: references(entry.headers),
@@ -1986,7 +1961,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   const resourceCollections = sanitizeResourceCollections(value.resourceCollections)
-	const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
+  const providerModelCatalogs = sanitizeProviderModelCatalogs(value.providerModelCatalogs)
 
   const selectedChatId =
     isString(value.selectedChatId)
@@ -2049,19 +2024,19 @@ function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
     return [{
       providerId,
       workspaceDirectory,
-	  executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
+      executionHostId: stringOr(entry.executionHostId, 'local').trim() || 'local',
       availableModels: Array.isArray(entry.availableModels)
         ? entry.availableModels.flatMap((model) => {
             const sanitized = sanitizeAcpModel(model)
             return sanitized ? [sanitized] : []
           })
         : [],
-	  configOptions: Array.isArray(entry.configOptions)
-		? entry.configOptions.flatMap((option) => {
-			const sanitized = sanitizeAcpConfigOption(option)
-			return sanitized ? [sanitized] : []
-		  })
-		: [],
+      configOptions: Array.isArray(entry.configOptions)
+        ? entry.configOptions.flatMap((option) => {
+          const sanitized = sanitizeAcpConfigOption(option)
+          return sanitized ? [sanitized] : []
+        })
+        : [],
       currentModelId: normalizeAcpModelId(entry.currentModelId),
       modelsLoading: booleanOr(entry.modelsLoading),
       modelRefreshError: stringOr(entry.modelRefreshError),

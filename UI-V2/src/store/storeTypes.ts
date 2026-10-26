@@ -227,7 +227,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
   editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
-  setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
+  /** `quiet` leaves failure reporting to a caller that names each chat. */
+  setSessionPinned: (id: string, pinned: boolean, options?: { quiet?: boolean }) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
   setSessionModel: (id: string, modelId: string) => Promise<boolean>
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>

@@ -1016,6 +1016,18 @@ describe('ChatView', () => {
     expect(exactShortcut.defaultPrevented).toBe(true)
     expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'reviewer')
 
+    // A prose @mention at the caret must not disable the agent shortcut.
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'thanks @claude')
+      textarea.setSelectionRange(14, 14)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const mentionShortcut = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => textarea.dispatchEvent(mentionShortcut))
+    expect(mentionShortcut.defaultPrevented).toBe(true)
+    expect(setSessionUamAgent).toHaveBeenCalledTimes(2)
+    expect(textarea.value).toBe('thanks @claude')
+
     act(() => root.unmount())
     host.remove()
   })
@@ -1750,6 +1762,20 @@ describe('ChatView', () => {
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end', behavior: 'smooth' })
     expect(host.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull()
+
+    // Motion Off jumps to the bottom instantly.
+    document.documentElement.setAttribute('data-motion', 'off')
+    try {
+      await act(async () => {
+        transcript.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await new Promise(window.requestAnimationFrame)
+      })
+      act(() => (host.querySelector('button[aria-label="Scroll to bottom"]') as HTMLButtonElement | null)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'end', behavior: 'auto' })
+    } finally {
+      document.documentElement.removeAttribute('data-motion')
+    }
 
     act(() => root.unmount())
     host.remove()
@@ -3662,7 +3688,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
     expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('Default')
-    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands')
+    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands · @ for context')
 
     act(() => {
       root.unmount()
@@ -4226,6 +4252,219 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('offers context references from @ in the composer: branch and worktree remove the token, a typed file path keeps its text', async () => {
+    const previousCefQuery = window.cefQuery
+    const requests: { action: string; payload?: Record<string, unknown> }[] = []
+    window.cefQuery = ({ request }) => { requests.push(JSON.parse(request)) }
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace', workspaceIsolationKind: undefined, workspaceWorktreeDirectory: undefined } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      expect(textarea.placeholder).toContain('@ for context')
+      // No reference or voice actions sit above the input.
+      expect(Array.from(host.querySelectorAll('button')).some((button) => /Reference (branch|worktree)|voice mode|Read response/.test(button.textContent ?? ''))).toBe(false)
+      const type = async (value: string) => act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const palette = () => document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Context references"]')
+      const option = (label: string) => Array.from(palette()?.querySelectorAll<HTMLElement>('[role="option"]') ?? []).find((item) => item.textContent?.startsWith(label))
+
+      await type('Check @')
+      expect(textarea.getAttribute('aria-expanded')).toBe('true')
+      // No option is active until the user arrows into the list.
+      expect(textarea.hasAttribute('aria-activedescendant')).toBe(false)
+      expect(palette()?.querySelector('[aria-selected="true"]')).toBeNull()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await Promise.resolve() })
+      expect(palette()).toBeNull()
+      expect(textarea.value).toBe('Check @')
+      // Editing the closed word reopens the list.
+      await type('Check @b')
+      expect(palette()).toBeTruthy()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await Promise.resolve() })
+      await type('Check ')
+      await type('Check @')
+      expect(palette()).toBeTruthy()
+      expect(option('@branch')?.textContent).toContain('does not switch it')
+      expect(option('@worktree')?.textContent).toContain('Needs a configured worktree')
+      expect(option('@worktree')?.getAttribute('aria-disabled')).toBe('true')
+      expect(option('@branch')?.hasAttribute('aria-disabled')).toBe(false)
+      act(() => option('@worktree')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      // Tab on an unavailable option keeps normal focus movement; Shift+Tab never accepts.
+      await type('Check @w')
+      const tabOnUnavailable = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      await act(async () => { textarea.dispatchEvent(tabOnUnavailable); await Promise.resolve() })
+      expect(tabOnUnavailable.defaultPrevented).toBe(false)
+      await type('Check @b')
+      const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+      await act(async () => { textarea.dispatchEvent(shiftTab); await Promise.resolve() })
+      expect(textarea.value).toBe('Check @b')
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+      expect(textarea.getAttribute('aria-activedescendant')).toBe(option('@branch')?.id)
+
+      // Keyboard: Tab picks the highlighted @branch option (Enter keeps sending until the user arrows through the list).
+      // Moving the caret off the @ word closes the list, so Enter/Tab cannot act on text the caret has left.
+      await type('Check @br')
+      await act(async () => { textarea.focus(); textarea.setSelectionRange(0, 0); textarea.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); textarea.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); await Promise.resolve() })
+      expect(palette()).toBeNull()
+      await type('Check @b now')
+      // Caret inside the word, with text after it, so a lost caret restore would leave it at the end.
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Check @br now')
+        textarea.setSelectionRange(9, 9)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      expect(option('@worktree')).toBeUndefined()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); await Promise.resolve() })
+      expect(requests.find((request) => request.action === 'captureChatReferenceContext')?.payload).toEqual({ chatId: 'chat-1', kind: 'branch' })
+      expect(textarea.value).toBe('Check now')
+      // The real caret returns to where the @ word was.
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(null))) })
+      expect(textarea.selectionStart).toBe(6)
+      expect(palette()).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.cefQuery = previousCefQuery
+    }
+  })
+
+  it('tells companion users about the keyboard microphone in the placeholder and the mic tooltip', () => {
+    const previousPath = window.location.pathname
+    const previousDiscovery = useAppStore.getState().discoverProviderModels
+    useAppStore.setState({ discoverProviderModels: vi.fn(async () => true) })
+    window.history.replaceState(null, '', '/companion')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect((host.querySelector('textarea') as HTMLTextAreaElement).placeholder.endsWith('· keyboard mic for dictation')).toBe(true)
+      expect(host.querySelector('button[data-dictation-state="idle"]')?.getAttribute('title')).toContain('or use your keyboard microphone')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.history.replaceState(null, '', previousPath)
+      useAppStore.setState({ discoverProviderModels: previousDiscovery })
+    }
+  })
+
+  it('still sends with Enter on a prose @mention and only picks an @ option after arrowing to it', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const previousCefQuery = window.cefQuery
+    const requests: { action: string }[] = []
+    window.cefQuery = ({ request }) => { requests.push(JSON.parse(request)) }
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      const type = async (value: string) => act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const options = () => Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).map((option) => option.textContent ?? '')
+      // A prose handle is not offered as a file.
+      await type('thanks @claude')
+      expect(options()).toEqual([])
+      await type('meet @b')
+      expect(options().some((label) => label.startsWith('@branch'))).toBe(true)
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+      expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'meet @b', [], undefined, expect.any(Function))
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      await type('Check @')
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(true)
+      expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.cefQuery = previousCefQuery
+    }
+  })
+
+  it('offers a quoted @"path with spaces" as a file reference', async () => {
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace' } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      const value = 'Read @"release notes/draft one.md"'
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length - 4, value.length - 4)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const file = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).find((item) => item.textContent?.startsWith('@"release notes/draft one.md"'))!
+      await act(async () => { file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await Promise.resolve() })
+      expect(getWorkspaceFilePreview).toHaveBeenCalledWith('chat-1', 'release notes/draft one.md')
+      expect(textarea.value).toBe(value)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('offers a typed @file path as a reference and keeps the mention in the message', async () => {
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace' } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Summarise @docs/readme.md')
+        textarea.setSelectionRange(25, 25)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const file = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).find((item) => item.textContent?.startsWith('@docs/readme.md'))!
+      expect(file.textContent).toContain('current text')
+      await act(async () => { file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await Promise.resolve() })
+      expect(getWorkspaceFilePreview).toHaveBeenCalledWith('chat-1', 'docs/readme.md')
+      expect(textarea.value).toBe('Summarise @docs/readme.md')
+      expect(host.querySelector('[data-reference-status]')?.textContent).toContain('Reading docs/readme.md')
+      expect(document.body.querySelector('[aria-label="Context references"]')).toBeNull()
+      // A path after four prose handles is still offered, and leaving the input closes the list.
+      await act(async () => {
+        const value = 'cc @alice @bob @carol @dave review @src/app.ts'
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const offered = Array.from(document.body.querySelectorAll('[aria-label="Context references"] [role="option"]')).map((item) => item.textContent ?? '')
+      expect(offered).toHaveLength(1)
+      expect(offered[0].startsWith('@src/app.ts')).toBe(true)
+      await act(async () => { textarea.dispatchEvent(new FocusEvent('blur')); textarea.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); await Promise.resolve() })
+      expect(document.body.querySelector('[aria-label="Context references"]')).toBeNull()
+      expect(textarea.getAttribute('aria-expanded')).toBe('false')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('closes the slash palette at once when /compact is chosen, with no success notice', async () => {
@@ -8897,82 +9136,6 @@ describe('ChatView', () => {
       window.history.replaceState(null, '', previousPath)
       useAppStore.setState(previous, true)
     }
-  })
-
-  it('keeps voice mode through the first provider startup, reads the first response, and stops on runtime shutdown', async () => {
-    const requests: { action: string; payload?: { dictationId?: string; speechId?: string; text?: string } }[] = []
-    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
-    window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request); requests.push(parsed)
-      if (parsed.action === 'startDictation') onSuccess(JSON.stringify({ started: true }))
-      else if (parsed.action === 'stopDictation') {
-        onSuccess(JSON.stringify({ stopped: true }))
-        window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', dictationId: parsed.payload.dictationId, event: 'end' } }))
-      } else onSuccess(JSON.stringify({ started: true, stopped: true, speechId: parsed.payload?.speechId }))
-    }
-    const session = useAppStore.getState().sessions[0]
-    const binding = { ...useAppStore.getState().acpBindingBySessionId[session.id], sessionId: '', running: false, lifecycleState: 'stopped' as const, processing: false, pendingPermission: null, turnEvents: [], lastError: '' }
-    useAppStore.setState({ sendAcpPrompt, acpBindingBySessionId: { [session.id]: binding }, cliBindingBySessionId: {}, messages: { [session.id]: [] } })
-    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<ChatView session={session}/>))
-    const voiceButton = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Stop voice mode')
-    await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!.click())
-    const dictationId = requests.find(request => request.action === 'startDictation')?.payload?.dictationId
-    const say = async (text: string) => { await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', event: 'final', dictationId, text } })) }) }
-    await say('First prompt'); await say('send message')
-    expect(sendAcpPrompt).toHaveBeenCalledWith(session.id, 'First prompt', [], undefined, expect.any(Function))
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, running: true, lifecycleState: 'starting' } } }))
-    expect(voiceButton()).toBeTruthy()
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', running: true, lifecycleState: 'processing', processing: true } } }))
-    expect(voiceButton()).toBeTruthy()
-    await act(async () => useAppStore.setState({
-      acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', running: true, lifecycleState: 'ready' } },
-      messages: { [session.id]: [{ id: 'first-response', sessionId: session.id, role: 'assistant', content: 'First response', createdAt: new Date() }] },
-    }))
-    expect(requests.find(request => request.action === 'startSpeechOutput')?.payload?.text).toBe('First response')
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', lifecycleState: 'stopped' } } }))
-    expect(voiceButton()).toBeFalsy()
-    expect(requests.some(request => request.action === 'stopSpeechOutput')).toBe(true)
-    for (const lifecycleState of ['error', 'stopped'] as const) {
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: binding } }))
-      await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!.click())
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, lifecycleState: 'starting' } } }))
-      expect(voiceButton()).toBeTruthy()
-      const stopsBeforeFailure = requests.filter(request => request.action === 'stopDictation').length
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, lifecycleState, lastError: lifecycleState === 'error' ? 'Provider startup failed' : '' } } }))
-      expect(voiceButton()).toBeFalsy()
-      expect(requests.filter(request => request.action === 'stopDictation')).toHaveLength(stopsBeforeFailure + 1)
-    }
-    act(() => root.unmount()); host.remove(); delete window.cefQuery
-  })
-
-  it('connects voice commands to the selected chat draft and existing send/navigation actions', async () => {
-    const requests: { action: string; payload?: { dictationId?: string } }[] = []
-    const originalSelection = useAppStore.getState().setActiveSession
-    const setActiveSession = vi.fn((id: string | null) => useAppStore.setState({ activeSessionId: id }))
-    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
-    window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request); requests.push(parsed)
-      onSuccess(JSON.stringify(parsed.action === 'startDictation' ? { started: true } : { stopped: true }))
-    }
-    const session = useAppStore.getState().sessions[0]
-    useAppStore.setState({ sendAcpPrompt, setActiveSession, sessions: [session, { ...session, id: 'imported', importedReadOnly: true }, { ...session, id: 'chat-hidden', parentChatId: session.id }, { ...session, id: 'chat-2', name: 'Second chat' }] })
-    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<ChatView session={session}/>))
-    const button = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!
-    expect(button.disabled).toBe(false)
-    await act(async () => button.click())
-    const dictationId = requests.find(request => request.action === 'startDictation')?.payload?.dictationId
-    const say = async (text: string) => { await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', event: 'final', dictationId, text } })) }) }
-    await say('Voice draft')
-    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Voice draft')
-    await say('send message')
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Voice draft', [], undefined, expect.any(Function))
-    await say('next chat')
-    expect(setActiveSession).toHaveBeenCalledWith('chat-2')
-    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(requests.some(request => request.action === 'stopDictation' && request.payload?.dictationId === dictationId)).toBe(true)
-    act(() => root.unmount()); host.remove(); delete window.cefQuery; useAppStore.setState({ setActiveSession: originalSelection })
   })
 
   it('keeps stopped dictation as a draft and only submits when Send stops it', async () => {

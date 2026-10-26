@@ -27,6 +27,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Settings history](settings-history.md) | Recorded layout choices and implementation notes |
 | [Visual Studio](visual-studio-solution.md) | Platform-specific developer setup |
 | [Duplication audit](codebase-dedup-report.md) | Prior code investigation, not product behaviour |
+| [Archived performance script](history/run_performance_test.ps1) | Manual Windows 500-chat load fixture; still writes the removed `rag_enabled` field |
 
 Exact current acceptance and assigned owners remain in the [V5 log](<../../V5 Improvement Change log.md>).
 

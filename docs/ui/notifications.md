@@ -1,6 +1,6 @@
 # Notifications
 
-Chat lifecycle notices belong in the transcript; app-wide failures, warnings, completed system actions and update notices belong in the bell panel with one shared transient alert surface. Features must report through the shared path rather than adding independent popup systems. This is the agreed product direction; the base [decision record](../architecture/decisions.md) still marks consolidation and organization-undo removal as pending implementation.
+Chat lifecycle notices belong in the transcript; app-wide failures, warnings, completed system actions and update notices belong in the bell panel with one shared transient alert surface. Features must report through the shared path rather than adding independent popup systems. This is the agreed product direction recorded in the [decision record](../architecture/decisions.md); review and user testing remain pending in the V5 log.
 
 - Chat status notices (compacting, waiting on subagents, stopped/timeout and response interrupted) are inline transcript dividers, never composer-docked or tagged on a message.
 - The compacting divider shows its existing scene, label and elapsed time without a context-fill meter; verified summary text stays hidden during generation and appears only inside the collapsed completed or interrupted summary.

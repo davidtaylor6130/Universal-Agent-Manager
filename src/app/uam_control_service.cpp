@@ -1341,8 +1341,12 @@ namespace uam
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
-			if (capability->seen_request_ids.size() > kMaxSeenRequests)
-				capability->seen_request_ids.erase(capability->seen_request_ids.begin());
+			capability->seen_request_order.push_back(request_id);
+			if (capability->seen_request_order.size() > kMaxSeenRequests)
+			{
+				capability->seen_request_ids.erase(capability->seen_request_order.front());
+				capability->seen_request_order.pop_front();
+			}
 
 
 
