@@ -200,29 +200,49 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 	if (!uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id, &error, nullptr, true))
 	{ previous.Restore(*chat); cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to activate goal.")); return; }
 	const bool native_resume = provider_managed && chat->provider_id == "codex-cli";
-	PersistGoalMutation(browser, chat_id,
-	    [this, chat_id, previous]() { if (ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id)) previous.Restore(*current); },
-	    [this, chat_id, goal_id, native_resume](std::string* failure, std::function<bool()> admitted, std::function<bool()>, std::function<void(bool, std::string)> completion)
+	PersistGoalMutation(
+	    browser, chat_id,
+	    [this, chat_id, previous]()
 	    {
-		if (!admitted()) return false;
-		if (native_resume)
-		{
-			if (uam::AcpSessionState* native = uam::FindAcpSessionForChat(m_app, chat_id)) native->goal_resume_suppressed = false;
-			const bool resumed = uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, failure, false, true, true,
-		    uam::acp_detail::GoalResumeStage::AfterReceipt, std::move(admitted));
-			completion(resumed, failure ? *failure : std::string());
-			return true;
-		}
-		if (uam::AcpSessionState* native = uam::FindAcpSessionForChat(m_app, chat_id); native && native->codex_goal_owner.goal_id != goal_id)
-		{
-			ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
-			if (current && !uam::acp_detail::StopCodexNativeGoal(*native, *current, true, native->codex_goal_owner.goal_id))
-			{ if (failure) *failure = native->last_error; return false; }
-		}
-		completion(true, "");
-		return true;
-	    }, cb, nlohmann::json{{"goalId", goal_id}, {"executionOwner", provider_managed ? "provider" : "uam"},
-	        {"providerCommand", provider_managed ? provider.native_goal_command : ""}}.dump());
+		    if (ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id))
+			    previous.Restore(*current);
+	    },
+	    [this, chat_id, goal_id, native_resume, stop_goal_id = previous.active](std::string* failure, std::function<bool()> admitted, std::function<bool()>, std::function<void(bool, std::string)> completion)
+	    {
+		    if (!admitted())
+			    return false;
+		    if (native_resume)
+		    {
+			    if (uam::AcpSessionState* native = uam::FindAcpSessionForChat(m_app, chat_id))
+				    native->goal_resume_suppressed = false;
+			    const bool resumed = uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, failure, false, true, true, uam::acp_detail::GoalResumeStage::AfterReceipt, std::move(admitted));
+			    completion(resumed, failure ? *failure : std::string());
+			    return true;
+		    }
+		    if (uam::AcpSessionState* native = uam::FindAcpSessionForChat(m_app, chat_id); native && native->codex_goal_owner.goal_id != goal_id)
+		    {
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    if (current && !uam::acp_detail::StopCodexNativeGoal(*native, *current, true, native->codex_goal_owner.goal_id))
+			    {
+				    if (failure)
+					    *failure = native->last_error;
+				    return false;
+			    }
+			    if (current && !stop_goal_id.empty() && stop_goal_id != goal_id)
+			    {
+				    std::string stop_error;
+				    if (!ProviderRuntimeRegistry::ResolveById(current->provider_id).OnAcpGoalControlCommitted(m_app, *native, *current, stop_goal_id, stop_error))
+				    {
+					    if (failure)
+						    *failure = stop_error;
+					    return false;
+				    }
+			    }
+		    }
+		    completion(true, "");
+		    return true;
+	    },
+	    cb, nlohmann::json{{"goalId", goal_id}, {"executionOwner", provider_managed ? "provider" : "uam"}, {"providerCommand", provider_managed ? provider.native_goal_command : ""}}.dump());
 }
 
 void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -278,6 +298,16 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 		uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 		if (session && current && !uam::acp_detail::StopCodexNativeGoal(*session, *current, true, goal_id, status == GoalStatus::Complete))
 		{ if (error) *error = session->last_error; return false; }
+		if (session && current)
+		{
+			std::string stop_error;
+			if (!ProviderRuntimeRegistry::ResolveById(current->provider_id).OnAcpGoalControlCommitted(m_app, *session, *current, goal_id, stop_error))
+			{
+				if (error)
+					*error = stop_error;
+				return false;
+			}
+		}
 		completion(current != nullptr, "");
 		return true;
 	    }, cb);
@@ -347,6 +377,16 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 		{
 			if (!uam::acp_detail::StopCodexNativeGoal(*session, *current, true, goal_id.empty() ? std::string() : stop_goal_id))
 			{ if (failure) *failure = session->last_error; return false; }
+		}
+		if (session && current && stop_goal_id != goal_id)
+		{
+			std::string stop_error;
+			if (!ProviderRuntimeRegistry::ResolveById(current->provider_id).OnAcpGoalControlCommitted(m_app, *session, *current, stop_goal_id, stop_error))
+			{
+				if (failure)
+					*failure = stop_error;
+				return false;
+			}
 		}
 		Goal* goal = uam::GoalService::FindGoalById(m_app, chat_id, goal_id);
 		if (current && current->provider_id == "codex-cli" && goal && uam::GoalService::IsProviderManaged(*goal))

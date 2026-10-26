@@ -153,17 +153,119 @@ UAM_TEST(GoalHandlerPauseDoesNotBlockOrSendBeforeFullReceipt) { RunGoalHandlerTi
 UAM_TEST(GoalHandlerResumeDoesNotBlockOrSendBeforeFullReceipt) { RunGoalHandlerTiming(1); }
 UAM_TEST(GoalHandlerSetDoesNotBlockOrSendBeforeFullReceipt) { RunGoalHandlerTiming(2); }
 
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+UAM_TEST(AntigravityGoalHandlerPauseWaitsForDurableReceiptBeforeCancelling)
+{
+	TempDir temp("uam-antigravity-pause-receipt");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "antigravity-pause-owner";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "local";
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	chat.active_goal_id = "goal";
+	chat.goal_command_revision = "revision";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.objective = "Retain goal ownership during Pause";
+	goal.token_budget = 100;
+	chat.goals.push_back(goal);
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	auto& session = *app.acp_sessions.front();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.session_id = chat.native_session_id;
+	session.processing = true;
+	session.turn_serial = 1;
+	std::string error;
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	UAM_ASSERT(runtime.OnAcpPreparePrompt(app, session, app.chats.front(), error));
+	// No transport is allocated: the actual handler cancels only this injected active turn.
+	UAM_ASSERT(!session.running);
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	CefRefPtr<GoalTimingCallback> callback = new GoalTimingCallback;
+	ChatSession blocker;
+	blocker.id = "pause-receipt-publication-gate";
+	const auto prepared = ChatRepository::PrepareChatSave(temp.root, blocker);
+	UAM_ASSERT(prepared != nullptr);
+	std::promise<void> acquired;
+	std::promise<void> release;
+	auto ready = acquired.get_future();
+	auto released = release.get_future();
+	std::jthread holder(
+	    [&]()
+	    {
+		    (void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr,
+		                                                  [&]()
+		                                                  {
+			                                                  acquired.set_value();
+			                                                  (void)released.wait_for(std::chrono::seconds(5));
+			                                                  return true;
+		                                                  });
+	    });
+	ready.wait();
+	GoalHandlerTestAccess::Invoke(*handler, 0, {{"chatId", chat.id}, {"goalId", goal.id}, {"status", "paused"}}, callback);
+	const bool processing_before_receipt = session.processing;
+	const int callbacks_before_receipt = callback->successes + callback->failures;
+	release.set_value();
+	holder.join();
+	UAM_ASSERT(processing_before_receipt);
+	UAM_ASSERT_EQ(callbacks_before_receipt, 0);
+	for (int attempt = 0; attempt < 500 && !app.pending_chat_save_at_by_chat_id.empty(); ++attempt)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT_EQ(callback->successes, 1);
+	UAM_ASSERT_EQ(callback->failures, 0);
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT(session.goal_resume_suppressed);
+	const auto saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->native_session_id, chat.native_session_id);
+	UAM_ASSERT_EQ(saved->goals.front().status, GoalStatus::Paused);
+	UAM_ASSERT_EQ(saved->goals.front().last_diagnostic, std::string("antigravity_goal_usage_unknown"));
+}
+#endif
+
 int main(int argc, char** argv)
 {
 #if defined(__APPLE__)
 	if (const std::optional<int> watchdog = uam::platform::RunMacParentDeathWatchdogIfRequested(argc, argv); watchdog.has_value()) return *watchdog;
 #endif
-	std::size_t passed = 0;
+	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
+	{
+		for (const TestCase& test : Registry())
+			std::cout << test.name << '\n';
+		return 0;
+	}
+	for (int index = 1; index < argc; ++index)
+	{
+		if (std::ranges::none_of(Registry(), [&](const TestCase& test) { return test.name == std::string_view(argv[index]); }))
+		{
+			std::cerr << "Unknown connected goal case: " << argv[index] << '\n';
+			return 1;
+		}
+	}
+	std::size_t passed = 0, selected = 0;
 	for (const TestCase& test : Registry())
 	{
-		try { test.fn(); ++passed; std::cout << "PASS " << test.name << '\n'; }
-		catch (const std::exception& error) { std::cerr << "FAIL " << test.name << ": " << error.what() << '\n'; }
+		if (argc > 1 && std::none_of(argv + 1, argv + argc, [&](const char* name) { return test.name == std::string_view(name); }))
+			continue;
+		++selected;
+		try
+		{
+			test.fn();
+			++passed;
+			std::cout << "[PASS] " << test.name << '\n';
+		}
+		catch (const std::exception& error)
+		{
+			std::cerr << "[FAIL] " << test.name << ": " << error.what() << '\n';
+		}
 	}
-	std::cout << passed << '/' << Registry().size() << " connected goal cases passed\n";
-	return passed == Registry().size() && Registry().size() == 3 ? 0 : 1;
+	std::cout << passed << '/' << selected << " connected goal cases passed\n";
+	return passed == selected && selected > 0 ? 0 : 1;
 }

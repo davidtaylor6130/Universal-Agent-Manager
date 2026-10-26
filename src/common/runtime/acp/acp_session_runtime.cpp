@@ -3767,7 +3767,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			chat->acp_queued_prompts.assign(existing_queue.begin(), existing_queue.end());
 			return false;
 		}
-		if (!CancelAcpTurn(app, chat_id, error_out, true, true))
+		if (!CancelAcpTurn(app, chat_id, error_out, true, true, false))
 		{
 			session.queued_user_prompts = existing_queue;
 			chat->acp_queued_prompts.assign(existing_queue.begin(), existing_queue.end());
@@ -4182,7 +4182,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (deferred_queue) return true;
 		if (!uam::AcpSessionHasActiveTurn(*session))
 			return DrainNextQueuedAcpUserPrompt(app, *session, *chat);
-		if (!CancelAcpTurn(app, chat_id, error_out, true, true))
+		if (!CancelAcpTurn(app, chat_id, error_out, true, true, false))
 		{
 			session->queued_user_prompts = previous_queue;
 			chat->acp_queued_prompts.assign(previous_queue.begin(), previous_queue.end());
@@ -5612,7 +5612,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool CancelAcpTurn(AppState& app, const std::string& chat_id,
 	                   std::string* error_out, bool update_goal_state,
-	                   bool preserve_queued_prompts)
+	                   bool preserve_queued_prompts, bool hold_preserved_queue)
 	{
 		RevokePendingEmptyHeldSend(app, chat_id);
 		if (AcpSessionState* owner = FindAcpSessionForChat(app, chat_id))
@@ -5649,6 +5649,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return true;
 		}
+		if (chat)
+			ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpTurnStopping(app, *session, *chat);
 		acp_detail::AbandonPendingLocalSteers(*session);
 		const bool staged_delivery_canceled = session->pending_prompt_delivery != nullptr;
 		if (chat != nullptr) acp_detail::RestorePendingPromptDelivery(*session, *chat);
@@ -5688,6 +5690,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
 		bool chat_changed = staged_delivery_canceled || referenced_queue_canceled;
+		if (preserve_queued_prompts && hold_preserved_queue && !session->queued_user_prompts.empty())
+		{
+			session->queue_held = true;
+			if (chat != nullptr)
+			{
+				chat->acp_queue_held = true;
+				chat->acp_queued_prompts.assign(session->queued_user_prompts.begin(), session->queued_user_prompts.end());
+				chat_changed = true;
+			}
+		}
 		if (chat != nullptr)
 		{
 			if (staged_delivery_canceled)
@@ -5705,7 +5717,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (chat != nullptr && chat_changed)
 		{
-			acp_detail::SaveChatQuietly(app, *chat);
+			acp_detail::SaveChatQuietly(app, *chat, preserve_queued_prompts ? acp_detail::AcpChatSavePurpose::PreserveQueuedIntent : acp_detail::AcpChatSavePurpose::SettleFailedDirect);
 		}
 		if (update_goal_state && chat != nullptr && !session->manual_compaction_pending)
 		{
@@ -5774,10 +5786,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		if (session->session_id.empty())
 		{
-			const bool stopped = StopAcpSession(app, chat_id);
+			const bool stopped = StopAcpSession(app, chat_id, AcpStopPurpose::Interrupt, preserve_queued_prompts);
 			if (!stopped && error_out != nullptr && error_out->empty())
 				*error_out = app.status_line;
-			return stopped;
+			return stopped || session->local_stop_pending;
 		}
 
 		const IProviderRuntime& cancel_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
@@ -5799,10 +5811,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				return true;
 			}
-			const bool stopped = StopAcpSession(app, chat_id);
+			const bool stopped = StopAcpSession(app, chat_id, AcpStopPurpose::Interrupt, preserve_queued_prompts);
 			if (!stopped && error_out != nullptr && error_out->empty())
 				*error_out = app.status_line;
-			return stopped;
+			return stopped || session->local_stop_pending;
 		}
 		if (!cancel_method.empty())
 		{
@@ -5821,11 +5833,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				session->pending_request_methods.erase(cancel_id);
 				session->cancel_request_id = 0;
 			}
-			const bool stopped = StopAcpSession(app, chat_id);
+			const bool stopped = StopAcpSession(app, chat_id, AcpStopPurpose::Interrupt, preserve_queued_prompts);
 			if (!stopped && error_out != nullptr && error_out->empty())
 				*error_out = app.status_line;
 			if (stopped && error_out != nullptr) error_out->clear();
-			return stopped;
+			return stopped || session->local_stop_pending;
 		}
 
 		return true;
@@ -5956,13 +5968,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return !AcpStopInProgress(app, chat_id);
 	}
 
-	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id, AcpStopPurpose purpose, bool observe_exit)
+	void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id, AcpStopPurpose purpose, bool observe_exit, std::shared_ptr<IPlatformProcessService> stop_service)
 	{
 		auto owned = std::make_shared<platform::StdioProcessPlatformFields>();
 		AsyncAcpProcessStopTask task;
 		task.chat_id = std::string(chat_id);
 		task.purpose = purpose;
 		task.observe_exit = observe_exit;
+		task.stop_service = stop_service;
 		task.result = std::make_shared<platform::ObservedProcessStopResult>();
 		task.owned_process = owned;
 		if (const AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id)) task.turn_serial = session->turn_serial;
@@ -6005,17 +6018,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 			app.acp_process_stop_tasks.reserve(std::max<std::size_t>(1, app.acp_process_stop_tasks.capacity() * 2));
 		acp_detail::ScopedStdioProcessTransfer handoff(process, *owned);
 		task.worker = std::make_unique<std::jthread>(
-		    [owned = std::move(owned), finished, result, purpose, observe_exit, confirm_writer_exit](std::stop_token stop_token)
+		    [owned = std::move(owned), finished, result, purpose, observe_exit, confirm_writer_exit, stop_service](std::stop_token stop_token)
 		    {
+			    IPlatformProcessService& service = stop_service ? *stop_service : PlatformServicesFactory::Instance().process_service;
 			    if (purpose == AcpStopPurpose::Timeout || observe_exit)
 				{
-					*result = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned,
+					*result = platform::StopStdioProcessObserved(service, *owned,
 				    std::chrono::milliseconds(800), purpose != AcpStopPurpose::WorkspaceChange);
-					if (result->exit_confirmed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*owned);
+					if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
 				}
 				else if (confirm_writer_exit)
 				{
-					IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+					IPlatformProcessService& process_service = service;
 					process_service.TerminateStdioProcess(*owned, true);
 					while (!process_service.PollStdioProcessExited(*owned))
 					{
@@ -6024,7 +6038,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					}
 					process_service.CloseStdioProcessHandles(*owned);
 				}
-				else PlatformServicesFactory::Instance().process_service.StopStdioProcess(*owned, true);
+				else service.StopStdioProcess(*owned, true);
 			    finished->store(true);
 		    });
 		handoff.Commit();
@@ -6273,7 +6287,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return cleanup_marker_saved;
 	}
 
-	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose, bool preserve_held_queue)
+	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose, bool preserve_held_queue, std::shared_ptr<IPlatformProcessService> stop_service)
 	{
 		CancelChatRepositoryBaseline(app, chat_id);
 		ManagedParentContinuationService::Revoke(app, chat_id, "stop_requested");
@@ -6322,16 +6336,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const auto owned = task.owned_process;
 				const auto result = task.result;
 				const auto finished = task.finished;
+				const auto service_owner = task.stop_service;
 				finished->store(false);
-				task.worker = std::make_unique<std::jthread>([owned, result, finished](std::stop_token)
+				task.worker = std::make_unique<std::jthread>([owned, result, finished, service_owner](std::stop_token)
 				{
-					const auto retry = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned, std::chrono::milliseconds(0));
+					IPlatformProcessService& service = service_owner ? *service_owner : PlatformServicesFactory::Instance().process_service;
+					const auto retry = platform::StopStdioProcessObserved(service, *owned, std::chrono::milliseconds(0));
 					result->outcome = retry.outcome;
 					result->exit_code = retry.exit_code;
 					result->exit_confirmed = retry.exit_confirmed;
 					result->standard_output += retry.standard_output;
 					result->standard_error += retry.standard_error;
-					if (result->exit_confirmed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*owned);
+					if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
 					finished->store(true);
 				});
 			}
@@ -6339,6 +6355,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (!session->remote_stop_pending && !session->remote_stop_unconfirmed) { session->stop_purpose = purpose; session->stop_outcome = platform::ProcessStopOutcome::Unknown; }
 		ChatSession* chat = FindAcpRuntimeChatById(app, chat_id);
+		if (chat)
+			ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpTurnStopping(app, *session, *chat);
 		if (session->restart_marker_save_pending)
 		{
 			if (chat == nullptr)
@@ -6428,10 +6446,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool temporary = chat != nullptr && !chat->temporary_parent_chat_id.empty();
 			const bool initial_owned_stop = static_cast<bool>(session->managed_initial_owner);
 			const bool native_children_live = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) > 0;
-			QueueAcpProcessStop(app, *session, session->chat_id, session->stop_purpose, temporary || native_children_live || initial_owned_stop || purpose == AcpStopPurpose::WorkspaceChange);
+			// A stopped metered turn cannot release its budget/conversation fence without observed exit.
+			// Idle completed turns used for private review transitions have no active execution to retire.
+			const bool metered_turn = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpAccountsGoalUsage() &&
+			    (session->cancel_requested || session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0);
+			QueueAcpProcessStop(app, *session, session->chat_id, session->stop_purpose, temporary || native_children_live || initial_owned_stop || metered_turn || purpose == AcpStopPurpose::WorkspaceChange, std::move(stop_service));
+			app.acp_process_stop_tasks.back().preserve_queued_prompts = preserve_held_queue;
 			session->transport_ownership_error.clear();
 			if (temporary) chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
-			if (session->stop_purpose == AcpStopPurpose::Timeout || native_children_live || initial_owned_stop || purpose == AcpStopPurpose::WorkspaceChange)
+			if (session->stop_purpose == AcpStopPurpose::Timeout || native_children_live || initial_owned_stop || metered_turn || purpose == AcpStopPurpose::WorkspaceChange)
 			{
 				session->running = false;
 				session->local_stop_pending = true;
@@ -6439,7 +6462,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
-		return FinalizeStoppedAcpSession(app, *session, chat, preserve_held_queue && session->queue_held);
+		return FinalizeStoppedAcpSession(app, *session, chat, preserve_held_queue);
 	}
 
 	bool SetAcpSessionMode(AppState& app,
@@ -6820,16 +6843,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser)
 	{
 		bool changed = false;
+		std::vector<std::pair<std::string, std::string>> ready_steers;
 		std::erase_if(app.acp_process_stop_tasks, [&](AsyncAcpProcessStopTask& task)
 		{
 			if (task.finished == nullptr || !task.finished->load()) return false;
+			IPlatformProcessService& service = task.stop_service ? *task.stop_service : PlatformServicesFactory::Instance().process_service;
 			if ((task.purpose == AcpStopPurpose::Timeout || task.observe_exit) && task.result != nullptr && !task.result->exit_confirmed && task.owned_process != nullptr)
 			{
-				if (!PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(*task.owned_process, &task.result->exit_code)) return false;
+				if (!service.PollStdioProcessExited(*task.owned_process, &task.result->exit_code)) return false;
 				task.result->exit_confirmed = true;
-				if (!platform::DrainObservedProcessStopOutput(PlatformServicesFactory::Instance().process_service, *task.owned_process, *task.result))
+				if (!platform::DrainObservedProcessStopOutput(service, *task.owned_process, *task.result))
 					task.result->outcome = platform::ProcessStopOutcome::Failed;
-				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*task.owned_process);
+				service.CloseStdioProcessHandles(*task.owned_process);
 			}
 			if (task.managed_initial_owner && !AgentRunScheduler::InitialStopCompletionOwned(app, task.managed_initial_owner))
 				return true; // Original process is reaped; do not touch any replacement namespace.
@@ -6854,16 +6879,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				if (task.observe_exit && task.result != nullptr && task.result->exit_confirmed)
 					(void)acp_detail::SettleClaudeBackgroundTasks(*stopped, chat, uam::acp_statuses::kCancelled);
-				(void)FinalizeStoppedAcpSession(app, *stopped, chat, stopped->queue_held);
+				(void)FinalizeStoppedAcpSession(app, *stopped, chat, task.preserve_queued_prompts || stopped->queue_held);
 				if (chat != nullptr && app.pending_chat_save_at_by_chat_id.contains(task.chat_id))
 				{
 					stopped->local_stop_pending = true;
 					return false;
 				}
+				if (task.preserve_queued_prompts && !stopped->queue_held && !stopped->queued_user_prompts.empty() && stopped->queued_user_prompts.front().priority_steer)
+					ready_steers.emplace_back(task.chat_id, stopped->queued_user_prompts.front().id);
 				changed = true;
 			}
 			return true;
 		});
+		// Dispatch only explicit steering authority, after task erasure and confirmed retirement.
+		for (const auto& [chat_id, prompt_id] : ready_steers)
+		{
+			AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+			ChatSession* chat = FindAcpRuntimeChatById(app, chat_id);
+			if (session && chat && !session->queue_held && !session->queued_user_prompts.empty() && session->queued_user_prompts.front().id == prompt_id && session->queued_user_prompts.front().priority_steer)
+				(void)DrainNextQueuedAcpUserPrompt(app, *session, *chat);
+		}
 		return changed;
 	}
 
