@@ -1634,6 +1634,20 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 #endif
 }
 
+namespace
+{
+	// A staged automatic claim dispatches only after its full-save receipt.
+	void AwaitQuotaClaimSettled(uam::AppState& app)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (app.chats.front().claude_quota_continuation.state == "claimed" && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+	}
+}
+
 UAM_TEST(ClaudeQuotaLegacyBuiltinVersionRemainsHeldWithoutNativeLaunch)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI && !defined(_WIN32)
@@ -1659,6 +1673,7 @@ UAM_TEST(ClaudeQuotaLegacyBuiltinVersionRemainsHeldWithoutNativeLaunch)
 	UAM_ASSERT(saved && saved->claude_quota_continuation == accepted);
 	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 59));
 	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	AwaitQuotaClaimSettled(fixture.app);
 	ClaudeQuotaContinuation held = accepted;
 	held.state = "held";
 	UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation == held);
@@ -1847,6 +1862,7 @@ UAM_TEST(ClaudeQuotaHoldsSameIdAgentDefinitionChangesBeforeNativeStartup)
 		UAM_ASSERT(changed != catalog.definitions.end());
 		UAM_ASSERT(changed->definition_hash != accepted->definition_hash);
 		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+		AwaitQuotaClaimSettled(fixture.app);
 		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("held"));
 		UAM_ASSERT(!fixture.session->running);
 		UAM_ASSERT(fixture.session->queued_prompt.empty());

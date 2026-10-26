@@ -182,6 +182,11 @@ namespace uam
 		{
 			return session.pending_agent_input && session.pending_agent_input->finished.load(std::memory_order_acquire);
 		}
+
+		bool AgentInputPreparationResuming(const AcpSessionState& session)
+		{
+			return session.pending_agent_input && session.pending_agent_input->resuming;
+		}
 	}
 	bool FinalizeActiveAcpTurnAsInterrupted(ChatSession& chat, AcpSessionState& session);
 	static std::string WorkspaceReceiptFingerprint(const ChatSession& chat);
@@ -2814,9 +2819,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
-		bool PendingRemoteSteerAdmission(const AcpSessionState& session)
+		bool PendingRemoteSteerAdmission(const AcpSessionState& session, const ChatSession& chat)
 		{
-			return session.process_execution_host_id != execution_hosts::kLocalHostId && !session.pending_local_steer_abandon.empty();
+			// Same remote test as SendNativeAcpSteer; a local session's process host can be unset.
+			return chat.execution_host_id != execution_hosts::kLocalHostId && !session.pending_local_steer_abandon.empty();
 		}
 
 		bool SendNativeAcpSteer(AppState& app, AcpSessionState& session, ChatSession& chat,
@@ -2832,7 +2838,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Wait for the provider to start the turn before steering.";
 				return false;
 			}
-			if (PendingRemoteSteerAdmission(session))
+			if (PendingRemoteSteerAdmission(session, chat))
 			{
 				if (error_out) *error_out = "Wait for the previous remote steer admission to finish.";
 				return false;
@@ -4131,7 +4137,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (chat == nullptr || session == nullptr || prompt_id.empty() || expected_revision < 1)
 			return reject("Queued prompt is no longer available. Refresh the queue.");
-		if (PendingRemoteSteerAdmission(*session)) return reject("Wait for remote steer admission before changing the raw queue.");
+		if (PendingRemoteSteerAdmission(*session, *chat)) return reject("Wait for remote steer admission before changing the raw queue.");
 		std::deque<AcpQueuedUserPromptState>& queue = session->queued_user_prompts;
 		const auto item = std::find_if(queue.begin(), queue.end(), [&](const AcpQueuedUserPromptState& prompt) { return prompt.id == prompt_id; });
 		if (item == queue.end() || item->revision != expected_revision || item->prepared_for_delivery)
@@ -4206,7 +4212,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (chat == nullptr || session == nullptr) return reject("Queued prompts are no longer available.");
-		if (PendingRemoteSteerAdmission(*session)) return reject("Wait for remote steer admission before changing the raw queue.");
+		if (PendingRemoteSteerAdmission(*session, *chat)) return reject("Wait for remote steer admission before changing the raw queue.");
 		std::deque<AcpQueuedUserPromptState>& queue = session->queued_user_prompts;
 		std::vector<std::size_t> visible;
 		for (std::size_t index = 0; index < queue.size(); ++index)
@@ -4276,7 +4282,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
-		if (session && PendingRemoteSteerAdmission(*session))
+		if (session && chat && PendingRemoteSteerAdmission(*session, *chat))
 		{
 			if (error_out) *error_out = "Wait for remote steer admission before changing the raw queue.";
 			return false;
@@ -4774,7 +4780,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		if (session.queued_rollback_save_pending || HasPendingQueuedAdmissionSave(app, chat.id) || RemotePromptDeliveryUnconfirmed(session, chat))
 			return false;
+		// A staged quota claim awaits its full-save receipt; later queued input must not overtake the continuation.
 		if (chat.acp_queue_storage_error || chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held" ||
+		    chat.claude_quota_continuation.state == "claimed" ||
 		    RemoteSourceCleanupPending(session, chat) || session.turn_checkpoint_commit_pending || session.queue_held) return false;
 		if (session.queued_user_prompts.empty())
 		{

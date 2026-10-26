@@ -385,7 +385,8 @@ namespace
 		    AcpStopInProgress(app, chat.id) || chat.side_cleanup_requested || chat.imported_read_only ||
 		    chat.acp_queue_held || chat.acp_queue_storage_error || chat.remote_stop_cleanup_pending ||
 		    chat.remote_restart_pending || chat.remote_source_exit_pending ||
-		    !session.transport_ownership_error.empty() || session.pending_agent_input || session.pending_queued_history ||
+		    !session.transport_ownership_error.empty() ||
+		    (session.pending_agent_input && !AgentInputPreparationResuming(session)) || session.pending_queued_history ||
 		    session.pending_prompt_delivery || session.pending_local_session_receipt ||
 		    (!task.cold_recovery && AcpSessionHasPendingRuntimeRequest(session)) ||
 		    session.manual_compaction_pending || session.context_compaction_in_progress ||
@@ -2368,7 +2369,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	session.session_id = validated_resume_id;
 	session.codex_thread_id = codex_resume_id;
-	const bool defer_cold_launch = defer_until_saved && !session.model_discovery_only && !saved_retry && !migrate_copilot_wire && !cold_binding;
+	// A restart's own in-flight stop would revoke the staged launch, and an existing non-directory local
+	// workspace fails process start immediately; both keep their synchronous launch and error.
+	const std::filesystem::path deferred_workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+	const bool local_workspace_unusable = !remote && !deferred_workspace.empty() &&
+	    paths::PathExistsNoThrow(deferred_workspace) && !paths::IsDirectoryNoThrow(deferred_workspace);
+	const bool defer_cold_launch = defer_until_saved && !session.model_discovery_only && !saved_retry && !migrate_copilot_wire && !cold_binding &&
+	    !AcpStopInProgress(app, chat.id) && !local_workspace_unusable;
 	// Persist validated resume identity before launching a process bound to that identity.
 	if (!session.goal_internal_session && !session.model_discovery_only && !recovering_remote_turn && !recovering_remote_process && !chat.native_session_id.empty() && chat.native_session_id != session.session_id)
 	{

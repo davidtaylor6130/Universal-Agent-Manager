@@ -490,6 +490,8 @@ void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id)
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
 void AbandonPendingLocalSteers(AcpSessionState& session);
 bool AgentInputPreparationReady(const AcpSessionState& session);
+// True while completed preparation admits its own input, before its marker is cleared.
+bool AgentInputPreparationResuming(const AcpSessionState& session);
 std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Persists removal of a rejected resume ID; failure restores it and invalidates transport without losing queued work.</summary>
