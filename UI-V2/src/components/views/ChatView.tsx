@@ -9,6 +9,7 @@ import { acknowledgeComposerReferences, captureComposerReferenceSubmission, comp
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { motionScrollBehavior } from '../../utils/motionStorage'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
 import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
@@ -1220,7 +1221,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
-    target.scrollIntoView?.({ block: 'center' })
+    // Message-rail jumps glide to their target (subject to Motion); search results stay an immediate jump.
+    target.scrollIntoView?.(searchNavigation.queryRequestId.startsWith('message-rail:')
+      ? { block: 'center', behavior: motionScrollBehavior() } : { block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
   }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 

@@ -33,3 +33,10 @@ export function applyMotionSpeed(speed: MotionSpeed): void {
   if (speed === 'default') document.documentElement.removeAttribute('data-motion')
   else document.documentElement.setAttribute('data-motion', speed)
 }
+
+/** Smooth programmatic scrolling unless Appearance > Motion is Off or the system asks for reduced motion. */
+export function motionScrollBehavior(): ScrollBehavior {
+  if (typeof document === 'undefined') return 'auto'
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  return reduced || document.documentElement.getAttribute('data-motion') === 'off' ? 'auto' : 'smooth'
+}
