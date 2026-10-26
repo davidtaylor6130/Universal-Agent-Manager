@@ -3458,7 +3458,9 @@ UAM_TEST(RemoteModelDiscoveryUsesTheSelectedRunnerAndCachesOnlyItsCatalog)
 	const fs::path request_log = temp.root / "discovery-requests.ndjson";
 	UAM_ASSERT(uam::io::WriteTextFile(
 	    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	// OpenCode discovery launches now check the executing host's version first.
 	UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
+case "$1" in --version) echo 1.19.4; exit 0;; esac
 while IFS= read -r line; do
 	printf '%s\n' "$line" >> "$UAM_TEST_DISCOVERY_LOG"
   case "$line" in

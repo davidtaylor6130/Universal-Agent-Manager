@@ -297,7 +297,6 @@ namespace uam
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
 		constexpr double kRemoteTurnReconnectBaseDelaySeconds = 0.5;
 		constexpr double kRemoteTurnReconnectMaxDelaySeconds = 60.0;
-		constexpr double kAcpCancelTimeoutSeconds = 5.0;
 		constexpr std::size_t kMarkdownStorePromptMaxBytes = 2U * 1024U * 1024U;
 		constexpr std::size_t kAcpUserPromptMaxBytes = 1U * 1024U * 1024U;
 		constexpr std::size_t kAcpQueuedPromptMaxBytes = 2U * 1024U * 1024U;
@@ -7166,6 +7165,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			// Adapter-owned option deadlines must retire before control timeout recovery or queued prompt admission.
 			changed = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpPollNativeModelOptions(app, session, chat) || changed;
 			(void)acp_detail::PollLocalSessionReceipt(app, session, chat);
+			if (HoldAcpUnconfirmedCancellationIfTimedOut(app, session, chat, now_seconds))
+			{
+				changed = true;
+				continue;
+			}
 			if (HandleAcpTurnInactivityTimeout(app, session, chat, now_seconds))
 			{
 				changed = true;
@@ -7268,6 +7272,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// startup crash), the turn can be retried safely without risking a
 				// duplicate prompt reaching the provider.
 				const bool turn_was_active = uam::AcpSessionHasActiveTurn(session);
+				if ((turn_was_active || AcpSessionHasPendingCancel(session)) &&
+				    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
+				        "The owned provider process exited before its input outcome was confirmed.", exit_code))
+				{
+					changed = true;
+					continue;
+				}
 				const bool child_tasks_were_live = !session.claude_live_background_task_ids.empty() || !session.codex_live_background_thread_ids.empty();
 				const bool remote_source_exit = session.remote_source_exit_reported;
 				const std::optional<std::string> remote_startup_error = chat.execution_host_id != uam::execution_hosts::kLocalHostId
@@ -7546,8 +7557,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::unordered_set<std::string> completed_ephemeral_ids;
 		for (const auto& session : app.acp_sessions)
 		{
+			// A discovery parked on its host version check has not completed yet.
 			if (session == nullptr || !session->ephemeral_model_discovery || session->running ||
-			    session->reconnect_pending || AcpStopInProgress(app, session->chat_id)) continue;
+			    session->pending_local_launch || session->reconnect_pending || AcpStopInProgress(app, session->chat_id)) continue;
 			const std::vector<ChatSession>::iterator discovery = std::ranges::find_if(app.model_discovery_chats,
 			    [&session](const ChatSession& chat) { return chat.id == session->chat_id; });
 			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&

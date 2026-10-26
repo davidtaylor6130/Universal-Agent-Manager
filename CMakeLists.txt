@@ -284,6 +284,9 @@ endif()
 if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp
+    src/common/provider/opencode/v2/opencode_v2_session.cpp
+    src/common/provider/opencode/v2/opencode_v2_policy.cpp
+    src/common/provider/opencode/v2/opencode_v2_bridge.cpp
   )
 endif()
 if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
@@ -1375,6 +1378,7 @@ if(UAM_BUILD_TESTS)
     tests/native_remote_history_refresh_tests.cpp
     tests/copilot_native_protocol_tests.cpp
     tests/opencode_native_http_tests.cpp
+    tests/opencode_v2_integration_tests.cpp
     tests/opencode_native_activity_tests.cpp
     tests/opencode_terminal_activity_tests.cpp
     tests/antigravity_mcp_tests.cpp
