@@ -2,6 +2,7 @@
 #include "runtime_orchestration_services.h"
 #include "runtime_orchestration_internal.h"
 #include "common/provider/native_agent_history.h"
+#include "common/provider/opencode_v2_session.h"
 
 #include "app/chat_domain_service.h"
 #include "app/managed_subagent_control_service.h"
@@ -1862,6 +1863,18 @@ namespace
 
 	void OverlayLocalChatState(const ChatSession& local, ChatSession& native)
 	{
+		// A passive legacy/custom export cannot erase a same-owner V2 refusal.
+		// Check native identity before the general overlay changes provider/workspace.
+		// Presence includes malformed-present data; absence must retain a new V2 observation.
+		if (local.opencode_v2_session_id.has_value() &&
+		    uam::provider_ids::IsCliProviderAliasOf(local.provider_id, uam::provider_ids::kOpenCodeCli) &&
+		    uam::provider_ids::IsCliProviderAliasOf(native.provider_id, uam::provider_ids::kOpenCodeCli) &&
+		    !local.native_session_id.empty() && local.native_session_id == native.native_session_id &&
+		    uam::strings::NonEmptyOrFallback(uam::strings::Trim(local.execution_host_id), "local") ==
+		        uam::strings::NonEmptyOrFallback(uam::strings::Trim(native.execution_host_id), "local") &&
+		    !chat_identity::NativeWorkspaceForHistoryImport(local).empty() &&
+		    chat_identity::NativeIdentityKeyForHistoryImport(local) == chat_identity::NativeIdentityKeyForHistoryImport(native))
+			native.opencode_v2_session_id = local.opencode_v2_session_id;
 		const NativeSessionLinkService native_session_links;
 		const std::string local_session_id = native_session_links.RealNativeSessionId(local);
 		if (!local_session_id.empty() && !uam::strings::IsBlank(local.id) && local_session_id == native_session_links.RealNativeSessionId(native))
@@ -3539,13 +3552,30 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	if (!open_code_only && (provider_filter.empty() || provider_filter == uam::provider_ids::kGeminiCli))
 	{
 	const ProviderProfile gemini_profile = ProviderProfileStore::DefaultGeminiProfile();
+	// Arm producer cleanup before parsing. Batch leases begin too late, and
+	// startup selection may copy payload handles out of this discovery result.
+	// Payload aliases carry this independent bounded owner through those copies.
+	const auto context = std::make_shared<GeminiHistoryParseContext>();
+	ProviderRuntimeHistoryLoadOptions options;
+	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 	ProviderDiscoveryResult gemini_sources;
 	gemini_sources.sources = DiscoverGeminiTmpChatSources(&gemini_sources.error, stop_token);
 	if (!gemini_sources.error.empty()) discovery.result.Fail(gemini_sources.error);
 	for (const auto& source : gemini_sources.sources)
 	{
 		if (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(source.folder_directory), uam::paths::PathFromUtf8(folder.directory))) continue;
-		for (ChatSession& chat : LoadNativeSessionChats(source.chats_dir, gemini_profile, stop_token))
+		if (stop_token.stop_requested()) break;
+		if (!context->payload_retirement)
+		{
+			context->payload_retirement = uam::native_history::TryCreateWorkerOwnedNativeRefresh<GeminiHistoryParseContext::RetainedPayloads, uam::native_history::NativeRefreshWorkerPool::DiscoveryParser>();
+			if (!context->payload_retirement)
+			{
+				discovery.result.Fail("Gemini history discovery is busy; retry after the pending media scan is released.");
+				break;
+			}
+		}
+		for (ChatSession& chat : ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(source.chats_dir, gemini_profile, options, stop_token, context)))
 		{
 			if (!NativeChatShouldBeImported(source.chats_dir, chat, "", false)) continue;
 			if (uam::strings::IsBlank(chat.workspace_directory))
@@ -3558,6 +3588,12 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			chat.folder_id = folder.id;
 			discovery.chats.push_back(std::move(chat));
 		}
+		const auto admission_error = context->RetirementError();
+		if (!admission_error.empty())
+		{
+			discovery.result.Fail(admission_error);
+			break;
+		}
 	}
 	}
 #endif
@@ -3567,11 +3603,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		uam::ProviderWorkerInvocation invocation;
 		invocation.direct_process = true;
 		invocation.structured_stdout = true;
-		invocation.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildNativeDiscoveryArgv(*open_code_profile);
+		invocation.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildLocalNativeDiscoveryArgv(*open_code_profile);
 		const auto count_option = std::ranges::find(invocation.argv, "--max-count");
 		if (count_option != invocation.argv.end() && std::next(count_option) != invocation.argv.end()) invocation.argv.erase(count_option, std::next(count_option, 2));
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
-		const auto listed = uam::ExecuteProviderWorkerInvocation(invocation, (folder.directory.empty() ? uam::paths::CurrentPathOrDot() : uam::paths::PathFromUtf8(folder.directory)), 30000, stop_token);
+		const auto listed = uam::ExecuteProviderWorkerInvocation(invocation, (folder.directory.empty() ? uam::paths::CurrentPathOrDot() : uam::paths::PathFromUtf8(folder.directory)), uam::opencode_v2::HistoryCommandTimeoutMilliseconds(invocation.argv), stop_token);
 		nlohmann::json sessions = nlohmann::json::parse(listed.output, nullptr, false);
 		if (!listed.ok || listed.exit_code != 0 || listed.output_truncated || !sessions.is_array())
 		{
@@ -3624,12 +3660,13 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			ChatSession chat;
 			chat.id = id;
 			chat.native_session_id = id;
+			if (session.value("opencode_v2_session_id", nlohmann::json{}) == id) chat.opencode_v2_session_id = id;
 			chat.provider_id = uam::provider_ids::kOpenCodeCli;
 			chat.folder_id = folder.id;
 			chat.workspace_directory = session["directory"].get<std::string>();
 			uam::ProviderWorkerInvocation exported;
 			exported.direct_process = true;
-			exported.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildNativeExportArgv(*open_code_profile, chat);
+			exported.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildLocalNativeExportArgv(*open_code_profile, chat);
 			std::string error;
 			const auto source = uam::opencode_import::Export(std::move(exported), uam::paths::PathFromUtf8(chat.workspace_directory), stop_token, error);
 			std::size_t message_count = 0;
@@ -5035,7 +5072,7 @@ ChatHistorySyncService::RemoteOpenCodeTranscript ChatHistorySyncService::LoadLoc
 
 	uam::ProviderWorkerInvocation invocation;
 	invocation.direct_process = true;
-	invocation.argv = ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat);
+	invocation.argv = ProviderRuntimeRegistry::Resolve(profile).BuildLocalNativeExportArgv(profile, chat);
 	std::string error;
 	const auto source = uam::opencode_import::Export(std::move(invocation), workspace, stop_token, error);
 	if (!source || !uam::opencode_import::Read(*source, chat, [&](const Message& message)

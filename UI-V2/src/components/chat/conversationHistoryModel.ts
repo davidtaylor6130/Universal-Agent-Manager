@@ -40,13 +40,25 @@ export function hasSubstantiveOutput(message: Message) {
     message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
 }
 
+// Stream updates retain Date objects; weak ownership releases labels with their history.
+// Check the value and local offset so a mutated Date or timezone change cannot reuse stale time.
+const reviewTimeLabels = new WeakMap<Date, { timestamp: number; offset: number; label: string }>()
+
 /** Attribute each turn from its recorded metadata, independently of current provider/model settings. */
 export function reviewAssistantLabel(provider: string, message?: Message) {
   const model = message?.modelId?.trim() || ''
   const date = message?.createdAt
-  const time = date && Number.isFinite(date.getTime())
-    ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : ''
+  let time = ''
+  if (date && Number.isFinite(date.getTime())) {
+    const timestamp = date.getTime()
+    const offset = date.getTimezoneOffset()
+    let cached = reviewTimeLabels.get(date)
+    if (!cached || cached.timestamp !== timestamp || cached.offset !== offset) {
+      cached = { timestamp, offset, label: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+      reviewTimeLabels.set(date, cached)
+    }
+    time = cached.label
+  }
   return [provider, model, time].filter(Boolean).join(' · ')
 }
 
