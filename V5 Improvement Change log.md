@@ -956,6 +956,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Build and evidence | Performance | Cached Native CI Builds | Confirm hosted CI builds Windows with Ninja Multi-Config, MSVC, the precompiled test harness and ccache, and that pull requests reuse the base-branch cache on all three native platforms. | Implemented; Hosted CI Not Yet Observed; Un-Reviewed; Not User Tested | Unassigned |
 | Memory and skills | Bugfix | Ship Bundled Skills Only | Confirm the packaged macOS and Windows archives contain only bundled store skills and that existing users keep their seeded entries. | Not Started; Un-Reviewed; Not User Tested | Unassigned |
 | Platform and diagnostics | Bugfix | Process Exit Output Drain | Live SSH setup, provider account reads and companion proxy exits remain to be confirmed with the exit-before-drain fix on macOS and Windows hosts. | Implemented ([PR #542](https://github.com/davidtaylor6130/Universal-Agent-Manager/pull/542), merged 2026-10-26); Live Acceptance Pending; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Bugfix | Windows Desktop Start-up Crash | Windows launches in a signed-in desktop session crashed in CEF because the manifest lacked Windows 10 support; the manifest fix awaits David's test. | Implemented ([PR #540](https://github.com/davidtaylor6130/Universal-Agent-Manager/pull/540), merged 2026-10-26); Signed-in Session Launch Verified; Independently Reviewed; Not User Tested | Unassigned |

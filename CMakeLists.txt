@@ -1735,7 +1735,13 @@ if(UAM_BUILD_TESTS)
   endif()
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   # Every core test includes the harness; its ~120 headers otherwise dominate each test compile.
+  # Winsock must precede the Windows headers the harness pulls in, as tests using sockets expect.
+  if(WIN32)
+    target_precompile_headers(uam_core_tests PRIVATE <winsock2.h>)
+  endif()
   target_precompile_headers(uam_core_tests PRIVATE tests/test_harness.h)
+  # Clang otherwise rejects a cached PCH whose headers have newer timestamps, as on a fresh checkout.
+  target_compile_options(uam_core_tests PRIVATE "$<$<CXX_COMPILER_ID:AppleClang,Clang>:SHELL:-Xclang -fno-pch-timestamp>")
   set_source_files_properties(src/computer_use/computer_use_mcp_server.cpp src/remote/runner_protocol.cpp
     src/remote/runner_bootstrap.cpp src/remote/runner_proxy.cpp src/remote/runner_state.cpp
     src/remote/runner_service_posix.cpp src/remote/runner_service_windows.cpp
