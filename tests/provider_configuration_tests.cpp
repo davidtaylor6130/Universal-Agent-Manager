@@ -145,11 +145,38 @@ UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
 #endif
 }
 
+UAM_TEST(RemoteOpenCodeV2VersionRefusesFreshLegacyAcpWithoutBorrowingLocalVersion)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked("2.1.2");
+	// Installation minimums still pass V2; the executing host's protocol policy must refuse it.
+	auto& local = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
+	local.execution_host = uam::execution_hosts::LocalHost();
+	local.checked = true; local.supported = true; local.installed_version = "1.19.4";
+	fixture.Session().queued_prompt = "retain remote authored input";
+	fixture.app.chats.front().native_session_id = "ses_remote_retained";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("V2") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.Session().last_error, error);
+	UAM_ASSERT(!fixture.Session().running && !fixture.Session().opencode_native_companion);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, std::string("retain remote authored input"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().native_session_id, std::string("ses_remote_retained"));
+	UAM_ASSERT(fixture.app.runtime_cli_install_tasks.empty());
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeMatchingVersionCacheLaunchesWithoutWaitingForUnrelatedCheck)
 {
 #if defined(__APPLE__)
 	RemoteOpenCodeVersionLaunchFixture fixture;
 	fixture.Checked();
+	auto& local = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
+	local.checked = true; local.supported = true; local.installed_version = "2.1.2";
 	UAM_ASSERT(fixture.Start());
 	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
 	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
@@ -321,6 +348,7 @@ UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
 	for (const bool recovery : {false, true})
 	{
 		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Checked("2.1.2"); // A later installation change cannot revoke an already-owned process.
 		fixture.Session().running = !recovery;
 		fixture.Session().recovering_remote_process = recovery;
 		UAM_ASSERT(fixture.Start());

@@ -42,7 +42,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled,
         gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
-      setDraft(accepted); setBaseline(accepted)
+      setDraft(accepted); setBaseline(accepted); setExit(null)
     } catch { setError('Could not save VCS settings. Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
   }
@@ -75,7 +75,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       <Button size="sm" variant="primary" disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save VCS settings'}</Button>
     </div>
     {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved VCS changes?</span><div className="flex gap-2">
-      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
+      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" disabled={saving} onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
     </div></div>}
   </div>
 })

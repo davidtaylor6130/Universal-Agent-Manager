@@ -102,7 +102,9 @@ public enum CompanionProtocol
     {
         guard let ok = value["ok"]?.boolValue else { return value }
         guard ok else { throw CompanionError.serverRejected }
-        return value["data"] ?? .null
+        // Existing native handlers also return raw {ok:true,runId:...} receipts.
+        // Preserve their identity fields; only an empty success has no result.
+        return value["data"] ?? ((value.objectValue?.count ?? 0) > 1 ? value : .null)
     }
 }
 

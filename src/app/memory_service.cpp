@@ -2122,6 +2122,15 @@ std::string MemoryService::BuildWorkerCommandForTests(const ProviderProfile& pro
 		version.checked = true;
 		version.supported = true;
 	}
+	if (uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kOpenCodeCli))
+	{
+		// The OpenCode worker gate requires a checked local version; V1 keeps the direct `opencode run` command.
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+		version.execution_host = uam::execution_hosts::LocalHost();
+		version.checked = true;
+		version.supported = true;
+		version.installed_version = "1.19.4";
+	}
 	return BuildMemoryWorkerInvocation(app, profile, prompt, model_id).command_preview;
 }
 
