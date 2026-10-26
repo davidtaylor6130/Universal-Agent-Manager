@@ -3,6 +3,7 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/provider/provider_runtime.h"
+#include <limits>
 
 using namespace uam_test;
 
@@ -2191,6 +2192,508 @@ UAM_TEST(GoalServiceParseReviewDecisionRepairsMissingEvidenceArrayBracket)
 	UAM_ASSERT_EQ(parsed->evidence, (std::vector<std::string>{"first check", "second check"}));
 }
 
+namespace
+{
+	struct GoalReviewBudgetFixture
+	{
+		uam::AppState app;
+		std::size_t review_chat_index = 0;
+
+		explicit GoalReviewBudgetFixture(const fs::path& root, bool legacy_iteration = false)
+		{
+			app.data_root = root;
+			ChatSession owner;
+			owner.id = "budget-owner";
+			owner.provider_id = "gemini-cli";
+			owner.workspace_directory = root.string();
+			Goal goal;
+			goal.id = "budget-goal";
+			goal.objective = "Account every completed review before more work.";
+			goal.status = GoalStatus::Active;
+			goal.token_budget = 100;
+			goal.tokens_used = 70;
+			owner.active_goal_id = goal.id;
+			owner.goals.push_back(goal);
+			Goal other = goal;
+			other.id = "unrelated-goal";
+			other.tokens_used = 17;
+			owner.goals.push_back(other);
+			app.chats.push_back(std::move(owner));
+			if (legacy_iteration)
+			{
+				ChatSession iteration;
+				iteration.id = "budget-iteration";
+				iteration.provider_id = "gemini-cli";
+				iteration.goal_owner_chat_id = "budget-owner";
+				iteration.goal_iteration_goal_id = "budget-goal";
+				iteration.goal_iteration_turn_kind = "review";
+				app.chats.push_back(std::move(iteration));
+				review_chat_index = 1;
+			}
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = ReviewChat().id;
+			session->provider_id = "gemini-cli";
+			session->session_id = "budget-native";
+			session->session_ready = true;
+			session->processing = true;
+			session->turn_serial = 1;
+			session->prompt_request_id = 10;
+			session->pending_request_methods[10] = uam::acp_methods::kSessionPrompt;
+			session->goal_turn_kind = "review";
+			session->goal_review_turn = true;
+			session->goal_review_scheduled = true;
+			session->goal_review_goal_id = "budget-goal";
+			uam::acp_detail::BeginGoalReviewUsage(*session, true);
+			app.acp_sessions.push_back(std::move(session));
+		}
+
+		ChatSession& ReviewChat() { return app.chats[review_chat_index]; }
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		Goal& ReviewedGoal() { return app.chats.front().goals.front(); }
+		void Output(const std::string& text)
+		{
+			const nlohmann::json message = {{"jsonrpc", "2.0"}, {"method", "session/update"},
+			    {"params", {{"update", {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", text}}}}}}}};
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, Session(), ReviewChat(), message.dump()));
+		}
+		void Reply(int id, const nlohmann::json& result)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, Session(), ReviewChat(),
+			    nlohmann::json({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}).dump()));
+		}
+	};
+
+	nlohmann::json GoalReviewUsageResult(std::int64_t input, std::int64_t output)
+	{
+		return {{"usage", {{"inputTokens", input}, {"outputTokens", output}, {"totalTokens", input + output}}}};
+	}
+
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	struct CodexGoalReviewBudgetFixture : GoalReviewBudgetFixture
+	{
+		explicit CodexGoalReviewBudgetFixture(const fs::path& root, bool legacy_iteration = false)
+		    : GoalReviewBudgetFixture(root, legacy_iteration)
+		{
+			app.chats.front().provider_id = "codex-cli";
+			ReviewChat().provider_id = "codex-cli";
+			ReviewChat().native_session_id = Session().session_id;
+			Session().provider_id = "codex-cli";
+			Session().protocol_kind = "codex-app-server";
+			Session().codex_thread_id = Session().session_id;
+			Session().codex_turn_id = "budget-review-turn";
+		}
+		~CodexGoalReviewBudgetFixture()
+		{
+			std::vector<std::string> chat_ids;
+			for (const auto& chat : app.chats) chat_ids.push_back(chat.id);
+			for (const auto& id : chat_ids) (void)uam::StopAcpSession(app, id);
+		}
+
+		void Emit(const std::string& method, const nlohmann::json& params)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, Session(), ReviewChat(),
+			    nlohmann::json({{"jsonrpc", "2.0"}, {"method", method}, {"params", params}}).dump()));
+		}
+		nlohmann::json UsageParams(std::int64_t total)
+		{
+			return {{"threadId", Session().session_id}, {"turnId", Session().codex_turn_id},
+			    {"tokenUsage", {{"total", {{"totalTokens", total}}}, {"last", {{"totalTokens", total}}}}}};
+		}
+		void Usage(std::int64_t total) { Emit("thread/tokenUsage/updated", UsageParams(total)); }
+		void Output(const std::string& text)
+		{
+			Emit("item/agentMessage/delta", {{"threadId", Session().session_id}, {"turnId", Session().codex_turn_id},
+			    {"itemId", "budget-review-message-" + std::to_string(Session().turn_serial)}, {"delta", text}});
+		}
+		void Complete()
+		{
+			Emit("turn/completed", {{"threadId", Session().session_id},
+			    {"turn", {{"id", Session().codex_turn_id}, {"status", "completed"}}}});
+		}
+		void StartRepair()
+		{
+			Session().queued_prompt.clear();
+			Session().prompt_request_id = 11;
+			Session().pending_request_methods[11] = uam::acp_methods::kTurnStart;
+			Emit("turn/started", {{"threadId", Session().session_id}, {"turn", {{"id", "budget-repair-turn"}}}});
+		}
+	};
+#endif
+}
+
+UAM_TEST(AcpGoalReviewBudgetStopsEveryDecisionAndRepairBeforeAdmission)
+{
+	const std::vector<std::string> reviews = {
+	    R"({"decision":"continue","reason":"More work","nextPrompt":"Implement next step","progressUpdate":{"remaining":["Implement next step"]}})",
+	    R"({"decision":"blocked","reason":"Temporary outage","blockerKind":"transient"})",
+	    R"({"decision":"complete","reason":"Verified","evidence":["Tests passed"]})",
+	    "Invalid review requiring repair"};
+	for (const bool legacy : {false, true})
+	for (const std::string& review : reviews)
+	{
+		TempDir temp("uam-review-budget-admission");
+		GoalReviewBudgetFixture fixture(temp.root, legacy);
+		fixture.Output(review);
+		fixture.Reply(10, GoalReviewUsageResult(20, 10));
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{100});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("token_budget"));
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 0);
+		UAM_ASSERT(fixture.app.chats.front().active_goal_id.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().goals[1].tokens_used, std::int64_t{17});
+		UAM_ASSERT(!fixture.Session().processing);
+		UAM_ASSERT(fixture.Session().queued_prompt.empty());
+		fixture.Reply(10, GoalReviewUsageResult(20, 10));
+		if (legacy) (void)uam::acp_detail::HandleGoalReviewCompletion(fixture.app, fixture.Session(), fixture.ReviewChat(), nullptr);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{100});
+		const auto saved = ChatRepository::LoadLocalChats(temp.root);
+		const auto owner = std::ranges::find_if(saved, [](const ChatSession& chat) { return chat.id == "budget-owner"; });
+		UAM_ASSERT(owner != saved.end());
+		UAM_ASSERT_EQ(owner->goals.front().tokens_used, std::int64_t{100});
+		UAM_ASSERT_EQ(owner->goals.front().last_blocker_kind, std::string("token_budget"));
+	}
+}
+
+UAM_TEST(AcpGoalReviewRepairUsageAddsOnceBeforeBudgetAdmission)
+{
+	TempDir temp("uam-review-repair-budget");
+	GoalReviewBudgetFixture fixture(temp.root);
+	fixture.ReviewedGoal().tokens_used = 10;
+	fixture.ReviewedGoal().token_budget = 75;
+	fixture.Output("Invalid first review");
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{30});
+	UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 1);
+	UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{30});
+	fixture.Session().queued_prompt.clear();
+	fixture.Session().prompt_request_id = 11;
+	fixture.Session().pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	fixture.Output("Still invalid after repair");
+	fixture.Reply(11, GoalReviewUsageResult(30, 15));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{75});
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("token_budget"));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
+	UAM_ASSERT(fixture.Session().queued_prompt.empty());
+}
+
+UAM_TEST(AcpGoalReviewUsagePreservesUnknownAndObservedZero)
+{
+	for (const nlohmann::json& result : std::vector<nlohmann::json>{nlohmann::json::object(),
+	    GoalReviewUsageResult(0, 0), {{"usage", {{"inputTokens", -1}, {"outputTokens", 3}, {"totalTokens", 2}}}}})
+	{
+		TempDir temp("uam-review-unknown-usage");
+		GoalReviewBudgetFixture fixture(temp.root);
+		auto& usage = fixture.Session().provider_usage.token_usage;
+		usage.available = true;
+		usage.session_id = fixture.Session().session_id;
+		usage.last.total_tokens = 999;
+		usage.total.total_tokens = 999;
+		uam::acp_detail::BeginGoalReviewUsage(fixture.Session(), false);
+		fixture.Output(R"({"decision":"blocked","reason":"User approval required","blockerKind":"user_permission_approval"})");
+		fixture.Reply(10, result);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{70});
+		const bool observed_zero = result.contains("usage") && result["usage"]["inputTokens"] == 0;
+		UAM_ASSERT_EQ(fixture.Session().goal_review_usage.tokens.has_value(), observed_zero);
+		UAM_ASSERT_EQ(usage.last_available, observed_zero);
+		UAM_ASSERT_EQ(usage.total.total_tokens, std::int64_t{999});
+	}
+}
+
+UAM_TEST(AcpGoalReviewProviderReceiptsNormalizeBeforeBudgetAccounting)
+{
+	const std::string review = R"({"decision":"blocked","reason":"User approval required","blockerKind":"user_permission_approval"})";
+	std::vector<std::string> providers{"gemini-cli", "opencode-cli"};
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	providers.push_back("codex-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	providers.push_back("claude-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	providers.push_back("copilot-cli");
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	providers.push_back("antigravity-cli");
+#endif
+	for (const std::string& provider : providers)
+	{
+		TempDir temp("uam-review-provider-receipts");
+		GoalReviewBudgetFixture fixture(temp.root);
+		fixture.Output(review);
+		auto& session = fixture.Session();
+		session.provider_id = provider;
+		fixture.ReviewChat().provider_id = provider;
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider);
+		const auto emit = [&](const nlohmann::json& event)
+		{
+			UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, session, fixture.ReviewChat(), event, nullptr));
+		};
+		if (provider == "gemini-cli" || provider == "opencode-cli")
+		{
+			fixture.Reply(10, GoalReviewUsageResult(6, 4));
+		}
+		else if (provider == "codex-cli")
+		{
+			session.codex_thread_id = session.session_id;
+			session.codex_turn_id = "review-turn";
+			nlohmann::json event = {{"jsonrpc", "2.0"}, {"method", "thread/tokenUsage/updated"}, {"params", {
+			    {"threadId", session.session_id}, {"turnId", "old-turn"},
+			    {"tokenUsage", {{"total", {{"totalTokens", 10}}}, {"last", {{"totalTokens", 4}}}}}}}};
+			emit(event);
+			UAM_ASSERT(!session.goal_review_usage.tokens.has_value());
+			event["params"]["turnId"] = session.codex_turn_id;
+			emit(event);
+			emit(event);
+			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, session, fixture.ReviewChat(), "ready", nullptr);
+		}
+		else if (provider == "claude-cli")
+		{
+			emit({{"type", "result"}, {"session_id", session.session_id}, {"subtype", "success"},
+			    {"modelUsage", {{"reviewer", {{"inputTokens", 5}, {"cacheReadInputTokens", 2}, {"cacheCreationInputTokens", 1}, {"outputTokens", 2}}}}}});
+			UAM_ASSERT(!session.provider_usage.token_usage.last_available);
+		}
+		else if (provider == "copilot-cli")
+		{
+			const auto event = [&](const std::string& id, const std::string& api_call)
+			{
+				return nlohmann::json{{"jsonrpc", "2.0"}, {"method", "session.event"}, {"params", {
+				    {"sessionId", session.session_id}, {"event", {{"type", "assistant.usage"}, {"id", id},
+				    {"data", {{"apiCallId", api_call}, {"inputTokens", 3}, {"outputTokens", 2}}}}}}}};
+			};
+			emit(event("event-1", "call-1"));
+			emit(event("event-2", "call-2"));
+			emit(event("event-3", "call-1"));
+			uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, session, fixture.ReviewChat(), "ready", nullptr);
+		}
+		else if (provider == "antigravity-cli")
+		{
+			session.session_id = "11111111-2222-4333-8444-555555555555";
+			fixture.ReviewChat().native_session_id = session.session_id;
+			const nlohmann::json step{{"event", "step_update"}, {"step_update", {
+			    {"conversation_id", session.session_id}, {"step_index", 0}, {"step_type", "agent_response"},
+			    {"state", "DONE"}, {"usage", {{"input_tokens", 6}, {"output_tokens", 4}}}}}};
+			emit(step);
+			emit(step);
+			emit({{"event", "result"}, {"result", {{"conversation_id", session.session_id}, {"status", "SUCCESS"},
+			    {"response", review}, {"num_turns", 1}, {"usage", {{"input_tokens", 99999}, {"output_tokens", 99999}}}}}});
+		}
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{80});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("user_permission_approval"));
+		UAM_ASSERT(fixture.Session().queued_prompt.empty());
+	}
+}
+
+UAM_TEST(AcpGoalReviewCancelledAndSupersededTurnsKeepAccountingGate)
+{
+	for (const bool superseded : {false, true})
+	{
+		TempDir temp("uam-review-cancelled-usage");
+		GoalReviewBudgetFixture fixture(temp.root);
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+		(void)runtime.OnAcpHandleResult(fixture.app, fixture.Session(), fixture.ReviewChat(),
+		    uam::acp_methods::kSessionPrompt, "10", GoalReviewUsageResult(20, 10));
+		UAM_ASSERT(fixture.Session().goal_review_usage.tokens.has_value());
+		if (superseded) fixture.app.chats.front().goal_command_revision = "new-user-command";
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, fixture.Session(), fixture.ReviewChat(),
+		    uam::acp_detail::kAcpLifecycleReady, nullptr, superseded);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{70});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Active);
+		UAM_ASSERT(fixture.Session().queued_prompt.empty());
+	}
+}
+
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+UAM_TEST(AcpCodexGoalReviewUnscopedUsageCannotPoisonRepairBaseline)
+{
+	for (const bool legacy : {false, true})
+	for (int missing_identity = 0; missing_identity < 4; ++missing_identity)
+	{
+		TempDir temp("uam-codex-review-repair-baseline");
+		ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+		CodexGoalReviewBudgetFixture fixture(temp.root, legacy);
+		fixture.Output("Invalid first review");
+		fixture.Usage(10);
+		nlohmann::json unscoped = fixture.UsageParams(1000);
+		if (missing_identity == 0 || missing_identity == 2) unscoped.erase("threadId");
+		if (missing_identity == 1 || missing_identity == 2) unscoped.erase("turnId");
+		if (missing_identity == 3) unscoped["turnId"] = "old-review-turn";
+		fixture.Emit("thread/tokenUsage/updated", unscoped);
+		// A stale turn is rejected by native dispatch before display usage is updated.
+		// Missing identity can update display usage, but cannot become a goal baseline.
+		UAM_ASSERT_EQ(fixture.Session().provider_usage.token_usage.total.total_tokens,
+		    missing_identity == 3 ? std::int64_t{10} : std::int64_t{1000});
+		UAM_ASSERT_EQ(fixture.Session().provider_usage.token_usage.goal_cumulative_total.value_or(-1), std::int64_t{10});
+		fixture.Complete();
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{80});
+		UAM_ASSERT_EQ(legacy ? fixture.ReviewChat().goal_iteration_repair_attempts : fixture.Session().goal_review_repair_attempts, 1);
+		UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+		fixture.StartRepair();
+		fixture.Output(R"({"decision":"continue","reason":"More work","nextPrompt":"Continue","progressUpdate":{"remaining":["Continue"]}})");
+		fixture.Usage(30);
+		fixture.Complete();
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{100});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("token_budget"));
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 0);
+		UAM_ASSERT(fixture.app.chats.front().active_goal_id.empty());
+		UAM_ASSERT(!fixture.Session().processing);
+		UAM_ASSERT(fixture.Session().queued_prompt.empty());
+	}
+}
+
+UAM_TEST(AcpCodexGoalReviewReplayedCumulativeUsageCannotReduceBudgetCharge)
+{
+	for (const bool legacy : {false, true})
+	{
+		TempDir temp("uam-codex-review-cumulative-replay");
+		ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+		CodexGoalReviewBudgetFixture fixture(temp.root, legacy);
+		fixture.Output(R"({"decision":"continue","reason":"More work","nextPrompt":"Continue","progressUpdate":{"remaining":["Continue"]}})");
+		fixture.Usage(20);
+		fixture.Usage(30);
+		fixture.Usage(20);
+		fixture.Complete();
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{100});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Blocked);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().last_blocker_kind, std::string("token_budget"));
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 0);
+		UAM_ASSERT(fixture.app.chats.front().active_goal_id.empty());
+		UAM_ASSERT(!fixture.Session().processing);
+		UAM_ASSERT(fixture.Session().queued_prompt.empty());
+	}
+}
+#endif
+
+UAM_TEST(AcpGoalReviewCumulativeUsageBindsBaselineAndDoesNotAddSnapshots)
+{
+	uam::AcpSessionState session;
+	session.processing = true;
+	session.goal_review_turn = true;
+	session.session_id = "native-review";
+	session.turn_serial = 1;
+	auto& usage = session.provider_usage.token_usage;
+	usage.available = true;
+	usage.session_id = session.session_id;
+	usage.total.total_tokens = 200;
+	usage.goal_cumulative_session_id = session.session_id;
+	usage.goal_cumulative_total = 200;
+	uam::acp_detail::BeginGoalReviewUsage(session, false);
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 230);
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 230);
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 245);
+	UAM_ASSERT_EQ(*session.goal_review_usage.tokens, std::int64_t{45});
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 230);
+	UAM_ASSERT_EQ(*session.goal_review_usage.tokens, std::int64_t{45});
+	session.session_id = "replacement-session";
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 500);
+	UAM_ASSERT(!session.goal_review_usage.tokens.has_value());
+	usage.available = false;
+	usage.goal_cumulative_total.reset();
+	usage.goal_cumulative_session_id.clear();
+	uam::acp_detail::BeginGoalReviewUsage(session, false);
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 500);
+	UAM_ASSERT(!session.goal_review_usage.tokens.has_value());
+	uam::acp_detail::BeginGoalReviewUsage(session, true);
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 0);
+	UAM_ASSERT(session.goal_review_usage.tokens.has_value());
+	UAM_ASSERT_EQ(*session.goal_review_usage.tokens, std::int64_t{0});
+	uam::acp_detail::RecordGoalReviewCumulativeUsage(session, 35);
+	UAM_ASSERT_EQ(*session.goal_review_usage.tokens, std::int64_t{35});
+	++session.turn_serial;
+	uam::acp_detail::RecordGoalReviewTurnUsage(session, 100);
+	UAM_ASSERT_EQ(*session.goal_review_usage.tokens, std::int64_t{35});
+}
+
+UAM_TEST(AcpGoalReviewSessionReplacementCannotChargeAnEarlierReceipt)
+{
+	for (const bool replacement_before_usage : {false, true})
+	{
+		TempDir temp("uam-review-replaced-session-usage");
+		GoalReviewBudgetFixture fixture(temp.root);
+		uam::acp_detail::BeginGoalReviewUsage(fixture.Session(), false);
+		fixture.Output(R"({"decision":"blocked","reason":"User approval required","blockerKind":"user_permission_approval"})");
+		if (replacement_before_usage) fixture.Session().session_id = "replacement-native";
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+		(void)runtime.OnAcpHandleResult(fixture.app, fixture.Session(), fixture.ReviewChat(),
+		    uam::acp_methods::kSessionPrompt, "10", GoalReviewUsageResult(12, 8));
+		if (!replacement_before_usage) fixture.Session().session_id = "replacement-native";
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(fixture.app, fixture.Session(), fixture.ReviewChat(), "ready", nullptr);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{70});
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 1);
+	}
+}
+
+UAM_TEST(AcpGoalReviewUndeliveredStartupRetryStartsANewUsageReceipt)
+{
+	TempDir temp("uam-review-startup-retry-usage");
+	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+	GoalReviewBudgetFixture fixture(temp.root);
+	auto& session = fixture.Session();
+	struct StopReviewProcess
+	{
+		GoalReviewBudgetFixture& fixture;
+		~StopReviewProcess() { (void)uam::StopAcpSession(fixture.app, fixture.ReviewChat().id); }
+	} stop{fixture};
+	session.running = true;
+	session.session_ready = false;
+	session.prompt_request_id = 0;
+	session.pending_request_methods.clear();
+	session.queued_prompt = "Read-only review of the completed work.";
+	session.goal_internal_session = true;
+	session.turn_started_time_s = session.last_runtime_activity_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/d", "/s", "/c", "exit /b 1"};
+#else
+	const std::vector<std::string> argv{"/bin/sh", "-c", "exit 1"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, argv, &error));
+	for (int attempt = 0; attempt < 200 && session.crash_restart_attempts == 0; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(session.crash_restart_attempts, 1);
+	UAM_ASSERT_EQ(session.turn_serial, 2);
+	UAM_ASSERT(session.goal_review_turn);
+	session.session_id = "restarted-review-native";
+	session.session_ready = true;
+	session.queued_prompt.clear();
+	session.prompt_request_id = 20;
+	session.pending_request_methods[20] = uam::acp_methods::kSessionPrompt;
+	fixture.Output(R"({"decision":"blocked","reason":"User approval required","blockerKind":"user_permission_approval"})");
+	fixture.Reply(20, GoalReviewUsageResult(12, 8));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().tokens_used, std::int64_t{90});
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().loop_count, 1);
+}
+
+UAM_TEST(GoalTurnUsageSaturatesWithoutReturningBudgetCapacity)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "saturated-budget";
+	Goal goal;
+	goal.id = "saturated-goal";
+	goal.status = GoalStatus::Active;
+	goal.token_budget = std::numeric_limits<std::int64_t>::max();
+	goal.tokens_used = goal.token_budget - 3;
+	goal.loop_count = 7;
+	goal.blocked_turn_count = 2;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(chat);
+	uam::GoalService::RecordTurnCompletion(app, chat.id, goal.id, 10);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, goal.token_budget);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 2);
+	uam::GoalService::RecordTurnCompletion(app, chat.id, goal.id, -20);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, goal.token_budget);
+}
+
 UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 {
 	TempDir temp("uam-goal-review-turn-completion");
@@ -2206,12 +2709,15 @@ UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 	goal.objective = "Finish the work without looping.";
 	goal.status = GoalStatus::Active;
 	goal.token_budget = 1000;
+	goal.tokens_used = 20;
 	chat.active_goal_id = goal.id;
 	chat.goals.push_back(goal);
 	app.chats.push_back(std::move(chat));
 
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-1";
+	session->provider_id = "gemini-cli";
+	session->session_id = "native-review";
 	session->running = false;
 	session->session_ready = true;
 	session->processing = true;
@@ -2223,12 +2729,14 @@ UAM_TEST(AcpGoalReviewTurnQueuesWorkerContinuationWithoutReviewingReviewOutput)
 	session->goal_review_goal_id = "goal-1";
 	session->goal_review_user_prompt = "Implement the fix.";
 	session->goal_review_assistant_text = "I inspected the runtime.";
+	uam::acp_detail::BeginGoalReviewUsage(*session, true);
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"More implementation remains.\",\"nextPrompt\":\"Apply the runtime guard.\",\"evidence\":[\"reviewed worker output\"],\"progressUpdate\":{\"remaining\":[\"Apply the runtime guard.\"],\"currentStep\":\"Apply the runtime guard.\"}}"}}}})"));
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{"usage":{"inputTokens":20,"outputTokens":10,"totalTokens":30}}})"));
 
+	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, std::int64_t{50});
 	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
 	UAM_ASSERT(!raw_session->goal_review_turn);
 	UAM_ASSERT(!raw_session->goal_review_scheduled);

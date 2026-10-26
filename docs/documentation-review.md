@@ -2,6 +2,10 @@
 
 This page records the isolated documentation trial and subsequent provider implementation decisions. The provider worktree includes local V5 `e28ba717` and fetched V5 `db982f96` through merge `bb4fed8b`. Expected behaviour comes from David’s instructions and recorded repository decisions; the original documentation-only trial is separate from later native builds, regression checks and read-only CLI probes. The [V5 log](<../V5 Improvement Change log.md>) remains the acceptance and ownership register.
 
+## SVN branch-equivalent selection
+
+Task-1230’s initial read-only revision patch left this requirement open. David explicitly requested completion on 2026-10-23, including an explicit mapping boundary when repository layout is unknown. The implementation now accepts an explicit repository-relative parent, discovers existing child directories and offers a guarded, confirmed local working-copy switch; it does not infer `trunk`/`branches`. The per-selection mapping resolves the layout question for this route. Automated, connected bridge, platform and user acceptance remain separately recorded in the V5 log. The separate new-chat Git selector remains task-1322; see [composer workspace actions](chat/composer/workspace-actions.md) and [SVN](settings/version-control/svn.md).
+
 ## Resolved documentation conflicts
 
 | Previous conflict | Documentation disposition |

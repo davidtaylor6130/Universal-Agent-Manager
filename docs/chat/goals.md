@@ -14,6 +14,10 @@ Antigravity goals use UAM-managed continuation in the chat's saved native CLI co
 
 Continuation and review context may compact repeated objectives, task lists and empty state fields, while retaining distinct tasks, verification requirements, budgets and user stop conditions. Attached skill and computer-use context remains associated with the original authored inputs when requests are batched.
 
+Completed shared goal reviews and their single JSON repair count reported token usage once before UAM admits another repair or worker turn. Reaching the token budget holds the goal before applying a review decision, including a completion decision; unknown usage stays unknown and must not reuse an earlier turn’s count or infer tokens from response length. Cumulative usage requires a matching native session and a known starting total from adapter-validated receipts, or a newly created review context; replacement sessions cannot charge an earlier receipt, and startup retry begins a new receipt without assuming an empty native history. Replayed older cumulative snapshots cannot reduce already observed review usage, and display telemetry cannot establish a repair baseline. Cancellation and changed user controls retain their existing continuation gates. Native provider-managed goal budgets remain under their own adapter contract.
+
+**Implementation note:** Reviewer accounting and cumulative-receipt corrections have focused native verification across all six adapters and independent source/test review; broader runtime/platform verification and user acceptance remain pending.
+
 ## Inspection
 
 Goal inspection reports the selected goal’s saved execution owner (`uam` or `provider`) separately from its creator provenance and UAM’s lifecycle authority. Legacy records without a recognized execution owner retain the UAM default. Inspection preserves saved native commands and provenance without starting or transferring execution.
