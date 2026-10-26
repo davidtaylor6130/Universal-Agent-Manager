@@ -593,6 +593,14 @@ namespace uam
 
 		std::set<std::string> TrimmedFileSet(const std::vector<std::string>& files);
 
+		/// Windows svn prints `/` in diff headers but `\` in status rows; compare both with forward slashes.
+		// ponytail: a POSIX file name containing a literal backslash is rewritten too; svn then refuses it rather than publishing elsewhere.
+		std::string SlashKey(std::string path)
+		{
+			std::ranges::replace(path, '\\', '/');
+			return path;
+		}
+
 		struct SvnCommitPlan
 		{
 			std::vector<std::string> targets;
@@ -686,7 +694,7 @@ namespace uam
 						if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &listing, error)) return false;
 						for (const VcsChangedFile& added : ParseSvnStatusOutput(listing))
 						{
-							const std::filesystem::path child = uam::paths::PathFromUtf8(added.path).lexically_normal();
+							const std::filesystem::path child = uam::paths::PathFromUtf8(SlashKey(added.path)).lexically_normal();
 							if (!added.status.empty() && added.status.front() == 'A' && child != current && !selected_paths.contains(child))
 							{ error = "Select the scheduled items inside this new SVN folder too; committing the folder alone would leave them unpublished."; return false; }
 						}
@@ -728,7 +736,7 @@ namespace uam
 				if (!SvnOutput(svn, {"status", "--non-interactive", "--", target}, &output, error)) { error += retained; return false; }
 				// ponytail: every added descendant becomes an argv target; very large new trees can reach OS argv limits.
 				for (const VcsChangedFile& added : ParseSvnStatusOutput(output))
-					if (!added.status.empty() && added.status.front() == 'A') plan.AddTarget(uam::paths::PortablePathString(uam::paths::PathFromUtf8(added.path)) + "@");
+					if (!added.status.empty() && added.status.front() == 'A') plan.AddTarget(SlashKey(added.path) + "@");
 			}
 			for (const std::string& target : plan.deletions)
 			{
@@ -1016,13 +1024,6 @@ namespace uam
 		{
 			// The internal engine never runs a configured diff-cmd; the peg suffix keeps '@' names literal.
 			return {"diff", "--internal-diff", "--non-interactive", "--", target};
-		}
-
-		/// Windows svn prints `/` in diff headers but `\` in status rows; compare both with forward slashes.
-		std::string SlashKey(std::string path)
-		{
-			std::ranges::replace(path, '\\', '/');
-			return path;
 		}
 
 		/// One workspace diff split on "Index: " headers instead of one process per changed file.
