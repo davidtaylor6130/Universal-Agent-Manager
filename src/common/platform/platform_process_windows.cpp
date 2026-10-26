@@ -2,6 +2,7 @@
 #include "platform_services_windows_impl_internal.h"
 
 #include <atomic>
+#include "common/platform/powershell_selection.h"
 #include "remote/remote_workspace_terminal.h"
 
 using namespace uam::platform_windows_impl;
@@ -847,20 +848,25 @@ class WindowsProcessService final : public IPlatformProcessService
 		SetThreadExecutionState(keep_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
 	}
 
-	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out, std::string_view powershell_preference) const override
 	{
 		if (argv.empty())
 		{
 			if (error_out != nullptr) *error_out = "The terminal command is empty.";
 			return false;
 		}
+		const std::optional<std::string> windows_powershell = ResolveInstalledPowerShellPath(false);
+		const std::optional<std::string> pwsh = ResolveInstalledPowerShellPath(true);
+		const std::string selected = uam::powershell::Select(powershell_preference, windows_powershell.has_value(), pwsh.has_value(), error_out);
+		if (selected.empty()) return false;
+		const std::wstring executable = WideFromUtf8(selected == "pwsh.exe" ? *pwsh : *windows_powershell);
 		const std::string encoded_arguments = "-NoLogo -NoProfile -NoExit -EncodedCommand " + uam::remote::WindowsTerminalEncodedCommand(argv);
 		const std::wstring arguments(encoded_arguments.begin(), encoded_arguments.end());
 		SHELLEXECUTEINFOW launch{};
 		launch.cbSize = sizeof(launch);
 		launch.fMask = SEE_MASK_NOCLOSEPROCESS;
 		launch.lpVerb = L"open";
-		launch.lpFile = L"powershell.exe";
+		launch.lpFile = executable.c_str();
 		launch.lpParameters = arguments.c_str();
 		launch.nShow = SW_SHOWNORMAL;
 		if (!ShellExecuteExW(&launch))

@@ -143,7 +143,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 				    return;
 			    }
 			    std::string error;
-			    if (!PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(argv, &error))
+			    if (!PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(argv, &error, m_app.settings.windows_powershell))
 			    {
 				    std::cerr << "Remote workspace terminal launch failed: " << error << '\n';
 				    response = uam::query_handler_async::AsyncFailure(500, FailureDetailOrFallback(error, "Failed to open SSH terminal."));

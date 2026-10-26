@@ -583,6 +583,34 @@ inline std::string ResolveComSpecPath()
 	return "cmd.exe";
 }
 
+/// <summary>Find an installed PowerShell, checking its fixed install location before PATH so PATH order cannot substitute another copy.</summary>
+inline std::optional<std::string> ResolveInstalledPowerShellPath(const bool pwsh)
+{
+	if (pwsh)
+	{
+		const std::string program_files = GetWindowsEnvironmentVariableUtf8(L"ProgramFiles");
+		if (!program_files.empty())
+		{
+			if (auto installed = LaunchableCommandPathIfExists(JoinWindowsPathUtf8(program_files, "PowerShell\\7\\pwsh.exe")))
+			{
+				return installed;
+			}
+		}
+		return ResolveWindowsCommandPath("pwsh.exe");
+	}
+	std::wstring system_directory(static_cast<std::size_t>(MAX_PATH), L'\0');
+	const UINT length = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+	if (length > 0 && length < system_directory.size())
+	{
+		system_directory.resize(static_cast<std::size_t>(length));
+		if (auto installed = LaunchableCommandPathIfExists(WideToUtf8(system_directory) + "\\WindowsPowerShell\\v1.0\\powershell.exe"))
+		{
+			return installed;
+		}
+	}
+	return ResolveWindowsCommandPath("powershell.exe");
+}
+
 inline std::string BuildCmdScriptInvocation(const std::string& script_path, const std::vector<std::string>& argv)
 {
 	std::ostringstream out;
