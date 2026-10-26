@@ -641,6 +641,9 @@ namespace
 		{
 			if (stop_token.stop_requested()) return fail("OpenCode session creation was canceled.");
 			bool received = false;
+			// A session reply written just before exit is still read.
+			int exit_code = -1;
+			const bool exit_observed = !child.remote && service.PollStdioProcessExited(child.process, &exit_code);
 			uam::remote::ProcessPollResult remote_poll;
 			if (child.remote)
 			{
@@ -735,8 +738,7 @@ namespace
 				if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				continue;
 			}
-			int exit_code = -1;
-			if (!received && service.PollStdioProcessExited(child.process, &exit_code))
+			if (!received && exit_observed)
 			{
 				// A confirmed session survives a teardown failure; retrying would create another.
 				if (!session_id.empty()) return session_id;

@@ -1504,6 +1504,7 @@ if(UAM_BUILD_TESTS)
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
     tests/remote_runner_tests.cpp
+    tests/process_exit_drain_tests.cpp
     tests/runner_startup_rollback_tests.cpp
     tests/remote_cli_elevation_tests.cpp
     tests/runner_retirement_tests.cpp

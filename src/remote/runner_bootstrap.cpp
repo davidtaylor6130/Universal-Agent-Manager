@@ -208,14 +208,14 @@ namespace uam::remote
 
 		bool RunStep(const BootstrapStep& step, std::string& output, std::string& diagnostic,
 		             std::string& error,
-		             std::stop_token stop_token)
+		             std::stop_token stop_token,
+		             IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service)
 		{
 			if (stop_token.stop_requested())
 			{
 				error = "Remote setup was canceled.";
 				return false;
 			}
-			auto& service = PlatformServicesFactory::Instance().process_service;
 			uam::platform::StdioProcessPlatformFields process;
 			std::error_code current_path_error;
 			const std::optional<std::filesystem::path> current_path =
@@ -232,6 +232,8 @@ namespace uam::remote
 			int exit_code = -1;
 			for (;;)
 			{
+				// Bytes written before exit are already in the pipe, so one drain after observing exit keeps the final line.
+				const bool exited = service.PollStdioProcessExited(process, &exit_code);
 				for (const bool standard_error : {false, true})
 				{
 					for (;;)
@@ -260,7 +262,7 @@ namespace uam::remote
 						destination.append(buffer.data(), static_cast<std::size_t>(read));
 					}
 				}
-				if (service.PollStdioProcessExited(process, &exit_code)) break;
+				if (exited) break;
 				if (stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
 				{
 					error = stop_token.stop_requested() ? "Remote setup was canceled."
@@ -348,7 +350,7 @@ namespace uam::remote
 			if (separate_commands)
 			{
 				std::string diagnostic;
-				return RunStep(step, output, diagnostic, error, stop_token);
+				return RunStep(step, output, diagnostic, error, stop_token, service);
 			}
 			std::string command = step.argv.back();
 			if (command.starts_with("powershell.exe "))
@@ -368,13 +370,18 @@ namespace uam::remote
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 			for (;;)
 			{
+				// A guard that prints its result and exits at once must not lose that result.
+				const bool exited = service.PollStdioProcessExited(process);
+				bool read_any = false;
 				for (const bool stderr_output : {false, true})
 				{
 					const std::ptrdiff_t count = stderr_output
 					    ? service.ReadStdioProcessStderr(process, buffer.data(), buffer.size(), &error)
 					    : service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
 					if (count == -1) return invalidate();
-					if (count > 0) (stderr_output ? diagnostic : received).append(buffer.data(), static_cast<std::size_t>(count));
+					if (count <= 0) continue;
+					read_any = true;
+					(stderr_output ? diagnostic : received).append(buffer.data(), static_cast<std::size_t>(count));
 				}
 				const std::size_t newline = received.find('\n');
 				if (newline != std::string::npos)
@@ -401,7 +408,7 @@ namespace uam::remote
 					}
 					return true;
 				}
-				if (received.size() + diagnostic.size() > 2 * 1024 * 1024 || service.PollStdioProcessExited(process) ||
+				if (received.size() + diagnostic.size() > 2 * 1024 * 1024 || (exited && !read_any) ||
 				    stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
 				{
 					error = stop_token.stop_requested() ? "Remote setup was canceled." :
@@ -421,7 +428,7 @@ namespace uam::remote
 				std::string output;
 				std::string diagnostic;
 				std::string error;
-				RunStep({"Release helper installation lock", release_argv, ""}, output, diagnostic, error, {});
+				RunStep({"Release helper installation lock", release_argv, ""}, output, diagnostic, error, {}, service);
 			}
 			service.CloseStdioProcessInput(process);
 			// Give the target guard time to finish its rollback before closing SSH.
@@ -630,14 +637,20 @@ namespace uam::remote
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 		for (;;)
 		{
+			// Observe exit first so a busy or failed guard's final diagnostic is still read.
+			int status = -1;
+			const bool exited = lease->service.PollStdioProcessExited(lease->process, &status);
 			bool read_failed = false;
+			bool read_any = false;
 			for (const bool stderr_output : {false, true})
 			{
 				const std::ptrdiff_t count = stderr_output
 				    ? lease->service.ReadStdioProcessStderr(lease->process, buffer.data(), buffer.size(), &error)
 				    : lease->service.ReadStdioProcessStdout(lease->process, buffer.data(), buffer.size(), &error);
 				if (count == -1) read_failed = true;
-				if (count > 0) (stderr_output ? diagnostic : output).append(buffer.data(), static_cast<std::size_t>(count));
+				if (count <= 0) continue;
+				read_any = true;
+				(stderr_output ? diagnostic : output).append(buffer.data(), static_cast<std::size_t>(count));
 			}
 			if (output.starts_with("R\n")) { recovery_observed = true; output.erase(0, 2); }
 			else if (output.starts_with("R\r\n")) { recovery_observed = true; output.erase(0, 3); }
@@ -646,8 +659,7 @@ namespace uam::remote
 				if (recovery_required) *recovery_required = recovery_observed;
 				return lease;
 			}
-			int status = -1;
-			if (read_failed || output.size() + diagnostic.size() > 8192 || lease->service.PollStdioProcessExited(lease->process, &status) ||
+			if (read_failed || output.size() + diagnostic.size() > 8192 || (exited && !read_any) ||
 			    stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
 			{
 				if (status == 73 && !recovery_observed && uam::strings::Trim(output) == "UAM_INSTALL_BUSY" && recovery_required) *recovery_required = false;
@@ -948,6 +960,19 @@ namespace uam::remote
 		}
 		result.ok = true;
 		return result;
+	}
+
+	bool RunBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error)
+	{
+		std::string diagnostic;
+		return RunStep(step, output, diagnostic, error, {}, service);
+	}
+
+	bool RunGuardedBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error)
+	{
+		BootstrapInstallLease lease{service};
+		lease.authorized = true;
+		return lease.Run(step, output, error, {});
 	}
 
 	bool FinalizeBootstrapPlan(const BootstrapPlan& plan, const BootstrapResult& result,

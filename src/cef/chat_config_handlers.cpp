@@ -164,6 +164,8 @@ namespace
 		bool exited = false;
 		for (;;)
 		{
+			// Observe exit before reading so helper JSON written just before exit is kept.
+			if (!exited) exited = process_service.PollStdioProcessExited(process, &exit_code);
 			std::string read_error;
 			const std::ptrdiff_t read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
 			if (read > 0)
@@ -187,7 +189,6 @@ namespace
 					return uam::query_handler_async::AsyncFailure(502, "Computer Use helper returned too much diagnostic output.");
 				}
 			}
-			if (!exited) exited = process_service.PollStdioProcessExited(process, &exit_code);
 			if (exited && read <= 0 && error_read <= 0) break;
 			if (std::chrono::steady_clock::now() >= deadline)
 			{

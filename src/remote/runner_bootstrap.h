@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+class IPlatformProcessService;
+
 namespace uam::remote
 {
 	struct BootstrapStep
@@ -77,6 +79,9 @@ namespace uam::remote
 	/// Call only after saving this exact nonce/identity fence through the owning settings store.
 	BootstrapResult ExecuteBootstrapPlan(const BootstrapPlan& plan, BootstrapResult acquired,
 	    std::string_view saved_nonce, std::string_view saved_identity, std::stop_token stop_token = {});
+	/// <summary>Test seams: one setup step, or one guarded transaction request, through an injected process service.</summary>
+	bool RunBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
+	bool RunGuardedBootstrapStepForTests(const BootstrapStep& step, IPlatformProcessService& service, std::string& output, std::string& error);
 	bool FinalizeBootstrapPlan(const BootstrapPlan& plan,
 	                           const BootstrapResult& result,
 	                           bool keep_new_runner,
