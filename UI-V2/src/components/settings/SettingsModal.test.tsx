@@ -50,6 +50,9 @@ describe('SettingsModal memory settings', () => {
       favoriteUamAgentIds: ['writer', 'reviewer'],
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
+      computerUseEnabled: undefined,
+      computerUseRevocationPending: undefined,
+      computerUseSettingsError: '',
       computerUseAllowedApplications: [],
       uamAgentsBySessionId: {
         'chat-1': [
@@ -2473,6 +2476,38 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it.each(['Computer Use', 'MCP Servers'])('retries global cleanup from %s without changing OS permissions or target ownership', async page => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'setComputerUseSettings'
+        ? { computerUseGloballyEnabled: parsed.payload.computerUseGloballyEnabled, computerUseRevocationPending: false }
+        : {}))
+    }
+    useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: true })
+    const { host, root } = renderModal()
+    try {
+      await act(async () => host.querySelector<HTMLButtonElement>(`nav button[aria-label="${page}"]`)!.click())
+      const toggle = () => host.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')!
+      expect(toggle().checked).toBe(false)
+      expect(toggle().disabled).toBe(true)
+      expect(host.textContent).toContain('Cleanup pending.')
+      const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry disabling')!
+      await act(async () => retry.click())
+      expect(host.textContent).toContain('Off. UAM grants cleared.')
+      expect(toggle().disabled).toBe(false)
+      await act(async () => toggle().click())
+      expect(toggle().checked).toBe(true)
+      expect(requests.filter(request => request.action === 'setComputerUseSettings')).toEqual([
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false }, requestId: expect.any(String) },
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: true }, requestId: expect.any(String) },
+      ])
+      expect(requests.some(request => /ComputerUsePermission|ComputerUseSystemSettings|ChatComputerUse/.test(request.action))).toBe(false)
+      expect(useAppStore.getState().sessions[0].computerUseTargetId).toBeUndefined()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('checks Computer Use readiness honestly and persists friendly application selections', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }: { request: string; onSuccess: (value: string) => void }) => {
@@ -2495,6 +2530,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer Use"]')!.click())
+    expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
     expect(uamControlToggle?.disabled).toBe(false)

@@ -85,8 +85,7 @@ std::optional<ChatSession> LoadAgentHistory(const ChatSession& source, std::stri
 	if (host->id != source.execution_host_id || host->runner_status != "ready" || host->transport != "ssh")
 	{ if (error) *error = "The exact remote Copilot parent helper is unavailable."; return std::nullopt; }
 	remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version),
-		host->runner_version, host->runner_protocol_version);
+		*host);
 	nlohmann::json snapshot;
 	if (!client.ReadNativeHistory(provider_ids::kCopilotCli, decoded->parent_session_id, source.workspace_directory, snapshot, error, stop_token)) return std::nullopt;
 	return ParseAgentHistorySnapshot(*host, source, reference, snapshot, error, stop_token);

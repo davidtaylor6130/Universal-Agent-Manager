@@ -2166,7 +2166,7 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 	uam::AppState app;
 	app.data_root = root / "controller";
 	ExecutionHost host;
-	host.id = "ssh-memory-fixture"; host.ssh_alias = "memory-target"; host.platform = "linux";
+	host.id = "ssh-memory-fixture"; host.ssh_alias = "memory-target"; host.transport = "ssh"; host.platform = "linux";
 	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
 	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 	app.settings.execution_hosts.push_back(host);

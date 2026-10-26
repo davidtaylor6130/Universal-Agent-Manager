@@ -773,8 +773,10 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
-  /** Global Computer Use consent (settings.computerUseGloballyEnabled). Off when absent. */
+  /** Saved global Computer Use consent. Unknown when absent; does not grant a target. */
   computerUseGloballyEnabled?: boolean
+  /** Native owned-resource cleanup remains incomplete. Unknown when absent. */
+  computerUseRevocationPending?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
 
@@ -1075,7 +1077,7 @@ export type ParsedPushResult =
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
 
 export interface CentralProviderConfiguration {
-  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean }>
+  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>
   enabled: boolean
   instructions: string
   instructionFiles: string[]

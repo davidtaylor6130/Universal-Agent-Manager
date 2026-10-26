@@ -11,6 +11,7 @@ import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
+import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
@@ -1755,6 +1756,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     ] as const
     return <div className="grid gap-0">
       <SettingsSection title="Control method">
+        <ComputerUseSettingRow />
         <SettingRow
           title="Computer Use backend"
           description={activeSession

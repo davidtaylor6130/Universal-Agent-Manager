@@ -124,9 +124,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 		    [observed]()
 		    {
 			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			        uam::remote::SshBridgeArgv(observed.ssh_alias, observed.platform, observed.runner_version,
-			            observed.runner_directory, observed.runner_protocol_version), observed.runner_version,
-			        observed.runner_protocol_version);
+			        observed);
 			    std::string error;
 			    if (client.Connect(&error)) return uam::query_handler_async::AsyncSuccess({});
 			    std::cerr << "Remote workspace terminal connection failed: " << error << '\n';

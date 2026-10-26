@@ -365,6 +365,8 @@ function deserializeState(
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
+    computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
+    computerUseSettingsStateRevision: cppStateRevision(cpp),
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
     branchSwitching: cpp.settings.branchSwitching === true,
@@ -598,6 +600,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
     computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
+    computerUseRevocationPending: patch.settings?.computerUseRevocationPending ?? current.computerUseRevocationPending,
+    computerUseSettingsStateRevision: typeof patch.settings?.computerUseGloballyEnabled === 'boolean' || typeof patch.settings?.computerUseRevocationPending === 'boolean'
+      ? nextRevision : current.computerUseSettingsStateRevision,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
     branchSwitching: patch.settings?.branchSwitching ?? current.branchSwitching,

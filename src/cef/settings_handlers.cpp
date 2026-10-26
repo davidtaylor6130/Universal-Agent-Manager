@@ -1212,19 +1212,12 @@ void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> br
 		const std::string provider = payload.at("providerId").get<std::string>();
 		const std::string server = payload.at("serverId").get<std::string>();
 		const bool enabled = payload.at("enabled").get<bool>();
-		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr || !uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, provider))
-		{ cb->Failure(404, "Provider or execution host not found."); return; }
-		if (server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(uam::host_scoped_settings::McpServers(m_app.settings, host), [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
-		{ cb->Failure(404, "MCP server is not configured on this host."); return; }
-		const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
-		CentralProviderConfiguration candidate = previous;
-		std::erase_if(candidate.mcp_overrides, [&](const ProviderMcpOverride& item) { return item.provider_id == provider && item.execution_host_id == host && item.server_id == server; });
-		candidate.mcp_overrides.push_back({provider, host, server, enabled});
+		const std::string kind = payload.value("kind", std::string("server"));
+		if (kind != "server" && kind != "preference") { cb->Failure(400, "Unknown provider MCP setting kind."); return; }
 		std::string error;
-		if (!uam::central_configuration::Parse(uam::central_configuration::Serialize(candidate), candidate, error)) { cb->Failure(400, error); return; }
-		m_app.settings.central_provider_configuration = std::move(candidate);
-		if (!PersistenceCoordinator().SaveSettings(m_app))
-		{ m_app.settings.central_provider_configuration = previous; cb->Failure(500, "Could not save provider MCP settings."); return; }
+		const int failure = uam::provider_mcp_settings::SetConfiguration(m_app.settings, host, provider, server, enabled, kind == "preference",
+		    [&]() { return PersistenceCoordinator().SaveSettings(m_app); }, error);
+		if (failure != 0) { cb->Failure(failure, error); return; }
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success(uam::provider_mcp_settings::Status(m_app, host, "").dump());
 	}
