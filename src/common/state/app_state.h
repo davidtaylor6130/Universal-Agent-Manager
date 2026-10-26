@@ -36,6 +36,7 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
+	namespace acp_detail { struct ColdRetryBinding; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
@@ -692,6 +693,8 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
+		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
+		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();

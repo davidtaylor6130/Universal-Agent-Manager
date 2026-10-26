@@ -2,6 +2,8 @@
 
 A goal is explicitly requested continuing work with recorded progress and, when specified, a budget. UAM should retain its state across interruptions and distinguish active work, waiting for the user, blocked work and achieved completion. Automatic continuation must remain bounded by the user’s instructions, stop conditions, permissions and budget; ordinary chat input must not silently become a goal or automatically resume unrelated held input.
 
+The configured [iteration cap](../settings/goal-loops.md) applies before any further UAM-managed worker continuation, including continuation after a transient blocker. Reaching the cap blocks the goal instead of starting another iteration; terminal blockers retain their own stop reason. **Implementation gap:** Review-driven continuation enforces this bound; [stalled-loop auto-resume](../documentation-review.md#stalled-goal-loop-cap) still needs a cap admission check.
+
 [Agents](../settings/central-setup/agents.md) · [Current session reference](../reference/architecture/provider-sessions.md).
 
 [Goal Loops settings](../settings/goal-loops.md).
@@ -13,3 +15,7 @@ Continuation and review context may compact repeated objectives, task lists and 
 Completed shared goal reviews and their single JSON repair count reported token usage once before UAM admits another repair or worker turn. Reaching the token budget holds the goal before applying a review decision, including a completion decision; unknown usage stays unknown and must not reuse an earlier turn’s count or infer tokens from response length. Cumulative usage requires a matching native session and a known starting total from adapter-validated receipts, or a newly created review context; replacement sessions cannot charge an earlier receipt, and startup retry begins a new receipt without assuming an empty native history. Replayed older cumulative snapshots cannot reduce already observed review usage, and display telemetry cannot establish a repair baseline. Cancellation and changed user controls retain their existing continuation gates. Native provider-managed goal budgets remain under their own adapter contract.
 
 **Implementation note:** Reviewer accounting and cumulative-receipt corrections have focused native verification across all six adapters and independent source/test review; broader runtime/platform verification and user acceptance remain pending.
+
+## Inspection
+
+Goal inspection reports the selected goal’s saved execution owner (`uam` or `provider`) separately from its creator provenance and UAM’s lifecycle authority. Legacy records without a recognized execution owner retain the UAM default. Inspection preserves saved native commands and provenance without starting or transferring execution.
