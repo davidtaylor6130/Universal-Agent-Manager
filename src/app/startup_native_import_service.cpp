@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -278,15 +279,16 @@ namespace uam
 				m_phase = "complete";
 				return true;
 			}
+			// Identity keys canonicalize workspace paths (a file-system query each); derive each once per pass.
+			std::set<std::pair<std::string, std::string>> candidate_keys;
+			for (const Candidate& existing : m_candidates)
+				candidate_keys.emplace(chat_identity::NativeIdentityKeyForHistoryImport(existing.chat), existing.chat.execution_host_id);
 			const auto add = [&](ChatSession chat, std::filesystem::path rollout)
 			{
 				const ChatFolder* owner = ChatDomainService().FindFolderById(app, chat.folder_id);
 				if (owner == nullptr) return;
-				if (std::ranges::any_of(m_candidates, [&](const Candidate& existing)
-				{
-					return chat_identity::NativeIdentityKeyForHistoryImport(existing.chat) == chat_identity::NativeIdentityKeyForHistoryImport(chat) &&
-					    existing.chat.execution_host_id == chat.execution_host_id;
-				})) return;
+				const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+				if (candidate_keys.contains({key, chat.execution_host_id})) return;
 				Candidate candidate;
 				if (!paths::IsControllerLocalWorkspace(chat))
 				{
@@ -301,11 +303,12 @@ namespace uam
 				candidate.summary = {m_generation + ":" + std::to_string(m_candidates.size()), chat.provider_id,
 				    chat.native_session_id, strings::SafeLine(chat.title, 512, true), chat.folder_id, chat.workspace_directory,
 				    strings::NonEmptyOrFallback(chat.execution_host_id, "local"), chat.updated_at};
-				const auto exported = discovery.open_code_exports.find(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+				const auto exported = discovery.open_code_exports.find(key);
 				if (exported != discovery.open_code_exports.end()) candidate.open_code_export = std::move(exported->second);
 				candidate.chat = std::move(chat);
 				candidate.rollout = std::move(rollout);
 				candidate.owner = *owner;
+				candidate_keys.emplace(key, candidate.chat.execution_host_id);
 				m_candidates.push_back(std::move(candidate));
 			};
 			for (ChatSession& chat : discovery.chats) add(std::move(chat), {});
@@ -346,7 +349,7 @@ namespace uam
 		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(
 		    app, {}, m_import, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
 		m_imported_count += result.imported_count;
-		std::erase_if(m_selected, [&](const Candidate& candidate)
+		if (!result.confirmed_empty_native_keys.empty()) std::erase_if(m_selected, [&](const Candidate& candidate)
 		{
 			return std::ranges::find(result.confirmed_empty_native_keys, chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) != result.confirmed_empty_native_keys.end();
 		});

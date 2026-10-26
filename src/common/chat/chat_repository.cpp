@@ -23,6 +23,7 @@
 #include "common/platform/platform_services.h"
 #include <stdexcept>
 #include "common/provider/provider_runtime.h"
+#include "common/provider/native_session_storage_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/codex_thread_id.h"
 #include "common/provider/native_agent_history.h"
@@ -124,6 +125,7 @@ namespace
 	constexpr std::string_view kChatExecutionHostIdField = "execution_host_id";
 	constexpr std::string_view kChatProviderIdField = "provider_id";
 	constexpr std::string_view kChatNativeSessionIdField = "native_session_id";
+	constexpr std::string_view kChatOpenCodeV2SessionIdField = "opencode_v2_session_id";
 	constexpr std::string_view kChatRemoteClaudeSessionUnstartedField = "remote_claude_session_unstarted";
 	constexpr std::string_view kChatRemoteTurnReconnectPendingField = "remote_turn_reconnect_pending";
 	constexpr std::string_view kChatRemoteProcessExistsField = "remote_process_exists";
@@ -608,6 +610,8 @@ namespace
 			uam::json::SetBool(obj, "include_prior_context", true);
 		if (prompt.direct_admission)
 			uam::json::SetBool(obj, "direct_admission", true);
+		if (prompt.repository_baseline_hold)
+			uam::json::SetBool(obj, "repository_baseline_hold", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -741,6 +745,11 @@ namespace
 		{
 			if (direct_admission->type != JsonValue::Type::Bool) return std::nullopt;
 			prompt.direct_admission = direct_admission->bool_value;
+		}
+		if (const JsonValue* baseline_hold = obj.Find("repository_baseline_hold"); baseline_hold != nullptr)
+		{
+			if (baseline_hold->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.repository_baseline_hold = baseline_hold->bool_value;
 		}
 		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
 		{
@@ -1490,6 +1499,7 @@ namespace
 		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
 		       lhs.include_prior_context == rhs.include_prior_context &&
 		       lhs.direct_admission == rhs.direct_admission &&
+		       lhs.repository_baseline_hold == rhs.repository_baseline_hold &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
@@ -1522,6 +1532,7 @@ namespace
 	{
 		return lhs.id == rhs.id && lhs.execution_host_id == rhs.execution_host_id &&
 		       lhs.provider_id == rhs.provider_id && lhs.native_session_id == rhs.native_session_id &&
+		       lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		       lhs.managed_parent_input_receipts == rhs.managed_parent_input_receipts && lhs.managed_parent_result == rhs.managed_parent_result &&
 		       lhs.managed_followup_incarnation == rhs.managed_followup_incarnation &&
 		       lhs.managed_followup_input_unavailable == rhs.managed_followup_input_unavailable;
@@ -1676,9 +1687,14 @@ namespace
 
 	void ApplyChatTimestampFallbacks(ChatSession& chat, bool legacy_interaction = true);
 
+	std::string SummaryDigest(std::string_view updated_at, std::size_t message_count)
+	{
+		return std::string(updated_at) + ":" + std::to_string(message_count);
+	}
+
 	std::string SummaryDigest(const ChatSession& chat, std::size_t message_count)
 	{
-		return chat.updated_at + ":" + std::to_string(message_count);
+		return SummaryDigest(chat.updated_at, message_count);
 	}
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
@@ -1972,6 +1988,11 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		if (root.Find(kChatOpenCodeV2SessionIdField) != nullptr)
+		{
+			const std::string origin = JsonStringOrEmpty(root.Find(kChatOpenCodeV2SessionIdField));
+			chat.opencode_v2_session_id = origin.starts_with("ses_") && origin.size() <= 512 && uam::execution_hosts::IsPortableId(origin) ? origin : "";
+		}
 		if (const JsonValue* quota = root.Find("claude_quota_continuation"); quota != nullptr && quota->type == JsonValue::Type::Object)
 		{
 			ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -2566,7 +2587,7 @@ namespace
 		}
 
 		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
-		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
 		{
 			chat.branch_root_chat_id = chat.id;
@@ -2611,7 +2632,11 @@ namespace
 		if (expected_source_size > 0 &&
 		    chat.persisted_messages_digest != SummaryDigest(chat, chat.persisted_message_count))
 		{
-			return {std::nullopt, "contains a stale message digest"};
+			// Saves digest the stored timestamp; the load fallbacks above may fill an empty one.
+			// Report the filled form a primary load derives instead of rejecting and rewriting the cache.
+			if (chat.persisted_messages_digest != SummaryDigest(JsonStringOrEmpty(root.Find(kChatUpdatedAtField)), chat.persisted_message_count))
+				return {std::nullopt, "contains a stale message digest"};
+			chat.persisted_messages_digest = SummaryDigest(chat, chat.persisted_message_count);
 		}
 
 		if (publish_summary_cache && !include_messages && expected_source_size == 0 && path.extension() == ".json")
@@ -3373,10 +3398,11 @@ namespace
 			JsonStringOrEmpty(document->Find("temporary_storage_owner_token")) == token && StorageRevision(primary) == revision;
 	}
 
-	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs)
+	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs, bool require_same_recency = true)
 	{
-		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
+		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && (!require_same_recency || lhs.updated_at == rhs.updated_at) && lhs.provider_id == rhs.provider_id &&
 		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
+		    lhs.opencode_v2_session_id == rhs.opencode_v2_session_id &&
 		    lhs.temporary_storage_owner_token == rhs.temporary_storage_owner_token &&
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
@@ -3458,6 +3484,30 @@ bool ChatRepository::MatchesMessagePage(const ChatSession& current, const ChatMe
 	return !current.messages_loaded && PageOwnerMatches(current, page.chat) &&
 	    current.persisted_message_count == page.total_count &&
 	    current.persisted_messages_digest == page.chat.persisted_messages_digest;
+}
+
+std::optional<ChatMessagePage> ChatRepository::ReadSavedPrimaryMessagePage(const fs::path& data_root,
+    std::string_view chat_id, std::size_t limit, std::optional<std::size_t> before,
+    std::string* warning_out, const std::function<bool()>& cancelled)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || limit == 0 || limit > 200) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	if (uam::paths::IsLinkOrReparsePointNoThrow(primary) || uam::paths::IsLinkOrReparsePointNoThrow(uam::chat_pages::IndexPath(primary))) return std::nullopt;
+	const auto revision = ChatStorageRevision(data_root, chat_id);
+	if (!revision || *revision == "missing" || (cancelled && cancelled())) return std::nullopt;
+	const auto index = EnsureMessageIndex(primary, *revision, chat_id, cancelled);
+	const auto metadata = index ? ReadIndexedMetadata(primary, *index) : std::nullopt;
+	if (!metadata || ChatStorageRevision(data_root, chat_id) != revision) return std::nullopt;
+	// The strict existing page reader verifies this primary's own metadata/count,
+	// each selected span and the physical revision. Only its derived index may change.
+	auto page = ReadMessagePage(data_root, *metadata, limit, before, warning_out, cancelled);
+	if (!page || page->storage_revision != *revision) return std::nullopt;
+	return page;
+}
+
+bool ChatRepository::MatchesSavedPrimaryObservation(const ChatSession& current, const ChatMessagePage& page)
+{
+	return PageOwnerMatches(current, page.chat, false);
 }
 
 namespace
@@ -3949,6 +3999,7 @@ try
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	if (chat.opencode_v2_session_id) uam::json::SetString(root, kChatOpenCodeV2SessionIdField, *chat.opencode_v2_session_id);
 	if (!chat.claude_quota_continuation.id.empty())
 	{
 		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -4697,8 +4748,9 @@ catch (const std::exception& error)
 	return nullptr;
 }
 
-bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned)
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned, ChatPublicationState* primary_publication_state, const std::function<bool(uam::io::AtomicWriteStage)>& primary_stage_hook_for_tests)
 {
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Rejected;
 	if (!prepared) return false;
 	if (!PreparedChatAcknowledgementMatches(*prepared, committed_chat)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
@@ -4709,7 +4761,9 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	if (prepared->primary_temp.empty())
 		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	if (!CanonicalBirthAllowsStage(prepared->primary_path, prepared->primary_temp)) return false;
-	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
+	if (primary_publication_state) *primary_publication_state = ChatPublicationState::Uncertain;
+	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, primary_stage_hook_for_tests, sync_directory);
+	if (primary_publication_state && primary.primary_committed) *primary_publication_state = ChatPublicationState::Committed;
 	if (!primary.success) return false;
 	if (!prepared->index_temp.empty()) (void)uam::io::CommitSyncedAtomicTemp(prepared->index_path, prepared->index_temp, false, {}, sync_directory);
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
@@ -5224,7 +5278,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	}
 
 	ApplyChatTimestampFallbacks(chat);
-	ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
+	uam::provider_storage::NormalizeLoadedNativeSessionId(chat);
 
 	if (chat.branch_root_chat_id.empty())
 	{
@@ -5473,7 +5527,7 @@ namespace
 
 		const std::string previous_id = backup_chat.chat->id;
 		recovered.id = recovered_id;
-		ProviderRuntimeRegistry::ResolveById(recovered.provider_id).NormalizeLoadedNativeSessionId(recovered);
+		uam::provider_storage::NormalizeLoadedNativeSessionId(recovered);
 
 		if (recovered.branch_root_chat_id.empty() || recovered.branch_root_chat_id == previous_id)
 		{
@@ -6410,6 +6464,15 @@ StoppedChatLaunchPublicationResult ChatRepository::PublishStoppedChatLaunchStora
 		auto receipt = std::shared_ptr<StoppedChatLaunchStorageReceipt>(new StoppedChatLaunchStorageReceipt());
 		receipt->m_root = prepared->m_root;
 		receipt->m_graph = std::move(committed);
+		if (prepared->m_own_predecessor)
+		{
+			receipt->m_launch_origin = prepared->m_own_predecessor->m_launch_origin;
+		}
+		else if (prepared->m_stopped_read && receipt->m_graph.remote_process_exists && !receipt->m_graph.remote_structured_protocol.empty())
+		{
+			receipt->m_initial_transport_launch = true;
+			receipt->m_launch_origin = std::make_shared<const std::uint8_t>(0);
+		}
 		receipt->m_queue_path = prepared->m_own_predecessor ? prepared->m_own_predecessor->m_queue_path : prepared->m_stopped_read->m_queue_path;
 		receipt->m_inline_primary = prepared->m_inline_primary;
 		receipt->m_index_path = uam::chat_pages::IndexPath(prepared->m_legacy.primary_path);

@@ -624,7 +624,12 @@ UAM_TEST(CopilotAgentHistoryUsesActualParentEventsAndReadOnlyScopedReferences)
 	ExecutionHost host;
 	host.id = "ssh-host";
 	host.transport = "ssh";
+	// The snapshot reuses this controller's real workspace path, so the host platform must match its syntax.
+#if defined(_WIN32)
+	host.platform = "windows";
+#else
 	host.platform = "linux";
+#endif
 	ChatSession remote = source;
 	remote.execution_host_id = host.id;
 	const std::string remote_reference = BuildCopilotAgentHistoryId(parent, agent, host.id);

@@ -687,7 +687,11 @@ namespace uam
 						result["unsentDirectPrompts"].push_back(std::move(receipt));
 						continue;
 					}
-					result["unsentDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					auto receipt = SerializeQueuedAcpUserPrompt(*prompt);
+					// Only the exact receipt held by a failed repository baseline gains row-less Retry.
+					if (prompt->repository_baseline_hold && AcpBaselineHoldRetryAllowed(app, chat, session))
+						receipt["retryAllowed"] = true;
+					result["unsentDirectPrompts"].push_back(std::move(receipt));
 					continue;
 				}
 				if (IsVisibleAcpQueuedPrompt(*prompt))
@@ -1868,6 +1872,7 @@ namespace uam
 		// Settings slice that the UI cares about
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+			j["settings"]["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
 			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{
@@ -1950,6 +1955,7 @@ namespace uam
 
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeFingerprintSettingsFields(app.settings);
+			j["settings"]["computerUseRevocationPending"] = !app.computer_use_revocation_pending_chat_ids.empty();
 			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{

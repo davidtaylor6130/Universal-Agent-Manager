@@ -253,7 +253,7 @@ namespace
 		// The transfer must carry an actual opaque original file; no layout/name is
 		// prescribed, and this fixture never grants production path-copy authority.
 		UAM_ASSERT_EQ(matches.size(), std::size_t{1});
-		return matches.front();
+		return uam_test::NativePath(matches.front());
 	}
 
 	void AssertBundleOriginal(const fs::path& root, const std::string& owner,

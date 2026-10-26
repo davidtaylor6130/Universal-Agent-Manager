@@ -92,6 +92,10 @@ namespace uam
 		static void InitialExecutionObserved(AppState&, AcpSessionState&, const ChatSession&, std::string_view native, std::string_view model, std::string_view native_mode, bool complete_init);
 		/// Provisional correlated setup evidence; adapter parses native policy before applying defaults.
 		static void InitialSetupExecutionObserved(AppState&, AcpSessionState&, const ChatSession&, std::string_view request_id, std::string_view native, std::string_view model, std::string_view workspace, bool read_only_openai_policy_confirmed);
+		/// Provisional Gemini initial-only session/new evidence; an empty request invalidates, never refreshes it.
+		static void InitialGeminiExecutionObserved(AppState&, AcpSessionState&, const ChatSession&, std::string_view request_id, std::string_view native, std::string_view model, std::string_view mode);
+		/// Correlated completed Gemini prompt model telemetry; setup selection alone grants no binding generation.
+		static void InitialGeminiResultObserved(AppState&, AcpSessionState&, const ChatSession&, std::string_view request_id, std::string_view model);
 		/// Exact owned Codex resume reply, or same-thread live effective settings when request_id is empty.
 		/// Missing reply collaboration mode holds input; contradictory or incomplete live proof permanently refuses it.
 		static bool InitialResumeSetupExecutionObserved(AppState&, AcpSessionState&, const ChatSession&, std::string_view request_id, std::string_view native, std::string_view model, std::string_view workspace, bool read_only_openai_policy_confirmed, std::string_view effective_mode, std::string_view collaboration_model, bool collaboration_supplied);

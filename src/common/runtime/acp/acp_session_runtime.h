@@ -46,6 +46,9 @@ bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string
 bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
 /// Explicit retry of one exact retained direct receipt; it never infers delivery from history.
 bool RetryQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::pair<std::string, int>& expected, std::string* error_out = nullptr);
+/// Shared Retry eligibility for the single row-less direct receipt held by a failed repository baseline.
+/// A missing session is the restored state that RetryQueuedAcpPrompt rebuilds from the saved held outbox.
+bool AcpBaselineHoldRetryAllowed(const AppState& app, const ChatSession& chat, const AcpSessionState* session);
 bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr, const std::optional<std::pair<std::string, int>>& expected = std::nullopt);
 /// <summary>Updates an undispatched prompt while preserving captured context and optional retained attachment IDs.</summary>
 bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id, int expected_revision,
@@ -74,11 +77,11 @@ bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSess
 bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    std::string* error_out = nullptr, bool update_goal_state = true,
-                   bool preserve_queued_prompts = false);
+                   bool preserve_queued_prompts = false, bool hold_preserved_queue = true);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation = false);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 /// <summary>Stops a provider; internal recovery may preserve held intent instead of discarding it.</summary>
-bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool preserve_held_queue = false);
+bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool preserve_held_queue = false, std::shared_ptr<IPlatformProcessService> stop_service = {});
 bool SetAcpSessionMode(AppState& app,
                        const std::string& chat_id,
                        const std::string& mode_id,
@@ -105,7 +108,7 @@ bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
 bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
 void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source, platform::StdioProcessPlatformFields& destination);
-void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool observe_exit = false);
+void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool observe_exit = false, std::shared_ptr<IPlatformProcessService> stop_service = {});
 bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);
 std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);

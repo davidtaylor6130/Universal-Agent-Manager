@@ -42,7 +42,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled,
         gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
-      setDraft(accepted); setBaseline(accepted)
+      setDraft(accepted); setBaseline(accepted); setExit(null)
     } catch { setError('Could not save VCS settings. Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
   }
@@ -63,11 +63,11 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <SettingsSection title="SVN">
       <SettingRow title="SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
-      <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }), !draft.gitEnabled)} />
+      <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
       <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
     </SettingsSection>
     <SettingsSection title="No VCS">
-      <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }), !draft.gitEnabled)} />
+      <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
     {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}
     <div className="flex justify-end gap-2">
@@ -75,7 +75,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       <Button size="sm" variant="primary" disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save VCS settings'}</Button>
     </div>
     {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved VCS changes?</span><div className="flex gap-2">
-      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
+      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" disabled={saving} onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
     </div></div>}
   </div>
 })

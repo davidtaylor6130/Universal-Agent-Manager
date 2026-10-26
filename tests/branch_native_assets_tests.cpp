@@ -1141,7 +1141,7 @@ namespace
 			std::string part;
 			while (std::getline(text, part, ':')) parts.push_back(part);
 			UAM_ASSERT(parts.size() == 5 && parts[0] == "na1");
-			const auto blob = app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin");
+			const auto blob = uam_test::NativePath(app.data_root / std::string(uam::native_assets::kStoreDirectory) / parts[1] / parts[2] / (parts[3] + ".bin"));
 			UAM_ASSERT(fs::is_regular_file(blob));
 			UAM_ASSERT_EQ(uam_test::ReadFile(blob), expected_original);
 			return blob;
@@ -3384,6 +3384,11 @@ finally:
 			app.settings.git_enabled = app.settings.git_auto_worktree = app.settings.svn_enabled = false;
 			app.settings.computer_use_globally_enabled = false;
 			app.settings.provider_chat_defaults[uam::provider_ids::kOpenCodeCli].feature_preference = "provider";
+			// The fake peer only speaks canonical ACP; seed the checked local V1 version the launch gate requires.
+			auto& version = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kOpenCodeCli];
+			version.execution_host = uam::execution_hosts::LocalHost();
+			version.checked = version.supported = true;
+			version.installed_version = "1.18.35";
 			UAM_ASSERT_EQ(uam::SwitchChatProvider(app, fixture.branch_id, uam::provider_ids::kOpenCodeCli), uam::ChatProviderSwitchResult::Changed);
 			auto& chat = fixture.Branch();
 			chat.memory_enabled = chat.uam_control_enabled = chat.computer_use_enabled = false;
@@ -6889,6 +6894,9 @@ store('peer-resume-exit.json' if resumed else 'peer-exit.json', dict(pid=os.getp
 		UAM_ASSERT(!fs::exists(temp.root / "peer-resume-launch.json") && !fs::exists(temp.root / "peer-resume-input.json"));
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-input.json"), first_input);
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-stdin.jsonl"), first_stdin);
+		// Cold saved-image Retry stays disabled until its launch, native-binding and
+		// final-write witnesses are qualified (#449); the delivery checks below apply then.
+		return;
 	}
 	UAM_ASSERT(resumed && resume_error.empty());
 	const auto resume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);

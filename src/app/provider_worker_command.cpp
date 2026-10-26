@@ -275,6 +275,13 @@ namespace uam
 			SetError(error_out, "This provider does not support text workers.");
 			return {};
 		}
+		std::string launch_error;
+		bool private_isolation = false;
+		if (!remote_target && !runtime.PrepareLocalWorkerLaunch(app, profile, argv, launch_error, &private_isolation))
+		{
+			SetError(error_out, launch_error);
+			return {};
+		}
 
 		const std::shared_ptr<const std::filesystem::path> isolation_directory = PrepareWorkerIsolationDirectory();
 		if (!isolation_directory)
@@ -282,12 +289,12 @@ namespace uam
 			SetError(error_out, "Failed to prepare the isolated provider worker directory.");
 			return {};
 		}
-		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv))
+		if (!uam::provider_workers::ApplyWorkerIsolationPolicy(profile, *isolation_directory, argv, private_isolation))
 		{
 			SetError(error_out, "Failed to prepare the provider worker safety policy.");
 			return {};
 		}
-		if (!uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
+		if (!private_isolation && !uam::provider_workers::RemoveWorkerPromptArgument(profile, argv))
 		{
 			SetError(error_out, "Provider worker prompt arguments are invalid.");
 			return {};
@@ -340,7 +347,7 @@ namespace uam
 		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
 		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version, remote_host->runner_directory, remote_host->runner_protocol_version), remote_host->runner_version, remote_host->runner_protocol_version);
+		uam::remote::RunnerClient client(service, *remote_host);
 		const std::string id = service.GenerateUuid();
 		std::filesystem::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;

@@ -119,8 +119,7 @@ namespace uam::attached_skills
 		if (!local)
 		{
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version),
-			    host.runner_version, host.runner_protocol_version);
+			    host);
 			if (!client.InstallProviderConfiguration(source, target, &error, stop)) return false;
 		}
 		if (stop.stop_requested()) return false;

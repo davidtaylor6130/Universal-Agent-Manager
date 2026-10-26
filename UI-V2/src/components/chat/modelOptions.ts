@@ -17,7 +17,7 @@ import {
   CODEX_SPEED_LABELS,
 } from '../../utils/providerMetadata'
 
-export interface ModelOption {
+export interface ModelOption extends Pick<AcpModel, 'contextWindowTokens' | 'maxOutputTokens'> {
   id: string
   label: string
   shortLabel: string
@@ -55,10 +55,11 @@ function unresolvedModelOption(providerName: string): ModelOption {
 function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): ModelOption | null {
   const id = model.id.trim()
   if (!id) return null
+  const capacity = { contextWindowTokens: model.contextWindowTokens, maxOutputTokens: model.maxOutputTokens }
   if (useFriendlyLabels) {
     const friendly = FRIENDLY_MODEL_LABELS[id]
     if (friendly) {
-      return { id, ...friendly, detail: model.description || friendly.detail }
+      return { id, ...friendly, ...capacity, detail: model.description || friendly.detail }
     }
   }
   const label = model.name.trim() || titleFromModelId(id)
@@ -67,6 +68,7 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
     label,
     shortLabel: label.length <= 16 ? label : titleFromModelId(id),
     detail: model.description.trim() || id,
+    ...capacity,
   }
 }
 

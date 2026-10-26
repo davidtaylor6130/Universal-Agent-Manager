@@ -1,6 +1,6 @@
 # Composer attachments
 
-Users can attach files, images, folders and skills as visible context chips, inspect their identity and remove them before sending. The message must retain its selected context through send, save, retry and editing; silently omitted resources are a failure. Provider consumption and SSH delivery follow the [provider attachment agreement](../../providers/attachments.md), and skills retain their [supporting resources](../../providers/skills.md).
+Users can attach files, images, folders and skills as visible context chips, inspect their identity and remove them before sending. The message must retain its selected context through send, save, retry and editing; silently omitted resources are a failure. Supported file, image or folder input can be sent without text; malformed attachment input rejects the whole request under the [shared admission rule](../../providers/attachments.md#input-admission). Provider consumption and SSH delivery follow the [provider attachment agreement](../../providers/attachments.md), and skills retain their [supporting resources](../../providers/skills.md).
 
 Attachment staging is user-visible work and remains independent of low-priority background file maintenance. Ordinary file bytes bypass optional native image-format probing; recognized images retain the existing bounded decoding, orientation and preview policy, while original attachment bytes remain unchanged. These rules apply to desktop, browser and native-phone callers and preserve the same workspace/SSH ownership checks.
 

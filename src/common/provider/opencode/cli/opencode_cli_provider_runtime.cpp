@@ -2,6 +2,9 @@
 #include "common/provider/opencode/opencode_permission_policy.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_polling.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/provider/opencode_v2_session.h"
 #include "app/opencode_native_activity_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
@@ -58,9 +61,21 @@ void OpenCodeCliProviderRuntime::CheckpointInteractiveSubmission(uam::CliTermina
 }
 
 /// <summary>Count observed OpenCode prompts; its cache and reasoning counts are separate token buckets.</summary>
-bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
     const std::string& method, const std::string&, const nlohmann::json& result) const
 {
+	if (session.opencode_v2_native && session.running && session.chat_id == chat.id && session.provider_id == chat.provider_id &&
+	    (method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad))
+	{
+		const std::string id(uam::nlohmann_json::StringViewOrEmpty(result, "sessionId"));
+		if (id.starts_with("ses_") && uam::opencode_native::ValidNativeId(id) && chat.opencode_v2_session_id != std::optional<std::string>{id})
+		{
+			chat.opencode_v2_session_id = id;
+			if (method == uam::acp_methods::kSessionLoad && !session.model_discovery_only && !session.goal_internal_session && chat.native_session_id == id)
+				uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		}
+	}
+	else if (!session.opencode_v2_native && method == uam::acp_methods::kSessionNew && chat.native_session_id.empty()) chat.opencode_v2_session_id.reset();
 	if (method != uam::acp_methods::kSessionPrompt) return false;
 	uam::AcpTokenUsageState& usage = session.provider_usage.token_usage;
 	if (usage.session_id != session.session_id) usage = {};
@@ -110,6 +125,15 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessi
 	return false;
 }
 
+void OpenCodeCliProviderRuntime::OnAcpObserveCancelledPromptResult(uam::AppState& app,
+	uam::AcpSessionState& session, ChatSession& chat, const nlohmann::json& result) const
+{
+	if (!session.opencode_v2_native) return;
+	// The prompt branch only validates/records usage. It cannot settle a turn,
+	// drain input or reconnect; the shared cancellation path retains those decisions.
+	(void)OnAcpHandleResult(app, session, chat, uam::acp_methods::kSessionPrompt, "", result);
+}
+
 bool OpenCodeCliProviderRuntime::AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState& pending) const
 {
 	// Both the built-in question and a colliding MCP action require an explicit decision.
@@ -149,10 +173,40 @@ nlohmann::json OpenCodeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionS
 	return IProviderRuntime::OnAcpBuildInitialize(session, request_id);
 }
 
-bool OpenCodeCliProviderRuntime::OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+bool OpenCodeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	const nlohmann::json& message, const CefRefPtr<CefBrowser>&) const
 {
 	using uam::nlohmann_json::StringViewOrEmpty;
+	if (session.opencode_v2_native && StringViewOrEmpty(message, "method") == "uam/opencode/question")
+	{
+		const auto& params = message.at("params");
+		if (!session.running || !session.session_ready || params.value("sessionId", "") != session.session_id || !session.pending_user_input.request_id_json.empty() || uam::AcpSessionHasPendingCancel(session))
+		{
+			(void)uam::acp_detail::WriteAcpMessage(session, {{"jsonrpc", "2.0"}, {"id", message.at("id")}, {"result", {{"answers", nlohmann::json::object()}}}});
+			return true;
+		}
+		const auto& form = params.at("form");
+		uam::AcpPendingUserInputState pending;
+		pending.request_id_json = uam::acp_detail::JsonRpcIdToStableString(message.at("id"));
+		pending.provider_input_json = form.dump(); pending.item_id = form.at("id").get<std::string>();
+		pending.status = "pending"; pending.attention_kind = "question";
+		for (const auto& field : form.at("fields"))
+		{
+			uam::AcpUserInputQuestionState question;
+			question.id = field.at("key").get<std::string>();
+			question.header = field.value("title", form.value("title", "Question"));
+			question.question = field.value("description", question.header);
+			question.is_multiple = field.at("type") == "multiselect";
+			question.is_other = field.value("custom", !field.contains("options"));
+			for (const auto& option : field.value("options", nlohmann::json::array())) question.options.push_back({option.at("label").get<std::string>(), option.value("description", "")});
+			pending.questions.push_back(std::move(question));
+		}
+		uam::acp_detail::AppendUserInputTurnEventIfNeeded(session, pending.request_id_json, pending.item_id);
+		session.pending_user_input = std::move(pending); session.waiting_for_user_input = true;
+		uam::acp_detail::BeginAcpPendingWait(session, uam::acp_detail::kAcpLifecycleWaitingUserInput);
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		return true;
+	}
 	if (!session.running || !session.session_ready || session.last_process_id.empty() || session.session_id.empty() ||
 		StringViewOrEmpty(message, "method") != "session/update") return false;
 	bool replaying = session.manual_compaction_pending || session.context_compaction_in_progress;
@@ -191,6 +245,23 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleMessage(uam::AppState&, uam::AcpSess
 		found->second.status = status;
 	}
 	return false; // Preserve generic ACP tool projection and transcript handling.
+}
+
+bool OpenCodeCliProviderRuntime::PrepareAcpUserInputResponse(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+	const std::map<std::string, std::vector<std::string>>& answers, nlohmann::json&, std::string* error) const
+{
+	if (!session.opencode_v2_native) return false;
+	for (const auto& [key, values] : answers)
+	{
+		const auto question = std::ranges::find(session.pending_user_input.questions, key, &uam::AcpUserInputQuestionState::id);
+		if (question == session.pending_user_input.questions.end() || values.empty() || (!question->is_multiple && values.size() != 1) ||
+		    (!question->is_other && std::ranges::any_of(values, [&](const auto& value) { return std::ranges::none_of(question->options, [&](const auto& option) { return option.label == value; }); })))
+		{
+			if (error) *error = "The answer does not match the active OpenCode V2 question.";
+			return false;
+		}
+	}
+	return true;
 }
 
 namespace
@@ -405,6 +476,28 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(c
 	return argv;
 }
 
+bool OpenCodeCliProviderRuntime::PrepareLocalWorkerLaunch(const uam::AppState& app, const ProviderProfile& profile,
+	std::vector<std::string>& argv, std::string& error, bool* private_isolation) const
+{
+	if (private_isolation) *private_isolation = false;
+	if (!RequiresStructuredCliVersion(profile)) return true;
+	const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(profile.id, "local"));
+	const bool observed = version != app.runtime_cli_versions_by_provider_id.end();
+	error = uam::opencode_v2::WorkerVersionError(observed && version->second.checked && version->second.supported,
+		observed && uam::execution_hosts::SameConnection(version->second.execution_host, uam::execution_hosts::LocalHost()),
+		observed ? version->second.installed_version : std::string{}, observed ? version->second.check_error : std::string{});
+	if (!error.empty()) return false;
+	if (version->second.installed_version.starts_with("1.")) return true;
+	const auto executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
+	if (executable.empty()) { error = "UAM cannot resolve its private OpenCode V2 text worker."; return false; }
+	std::string model;
+	const auto selected = std::ranges::find(argv, "--model");
+	if (selected != argv.end() && std::next(selected) != argv.end()) model = *std::next(selected);
+	argv = {uam::paths::Utf8PathString(executable), "--uam-opencode-v2-text-worker", model, "--", "opencode"};
+	if (private_isolation) *private_isolation = true;
+	return true;
+}
+
 std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession& chat) const
 {
 	// OpenCode ACP does not reliably forward child-session permission requests, so
@@ -418,8 +511,42 @@ std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::Bui
 bool OpenCodeCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session,
 	ChatSession& chat, const uam::acp_detail::AcpResponseFailureDetails& details) const
 {
+	if (session.opencode_v2_native)
+	{
+		const auto data = nlohmann::json::parse(details.error_data, nullptr, false);
+		if (details.failure.method == uam::acp_methods::kSessionPrompt && data.is_object() && data.contains("usage"))
+			(void)OnAcpHandleResult(app, session, chat, details.failure.method, "", data);
+		if (details.failure.method == uam::acp_methods::kSessionPrompt && data.is_object() &&
+		    data.value("uamInputHeld", nlohmann::json{}) == true && data.value("noReplay", nlohmann::json{}) == true)
+			return OnAcpHoldUnconfirmedInput(app, session, chat, details.formatted_error);
+		return false; // exact resume failure never creates a replacement
+	}
 	if (details.failure.has_code && details.failure.code != -32002) return false;
 	return uam::acp_detail::RetrySessionNewAfterInvalidLoad(app, session, chat, details);
+}
+
+bool OpenCodeCliProviderRuntime::OnAcpHoldUnconfirmedInput(uam::AppState& app,
+	uam::AcpSessionState& session, ChatSession& chat, const std::string& reason, std::optional<int> observed_exit_code) const
+{
+	if (!session.opencode_v2_native) return false;
+	// The shared poller has drained and observed this owned process exit. Mark
+	// that observation before retirement: its reaped PID is no longer a live
+	// restart/stop target, while the unresolved input still needs to be held.
+	if (observed_exit_code)
+	{
+		std::string ownership_error;
+		if (!uam::acp_detail::ValidateAcpRestartOwnership(app, session, chat, &ownership_error, true))
+		{
+			session.transport_ownership_error = std::move(ownership_error);
+			session.last_error = reason;
+			session.lifecycle_state = uam::acp_detail::kAcpLifecycleError;
+			return true;
+		}
+		uam::acp_detail::MarkAcpProcessExited(session, &chat, true, *observed_exit_code, true);
+	}
+	uam::acp_detail::HoldAcpTransportForExplicitRecovery(app, session, chat,
+	    reason + " Input and queued follow-ups are held; nothing is replayed automatically. Inspect native history before explicitly resuming queued input.");
+	return true;
 }
 
 std::string OpenCodeCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
@@ -481,9 +608,7 @@ namespace
 		if (remote_host != nullptr)
 		{
 			child.remote = std::make_unique<uam::remote::RunnerClient>(service,
-			    uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version,
-			                               remote_host->runner_directory, remote_host->runner_protocol_version),
-			    remote_host->runner_version, remote_host->runner_protocol_version);
+			    *remote_host);
 			const std::string operation_id = service.GenerateUuid();
 			if (operation_id.empty()) return fail("Could not allocate a remote OpenCode creation request.");
 			child.remote_process_id = "opencode-create-" + operation_id;
@@ -624,6 +749,106 @@ namespace
 	}
 }
 
+bool OpenCodeCliProviderRuntime::RequiresStructuredCliVersion(const ProviderProfile& profile) const
+{
+	const auto command = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
+	return command == std::vector<std::string>{"opencode"};
+}
+
+AcpRequestPreflight OpenCodeCliProviderRuntime::OnAcpPrepareSetup(uam::AppState&, uam::AcpSessionState& session,
+	const ChatSession& chat, const std::string&, std::string& error) const
+{
+	if (!session.opencode_v2_native && !chat.native_session_id.empty() && chat.opencode_v2_session_id &&
+	    (chat.opencode_v2_session_id->empty() || *chat.opencode_v2_session_id == chat.native_session_id))
+	{
+		error = "This saved OpenCode session was bound through V2. Use the verified native V2 adapter before resuming it; the native ID and authored input are retained.";
+		return AcpRequestPreflight::Rejected;
+	}
+	if (!session.opencode_v2_native && CliProviderVersionAtLeast(session.agent_version, "2.0.0"))
+	{
+		error = "This process reports OpenCode V2 on a legacy ACP path. Refresh the CLI version and use the verified native adapter before input.";
+		return AcpRequestPreflight::Rejected;
+	}
+	return AcpRequestPreflight::Ready;
+}
+
+std::string OpenCodeCliProviderRuntime::StructuredCliVersionError(const ProviderProfile& profile, std::string_view checked_version, bool remote, const ChatSession* chat) const
+{
+	// PATH's version observation never identifies a separately configured wrapper.
+	if (!RequiresStructuredCliVersion(profile)) return {};
+	if (chat && !chat->native_session_id.empty() && chat->opencode_v2_session_id &&
+	    (chat->opencode_v2_session_id->empty() || *chat->opencode_v2_session_id == chat->native_session_id) && !CliProviderVersionAtLeast(checked_version, "2.0.0"))
+		return "This saved OpenCode V2 session requires the verified native V2 adapter. Its native ID and authored input are retained.";
+	if (!CliProviderVersionAtLeast(checked_version, "2.0.0")) return {};
+	if (checked_version == "2.1.2" && !remote) return {};
+	if (remote) return "OpenCode V2 requires the native API adapter on the executing SSH helper; this helper's V1 ACP launch remains refused. Existing owned remote recovery is preserved.";
+	return "This OpenCode V2 protocol version has not been verified. UAM supports the local native API adapter for checked V2.1.2.";
+}
+
+bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile& profile,
+	std::string_view version, bool remote, std::vector<std::string>& argv,
+	std::vector<std::pair<std::string, std::string>>& environment, std::string& error) const
+{
+	session.opencode_v2_native = false;
+	if (!RequiresStructuredCliVersion(profile) || version != "2.1.2") return true;
+	if (remote) { error = StructuredCliVersionError(profile, version, true); return false; }
+	if (session.saved_image_retry)
+	{ error = "OpenCode V2 saved-image Retry is not admitted by this adapter. The saved row and originals are retained without starting a provider process."; return false; }
+	if (session.active_uam_agent_execution_capability == "opencode-native-agent-config")
+	{ error = "Imported V1 OpenCode agent policies require separate V2 policy translation before input."; return false; }
+	const auto executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
+	if (executable.empty()) { error = "UAM cannot resolve its private OpenCode V2 bridge executable."; return false; }
+	argv = {uam::paths::Utf8PathString(executable), "--uam-opencode-v2-bridge", "--", "opencode"};
+	// The V2 evaluation guard owns force-ask; V1's environment flags are not a V2 contract.
+	std::erase_if(environment, [](const auto& entry) { return entry.first == "OPENCODE_PERMISSION"; });
+	session.opencode_v2_native = true;
+	session.opencode_native_companion.reset();
+	return true;
+}
+
+namespace
+{
+nlohmann::json CapturedV2Policy(const uam::AcpSessionState& session, const ChatSession& chat)
+{
+	return {{"readOnly", session.goal_review_turn || session.active_uam_agent_workspace_access == "read" || chat.approval_mode == "plan"}, {"approvalMode", chat.approval_mode}, {"commandSafetyTier", chat.command_safety_tier}, {"agentDefinition", session.active_uam_agent_definition_hash}, {"agent", session.active_uam_agent_id}};
+}
+std::vector<std::string> LocalHistoryCommand(const ProviderProfile& profile, const std::string& operation, const std::string& id)
+{
+	std::vector<std::string> result{uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()), "--uam-opencode-history", operation};
+	if (!id.empty()) result.push_back(id);
+	result.push_back("--");
+	const auto command = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
+	result.insert(result.end(), command.begin(), command.end());
+	return result;
+}
+}
+
+std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeDiscoveryArgv(const ProviderProfile& profile) const
+{
+	if (!RequiresStructuredCliVersion(profile)) return BuildNativeDiscoveryArgv(profile);
+	return LocalHistoryCommand(profile, "list", {});
+}
+std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeExportArgv(const ProviderProfile& profile, const ChatSession& chat) const
+{
+	if (!RequiresStructuredCliVersion(profile)) return BuildNativeExportArgv(profile, chat);
+	if (chat.native_session_id.empty()) return {};
+	return LocalHistoryCommand(profile, "export", chat.native_session_id);
+}
+nlohmann::json OpenCodeCliProviderRuntime::OnAcpBuildSessionSetupRequest(uam::AcpSessionState& session, int request_id,
+	const ChatSession& chat, const std::string& cwd, bool can_load, std::string& method) const
+{
+	auto request = IProviderRuntime::OnAcpBuildSessionSetupRequest(session, request_id, chat, cwd, can_load, method);
+	if (session.opencode_v2_native) request["params"]["_meta"]["uamPolicy"] = CapturedV2Policy(session, chat);
+	return request;
+}
+nlohmann::json OpenCodeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
+	const std::string& prompt, const ChatSession& chat, std::string& method) const
+{
+	auto request = IProviderRuntime::OnAcpBuildPrompt(session, request_id, prompt, chat, method);
+	if (session.opencode_v2_native) request["params"]["_meta"]["uamPolicy"] = CapturedV2Policy(session, chat);
+	return request;
+}
+
 std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::AppState& app) const
 {
 	const auto state_it = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kOpenCodeCli);
@@ -651,7 +876,7 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 bool OpenCodeCliProviderRuntime::SupportsSavedImageRetry(const uam::AcpSessionState& session) const
 {
 	// Cold permission capture precedes native discovery; it grants no image reads or dispatch.
-	return session.protocol_kind == "opencode-acp";
+	return session.protocol_kind == "opencode-acp" && !session.opencode_v2_native;
 }
 
 SavedImageRetryPreflight OpenCodeCliProviderRuntime::PrepareSavedImageRetry(uam::AcpSessionState& session, const ChatSession& settings,

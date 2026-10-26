@@ -38,7 +38,7 @@ namespace uam::usage
 				if (host.runner_version.empty() || host.runner_protocol_version < 2)
 				{ error = "Install this machine's UAM runner to collect usage."; return std::nullopt; }
 				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				    host);
 				nlohmann::json snapshot;
 				const std::filesystem::path path = data_root / "usage" / "remote" / Scope(host) / "snapshot-v3.jsonl";
 				if (!client.ReadUsageAccountingFile(path, snapshot, &error, stop)) return std::nullopt;

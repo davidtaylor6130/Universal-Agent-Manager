@@ -4,6 +4,7 @@ import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
 import { Notice } from '../ui/Notice'
 import './panels.css'
+import './update-release-notes.css'
 
 export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: UpdateMonitor; onClose: () => void; closing?: boolean }) {
   const [installError, setInstallError] = useState('')
@@ -220,6 +221,14 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                       onClick={() => monitor.dismiss(update.id, update.latestVersion)}
                     />
                   </div>
+                  {update.releaseNotesExcerpt?.trim() && (
+                    <details key={update.latestVersion} className="uam-update-notes">
+                      <summary aria-label={`Release notes excerpt for ${update.name} ${update.latestVersion}`}>
+                        Release notes excerpt
+                      </summary>
+                      <p>{update.releaseNotesExcerpt}</p>
+                    </details>
+                  )}
                   {Boolean(providerState?.blockingChatIds?.length) && <p role="status" className="text-xs">Waiting for {providerState!.blockingChatIds!.length} provider session(s).</p>}
                   {providerRunning && <p role="status" className="text-xs">{providerState?.message || 'Installing update.'}</p>}
                   <div className="flex flex-wrap gap-2">
