@@ -24,7 +24,8 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 	const std::string& operation, const std::string& id)
 {
 	const bool v2 = version == "2.1.2";
-	if (command.empty() || (!v2 && !version.starts_with("1."))) throw std::runtime_error("This OpenCode history protocol has not been verified.");
+	if (command.empty() || (!v2 && !version.starts_with("1.")))
+		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});
@@ -36,6 +37,12 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 		command.insert(command.end(), {"export", id, v2 ? "--standalone" : "--pure"});
 	}
 	else throw std::runtime_error("Invalid OpenCode history request.");
+	return command;
+}
+
+std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command)
+{
+	command.insert(command.begin(), {"/bin/sh", "-c", "f=$(mktemp) || exit 1; trap 'rm -f \"$f\"' EXIT; \"$@\" >\"$f\" || exit $?; cat \"$f\"", "uam-opencode-export"});
 	return command;
 }
 

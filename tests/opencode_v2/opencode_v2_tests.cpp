@@ -97,8 +97,9 @@ int main(int argc, char** argv)
 			Check(HistoryArgv("1.19.4", {"opencode"}, "list", {}) == std::vector<std::string>({"opencode", "session", "list", "--format", "json", "--pure"}), "V1 list changed");
 			Check(HistoryArgv("1.19.4", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "export", "ses_exact", "--pure"}), "V1 export changed");
 			Check(HistoryArgv("2.1.2", {"opencode"}, "export", "ses_exact") == std::vector<std::string>({"opencode", "session", "export", "ses_exact", "--standalone"}), "V2 export changed");
-			bool refused = false; try { (void)HistoryArgv("2.2.0", {"opencode"}, "export", "ses_exact"); } catch (...) { refused = true; }
-			Check(refused, "unknown V2 history admitted");
+			std::string refusal; try { (void)HistoryArgv("2.2.0", {"opencode"}, "export", "ses_exact"); } catch (const std::exception& error) { refusal = error.what(); }
+			Check(refusal.find("OpenCode 2.2.0 history has not been verified") != std::string::npos, "unknown V2 history admitted or unnamed");
+			Check(AdapterError("native noise\nUAM OpenCode adapter: " + refusal + "\n") == refusal && AdapterError("native only\n").empty(), "adapter refusal not isolated from native stderr");
 		});
 		Run("CreatePublishesAndReadsBackExactPolicy", []
 		{

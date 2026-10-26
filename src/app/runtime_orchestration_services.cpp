@@ -3628,7 +3628,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		nlohmann::json sessions = nlohmann::json::parse(listed.output, nullptr, false);
 		if (!listed.ok || listed.exit_code != 0 || listed.output_truncated || !sessions.is_array())
 		{
-			discovery.result.Fail("OpenCode history discovery failed: " + uam::strings::NonEmptyOrFallback(listed.error, "invalid session list."));
+			// The exit code and UAM's own adapter refusal distinguish an unverified CLI from a malformed list.
+			const std::string reason = !listed.error.empty() ? listed.error : uam::opencode_v2::AdapterError(listed.diagnostic_tail);
+			discovery.result.Fail("OpenCode history discovery failed: " + (!reason.empty() ? reason
+			    : listed.output_truncated ? std::string("session list exceeded its output limit.")
+			    : listed.exit_code != 0 ? "exit " + std::to_string(listed.exit_code) + "." : std::string("invalid session list.")));
 		}
 		else
 		{
@@ -3697,7 +3701,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				return true;
 			}, stop_token, error))
 			{
-				discovery.result.Fail(error);
+				discovery.result.Fail("OpenCode session " + id + ": " + error);
 				continue;
 			}
 			if (!has_content) continue;
@@ -4054,7 +4058,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 			UnloadPersistedTranscript(chat);
 			verified.push_back(std::move(chat));
 		}
-		else if (!error.empty()) discovery.result.Fail(std::move(error));
+		// Native session and host identity make a repeating startup cohort verifiable from the log alone.
+		else if (!error.empty()) discovery.result.Fail(chat.provider_id + " session " + chat.native_session_id + " on " + host.id + ": " + error);
 	}
 	discovery.chats = std::move(verified);
 	return discovery;
@@ -5147,8 +5152,9 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	}
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-	if (!client.StartProcess(process_id, uam::paths::PathFromUtf8(chat.workspace_directory),
-	                         ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat), {},
+	std::vector<std::string> argv = ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat);
+	if (host.platform != "windows" && host.platform != "Windows") argv = uam::opencode_v2::FileBackedStdoutArgv(std::move(argv));
+	if (!client.StartProcess(process_id, uam::paths::PathFromUtf8(chat.workspace_directory), argv, {},
 	                         &result.error) || !client.CloseProcessInput(process_id, &result.error))
 	{
 		(void)client.StopProcess(process_id);

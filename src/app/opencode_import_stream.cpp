@@ -168,7 +168,8 @@ namespace uam::opencode_import
 			const ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, workspace, opencode_v2::HistoryCommandTimeoutMilliseconds(invocation.argv), stop);
 			if (!result.ok || result.exit_code != 0 || stop.stop_requested())
 			{
-				error = "OpenCode could not export the session: " + strings::NonEmptyOrFallback(result.error, "exit " + std::to_string(result.exit_code));
+				error = "OpenCode could not export the session: " + strings::NonEmptyOrFallback(result.error,
+				    strings::NonEmptyOrFallback(opencode_v2::AdapterError(result.diagnostic_tail), "exit " + std::to_string(result.exit_code)));
 				return false;
 			}
 			return true;
