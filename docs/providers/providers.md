@@ -37,6 +37,8 @@ Every provider checklist must account for every row. Conditional features must c
 
 ## Provider checklists
 
+The shared [managed desktop controls](../chat/subagents.md#control-and-results) and [draft disclosure](../chat/subagents.md#catalogue-and-navigation) apply to UAM-owned child conversations when their current scoped capabilities permit them; inspecting a retained draft grants no messaging permission. Background reads retain the displayed Hide input control and its focus while making it unavailable until read recovery. Losing draft inspectability retires its disclosure notice without discarding text; removing a focused draft action recovers only the active child's owned focus. Keeping an unavailable Stop control visible during background refresh preserves focus, without retaining permission to cancel; repeated control-read failures also retain the unavailable-status notice until validated recovery or explicit Refresh. These UAM routes do not establish provider-native messaging, transcript export or original-process cancellation, and the provider rows retain their partial delivery and verification limits.
+
 - [Gemini](gemini/gemini.md)
 - [Codex](codex/codex.md)
 - [Claude Code](claude-code/claude-code.md)

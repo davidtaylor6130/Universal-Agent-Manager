@@ -279,7 +279,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   openSessionWorkspace: (id: string) => Promise<boolean>
   openSessionWorkspaceEditor: (id: string) => Promise<boolean>
   openSessionTerminal: (id: string) => Promise<boolean>
-  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean) => Promise<string | null>
+  openSubAgentSession: (sourceChatId: string, nativeSessionId: string, title?: string, selectChat?: boolean, onFailure?: (message: string) => void) => Promise<string | null>
   getChatWorktreeStatus: (id: string) => Promise<GitWorktreeStatus | null>
   createChatWorktree: (id: string) => Promise<GitWorktreeResult>
   discardChatWorktreeChanges: (id: string) => Promise<GitWorktreeResult>

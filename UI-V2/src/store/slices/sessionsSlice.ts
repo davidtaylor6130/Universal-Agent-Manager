@@ -1218,9 +1218,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true) => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void) => {
       if (isCefContext()) {
-        const source = get().sessions.find(candidate => candidate.id === sourceChatId)
+        const stateAtRequest = get()
+        const source = stateAtRequest.sessions.find(candidate => candidate.id === sourceChatId)
+        const passiveRefreshChild = !selectChat && stateAtRequest.sessions.find(candidate => candidate.id === nativeSessionId &&
+          candidate.importedReadOnly && subagentParentFor(candidate, stateAtRequest.sessions)?.id === sourceChatId)
         const selectionRevision = selectChat ? ++intentionalSelectionRevision : intentionalSelectionRevision
         const response = await sendToCEF<OpenNativeSessionChatResponse>({
           action: 'openNativeSessionChat',
@@ -1235,10 +1238,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (!response.ok) {
           console.error('[CEF] openNativeSessionChat failed:', response.error)
+          onFailure?.(response.error || 'The native conversation could not be read. Refresh to try again.')
           return null
         }
 
         const chatId = response.data?.chatId?.trim() ?? ''
+        // Refreshing a known passive child cannot redirect display lineage or saved reads.
+        if (passiveRefreshChild && chatId !== passiveRefreshChild.id) {
+          onFailure?.('The native conversation could not be read. Refresh to try again.')
+          return null
+        }
         if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
         const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
         if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
@@ -2661,6 +2670,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     stageChatContextReference: (sessionId: string, reference: ContextReference): boolean => {
       if (!get().sessions.some((session) => session.id === sessionId)) return false
       const validated = sanitizeContextReferences([reference])[0]
+      // File/repository snapshots must come from their asynchronous native readers, not caller-supplied text.
+      if (validated && validated.kind !== 'message' && validated.kind !== 'terminal') return false
       const source = get().sessions.find((session) => session.id === reference.sourceChatId)
       if (!validated || !source || (source.executionHostId || 'local') !== validated.executionHostId ||
         (source.workspaceWorktreeDirectory || source.workspaceDirectory || '') !== validated.workspaceDirectory) return false

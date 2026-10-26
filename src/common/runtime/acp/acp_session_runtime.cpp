@@ -17,6 +17,7 @@
 
 #include "app/chat_domain_service.h"
 #include "common/chat/conversation_handoff.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/computer_use_service.h"
@@ -275,6 +276,8 @@ namespace uam
 	namespace
 	{
 		bool CanDeferLocalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+		bool ValidateAcpReplayContext(const AppState& app, const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out);
+		bool ValidateQueuedReplayBeforeLaunch(AppState& app, AcpSessionState& session, ChatSession& chat);
 
 		using namespace acp_detail;
 
@@ -779,6 +782,8 @@ namespace uam
 			{
 				return false;
 			}
+			if (!session.recovering_remote_turn && !session.recovering_remote_process &&
+			    !ValidateQueuedReplayBeforeLaunch(app, session, chat)) return true;
 			if (chat.routing_mode == "automatic" && !ExecutionRoutingOwnsWork(app, chat) && !session.queued_user_prompts.empty())
 			{
 				const bool dispatched = DrainNextQueuedAcpUserPrompt(app, session, chat);
@@ -1274,6 +1279,7 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
+			if (session.goal_review_turn) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
 			{
@@ -1771,6 +1777,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (skill_spans != nullptr) skill_spans->clear();
 			const std::size_t current_index = queued.existing_user_message_index >= 0
 			    ? static_cast<std::size_t>(queued.existing_user_message_index) : chat.messages.size() - 1;
+			if (!chat.messages_loaded || current_index >= chat.messages.size())
+			{
+				if (error_out) *error_out = "Retry history no longer contains its selected input. Input is retained.";
+				return false;
+			}
 			const std::string authored_text = queued.text;
 			const std::vector<int> known_unsent = KnownUnsentAcpMessageIndices(app, chat);
 			if (current_index == 0) return true;
@@ -1791,18 +1802,26 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				const Message& prior = chat.messages[index];
 				if (prior.acp_prompt_discarded || std::binary_search(known_unsent.begin(), known_unsent.end(), static_cast<int>(index))) continue;
-				if (completed_boundary && (index == completed_boundary->first || uam::chat::HandoffUsesBlockOrder(prior)))
+				const bool ordered = uam::chat::HandoffUsesBlockOrder(prior);
+				if (!ordered && uam::chat::HandoffHasQuarantinedSummary(prior))
+				{
+					if (error_out) *error_out = uam::chat::kAmbiguousCompactionHistory;
+					return false;
+				}
+				if (ordered)
 				{
 					// The latest completed summary replaces its earlier history; interrupted summaries never do.
-					for (std::size_t block = index == completed_boundary->first ? completed_boundary->second : 0; block < prior.blocks.size(); ++block)
+					const std::size_t before = queued.text.size();
+					for (std::size_t block = completed_boundary && index == completed_boundary->first ? completed_boundary->second : 0; block < prior.blocks.size(); ++block)
 					{
 						const MessageBlock& entry = prior.blocks[block];
 						if (uam::strings::IsBlank(entry.text)) continue;
 						if (entry.type == "context_compaction") queued.text += "Conversation summary: " + entry.text + "\n\n";
 						else if (entry.type == "context_compaction_interrupted") queued.text += "Interrupted conversation summary: " + entry.text + "\n\n";
 						else if (entry.type == "assistant_text") queued.text += "Assistant: " + entry.text + "\n\n";
+						// context_compaction_summary is lossless saved evidence, not prompt content.
 					}
-					has_prior_context = true;
+					has_prior_context = has_prior_context || queued.text.size() != before;
 				}
 				else if (prior.role == MessageRole::User)
 				{
@@ -1842,8 +1861,45 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
+		bool ValidateAcpReplayContext(const AppState& app, const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
+		{
+			std::size_t history_count = chat.messages.size();
+			for (const AcpQueuedUserPromptState& prompt : batch)
+			{
+				if (!prompt.append_user_message && !chat.messages.empty())
+					history_count = std::min(history_count, prompt.existing_user_message_index >= 0
+					    ? static_cast<std::size_t>(prompt.existing_user_message_index) : chat.messages.size() - 1);
+				if (prompt.include_prior_context)
+				{
+					if (chat.messages.empty() || !chat.messages_loaded)
+					{
+						if (error_out) *error_out = "Load the complete saved history before Retry. Input is retained.";
+						return false;
+					}
+					AcpQueuedUserPromptState validation = prompt;
+					if (!ExpandAcpRetryContext(app, chat, validation, error_out)) return false;
+				}
+			}
+			return chat.provider_handoff_context.empty() ||
+			    (!chat.provider_handoff_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id) ||
+			    ValidateProviderHandoffContext(chat, history_count, error_out);
+		}
+
+		bool ValidateQueuedReplayBeforeLaunch(AppState& app, AcpSessionState& session, ChatSession& chat)
+		{
+			if (session.queued_user_prompts.empty()) return true;
+			std::string error;
+			if (ValidateAcpReplayContext(app, chat, {session.queued_user_prompts.front()}, &error)) return true;
+			session.last_error = error;
+			session.queue_held = chat.acp_queue_held = true;
+			session.reconnect_pending = false;
+			ScheduleChatSave(app, chat, 0.0);
+			return false;
+		}
+
 		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out, std::optional<std::size_t>* recall_position = nullptr, std::vector<attached_skills::Span>* skill_spans = nullptr)
 		{
+			if (!ValidateAcpReplayContext(app, chat, batch, error_out)) return false;
 			if (skill_spans != nullptr) skill_spans->clear();
 			if (recall_position != nullptr) recall_position->reset();
 			const AcpQueuedUserPromptState& first = batch.front();
@@ -2090,10 +2146,45 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		// Only this admission stack may disregard its own raw FIFO when preparing native settings.
+		// Public setting changes continue to treat queued input as busy.
+		bool CanPrepareNongenericPromptSettings(const AppState& app, const AcpSessionState& session,
+		    const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, bool queued_dispatch)
+		{
+			if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
+			    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat ||
+			    !ValidateAcpRestartOwnership(app, session, chat, nullptr) ||
+			    (session.session_id.empty() && !ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpCanSendPromptWithoutSessionId()) ||
+			    session.processing || AcpSessionIsWaitingForInput(session) || !session.queued_prompt.empty() ||
+			    AcpSessionHasPendingRuntimeRequest(session) || AcpSessionHasPendingCancel(session) ||
+			    !session.pending_permission.request_id_json.empty() || !session.queued_permissions.empty() ||
+			    !session.pending_user_input.request_id_json.empty() || session.pending_prompt_delivery ||
+			    session.manual_compaction_pending || session.pending_compaction || session.local_stop_pending ||
+			    session.remote_stop_pending || session.remote_stop_unconfirmed || session.recovering_remote_turn || session.recovering_remote_process ||
+			    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0 ||
+			    (session.turn_serial > session.last_settled_turn_serial &&
+			     !ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session).empty())) return false;
+			if (!queued_dispatch && session.queued_user_prompts.empty() && chat.acp_queued_prompts.empty()) return true;
+			// A claimed quota instruction is a separate control, never a replacement for future user input.
+			// Its invocation-only dispatch scope already validated the accepted native turn and policy.
+			const bool quota_control = !queued_dispatch && batch.size() == 1 &&
+			    IsCurrentClaudeQuotaContinuationInput(app, session, chat, batch.front()) &&
+			    std::ranges::none_of(session.queued_user_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; });
+			if (!queued_dispatch && !quota_control) return false;
+			return !batch.empty() && batch.size() <= session.queued_user_prompts.size() &&
+			    chat.acp_dispatched_queued_prompt_count == 0 &&
+			    chat.acp_queued_prompts.size() == session.queued_user_prompts.size() &&
+			    std::equal(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end(), session.queued_user_prompts.begin()) &&
+			    (quota_control || std::equal(batch.begin(), batch.end(), session.queued_user_prompts.begin())) &&
+			    std::ranges::none_of(batch, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; });
+		}
+
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false, bool queued_dispatch = false, const AcpQueuedUserPromptState* original_queued_prompt = nullptr, AcpPromptFailurePurpose* failure_purpose_out = nullptr, AcpInputAdmission* admission_out = nullptr)
 		{
 			if (failure_purpose_out)
 				*failure_purpose_out = AcpPromptFailurePurpose::Admission;
+			// Recheck retained history before workspace, stop, queue or policy mutations.
+			if (batch.empty() || !ValidateAcpReplayContext(app, chat, batch, error_out)) return false;
 			if (!session.transport_ownership_error.empty())
 			{
 				if (error_out)
@@ -2385,11 +2476,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+			if (!runtime.IsGenericAcpSession() && session.running && session.session_ready &&
+			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch))
+			{
+				if (error_out) *error_out = "Native session settings are waiting for the owning input and idle runtime.";
+				return false;
+			}
 			// A fresh stream can receive its first model report only after input. Its captured launch
 			// option is sufficient for restart selection, never native execution/model attestation.
 			const std::string& restart_model_id = session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
+			// An empty selection removes an explicit launch model; a reported default model alone
+			// must not restart every later turn of an already default-configured stream.
+			// An unknown reattached launch establishes Default by owned idle restart.
+			const bool model_requires_restart = runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession &&
+			    (turn_model_id.empty() ? !session.launch_model_options_captured || !session.launch_model_options_id.empty() : restart_model_id != turn_model_id);
 			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
-			const bool settings_require_restart = session.running && session.session_ready && ((!turn_model_id.empty() && restart_model_id != turn_model_id && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession) || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
+			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "uam-central-native-setup" ||
@@ -2465,14 +2567,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			else if (native_adapter_changed || settings_require_restart)
 			{
-				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
-				if (!StopAcpSession(app, chat.id))
+				// Teardown saves chat state: retain the owned FIFO in both carriers throughout
+				// the stop, including a failed stop/preparation and a crash before admission.
+				const bool preserve_queue = !session.queued_user_prompts.empty();
+				const bool previous_runtime_held = session.queue_held;
+				const bool previous_outbox_held = chat.acp_queue_held;
+				if (preserve_queue) session.queue_held = chat.acp_queue_held = true;
+				if (!StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, preserve_queue))
 				{
-					session.queued_user_prompts = std::move(pending);
-					if (error_out != nullptr) *error_out = "Could not restart the provider for the selected agent or session settings.";
+					if (queued_dispatch && original_queued_prompt &&
+					    RestoreRejectedQueuedAdmission(session, chat, *original_queued_prompt, first))
+						(void)PublishRestoredQueuedAdmission(app, session, chat);
+					session.last_error = "Could not restart the provider for the selected agent or session settings.";
+					if (error_out != nullptr) *error_out = session.last_error;
 					return false;
 				}
-				session.queued_user_prompts = std::move(pending);
+				session.queue_held = previous_runtime_held;
+				chat.acp_queue_held = previous_outbox_held;
 			}
 			BindQueuedAgentForLaunch(session, first);
 			const std::string previous_turn_model = session.goal_turn_model_id;
@@ -2518,16 +2629,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			if (!runtime.IsGenericAcpSession() && session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
-			    session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
-			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) &&
-			    !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
+			    session.session_ready && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier))
 			{
-				return false;
+				if (runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::ApplyLocally)
+					session.current_mode_id = desired_mode;
+				else if (!SetAcpSessionMode(app, chat.id, desired_mode, error_out)) return false;
 			}
 			const std::string& configured_model_id = session.current_model_id.empty() && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
-			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id && !SetAcpSessionModel(app, chat.id, session.goal_turn_model_id, error_out))
+			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id)
 			{
-				return false;
+				if (runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::ApplyLocally)
+					session.current_model_id = session.goal_turn_model_id;
+				else if (!SetAcpSessionModel(app, chat.id, session.goal_turn_model_id, error_out)) return false;
 			}
 
 			session.memory_recall_preparation.reset();
@@ -4286,6 +4400,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			return true;
 		}
+		if (!ValidateAcpReplayContext(app, *chat, queue, error_out)) return false;
 		const bool previous_chat_held = chat->acp_queue_held;
 		session->queue_held = false;
 		chat->acp_queue_held = false;
@@ -4488,6 +4603,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
+		if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
+		    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat) return false;
 		if (!session.transport_ownership_error.empty())
 			return false;
 		if (session.queued_rollback_save_pending || HasPendingQueuedAdmissionSave(app, chat.id) || RemotePromptDeliveryUnconfirmed(session, chat))
@@ -4498,6 +4615,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return false;
 		}
+		if (!ValidateQueuedReplayBeforeLaunch(app, session, chat)) return false;
+		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready &&
+		    !CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
 		if (chat.routing_mode == "automatic")
 		{
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
@@ -5262,6 +5382,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("Retry requires a user message with no assistant output.");
 		if (!message.provider.empty() && message.provider != chat->provider_id)
 			return reject("Reconnect the original native session before retrying.");
+		AcpQueuedUserPromptState replay_validation;
+		replay_validation.text = message.content;
+		replay_validation.append_user_message = false;
+		replay_validation.existing_user_message_index = message_index;
+		// Native failed-message Retry keeps its existing history semantics; validate
+		// any saved handoff before retaining input or changing reconnect ownership.
+		if (!ValidateAcpReplayContext(app, *chat, {replay_validation}, error_out)) return false;
 		const bool owned_images = std::ranges::any_of(message.attachments, [](const MessageAttachment& attachment) { return attachment.source == AttachmentSource::OwnedNativeAsset; });
 		if (AcpSessionState* retained = FindAcpSessionForChat(app, chat_id); HasRetainedAcpRetry(*chat, retained, message_index))
 		{
@@ -5472,6 +5599,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		const int message_index = static_cast<int>(chat->messages.size()) - 1;
+		AcpQueuedUserPromptState replay_validation;
+		replay_validation.text = chat->messages.back().content;
+		replay_validation.append_user_message = false;
+		replay_validation.existing_user_message_index = message_index;
+		replay_validation.include_prior_context = true;
+		if (!ValidateAcpReplayContext(app, *chat, {replay_validation}, error_out)) return false;
 		std::optional<AcpUnsentPromptRecovery> captured_retry;
 		if (!ResolveCapturedRetryPolicy(app, *chat, message_index, captured_retry, error_out))
 			return false;
@@ -5515,12 +5648,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 		queued.text = message.content;
 		queued.native_input_id = message.native_input_id;
 		queued.origin_request_id = message.origin_request_id;
-		if (!needs_workspace)
-		{
-			// Validate before goal/snapshot side effects; assemble tagged context at batch admission.
-			AcpQueuedUserPromptState validation = queued;
-			if (!ExpandAcpRetryContext(app, *chat, validation, error_out)) return false;
-		}
 		queued.include_prior_context = true;
 		queued.markdown_store_files = message.markdown_store_files;
 		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
@@ -6103,6 +6230,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool FinalizeStoppedAcpSession(AppState& app, AcpSessionState& session,
 	                               ChatSession* chat, bool preserve_held_queue = false)
 	{
+		const bool model_discovery_only = session.model_discovery_only;
 		bool retained_policy_queue = false;
 		auto save_purpose = preserve_held_queue ? acp_detail::AcpChatSavePurpose::PreserveQueuedIntent : acp_detail::AcpChatSavePurpose::SettleFailedDirect;
 		const bool graceful_update_stop = session.stop_purpose == AcpStopPurpose::ProviderUpdate &&
@@ -6192,6 +6320,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.goal_turn_kind.clear();
 		session.goal_turn_model_id.clear();
 		session.launch_model_options_id.clear();
+		session.launch_model_options_captured = false;
 		session.goal_internal_session = false;
 		ClearGoalReviewState(session);
 		session.reconnect_pending = false;
@@ -6211,6 +6340,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.stderr_buffer.clear();
 		session.stdout_poll_pending = false;
 		session.stderr_poll_pending = false;
+		if (!model_discovery_only && chat != nullptr && app.opencode_compaction_before_turn_reset)
+			app.opencode_compaction_before_turn_reset(session, *chat);
 		session.current_assistant_message_index = -1;
 		session.turn_first_user_message_index = -1;
 		session.turn_user_message_index = -1;
@@ -7018,6 +7149,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				ChatSession* workspace_chat = FindAcpRuntimeChatById(app, session.chat_id);
 				if (!workspace_chat) continue;
+				if (session.queue_held) continue;
+				if (!ValidateQueuedReplayBeforeLaunch(app, session, *workspace_chat))
+				{
+					changed = true;
+					continue;
+				}
 				const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, *workspace_chat);
 				if (workspace == WorktreeLaunchPreparationState::Pending) continue;
 				changed = true;
@@ -7120,6 +7257,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (launch_chat) { launch_chat->acp_queue_held = true; ScheduleChatSave(app, *launch_chat, 0.0); }
 				}
 				else if (launch_chat == nullptr)
+				{
+					session.pending_local_launch.reset();
+					session.pending_referenced_queue_launch_fingerprint.clear();
+				}
+				else if (!ValidateQueuedReplayBeforeLaunch(app, session, *launch_chat))
 				{
 					session.pending_local_launch.reset();
 					session.pending_referenced_queue_launch_fingerprint.clear();
@@ -7581,6 +7723,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_goal_id = goal_review_goal_id;
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
+					// A replacement process can resume native history; do not infer a zero cumulative baseline.
+					if (session.goal_review_turn) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
 					AppendGoalLoopDiagnostic(session, "auto_restart_after_startup_crash", goal_review_goal_id, pending_prompt);
 				}

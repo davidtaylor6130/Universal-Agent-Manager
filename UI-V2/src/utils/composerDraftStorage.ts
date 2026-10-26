@@ -14,6 +14,12 @@ const chatPrefix = 'uam-chat-composer-draft-v1:'
 const terminalPrefix = 'uam-terminal-steer-draft-v1:'
 const chatDraftMemory = new Map<string, ChatComposerDraft>()
 const chatDraftDirty = new Set<string>()
+const draftListeners = new Set<(sessionId: string) => void>()
+
+export function subscribeChatComposerDraft(listener: (sessionId: string) => void): () => void {
+  draftListeners.add(listener)
+  return () => { draftListeners.delete(listener) }
+}
 
 function storage(): Storage | null {
   try {
@@ -65,6 +71,9 @@ export function writeChatComposerDraft(sessionId: string, draft: ChatComposerDra
     chatDraftDirty.delete(sessionId)
   } catch {
     chatDraftDirty.add(sessionId)
+  }
+  for (const listener of draftListeners) {
+    try { listener(sessionId) } catch { /* Presentation cannot change the persistence outcome. */ }
   }
 }
 

@@ -271,6 +271,61 @@ describe('passive window reviewed reading guards', () => {
 })
 
 describe('passive local reading recovery', () => {
+  it.each(['beginning', 'end'] as const)('does not offer an impossible retry at the absolute %s without visible row geometry', async edge => {
+    const shared = useAppStore.getState()
+    // Both rail marks must require a bounded read; the default tail already contains the end mark.
+    config = { ...config, first: 350, messages: book.slice(350, 400) }
+    await mount(); await clickMark(edge === 'end'); await complete()
+    const target = edge === 'beginning' ? 0 : 798
+    expect(requests).toHaveLength(1)
+    expect(requests[0].payload.targetMessageIndex).toBe(target)
+    expect(requests.every(request => request.done)).toBe(true)
+    const retained = row(target)
+    expect(retained?.querySelector('article')?.textContent).toBe(book[target].content)
+    // The beginning is fully revealed, and the end includes the actual final raw message.
+    expect(row(edge === 'beginning' ? 0 : 799)).not.toBeNull()
+    const geometry = vi.mocked(Element.prototype.getBoundingClientRect).getMockImplementation()!
+    vi.mocked(Element.prototype.getBoundingClientRect).mockImplementation(function (this: Element) {
+      const box = geometry.call(this)
+      return this.hasAttribute('data-message-index') ? { ...box, y: -1000, top: -1000, bottom: -900 } as DOMRect : box
+    })
+    await scrollTo(edge === 'beginning' ? 0 : region().scrollHeight - region().clientHeight)
+    expect(row(target)).toBe(retained)
+    expect(host.textContent, 'A known history edge must not fabricate anchor recovery').not.toContain('The visible reading position is unavailable.')
+    expect([...host.querySelectorAll('button')].find(item => item.textContent === 'Retry history')).toBeUndefined()
+    expect(requests).toHaveLength(1)
+    expect(useAppStore.getState()).toBe(shared)
+    expect(host.querySelector('textarea, input, form')).toBeNull()
+  })
+
+  it('retains explicit anchor recovery when an adjacent page actually exists', async () => {
+    const shared = useAppStore.getState()
+    await mount()
+    await act(async () => host.querySelector<HTMLElement>('[role="slider"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, clientY: 120 })))
+    expect(requests.at(-1)?.payload.targetMessageIndex).toBe(400)
+    await complete()
+    const retained = row(400)
+    expect(retained?.querySelector('article')?.textContent).toBe(book[400].content)
+    const geometry = vi.mocked(Element.prototype.getBoundingClientRect).getMockImplementation()!
+    vi.mocked(Element.prototype.getBoundingClientRect).mockImplementation(function (this: Element) {
+      const box = geometry.call(this)
+      return this.hasAttribute('data-message-index') ? { ...box, y: -1000, top: -1000, bottom: -900 } as DOMRect : box
+    })
+    await scrollTo(0)
+    expect(host.textContent).toContain('The visible reading position is unavailable.')
+    const retry = [...host.querySelectorAll('button')].find(item => item.textContent === 'Retry history')
+    expect(retry).toBeDefined()
+    expect(requests).toHaveLength(1)
+    vi.mocked(Element.prototype.getBoundingClientRect).mockImplementation(geometry)
+    await act(async () => retry!.click())
+    expect(requests).toHaveLength(2)
+    expect(requests[1].payload).toMatchObject({ chatId: 'passive-owned', limit: 100, before: 376 })
+    await complete()
+    expect(row(400)).toBe(retained)
+    expect(host.textContent).not.toContain('The visible reading position is unavailable.')
+    expect(useAppStore.getState()).toBe(shared)
+  })
+
   it.each(['unavailable retry', 'in-window rail recovery'])('keeps retained initial history truthful after missing visible anchor: %s', async mode => {
     const shared = useAppStore.getState()
     await mount()
