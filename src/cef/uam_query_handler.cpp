@@ -58,6 +58,12 @@ namespace
 			callback->Failure(503, "The native window is unavailable.");
 			return;
 		}
+		if (action == "quitApplication")
+		{
+			callback->Success("{}");
+			CefPostTask(TID_UI, new CloseWindowTask(window));
+			return;
+		}
 		if (action == "restartApplication")
 		{
 			if (!uam::platform::RequestApplicationRestart())
@@ -173,6 +179,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
+		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
+		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
@@ -199,13 +207,6 @@ bool UamQueryHandler::CompanionStartupFailed() const
 
 bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	if ((!UAM_ENABLE_SSH && (action.find("RemoteHost") != std::string_view::npos || action == "listRemoteDirectories")) ||
-	    (!UAM_ENABLE_COMPUTER_USE && action.find("ComputerUse") != std::string_view::npos) ||
-	    (!UAM_ENABLE_MOBILE_COMPANION && action.find("Companion") != std::string_view::npos))
-	{
-		cb->Failure(400, "This feature is disabled in this build.");
-		return true;
-	}
 	const std::string chat_id = payload.value("chatId", "");
 	if (uam::RequiresWorkspaceMutationLease(action))
 	{
@@ -261,7 +262,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
 		{"requestAppPermission", &UamQueryHandler::HandleRequestAppPermission},
 		{"openAppPermissionSettings", &UamQueryHandler::HandleOpenAppPermissionSettings},
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"repairCompanionLanAddress", &UamQueryHandler::HandleRepairCompanionLanAddress},
+#endif
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
 		{"setChatSnoozedUntil", &UamQueryHandler::HandleSetChatSnoozedUntil},
@@ -302,6 +305,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"submitManagedSubagentFollowup", &UamQueryHandler::HandleSubmitManagedSubagentFollowup},
 		{"resumeAgentRun", &UamQueryHandler::HandleResumeAgentRun},
 		{"setChatCommandSafetyTier", &UamQueryHandler::HandleSetChatCommandSafetyTier},
+		// Feature routes exist only in builds that include the feature; excluded actions are unknown.
+#if UAM_ENABLE_COMPUTER_USE
 		{"setChatComputerUseEnabled", &UamQueryHandler::HandleSetChatComputerUseEnabled},
 		{"setChatComputerUseBackend", &UamQueryHandler::HandleSetChatComputerUseBackend},
 		{"setComputerUseControl", &UamQueryHandler::HandleSetComputerUseControl},
@@ -311,13 +316,18 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"checkComputerUsePermissions", &UamQueryHandler::HandleCheckComputerUsePermissions},
 		{"requestComputerUsePermission", &UamQueryHandler::HandleRequestComputerUsePermission},
 		{"openComputerUseSystemSettings", &UamQueryHandler::HandleOpenComputerUseSystemSettings},
+#endif
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
 		{"restartCompanion", &UamQueryHandler::HandleRestartCompanion},
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
+#endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
+#if UAM_ENABLE_SSH
 		{"setChatRemoteRecovery", &UamQueryHandler::HandleSetChatRemoteRecovery},
+#endif
 		{"moveChatWorkspace", &UamQueryHandler::HandleMoveChatWorkspace},
 		{"getMemorySettings", &UamQueryHandler::HandleGetMemorySettings},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
@@ -327,7 +337,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
 		{"getProviderMcpStatus", &UamQueryHandler::HandleGetProviderMcpStatus},
 		{"setProviderMcpConfiguration", &UamQueryHandler::HandleSetProviderMcpConfiguration},
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
+#endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
@@ -336,11 +348,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
+#if UAM_ENABLE_SSH
 		{"setExecutionRoutingSettings", &UamQueryHandler::HandleSetExecutionRoutingSettings},
 		{"listRepositoryMatches", &UamQueryHandler::HandleListRepositoryMatches},
 		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
+#endif
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
 		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
+		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
+		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
@@ -348,12 +364,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
 		{"applyCliProviderVersions", &UamQueryHandler::HandleApplyCliProviderVersions},
 		{"applyCliProviderVersion", &UamQueryHandler::HandleApplyCliProviderVersion},
+#if UAM_ENABLE_SSH
 		{"previewRemoteHost", &UamQueryHandler::HandlePreviewRemoteHost},
 		{"installRemoteHost", &UamQueryHandler::HandleInstallRemoteHost},
 		{"saveRemoteHostOptions", &UamQueryHandler::HandleSaveRemoteHostOptions},
 		{"checkRemoteHostInstruction", &UamQueryHandler::HandleCheckRemoteHostInstruction},
 		{"removeRemoteHost", &UamQueryHandler::HandleRemoveRemoteHost},
 		{"listRemoteDirectories", &UamQueryHandler::HandleListRemoteDirectories},
+#endif
 		{"browseMarkdownStoreDirectory", &UamQueryHandler::HandleBrowseMarkdownStoreDirectory},
 		{"setMarkdownStoreDirectory", &UamQueryHandler::HandleSetMarkdownStoreDirectory},
 		{"listMarkdownStoreEntries", &UamQueryHandler::HandleListMarkdownStoreEntries},
@@ -413,7 +431,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
 		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},
 		{"recordRuntimeActivity", &UamQueryHandler::HandleRuntimeActivity},
+#if UAM_ENABLE_MOBILE_COMPANION
 		{"companionCliTerminal", &UamQueryHandler::HandleCompanionCli},
+#endif
 		{"startCliTerminal", &UamQueryHandler::HandleStartCli},
 		{"stopCliTerminal", &UamQueryHandler::HandleStopCli},
 		{"steerCliTerminal", &UamQueryHandler::HandleSteerCliTerminal},
@@ -480,7 +500,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
+	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication" || action == "quitApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
 		return true;

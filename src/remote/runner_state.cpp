@@ -1,4 +1,5 @@
 #include "common/provider/provider_setup.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_state.h"
@@ -796,10 +797,6 @@ namespace uam::remote
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
-#if !UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		if (type == "opencode.native" || type == "opencode.terminal.observe")
-			return ProcessError(request, "unsupported_request", "This request is unavailable in this build.");
-#endif
 		if (type == "path.inspect")
 		{
 			state_lock.unlock();
@@ -1013,6 +1010,7 @@ namespace uam::remote
 			}
 			return ProcessSuccess(request, {{"text", text}});
 		}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (type == "opencode.terminal.observe")
 		{
 			// The random credential is delivered only to this TUI through its private launch channel.
@@ -1041,6 +1039,7 @@ namespace uam::remote
 				return ProcessError(request, "native_observation_unavailable", error);
 			return ProcessSuccess(request, std::move(result));
 		}
+#endif
 		if (type == "workspace.file.read" || type == "workspace.attachment.read")
 		{
 			const bool attachment = type == "workspace.attachment.read";
@@ -1073,8 +1072,9 @@ namespace uam::remote
 			const std::string workspace = native_history::String(request, "workspace");
 			std::string token = native_history::String(request, "snapshotId");
 			const bool existing_snapshot = !token.empty();
-			if ((provider != "claude-cli" && provider != "copilot-cli" && provider != "gemini-cli") ||
-			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != "claude-cli" && provider != "gemini-cli"))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
+			// The excluded-provider placeholder equals every excluded provider's id, so it is never a valid request.
+			if (provider == uam::provider_ids::kExcludedCliProviderId || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kGeminiCli) ||
+			    !native_history::SafeId(session) || (!agent.empty() && (!native_history::SafeId(agent) || (provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli))) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
 			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace) ||
 			    (!token.empty() && !native_history::SafeId(token)))
 				return ProcessError(request, "invalid_request", "An exact provider, native session and workspace are required.");
@@ -1743,6 +1743,7 @@ namespace uam::remote
 			return ProcessError(request, "session_starting",
 			                    "The remote process is still starting.");
 		RenewLease(process);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (type == "opencode.native")
 		{
 			if (process.exited.load(std::memory_order_acquire) || !request.contains("operation") || !request["operation"].is_object())
@@ -1774,6 +1775,7 @@ namespace uam::remote
 				return ProcessError(request, "native_control_failed", error);
 			return ProcessSuccess(request, std::move(result));
 		}
+#endif
 		if (type == "process.remove")
 		{
 			if (!process.exited.load(std::memory_order_acquire))

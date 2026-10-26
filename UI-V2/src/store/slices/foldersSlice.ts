@@ -9,7 +9,7 @@ import {
   rememberPendingRequest,
 } from '../cpp/reconcile'
 import type { CppFolder, ShellAction } from '../cpp/types'
-import { DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
+import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
 import { discardPendingPushesForChats } from '../push/pushBuffers'
@@ -922,7 +922,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           title: session.name,
           folderId: session.folderId ?? '',
           folderTitle: session.folderId ? (get().folders.find((folder) => folder.id === session.folderId)?.name ?? '') : '',
-          providerId: session.providerId ?? GEMINI_CLI_PROVIDER_ID,
+          providerId: session.providerId ?? DEFAULT_PROVIDER_ID,
           messageCount: get().messages[session.id]?.length ?? 0,
           memoryEnabled: session.memoryEnabled ?? true,
           memoryLevel: session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off'),

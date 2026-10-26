@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 import { PermissionsSettings } from './PermissionsSettings'
 import { sendToCEF } from '../../ipc/cefBridge'
-vi.mock('../../config/buildFeatures', () => ({ COMPUTER_USE_ENABLED: false, MOBILE_COMPANION_ENABLED: true }))
+vi.mock('../../config/buildFeatures', async (importOriginal) => ({ ...await importOriginal<typeof import('../../config/buildFeatures')>(), COMPUTER_USE_ENABLED: false, MOBILE_COMPANION_ENABLED: true }))
 vi.mock('../../ipc/cefBridge', () => ({ sendToCEF: vi.fn() }))
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 

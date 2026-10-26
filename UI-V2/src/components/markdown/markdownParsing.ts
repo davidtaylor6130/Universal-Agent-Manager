@@ -2,6 +2,7 @@
 // Kept separate from the React components so they can be unit-tested directly.
 
 import { parseFileReference, type FileReference } from '../../utils/fileReferences'
+import { CLAUDE_ENABLED, CODEX_ENABLED } from '../../config/buildFeatures'
 
 export function safeHref(url: string): string | undefined {
   return /^(https?:|mailto:)/i.test(url) ? url : undefined
@@ -69,7 +70,8 @@ export interface InlineChip {
 }
 
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|[ch](?:pp|xx)?|cs|py|rs|go|java|swift|kt|json|ya?ml|toml|md|txt|css|scss|html|xml|sh|ps1|bat|sql|vue|svelte)$/i
-const BRANCH_NAME = /^(?:(?:feature|fix|claude|codex|uam)\/[\w./-]+|main|master|develop)$/
+// Agent branch prefixes are listed only for providers this build includes.
+const BRANCH_NAME = new RegExp(`^(?:(?:${['feature', 'fix', ...(CLAUDE_ENABLED ? ['claude'] : []), ...(CODEX_ENABLED ? ['codex'] : []), 'uam'].join('|')})\\/[\\w./-]+|main|master|develop)$`)
 // Path-ish characters only: anything with spaces, operators or brackets is ordinary code.
 const PATH_CHARS = /^[\w./\\:#@+~%-]+$/
 

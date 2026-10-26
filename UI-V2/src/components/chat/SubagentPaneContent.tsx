@@ -7,6 +7,8 @@ import type { Session } from '../../types/session'
 import { Notice } from '../ui'
 import { ManagedSubagentConversation } from './ManagedSubagentConversation'
 import { SubagentHeader, SubagentTranscript, SubagentTranscriptLoading, type OlderHistoryOutcome } from './SubagentTranscript'
+import { CLAUDE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
 
 export function SubagentPaneContent({ parent, route, active = true, navigationKey = '', onBack }: { parent: Session; route: SubagentRoute; active?: boolean; navigationKey?: string; onBack?: () => void }) {
   const visitKey = navigationKey ? JSON.stringify([navigationKey, readIdentity(parent)]) : ''
@@ -24,7 +26,7 @@ const readIdentity = (session: Session | undefined) => session ? JSON.stringify(
 // Passive journal Sessions retain the exact attested history reference as their ID.
 // The existing native import endpoint validates the reference; lineage grants no execution authority.
 function nativeJournalReference(child: Session | undefined) {
-  const prefix = child?.providerId === 'gemini-cli' ? 'gemini' : child?.providerId === 'claude-cli' ? 'claude' : child?.providerId === 'copilot-cli' ? 'copilot' : ''
+  const prefix = GEMINI_ENABLED && child?.providerId === GEMINI_CLI_PROVIDER_ID ? 'gemini' : CLAUDE_ENABLED && child?.providerId === CLAUDE_CLI_PROVIDER_ID ? 'claude' : COPILOT_ENABLED && child?.providerId === COPILOT_CLI_PROVIDER_ID ? 'copilot' : ''
   return child?.importedReadOnly && prefix && (child.id.startsWith(`${prefix}-agent-`) || child.id.startsWith(`${prefix}-a32-`)) ? child.id : undefined
 }
 

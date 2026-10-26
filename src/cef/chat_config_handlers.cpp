@@ -129,6 +129,7 @@ namespace
 		return uam::StopAndEraseCliTerminalForChat(app, chat_id);
 	}
 
+#if UAM_ENABLE_COMPUTER_USE
 	bool HasComputerUseOwnership(const uam::AppState& app, const std::string& chat_id, bool enabled)
 	{
 		if (enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id)) return true;
@@ -216,6 +217,7 @@ namespace
 			result = RunComputerUseSettingsHelperOnce(action, permission);
 		return result;
 	}
+#endif
 }
 
 using namespace uam::query_handler_internal;
@@ -1978,6 +1980,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	cb->Success(nlohmann::json{{"commandSafetyTier", chat->command_safety_tier}}.dump());
 }
 
+#if UAM_ENABLE_COMPUTER_USE
 void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> browser,
     const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -2272,6 +2275,7 @@ void UamQueryHandler::HandleRequestComputerUsePermission(CefRefPtr<CefBrowser>, 
 		return RunComputerUseSettingsHelper("request", helper_permission);
 	});
 }
+#endif
 
 void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -2310,6 +2314,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	cb->Success("{}");
 }
 
+#if UAM_ENABLE_SSH
 void UamQueryHandler::HandleSetChatRemoteRecovery(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	ChatSession* chat = FindChatOrFail(m_app, payload.value("chatId", ""), cb, "Chat not found.");
@@ -2332,6 +2337,7 @@ void UamQueryHandler::HandleSetChatRemoteRecovery(CefRefPtr<CefBrowser> browser,
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+#endif
 
 void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {

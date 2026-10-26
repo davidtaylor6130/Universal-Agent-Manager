@@ -475,6 +475,7 @@ namespace uam::remote
 				if (!uam::provider_setup::Apply(spec->configuration_provider, directory, spec->working_directory, spec->argv, spec->environment, error, spec->session_mcp_servers))
 				{ std::cerr << error << '\n'; return 70; }
 			}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 			if (private_launch)
 			{
 #if defined(_WIN32)
@@ -483,6 +484,7 @@ namespace uam::remote
 				(void)uam::opencode_native::RemoveConflictingTerminalObserver(spec->argv, spec->environment, "posix");
 #endif
 			}
+#endif
 			for (const std::string& argument : spec->argv)
 				if (argument.find('\0') != std::string::npos) return 2;
 			for (const std::pair<std::string, std::string>& entry : spec->environment)
