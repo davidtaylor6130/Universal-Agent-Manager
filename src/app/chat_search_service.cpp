@@ -1,6 +1,7 @@
 #include "app/chat_search_service.h"
 #include "cef/state_serializer.h"
 #include "common/chat/chat_repository.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/utils/string_utils.h"
 #include <algorithm>
 #include <array>
@@ -87,6 +88,7 @@ namespace uam
 		nlohmann::json result{{"chatIds", nlohmann::json::array()}, {"hits", nlohmann::json::array()}};
 		if (canceled()) return std::nullopt;
 		std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(root);
+		(void)uam::excluded_provider_data::TakeChats(summaries); // Search reads the disk itself, so it hides the same chats.
 		std::ranges::sort(summaries, [](const ChatSession& left, const ChatSession& right) { return left.updated_at > right.updated_at; });
 		for (const ChatSession& summary : summaries)
 		{

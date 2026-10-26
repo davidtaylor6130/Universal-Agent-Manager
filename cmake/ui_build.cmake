@@ -22,6 +22,14 @@ list(APPEND UAM_UI_INPUTS ${UAM_UI_CONFIG_INPUTS}
   "${CMAKE_SOURCE_DIR}/UI-V2/index.html")
 # The list itself invalidates the bundle when an input is deleted or added with an old timestamp.
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/UI-V2/inputs.txt" CONTENT "${UAM_UI_INPUTS}\n")
+# Every normalised build flag reaches Vite as a compile-time constant (see cmake/build_features.cmake).
+if(NOT DEFINED UAM_UI_FEATURE_ENV)
+  message(FATAL_ERROR "Include cmake/build_features.cmake before cmake/ui_build.cmake.")
+endif()
+set(UAM_UI_FEATURE_ENV_ARGS "")
+foreach(_uam_ui_feature IN LISTS UAM_UI_FEATURE_ENV)
+  string(APPEND UAM_UI_FEATURE_ENV_ARGS "    \"${_uam_ui_feature}\"\n")
+endforeach()
 configure_file("${CMAKE_CURRENT_LIST_DIR}/build_ui.cmake.in"
   "${CMAKE_BINARY_DIR}/UI-V2/build.cmake" @ONLY)
 

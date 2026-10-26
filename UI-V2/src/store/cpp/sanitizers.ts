@@ -69,11 +69,12 @@ import type { MemoryLevel } from '../../types/memory'
 import type { ResourceCollection, ResourceReferenceType } from '../../types/resourceCollection'
 import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
   normalizeCliProviderIdAlias,
   SUPPORTED_CLI_PROVIDER_IDS,
   providerCapabilities,
 } from '../../utils/providerMetadata'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 // ---------------------------------------------------------------------------
 // Memory settings constants (re-exported so useAppStore.ts and slices can use them)
@@ -1079,7 +1080,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     customIcon: sanitizeCustomIcon(value.customIcon),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
-    providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),
+    providerId: stringOr(value.providerId, DEFAULT_PROVIDER_ID),
     temporaryParentChatId: isString(value.temporaryParentChatId) ? value.temporaryParentChatId : undefined,
     sideCleanupRequested: booleanOr(value.sideCleanupRequested),
     parentChatId: isString(value.parentChatId) ? value.parentChatId : undefined,
@@ -1331,7 +1332,7 @@ export function sanitizeVcsCommitResult(value: unknown): VcsCommitResult {
 // ---------------------------------------------------------------------------
 
 export const emptyCliVersionProviderState: CliVersionProviderState = {
-  providerId: GEMINI_CLI_PROVIDER_ID,
+  providerId: DEFAULT_PROVIDER_ID,
   installedVersion: '',
   selectedVersion: '',
   availableVersions: [],
@@ -1351,7 +1352,7 @@ export const emptyCliVersionManager: CliVersionManager = {
 
 export function sanitizeCliVersionProviderState(value: unknown): CliVersionProviderState | null {
   if (!isRecord(value)) return null
-  const providerId = stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID).trim()
+  const providerId = stringOr(value.providerId, DEFAULT_PROVIDER_ID).trim()
   if (!providerId) return null
   const status = stringOr(value.status)
   const normalizedStatus: CliVersionProviderState['status'] =
@@ -1748,7 +1749,7 @@ function sanitizeCppSettingsPatch(value: Record<string, unknown>): Partial<CppSe
 export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
-      activeProviderId: GEMINI_CLI_PROVIDER_ID,
+      activeProviderId: DEFAULT_PROVIDER_ID,
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
@@ -1769,7 +1770,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       memoryWorkerBindings: {},
       permissionReviewerProviderId: '',
       permissionReviewerModelId: '',
-      defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+      defaultNewChatProviderId: DEFAULT_PROVIDER_ID,
       providerChatDefaults: {},
       markdownStoreDirectory: '',
       fileExplorerApplication: '',
@@ -1852,6 +1853,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         executionHosts[0].customIcon = sanitizeCustomIcon(entry.customIcon)
         continue
       }
+      if (!SSH_ENABLED) continue // Builds without SSH keep only this computer.
       const id = stringOr(entry.id).trim()
       const sshAlias = stringOr(entry.sshAlias).trim()
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(id) || id === 'local' ||
@@ -1895,7 +1897,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     ...sanitizeVoiceInputSettings(value),
     ...sanitizeVcsStorageSettings(value),
     providerAvailability: sanitizeProviderAvailability(value.providerAvailability),
-    activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
+    activeProviderId: stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID),
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
@@ -1916,7 +1918,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     memoryWorkerBindings: bindings,
     permissionReviewerProviderId: stringOr(value.permissionReviewerProviderId),
     permissionReviewerModelId: stringOr(value.permissionReviewerModelId),
-    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID)),
+    defaultNewChatProviderId: stringOr(value.defaultNewChatProviderId, stringOr(value.activeProviderId, DEFAULT_PROVIDER_ID)),
     providerChatDefaults: sanitizeProviderChatDefaultsMap(value.providerChatDefaults),
     markdownStoreDirectory: stringOr(value.markdownStoreDirectory),
     fileExplorerApplication: stringOr(value.fileExplorerApplication),

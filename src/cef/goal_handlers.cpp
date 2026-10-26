@@ -1,4 +1,5 @@
 #include "cef/uam_query_handler.h"
+#include "common/provider/provider_ids.h"
 #include "cef/uam_query_handler_internal.h"
 
 #include "app/chat_domain_service.h"
@@ -199,7 +200,7 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 	{ cb->Failure(409, "Failed to create goal."); return; }
 	if (!uam::GoalService::SetActiveGoal(m_app, chat_id, goal_id, &error, nullptr, true))
 	{ previous.Restore(*chat); cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to activate goal.")); return; }
-	const bool native_resume = provider_managed && chat->provider_id == "codex-cli";
+	const bool native_resume = provider_managed && chat->provider_id == uam::provider_ids::kCodexCli;
 	PersistGoalMutation(
 	    browser, chat_id,
 	    [this, chat_id, previous]()
@@ -389,7 +390,7 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 			}
 		}
 		Goal* goal = uam::GoalService::FindGoalById(m_app, chat_id, goal_id);
-		if (current && current->provider_id == "codex-cli" && goal && uam::GoalService::IsProviderManaged(*goal))
+		if (current && current->provider_id == uam::provider_ids::kCodexCli && goal && uam::GoalService::IsProviderManaged(*goal))
 		{
 			if (session) session->goal_resume_suppressed = false;
 			const bool resumed = uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, failure, false, true, false,
@@ -458,7 +459,7 @@ void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nloh
 		if (!admitted()) return false;
 		if (uam::AcpSessionState* native = uam::FindAcpSessionForChat(m_app, chat_id)) native->goal_resume_suppressed = false;
 		const Goal* goal = uam::GoalService::FindGoalById(m_app, chat_id, goal_id);
-		const bool native = goal && goal->execution_owner == "provider" && ChatDomainService().FindChatById(m_app, chat_id)->provider_id == "codex-cli";
+		const bool native = goal && goal->execution_owner == "provider" && ChatDomainService().FindChatById(m_app, chat_id)->provider_id == uam::provider_ids::kCodexCli;
 		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 		const bool deferred = !native && session && !uam::AcpSessionHasActiveTurn(*session);
 		const bool resumed = uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, failure, restart, true, false,

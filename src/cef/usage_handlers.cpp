@@ -1,12 +1,17 @@
 #include "cef/uam_query_handler.h"
+#include "common/provider/provider_ids.h"
 #include "cef/uam_query_handler_async.h"
 #include "common/usage/multi_host_history.h"
 #include "common/usage/history_transport.h"
 #include "common/config/execution_host_config.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/usage/account_allowance_service.h"
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 #include "common/usage/claude_account_allowance.h"
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI || UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 #include "common/usage/google_account_allowance.h"
+#endif
 #include "common/provider/provider_profile.h"
 #include "common/utils/command_line_words.h"
 
@@ -39,7 +44,8 @@ void UamQueryHandler::RefreshUsageTargets()
 void UamQueryHandler::RefreshAllowanceTargets()
 {
 	std::vector<uam::usage::AccountAllowanceProviderConfig> providers;
-	for (const char* id : {"codex-cli", "claude-cli", "copilot-cli", "gemini-cli", "antigravity-cli"})
+	// Excluded providers carry the placeholder id, which no profile has, so they are never queried.
+	for (const char* id : {uam::provider_ids::kCodexCli, uam::provider_ids::kClaudeCli, uam::provider_ids::kCopilotCli, uam::provider_ids::kGeminiCli, uam::provider_ids::kAntigravityCli})
 		if (const ProviderProfile* profile = ProviderProfileStore::FindById(m_app.provider_profiles, id))
 			providers.push_back({id, uam::command_line::SplitWords(profile->interactive_command)});
 	if (m_providerAllowances) { m_providerAllowances->SetProviders(std::move(providers)); return; }
@@ -53,9 +59,15 @@ void UamQueryHandler::RefreshAllowanceTargets()
 			    result.error = validated.error;
 			    return result;
 		    }
-		    if (config.provider_id == "claude-cli") return uam::usage::FetchClaudeAccountAllowance(root, stop);
-		    if (config.provider_id == "gemini-cli") return uam::usage::FetchGeminiAccountAllowance(root, stop);
-		    if (config.provider_id == "antigravity-cli") return uam::usage::FetchAntigravityAccountAllowance(root, stop);
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		    if (config.provider_id == uam::provider_ids::kClaudeCli) return uam::usage::FetchClaudeAccountAllowance(root, stop);
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		    if (config.provider_id == uam::provider_ids::kGeminiCli) return uam::usage::FetchGeminiAccountAllowance(root, stop);
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+		    if (config.provider_id == uam::provider_ids::kAntigravityCli) return uam::usage::FetchAntigravityAccountAllowance(root, stop);
+#endif
 		    return uam::usage::FetchCliAccountAllowance(config.provider_id, validated.command, root, stop);
 	    });
 }

@@ -1,5 +1,6 @@
 import { SettingsLoading } from '../settings/SettingsPrimitives'
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
+import { LegacyChatImportPrompt } from '../modals/LegacyChatImportPrompt'
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
@@ -49,6 +50,8 @@ import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup, relativeNotificationTime } from '../../utils/notificationTime'
+import { isSshHost } from '../../utils/remoteWorkspace'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
@@ -58,7 +61,6 @@ const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ Set
 const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
 const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
-const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
@@ -247,7 +249,7 @@ function remoteConnectionIssueSignature(state: ReturnType<typeof useAppStore.get
   const hosts = new Map(state.executionHosts.map((host) => [host.id, host]))
   const signature: string[] = []
   for (const host of state.executionHosts) {
-    if (host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
+    if (isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error')) {
       signature.push(['host', host.id, host.label, host.runnerStatus].join('\0'))
     }
   }
@@ -271,7 +273,7 @@ function remoteConnectionIssues(
   cliBindings: ReturnType<typeof useAppStore.getState>['cliBindingBySessionId'],
 ): RemoteConnectionNotification[] {
   const hosts = new Map(executionHosts.map((host) => [host.id, host]))
-  const issues = executionHosts.flatMap((host) => host.transport === 'ssh' && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
+  const issues = executionHosts.flatMap((host) => isSshHost(host) && (host.runnerStatus === 'offline' || host.runnerStatus === 'error') ? [{
     id: `remote-host-${host.id}-${host.runnerStatus}`,
     connectionKey: `host-${host.id}`,
     hostLabel: host.label,
@@ -605,7 +607,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
   const vcsIcon = vcsKind === 'svn' ? <SvnLogo size={17} /> : vcsKind === 'git' ? <GithubLogo size={16} /> : <GitBranch size={17} />
 
   const updateCount = monitor.updates.length
-  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || update.remoteHostId).length
+  const runtimeUpdateCount = monitor.updates.filter((update) => update.providerId || (SSH_ENABLED && update.remoteHostId)).length
   return (
     <aside className="uam-side-rail uam-side-rail--right" aria-label="Tool windows">
       <IconButton
@@ -658,7 +660,6 @@ export function AppShell() {
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
   const [usageOpen, setUsageOpen] = useState(false)
-  const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
@@ -1055,11 +1056,11 @@ export function AppShell() {
       />
 
       <StartupNativeImportChooser />
+      <LegacyChatImportPrompt />
       <TransientAlertSurface alert={alertSuppressed ? null : transientAlert} notice={transientAlert} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onHeldChange={setAlertHeld} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={() => setTransientAlert(null)} />
 
       {/* Modals */}
       <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>
-      <Presence open={Boolean(memoryLibraryScope) && !isSettingsOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryLibrary()}><Suspense fallback={null}><MemoryLibraryModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMemoryScanModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMemoryScanModal()}><Suspense fallback={null}><MemoryScanModal /></Suspense></InterfaceErrorBoundary></Presence>
       <Presence open={isMarkdownStoreOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().closeMarkdownStore()}><Suspense fallback={null}><MarkdownStoreModal /></Suspense></InterfaceErrorBoundary></Presence>
     </div>

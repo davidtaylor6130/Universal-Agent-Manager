@@ -547,7 +547,9 @@ namespace
 		};
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		const std::unordered_set<std::string> deleted_folders(intent.folder_ids.begin(), intent.folder_ids.end());
-		for (const ChatSession& chat : app.chats)
+		// An excluded provider's hidden chats are never deleted, so their sessions and workspaces stay owned.
+		for (const std::vector<ChatSession>* chats : {&app.chats, &app.excluded_provider_chats})
+		for (const ChatSession& chat : *chats)
 		{
 			if (deleted_ids.contains(chat.id)) continue;
 			if (!uam::strings::IsBlank(chat.native_session_id))

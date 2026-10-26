@@ -19,8 +19,10 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
@@ -67,7 +69,7 @@ const initialProviders: Provider[] = [
   { ...fallbackProviderForId(CLAUDE_CLI_PROVIDER_ID), color: '#7c3aed' },
   { ...fallbackProviderForId(OPENCODE_CLI_PROVIDER_ID), color: '#14b8a6' },
   { ...fallbackProviderForId(COPILOT_CLI_PROVIDER_ID), color: '#22c55e' },
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let lastPushStatusUpdateAtMs = 0
 
@@ -334,7 +336,7 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
-    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? DEFAULT_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     windowsPowerShell: cpp.settings.windowsPowerShell ?? 'auto',
@@ -400,7 +402,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     : current.providers
   const visibleProviders = providers.length > 0
     ? providers
-    : [{ id: GEMINI_CLI_PROVIDER_ID }]
+    : [{ id: DEFAULT_PROVIDER_ID }]
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {

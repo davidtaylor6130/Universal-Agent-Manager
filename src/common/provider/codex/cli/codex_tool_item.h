@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/runtime/acp/acp_tool_items.h"
+#include "common/provider/provider_ids.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include <nlohmann/json.hpp>
 #include <string>
@@ -12,7 +13,7 @@ namespace uam::codex
 	/// this adapter. Opaque tool names are not generically case/separator folded.
 	inline bool HistoryToolOperationEquivalent(std::string_view provider_id, std::string_view saved, std::string_view incoming)
 	{
-		if (provider_id != "codex-cli" || saved.empty() || incoming.empty()) return false;
+		if (provider_id != uam::provider_ids::kCodexCli || saved.empty() || incoming.empty()) return false;
 		if (saved == incoming) return true;
 		const auto spawn_operation = [](std::string_view value)
 		{

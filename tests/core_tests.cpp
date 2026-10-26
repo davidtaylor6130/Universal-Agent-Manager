@@ -10737,6 +10737,39 @@ UAM_TEST(ChatDomainServiceSelectChatByIdTrimsRequestedChatId)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string(""));
 }
 
+UAM_TEST(FinalizeChatSyncSelectionKeepsClosedSelectionEmpty)
+{
+	TempDir temp("uam-sync-selection-closed");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.remember_last_chat = true;
+	for (const char* id : {"chat-first", "chat-terminal"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+	}
+
+	// Closing or deleting the open chat leaves no selection. A later terminal
+	// history sync (its own chat, another native ID, or a removed chat) must not
+	// reopen anything.
+	for (const char* preferred : {"chat-terminal", "native-session-id", "chat-deleted", ""})
+	{
+		ChatDomainService().SelectChatById(app, "");
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, false));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "", preferred, true));
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+		UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string());
+	}
+
+	// An open chat still follows its terminal's import target as before.
+	ChatDomainService().SelectChatById(app, "chat-first");
+	UAM_ASSERT(uam::FinalizeChatSyncSelection(app, "chat-first", "chat-terminal", false));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("chat-terminal"));
+}
+
 UAM_TEST(FinalizeChatSyncSelectionPrunesReferencesAndReportsHydrationFailure)
 {
 	TempDir temp("uam-sync-selection-hydration");
@@ -10799,11 +10832,15 @@ UAM_TEST(SyncChatsFromLoadedNativeTrimsPreferredNativeSessionId)
 	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(saved.front().id, std::string("target-chat"));
 	UAM_ASSERT_EQ(saved.front().native_session_id, std::string("target-native"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	// No chat was open, so the background import must not open one.
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
 	app.chats.clear();
 	app.selected_chat_index = -1;
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, "missing-chat"));
-	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("target-chat"));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().id, std::string("target-chat"));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Target history"));
 }
 
@@ -18445,8 +18482,7 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	                               "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
 	                               "--disable-builtin-mcps",
 	                               "--no-custom-instructions",
-	                               "--no-remote",
-	                               "--no-remote-export",
+	                               "--sync-session=off",
 	                               "--disallow-temp-dir",
 	                               "--silent",
 	                           }));
@@ -18462,6 +18498,30 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "COPILOT_HOME="));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--agent"));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--plugin-dir"));
+
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export; older CLIs reject --sync-session.
+	const auto worker_flags = [&](std::string_view host_id)
+	{
+		return uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, nullptr, host_id).argv;
+	};
+	const auto uses_legacy_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--no-remote")) && uam::ranges::Contains(argv, std::string("--no-remote-export")) &&
+		       !uam::ranges::Contains(argv, std::string("--sync-session=off"));
+	};
+	const auto uses_current_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--sync-session=off")) && !uam::ranges::Contains(argv, std::string("--no-remote")) &&
+		       !uam::ranges::Contains(argv, std::string("--no-remote-export"));
+	};
+	UAM_ASSERT(uses_current_flags(worker_invocation.argv));
+	worker_version.installed_version = "1.0.102";
+	UAM_ASSERT(uses_legacy_flags(worker_flags({})));
+	worker_version.installed_version = "1.0.103-0";
+	UAM_ASSERT(uses_current_flags(worker_flags({})));
+	worker_app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, "ssh-old")].installed_version = "1.0.98";
+	UAM_ASSERT(uses_legacy_flags(worker_flags("ssh-old")));
+	UAM_ASSERT(uses_current_flags(worker_flags("ssh-unchecked")));
 
 	const std::string long_prompt(12000, 'x');
 	const uam::ProviderWorkerInvocation long_worker = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, long_prompt, "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);

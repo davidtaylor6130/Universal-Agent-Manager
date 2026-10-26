@@ -1,6 +1,7 @@
 #include "app/agent_run_ledger.h"
 
 #include "common/chat/chat_ids.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/config/approval_modes.h"
 #include "common/security/command_safety.h"
 #include "common/paths/path_utils.h"
@@ -991,13 +992,17 @@ namespace uam
 
 	AgentRunLoadResult AgentRunLedger::LoadAll(const std::filesystem::path& data_root)
 	{
-		return LoadAllImpl(data_root, true, {});
+		AgentRunLoadResult result = LoadAllImpl(data_root, true, {});
+		uam::excluded_provider_data::RemoveRuns(result.runs);
+		return result;
 	}
 
 	AgentRunLoadResult AgentRunLedger::LoadAllReadOnly(const std::filesystem::path& data_root,
 	    const std::function<void(const std::filesystem::path&)>& after_primary_size_for_tests)
 	{
-		return LoadAllImpl(data_root, false, after_primary_size_for_tests);
+		AgentRunLoadResult result = LoadAllImpl(data_root, false, after_primary_size_for_tests);
+		uam::excluded_provider_data::RemoveRuns(result.runs);
+		return result;
 	}
 
 	AgentRunLoadResult AgentRunLedger::LoadAllImpl(const std::filesystem::path& data_root, bool recover,

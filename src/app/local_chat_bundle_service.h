@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/models/app_models.h"
+
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -39,6 +41,8 @@ namespace uam
 		std::size_t failed_count = 0;
 		std::size_t renamed_count = 0;
 		std::vector<LocalChatBundleImportItem> items;
+		// Folders added by ImportLegacyDataRoot, for merging into the live app.
+		std::vector<ChatFolder> imported_folders;
 		std::vector<std::string> warnings;
 		std::vector<std::string> errors;
 	};
@@ -55,5 +59,26 @@ namespace uam
 		static LocalChatBundleImportResult Import(
 		    const std::filesystem::path& data_root,
 		    const std::filesystem::path& bundle_path);
+		// Copies chats and folders from a previous version's data root into data_root,
+		// keeping their ids and leaving the source untouched. Existing ids are skipped,
+		// and a fully imported source is recorded so later runs never import it again.
+		// Callers ask the user first (see LegacyDataRootPending).
+		static LocalChatBundleImportResult ImportLegacyDataRoot(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
+		// True when legacy_root holds earlier-release chats the user has neither copied nor declined.
+		static bool LegacyDataRootPending(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
+		// Earlier-release roots still awaiting an answer, deduplicated: default_root and the
+		// %APPDATA% fallback (when data_root is elsewhere), then <exe>/data and the exe directory.
+		static std::vector<std::filesystem::path> PendingLegacyDataRoots(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& default_root,
+		    const std::filesystem::path& executable_path);
+		// Records the "Brand new" choice so legacy_root is never offered again.
+		static bool DeclineLegacyDataRoot(
+		    const std::filesystem::path& data_root,
+		    const std::filesystem::path& legacy_root);
 	};
 } // namespace uam

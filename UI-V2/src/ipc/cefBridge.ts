@@ -1,4 +1,5 @@
 import { companionPlatformAction } from './companionPlatform'
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
 
 /**
  * Routes requests through the C++ CefMessageRouter when hosted in CEF.
@@ -19,7 +20,7 @@ declare global {
 
 /** Identifies the companion route sharing the desktop UI and store. */
 export function isCompanionContext(): boolean {
-  return typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
+  return MOBILE_COMPANION_ENABLED && typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
 }
 
 export function isCefContext(): boolean {

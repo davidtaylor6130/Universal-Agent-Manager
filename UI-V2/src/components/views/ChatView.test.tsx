@@ -4328,6 +4328,8 @@ describe('ChatView', () => {
 
   it('tells companion users about the keyboard microphone in the placeholder and the mic tooltip', () => {
     const previousPath = window.location.pathname
+    const previousDiscovery = useAppStore.getState().discoverProviderModels
+    useAppStore.setState({ discoverProviderModels: vi.fn(async () => true) })
     window.history.replaceState(null, '', '/companion')
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -4340,6 +4342,7 @@ describe('ChatView', () => {
       act(() => root.unmount())
       host.remove()
       window.history.replaceState(null, '', previousPath)
+      useAppStore.setState({ discoverProviderModels: previousDiscovery })
     }
   })
 

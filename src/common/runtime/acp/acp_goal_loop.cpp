@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -340,7 +341,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			return false;
 		}
 		const bool active_turn = AcpSessionHasActiveTurn(*session);
-		chat->goal_pending_continuation_id = active_turn && !(chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal)) ? goal_id : "";
+		chat->goal_pending_continuation_id = active_turn && !(chat->provider_id == uam::provider_ids::kCodexCli && GoalService::IsProviderManaged(*goal)) ? goal_id : "";
 		if (stage == GoalResumeStage::PrepareOnly)
 		{
 			// The poll loop must not execute this continuation before the CEF receipt.
@@ -356,7 +357,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	}
 	const std::string model_id = GoalService::IsProviderManaged(*goal) ? chat->model_id : GoalService::WorkerModelId(*chat, *goal);
 	const bool active_turn = AcpSessionHasActiveTurn(*session);
-	if (chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal))
+	if (chat->provider_id == uam::provider_ids::kCodexCli && GoalService::IsProviderManaged(*goal))
 	{
 		chat->goal_pending_continuation_id.clear();
 		return StartCodexNativeGoal(app, *session, *chat, *goal, user_action, error_out, replace_native || restart);
@@ -842,7 +843,7 @@ namespace
 			const std::string provider_goal_id = active_goal->id;
 			ClearGoalReviewState(session);
 			session.goal_turn_kind.clear();
-			if (chat.provider_id == "codex-cli" && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
+			if (chat.provider_id == uam::provider_ids::kCodexCli && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
 				return;
 			// A completed chat turn does not prove a provider goal has completed or been verified.
 			AppendGoalLoopDiagnostic(session, "provider_managed_turn_complete_unverified", provider_goal_id);
@@ -1006,7 +1007,7 @@ bool PollPendingGoalIterations(AppState& app)
 	for (ChatSession& chat : app.chats)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-		if (session == nullptr || session->provider_id != "codex-cli" || chat.active_goal_id.empty()) continue;
+		if (session == nullptr || session->provider_id != uam::provider_ids::kCodexCli || chat.active_goal_id.empty()) continue;
 		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
 			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
 			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))

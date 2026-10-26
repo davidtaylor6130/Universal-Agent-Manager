@@ -1184,7 +1184,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('opens project memory from the folder action', () => {
+  it('offers no standalone Project memory window from the folder actions', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -1199,16 +1199,11 @@ describe('FolderTree', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    const memoryButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Project memory')
-    )
-    expect(memoryButton).toBeTruthy()
-
-    act(() => {
-      memoryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(useAppStore.getState().openFolderMemoryLibrary).toHaveBeenCalledWith('project')
+    // Memory lives in Settings → Memory Store only (David, 2026-10-25).
+    const menu = document.body.querySelector('[role="menu"][aria-label="Project actions"]')
+    expect(menu?.textContent).toContain('New chat')
+    expect(menu?.textContent).not.toContain('memory')
+    expect(useAppStore.getState().openFolderMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => {
       root.unmount()
@@ -1238,7 +1233,7 @@ describe('FolderTree', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     expect(document.activeElement?.textContent).toContain('New chat')
     act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
-    expect(document.activeElement?.textContent).toContain('Project memory')
+    expect(document.activeElement?.textContent).toContain('Review native chats')
     act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(document.body.contains(menu)).toBe(false)
     expect(document.activeElement).toBe(trigger)

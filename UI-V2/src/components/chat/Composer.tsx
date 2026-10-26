@@ -1,4 +1,4 @@
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, COPILOT_ENABLED } from '../../config/buildFeatures'
 import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
@@ -8,7 +8,7 @@ import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
   CODEX_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
@@ -282,13 +282,13 @@ export function ComposerToolbar({
   const currentReviewerModel = modelOptionFor(reviewerModelOptions, reviewerModelId || modelId)
   const canonicalProviderId = normalizeCliProviderIdAlias(providerId)
   const reasoningOptions = buildProviderReasoningOptions(providerId, acp,
-    canonicalProviderId === DEFAULT_PROVIDER_ID ? modelId ?? '' : currentModel.id, reasoningEffort ?? '')
+    canonicalProviderId === GEMINI_CLI_PROVIDER_ID ? modelId ?? '' : currentModel.id, reasoningEffort ?? '')
   const hasReasoningEffort = reasoningOptions.length > 0
   const speedExplicit = serviceTierExplicit ?? (serviceTier ?? '') !== ''
   const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '', providerId === CODEX_CLI_PROVIDER_ID) : []
   const currentReasoning = modelOptionFor(
     reasoningOptions,
-    canonicalProviderId === DEFAULT_PROVIDER_ID ? reasoningEffort : reasoningEffortForModel(acp, currentModel.id, reasoningEffort, canonicalProviderId === COPILOT_CLI_PROVIDER_ID)
+    canonicalProviderId === GEMINI_CLI_PROVIDER_ID ? reasoningEffort : reasoningEffortForModel(acp, currentModel.id, reasoningEffort, canonicalProviderId === COPILOT_CLI_PROVIDER_ID)
   )
   const currentSpeed = modelOptionFor(speedOptions, speedExplicit ? serviceTier : CODEX_SPEED_INHERIT_ID)
   const variantOptions = providerConfigVariantOptions(acp, providerId)
@@ -522,7 +522,7 @@ export function ComposerToolbar({
                 />
               </div>
             )}
-            {canonicalProviderId === COPILOT_CLI_PROVIDER_ID && acp && <CopilotAutoRoutingControl acp={acp} disabled={modelDisabled} />}
+            {COPILOT_ENABLED && canonicalProviderId === COPILOT_CLI_PROVIDER_ID && acp && <CopilotAutoRoutingControl acp={acp} disabled={modelDisabled} />}
             {variantOptions.map((option) => (
               <div key={option.id} className="uam-cmenu__setting">
                 <span className="truncate">{option.name || option.id}</span>

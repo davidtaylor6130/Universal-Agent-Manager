@@ -6,7 +6,7 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 
 const buildFeatures = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
-vi.mock('../../config/buildFeatures', () => buildFeatures)
+vi.mock('../../config/buildFeatures', async importOriginal => Object.assign(buildFeatures, { ...await importOriginal<typeof import('../../config/buildFeatures')>(), COMPUTER_USE_ENABLED: true }))
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -263,7 +263,9 @@ it('distinguishes zero external servers and keeps warnings and source visible wi
 it.each([true, false])('distinguishes unknown consent from build exclusion %s without a chat permission toggle', async enabled => {
   buildFeatures.COMPUTER_USE_ENABLED = enabled
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
-  expect(document.body.textContent).toContain(enabled ? 'Status not confirmed.' : 'Unavailable in this build')
+  // A build without computer use has no row for it at all, not an "unavailable" placeholder.
+  if (enabled) expect(document.body.textContent).toContain('Status not confirmed.')
+  else expect(document.body.textContent).not.toMatch(/Computer Use|in this build/)
   expect(document.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
   expect(document.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
 })

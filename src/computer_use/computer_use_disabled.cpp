@@ -3,7 +3,7 @@ namespace uam::computer_use
 {
 	static bool Disabled(std::string* error)
 	{
-		if (error) *error = "Computer use is disabled in this build.";
+		if (error) *error = "This capability is not included in this build.";
 		return false;
 	}
 	std::vector<Target> ListTargets(std::string* error)
@@ -23,7 +23,7 @@ namespace uam::computer_use
 	Capture CaptureTarget(const std::string&, std::uint64_t, int, int)
 	{
 		Capture capture;
-		capture.error = "Computer use is disabled in this build.";
+		capture.error = "This capability is not included in this build.";
 		return capture;
 	}
 	bool AcquireControllerLock(std::string* error)

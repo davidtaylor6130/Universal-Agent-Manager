@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/config/build_features.h"
 #include "common/usage/transcript_scan.h"
 
 namespace uam::usage
@@ -27,4 +28,14 @@ namespace uam::usage
 		std::vector<Record> m_records;
 		std::size_t m_recordBase = 0;
 	};
+#if !UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	// Builds without OpenCode list no OpenCode database, so this scan never reads anything.
+	inline void OpenCodeHistoryScan::Reset() {}
+	inline ScanResult OpenCodeHistoryScan::Refresh(const std::filesystem::path&, std::int64_t, std::int64_t, const std::function<bool()>&)
+	{
+		ScanResult result;
+		result.complete = true;
+		return result;
+	}
+#endif
 }

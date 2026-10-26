@@ -36,6 +36,8 @@ set_target_properties(uam_bootstrap_metadata_tests PROPERTIES
 foreach(provider IN ITEMS GEMINI CODEX OPENCODE CLAUDE COPILOT ANTIGRAVITY)
   target_compile_definitions(uam_bootstrap_metadata_tests PRIVATE UAM_ENABLE_RUNTIME_${provider}_CLI=1)
 endforeach()
+# build_features.h requires every feature flag; this isolated check uses the full profile.
+target_compile_definitions(uam_bootstrap_metadata_tests PRIVATE UAM_ENABLE_COMPUTER_USE=1 UAM_ENABLE_SSH=1 UAM_ENABLE_MOBILE_COMPANION=1)
 # This isolated executable uses client admission/file APIs, not accounting collection.
 # Discard unreachable client methods rather than link unrelated product services.
 if(APPLE)
