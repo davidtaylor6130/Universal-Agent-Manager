@@ -1,5 +1,6 @@
 import { clearChatLeaf, chatGridLeaves, readChatGridLayout, setChatInLeaf, writeChatGridLayout } from './chatGridStorage'
 import type { Session } from '../types/session'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID } from './providerMetadata'
 
 type ParentVisit = { parentId: string; providerId: string; hostId: string; parentCreatedAt: number; parentWorkspace?: string }
 const visits = new Map<string, ParentVisit>()
@@ -7,7 +8,7 @@ const listeners = new Set<() => void>()
 const storageKey = 'uam-subagent-navigation-v1'
 let loaded = false
 let revision = 0
-const provider = (session: Session) => session.providerId || 'gemini-cli'
+const provider = (session: Session) => session.providerId || DEFAULT_PROVIDER_ID
 const host = (session: Session) => session.executionHostId || 'local'
 
 const workspace = (session: Session) => {
@@ -28,7 +29,7 @@ function parentVisit(child: Session): ParentVisit | undefined {
 export const hasNativeSubagentLineage = (child: Session) => Boolean(parentVisit(child))
 
 /** Existing native Session capability, independent of display-only lineage. */
-export const canExecuteNativeSubagent = (child: Session) => !child.importedReadOnly && (child.providerId === 'codex-cli' || child.providerId === 'opencode-cli' || (child.providerId === 'antigravity-cli' && host(child) === 'local'))
+export const canExecuteNativeSubagent = (child: Session) => !child.importedReadOnly && (child.providerId === CODEX_CLI_PROVIDER_ID || child.providerId === OPENCODE_CLI_PROVIDER_ID || (child.providerId === ANTIGRAVITY_CLI_PROVIDER_ID && host(child) === 'local'))
 
 function parentMatches(child: Session, parent: Session, visit: ParentVisit) {
   return parent.id !== child.id && parent.createdAt.getTime() === visit.parentCreatedAt &&

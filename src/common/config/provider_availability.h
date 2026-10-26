@@ -33,7 +33,7 @@ namespace uam::provider_availability
 		{
 			const std::string id = provider_ids::CanonicalCliProviderLookupId(entry.provider_id);
 			const std::string host = HostId(entry.execution_host_id);
-			if (provider_ids::IsKnownCliProviderId(id) && execution_hosts::IsPortableId(host)) unique[{id, host}] = entry.enabled;
+			if ((provider_ids::IsKnownCliProviderId(id) || provider_ids::IsRetainedExcludedProviderId(id)) && execution_hosts::IsPortableId(host)) unique[{id, host}] = entry.enabled;
 		}
 		entries.clear();
 		for (const std::pair<const std::pair<std::string, std::string>, bool>& entry : unique)
@@ -49,7 +49,8 @@ namespace uam::provider_availability
 		return result;
 	}
 
-	/// <summary>Rejects malformed persisted policy instead of silently enabling a disabled provider.</summary>
+	/// <summary>Rejects malformed persisted policy instead of silently enabling a disabled provider. A build that excludes
+	/// providers keeps their entries as inert data (IsEnabled is only asked about included providers).</summary>
 	inline bool Parse(const nlohmann::json& value, std::vector<ProviderAvailabilityOverride>& result)
 	{
 		if (!value.is_array() || value.size() > 4096) return false;
@@ -61,7 +62,7 @@ namespace uam::provider_availability
 			const std::optional<bool> enabled = nlohmann_json::BoolFieldStrict(entry, "enabled");
 			const std::string provider = provider_ids::CanonicalCliProviderLookupId(entry["providerId"].get<std::string>());
 			const std::string host = HostId(entry["executionHostId"].get<std::string>());
-			if (!enabled || !provider_ids::IsKnownCliProviderId(provider) || !execution_hosts::IsPortableId(host)) return false;
+			if (!enabled || !(provider_ids::IsKnownCliProviderId(provider) || provider_ids::IsRetainedExcludedProviderId(provider)) || !execution_hosts::IsPortableId(host)) return false;
 			parsed.push_back({provider, host, *enabled});
 		}
 		Normalize(parsed);

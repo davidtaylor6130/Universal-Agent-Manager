@@ -1,4 +1,5 @@
 import type { ExecutionHost, Folder, Session } from './session'
+import { isSshHost } from '../utils/remoteWorkspace'
 
 export interface RoutingProviderConfirmation {
   providerId: string
@@ -84,7 +85,7 @@ export function shortRepositoryIdentity(identity: string): string {
 export function routingConfigurationError(settings: ExecutionRoutingSettings, hosts: ExecutionHost[], folders: Folder[]): string {
   if (settings.hosts.length > 128 || new Set(settings.hosts.map((host) => host.hostId)).size !== settings.hosts.length) return 'Select each SSH computer once.'
   for (const policy of settings.hosts) {
-    if (!hosts.some((host) => host.id === policy.hostId && host.transport === 'ssh')) return 'Select a registered SSH computer.'
+    if (!hosts.some((host) => host.id === policy.hostId && isSshHost(host))) return 'Select a registered SSH computer.'
     if (!Number.isSafeInteger(policy.maxActiveTurns) || policy.maxActiveTurns < (policy.enabled ? 1 : 0) || policy.maxActiveTurns > 1024) return 'Concurrent sessions must be a whole number from 1 to 1024 for enabled computers.'
     for (const mapping of policy.workspaceMappings) {
       const source = folders.find((folder) => folder.id === mapping.sourceFolderId)

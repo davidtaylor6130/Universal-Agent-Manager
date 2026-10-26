@@ -19,8 +19,10 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
@@ -67,7 +69,7 @@ const initialProviders: Provider[] = [
   { ...fallbackProviderForId(CLAUDE_CLI_PROVIDER_ID), color: '#7c3aed' },
   { ...fallbackProviderForId(OPENCODE_CLI_PROVIDER_ID), color: '#14b8a6' },
   { ...fallbackProviderForId(COPILOT_CLI_PROVIDER_ID), color: '#22c55e' },
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let lastPushStatusUpdateAtMs = 0
 
@@ -173,9 +175,9 @@ function deserializeState(
 
   const nextMessages: Record<string, Message[]> = {}
   const historyStartIndexBySessionId = { ...existing.historyStartIndexBySessionId }
-	for (const chat of cpp.chats) {
-		const existingMessages = existing.messages[chat.id]
-		if (!Array.isArray(chat.messages)) {
+  for (const chat of cpp.chats) {
+    const existingMessages = existing.messages[chat.id]
+    if (!Array.isArray(chat.messages)) {
       const retained = reconcileHeldOutboxHistory(chat, existingMessages, historyStartIndexBySessionId[chat.id] ?? 0, existing.acpBindingBySessionId[chat.id], existingSessionsById[chat.id])
       if (retained !== undefined) nextMessages[chat.id] = retained
       else if (retained !== existingMessages) delete historyStartIndexBySessionId[chat.id]
@@ -187,7 +189,7 @@ function deserializeState(
       continue
     }
     historyStartIndexBySessionId[chat.id] = 0
-		nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
+    nextMessages[chat.id] = reconcileCppMessages(chat.id, existingMessages, chat.messages, true)
   }
   const messages = sameRecordEntries(existing.messages, nextMessages) ? existing.messages : nextMessages
 
@@ -271,7 +273,7 @@ function deserializeState(
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
-				lastBlockerKind: cppGoal.lastBlockerKind,
+        lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -283,10 +285,10 @@ function deserializeState(
         loopCount: cppGoal.loopCount,
         createdAt: new Date(cppGoal.createdAt || Date.now()),
         updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-		executionOwner: cppGoal.executionOwner ?? 'uam',
-		providerCommand: cppGoal.providerCommand ?? '',
-		workerModelId: cppGoal.workerModelId ?? '',
-		reviewerModelId: cppGoal.reviewerModelId ?? '',
+        executionOwner: cppGoal.executionOwner ?? 'uam',
+        providerCommand: cppGoal.providerCommand ?? '',
+        workerModelId: cppGoal.workerModelId ?? '',
+        reviewerModelId: cppGoal.reviewerModelId ?? '',
       }))
       goalsByChatId[chat.id] = goalObjects
     }
@@ -334,7 +336,7 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
-    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? DEFAULT_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     windowsPowerShell: cpp.settings.windowsPowerShell ?? 'auto',
@@ -400,7 +402,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     : current.providers
   const visibleProviders = providers.length > 0
     ? providers
-    : [{ id: GEMINI_CLI_PROVIDER_ID }]
+    : [{ id: DEFAULT_PROVIDER_ID }]
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {
@@ -488,7 +490,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         tokensUsed: cppGoal.tokensUsed,
         blockedTurnCount: cppGoal.blockedTurnCount,
         lastBlocker: cppGoal.lastBlocker,
-				lastBlockerKind: cppGoal.lastBlockerKind,
+        lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
@@ -850,7 +852,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // Register window.uamPush SYNCHRONOUSLY at module load time (before React mounts)
   // so that C++'s OnLoadEnd push is never missed.  Using getState() avoids stale closures.
   if (isCefContext() && typeof window !== 'undefined') {
-    window.uamPush = (payload: unknown) => {
+    const handlePush = (payload: unknown) => {
       const parsed = parseUamPushPayload(payload)
       if (!parsed.ok) {
         set((state) => ({
@@ -888,7 +890,7 @@ export const useAppStore = create<AppState>((set, get) => {
           // background deltas unless this update contains that chat's messages.
           for (const chatId of pendingStreamTokensByChatId.keys()) {
             const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
-			if (!chat || Array.isArray(chat.messages)) {
+            if (!chat || Array.isArray(chat.messages)) {
               pendingStreamTokensByChatId.delete(chatId)
             }
           }
@@ -1059,9 +1061,18 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'dictation':
           window.dispatchEvent(new CustomEvent('uam-dictation', { detail: msg }))
           break
-        }
       }
     }
+    // A failing handler must not throw into native code; report it and let the next push recover the status.
+    window.uamPush = (payload: unknown) => {
+      try {
+        handlePush(payload)
+      } catch (error) {
+        set({ pushChannelStatus: 'invalid-message', pushChannelError: `Push handling failed: ${error instanceof Error ? error.message : String(error)}` })
+        console.error('[uamPush] Handler failed:', error)
+      }
+    }
+  }
 
   const inCef = isCefContext()
 

@@ -175,7 +175,7 @@ describe('AppShell', () => {
     host.remove()
   })
 
-  it('does not open a standalone memory overlay when closing embedded memory settings', async () => {
+  it('never opens a standalone memory window outside Settings, including after closing embedded memory settings', async () => {
     const memoryModule = await import('../settings/MemoryLibraryModal')
     const memoryComponent = memoryModule.MemoryLibraryModal as unknown as { render: (props: { embedded?: boolean }, ref: unknown) => ReactNode }
     const originalRender = memoryComponent.render
@@ -205,7 +205,9 @@ describe('AppShell', () => {
         root.render(<AppShell />)
         await import('../settings/MemoryLibraryModal')
       })
-      expect(standaloneRender).toHaveBeenCalled()
+      // The Project memory popup was removed with the sidebar Memory Store button (David, 2026-10-25).
+      expect(standaloneRender).not.toHaveBeenCalled()
+      expect(host.querySelector('[role="dialog"]')).toBeNull()
       await act(async () => useAppStore.setState({ memoryLibraryScope: null }))
       standaloneRender.mockClear()
       await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.click(); await import('../settings/SettingsModal') })

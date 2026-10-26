@@ -494,6 +494,7 @@ namespace uam
 		int64_t expires_at_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
+		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
 		std::unordered_set<std::string> owned_agent_run_ids;
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
@@ -1325,6 +1326,9 @@ namespace uam
 
 		std::vector<ChatSession> chats;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
+		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
+		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
+		std::vector<ChatSession> excluded_provider_chats;
 		std::vector<AgentRun> agent_runs;
 		// Read-only restart metadata, never an execution or capacity inventory.
 		std::shared_ptr<const ManagedInitialHistoryCatalogue> managed_initial_history;
@@ -1364,6 +1368,8 @@ namespace uam
 		std::unordered_set<std::string> chats_with_unseen_updates;
 		std::unordered_set<std::string> filtered_chat_ids;
 		std::string status_line;
+		// Earlier-release data roots found at startup that still await Copy / Brand new / Stop.
+		std::vector<std::filesystem::path> pending_legacy_data_roots;
 		// Ownership of the native-sync failure currently shown in status_line.
 		std::string native_chat_refresh_error_target_id;
 		std::string native_chat_refresh_error_status;

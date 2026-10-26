@@ -4,6 +4,7 @@ import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } 
 import { Button, IconButton, MenuSelect, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
+import { CODEX_ENABLED } from '../../config/buildFeatures'
 import '../shared/review.css'
 
 /** Stacked add/remove bar; width is relative to the largest change in the list. */
@@ -207,11 +208,12 @@ export function VcsCommitPanel() {
         />
       </div>
 
-      <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      {/* Recorded chat edits are Codex receipts; builds without Codex keep only the workspace scope. */}
+      {CODEX_ENABLED && <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
         <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'workspace'} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
         <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'recorded'} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
-      </div>
-      {reviewScope === 'recorded' ? (
+      </div>}
+      {CODEX_ENABLED && reviewScope === 'recorded' ? (
         activeSessionId && session ? (
           <RecordedChatEdits
             key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, gitEnabled, svnEnabled])}

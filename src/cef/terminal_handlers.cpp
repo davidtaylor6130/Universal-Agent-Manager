@@ -640,6 +640,7 @@ void UamQueryHandler::HandleSteerCliTerminal(CefRefPtr<CefBrowser> browser, cons
 }
 
 /// <summary>Passively reads an owned live terminal without launching, resizing, or replacing its desktop attachment.</summary>
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
@@ -684,6 +685,7 @@ void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nl
 	response["replayData"] = uam::base64::Encode(std::string(output));
 	cb->Success(response.dump());
 }
+#endif
 
 /// <summary>Records deliberate UI activity in transient runtime state; backend pushes never call this.</summary>
 void UamQueryHandler::HandleRuntimeActivity(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

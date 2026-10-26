@@ -375,7 +375,7 @@ namespace uam
 				if (made_progress != nullptr) *made_progress = true;
 				stderr_tail.append(buffer.data(), static_cast<std::size_t>(count));
 				if (stderr_tail.size() > 4096)
-					stderr_tail.erase(0, stderr_tail.size() - 4096);
+					stderr_tail = std::string(uam::strings::Utf8Suffix(stderr_tail, 4096));
 			}
 			return true;
 		}
@@ -3046,7 +3046,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
 				return false;
 			}
-			if (computer_use_mode && (!UAM_ENABLE_COMPUTER_USE || !app.settings.computer_use_globally_enabled || !chat.computer_use_enabled))
+#if UAM_ENABLE_COMPUTER_USE
+			if (computer_use_mode && (!app.settings.computer_use_globally_enabled || !chat.computer_use_enabled))
 			{
 				if (error_out != nullptr) *error_out = "Computer Use is disabled in this build, globally, or for this chat.";
 				return false;
@@ -3056,6 +3057,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Computer Use is disabled for remote execution hosts.";
 				return false;
 			}
+#else
+			if (computer_use_mode)
+			{
+				if (error_out != nullptr) *error_out = "This capability is not included in this build.";
+				return false;
+			}
+#endif
 			queued.id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 			if (queued.id.empty()) queued.id = uam::time::SteadyEpochNanosecondsTokenNow();
 			queued.revision = 1;
@@ -4794,11 +4802,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	} // namespace acp_detail
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	bool acp_detail::StartClaudeQuotaContinuation(AppState& app, ChatSession& chat, std::string* error_out)
 	{
 		// This path never admits the control instruction to the ordinary mergeable user queue.
 		if (app.claude_quota_dispatch_id.empty() || app.claude_quota_dispatch_id != chat.claude_quota_continuation.id ||
-		    chat.claude_quota_continuation.state != "claimed" || chat.provider_id != "claude-cli") return false;
+		    chat.claude_quota_continuation.state != "claimed" || chat.provider_id != uam::provider_ids::kClaudeCli) return false;
 		AcpQueuedUserPromptState continuation;
 		if (!BuildQueuedAcpUserPrompt(app, chat, kClaudeQuotaContinuationPrompt, {}, {}, false, "", false, continuation, error_out)) return false;
 		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
@@ -4817,6 +4826,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		return StartAcpUserPrompt(app, session, chat, continuation, error_out);
 	}
+#endif
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
 	{

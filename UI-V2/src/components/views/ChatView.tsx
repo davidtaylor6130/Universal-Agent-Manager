@@ -1,6 +1,4 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
-import { useVoiceMode } from '../../hooks/useVoiceMode'
-import { buildChatSearchSessionGroups } from '../sidebar/chatSearch'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
@@ -11,6 +9,7 @@ import { acknowledgeComposerReferences, captureComposerReferenceSubmission, comp
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { motionScrollBehavior } from '../../utils/motionStorage'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
 import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
@@ -24,7 +23,7 @@ import type { ConversationDelivery } from '../chat/ConversationTurn'
 import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
 import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -36,7 +35,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -49,14 +48,15 @@ import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
-import { ComposerContextReferences } from '../chat/ComposerContextReferences'
-import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
+import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerContextReferences'
+import { draftFileMentions } from '../../utils/fileContextReferences'
+import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { getTopmostModal } from '../../utils/modalFocus'
 
@@ -80,6 +80,8 @@ type SlashCommand = {
   icon: ReactNode
   run: () => void
   groupEntries?: SlashCommand[]
+  /** Listed with its reason but not selectable. */
+  disabled?: boolean
 }
 
 function manualCompactionForChat(session: Session | undefined, acp: AcpBinding | undefined): ManualCompactionAvailability | undefined {
@@ -394,6 +396,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
   const [referenceCaptureLoading, setReferenceCaptureLoading] = useState(false)
+  // The @ word the list was closed for (position and text); editing the word reopens the list.
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null)
+  const [mentionNavigated, setMentionNavigated] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
@@ -898,7 +903,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
-  const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const remoteComputerUseDisabled = SSH_ENABLED && (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const workspaceFolders = useAppStore((s) => s.folders)
   const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
@@ -1216,7 +1221,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
-    target.scrollIntoView?.({ block: 'center' })
+    // Message-rail jumps glide to the top (the rail selects the first visible message, subject to Motion); search results centre immediately.
+    target.scrollIntoView?.(searchNavigation.queryRequestId.startsWith('message-rail:')
+      ? { block: 'start', behavior: motionScrollBehavior() } : { block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
   }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 
@@ -1226,9 +1233,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       isNearBottomRef.current = true
       showScrollToBottomRef.current = false
       setShowScrollToBottom(false)
-      // Smooth scrolling ignores CSS scroll-behavior, so Motion Off and OS reduced motion jump instead.
-      const reduced = document.documentElement.getAttribute('data-motion') === 'off' || Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
-      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: reduced ? 'auto' : 'smooth' })
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: motionScrollBehavior() })
     }
     if (searchNavigationRef.current) {
       void useAppStore.getState().clearChatSearchNavigation().then(() => {
@@ -1939,7 +1944,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
+    : `${currentProviderName} is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
@@ -2120,53 +2125,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
   const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
-  const selectedChatId = useAppStore(s => s.activeSessionId)
-  const voiceContextKey = JSON.stringify([session.id, session.createdAt?.getTime(), session.providerId, session.viewMode, session.executionHostId])
-  const voice = useVoiceMode({
-    contextKey: voiceContextKey,
-    enabled: showComposer && providerSupported && !session.importedReadOnly && selectedChatId === session.id,
-    blocked: dictationActive,
-    messages,
-    processing: Boolean(acp?.processing || cli?.processing || cli?.turnState === 'busy'),
-    append: text => setDraft(previous => joinedDictationText(previous, text, '')),
-    send: () => { if (canSend) void submit(undefined, draft) },
-    stopResponse: () => { void cancelAcpTurn(session.id) },
-    navigate: direction => {
-      const state = useAppStore.getState()
-      const eligible = state.sessions.filter(chat => !chat.importedReadOnly)
-      const groups = buildChatSearchSessionGroups(eligible, {}, [])
-      const ids = [...new Set([...groups.pinnedSessionIds, ...Array.from(groups.sessionIdsByFolderId.values()).flat(), ...groups.unfolderedSessionIds])]
-      const index = ids.indexOf(session.branchRootChatId || session.parentChatId || session.id)
-      const next = index >= 0 ? state.sessions.find(chat => chat.id === ids[index + direction]) : undefined
-      if (next) setActiveSession(next.id)
-    },
-  })
-
-  const previousVoiceRuntime = useRef({ key: voiceContextKey, acp, cli })
-  useEffect(() => {
-    const previous = previousVoiceRuntime.current
-    previousVoiceRuntime.current = { key: voiceContextKey, acp, cli }
-    if (previous.key !== voiceContextKey) return
-    // Initial startup and native ID assignment keep the same voice conversation.
-    // A runtime shutdown or a new failure ends its owned input and playback.
-    const acpStopped = acp?.lifecycleState === 'stopped' && previous.acp && previous.acp.lifecycleState !== 'stopped'
-    const cliStopped = cli?.lifecycleState === 'stopped' && previous.cli && previous.cli.lifecycleState !== 'stopped' && previous.cli.lifecycleState !== 'disabled'
-    if (acpStopped || cliStopped ||
-      (previous.acp?.running && !acp?.running && acp?.lifecycleState !== 'starting') ||
-      (previous.cli?.running && !cli?.running) ||
-      (acp?.lifecycleState === 'error' && previous.acp?.lifecycleState !== 'error') ||
-      (cli?.lifecycleState === 'shuttingDown' && previous.cli?.lifecycleState !== 'shuttingDown') ||
-      (acp?.lastError && acp.lastError !== previous.acp?.lastError) ||
-      (cli?.lastError && cli.lastError !== previous.cli?.lastError)) voice.stop()
-  }, [voiceContextKey, acp, cli])
-
   submitDictatedPromptRef.current = (prompt) => {
     void submit(undefined, prompt)
   }
 
   const startDictation = async () => {
     if (!showComposerRef.current) return
-    if (!dictationAvailable || dictationActiveRef.current || voice.active || voice.speaking) return
+    if (!dictationAvailable || dictationActiveRef.current) return
     const dictationId = createRequestId('dictation')
     dictationIdRef.current = dictationId
     dictationActiveRef.current = true
@@ -2288,12 +2253,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         session.reasoningEffort ?? '',
         isCopilotProvider(currentProvider, currentProviderId)
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
-          : currentProviderId === 'codex-cli' ? undefined : []
+          : currentProviderId === CODEX_CLI_PROVIDER_ID ? undefined : []
       )
     : [], [currentModel.id, currentProvider, currentProviderId, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
   const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
-    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === 'codex-cli')
+    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === CODEX_CLI_PROVIDER_ID)
     : [], [currentModel.id, currentProviderId, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
@@ -2440,7 +2405,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
-  const planActionsDisabledTitle = planActionBlockedByRuntime
+  const planActionsDisabledTitle = CODEX_ENABLED && planActionBlockedByRuntime
     ? 'Codex is still working.'
     : 'Plan action is unavailable.'
   const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
@@ -2562,6 +2527,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
+    if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
     if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
     return result
@@ -2623,9 +2589,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ] : []),
         ...(manualCompactionAvailable ? [{ id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
-        ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: CODEX_ENABLED ? 'Choose Codex reasoning' : 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: CODEX_ENABLED ? 'Choose Codex speed' : 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        ...(OPENCODE_ENABLED && providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
         ...(COMPUTER_USE_ENABLED ? [{ id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) }] : []),
@@ -2658,7 +2624,45 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session.id, session.providerId, session.modelId, manualCompactionAvailable, providerAcp?.sessionId, providerAcp?.manualCompaction, session.temporaryParentChatId, liveSideChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
+  const composerReferences = useComposerReferences({ chatId: session.id, ownerKey: `${session.id}:${session.createdAt.getTime()}`,
+    disabled: submitting || goalSubmitting || session.importedReadOnly === true, onBusyChange: setReferenceCaptureLoading })
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
+  // `@` offers context references (current branch, chat worktree or a file path); `/` stays for commands and skills.
+  const typedMentionToken = activeSlashToken ? null : mentionActionToken(draft, composerSelection.start, composerSelection.end)
+  const activeMentionToken = typedMentionToken && `${typedMentionToken.start}:${typedMentionToken.query}` !== dismissedMention ? typedMentionToken : null
+  const mentionQuery = activeMentionToken?.query
+  useEffect(() => { if (!typedMentionToken) setDismissedMention(null) }, [typedMentionToken === null])
+  useEffect(() => { setMentionNavigated(false) }, [activeMentionToken?.start, mentionQuery])
+  const removeMentionToken = (token: NonNullable<typeof activeMentionToken>) => {
+    setDraft((current) => current.slice(token.start, token.end) === draft.slice(token.start, token.end)
+      ? `${current.slice(0, token.start)}${current.slice(token.end).replace(/^ /, '')}` : current)
+    setComposerSelection({ start: token.start, end: token.start })
+    requestAnimationFrame(() => composerTextareaRef.current?.setSelectionRange(token.start, token.start))
+  }
+  const mentionMatches: SlashCommand[] = mentionQuery === undefined || !activeMentionToken ? [] : [
+    ...(['branch', 'worktree'] as const).filter((kind) => kind.startsWith(mentionQuery.toLowerCase())).map((kind) => {
+      const unavailable = kind === 'worktree' && !composerReferences.worktreeConfigured ? 'Needs a configured worktree for this chat'
+        : composerReferences.actionsDisabled ? composerReferences.unavailableReason : ''
+      return {
+        id: `mention:${kind}`,
+        label: `@${kind}`,
+        hint: unavailable || (kind === 'branch' ? 'Quote the current branch · does not switch it' : 'Quote this chat\u2019s worktree · does not switch it'),
+        icon: kind === 'branch' ? <GitBranch size={15} /> : <FolderGit2 size={15} />,
+        disabled: Boolean(unavailable),
+        run: () => { if (unavailable) return; removeMentionToken(activeMentionToken); composerReferences.captureRepository(kind) },
+      }
+    }),
+    // Only path-like mentions are offered as files, so prose @handles and @Annotations stay plain text.
+    ...(mentionQuery && composerReferences.pending !== mentionQuery && (activeMentionToken.quoted || /[./\\]/.test(mentionQuery)) && draftFileMentions(draft.slice(activeMentionToken.start, activeMentionToken.end))[0] === mentionQuery && !composerReferences.fileCaptured(mentionQuery) ? [{
+      id: 'mention:file',
+      label: activeMentionToken.quoted ? `@"${mentionQuery}"` : `@${mentionQuery}`,
+      hint: composerReferences.actionsDisabled ? composerReferences.unavailableReason : 'Quote this file\u2019s current text',
+      icon: <FileText size={15} />,
+      disabled: composerReferences.actionsDisabled,
+      // Close the list for this word so the reading/error state beside the chips stays visible.
+      run: () => { if (composerReferences.actionsDisabled) return; setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`); composerReferences.captureFile(mentionQuery) },
+    }] : []),
+  ]
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
   const slashQuery = activeSlashToken && !slashSubPalette ? activeSlashToken.query : null
   const permissionModeQuery = permissionMenuOpen ? '' : slashSubPalette && activeSlashToken?.command === 'permission' ? activeSlashToken.query : undefined
@@ -2713,16 +2717,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           }))
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
-      : []
-  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
-  const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
+      : mentionMatches
+  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const commandPaletteVisible = slashPaletteVisible && mentionQuery === undefined
   useEffect(() => {
-    if (slashPaletteVisible && markdownStoreEntries.length === 0) {
+    if (commandPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slashPaletteVisible])
+  }, [commandPaletteVisible])
   const runSlashCommand = (command: SlashCommand) => {
+    if (command.disabled) return
     if (command.id === 'compact') {
       void runCompact(draft, true)
       return
@@ -2757,7 +2763,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return groups
   }, []) : []
   const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
-  const activeSlashOptionId = !slashOpen
+  // The @ list has no active option until the user arrows into it, so Enter keeps sending the message.
+  const mentionListUntouched = mentionQuery !== undefined && !mentionNavigated
+  const activeSlashIndex = mentionListUntouched ? -1 : Math.min(slashIndex, slashMatches.length - 1)
+  const activeSlashOptionId = !slashOpen || (mentionListUntouched && !activeSlashGroup?.groupEntries)
     ? undefined
     : activeSlashGroup?.groupEntries
       ? `${slashListboxId}-group-${activeSlashGroups.length - 1}-option-${Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)}`
@@ -2778,7 +2787,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
 		!event.repeat &&
 		!appModalOpen && !selectedToolCallRef && !modelOpen && !workspaceMenuOpen &&
-		!slashPaletteVisible && !permissionMenuOpen && !slashGroup) {
+		!commandPaletteVisible && !slashOpen && !permissionMenuOpen && !slashGroup) {
 	  event.preventDefault()
 	  const currentIndex = uamAgentCycle.indexOf(selectedUamAgentId)
 	  void setSessionUamAgent(session.id, uamAgentCycle[currentIndex < 0 ? 0 : (currentIndex + 1) % uamAgentCycle.length])
@@ -2810,11 +2819,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (slashOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(0); return }
         setSlashIndex((i) => (i + 1) % slashMatches.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(slashMatches.length - 1); return }
         setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
         return
       }
@@ -2826,13 +2837,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           return
         }
       }
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // In the @ list, Enter still sends unless the user arrowed to an option. Tab accepts the chosen option, or the
+      // first available one before arrowing; Shift+Tab and Tab on an unavailable option keep their normal focus move.
+      if (mentionQuery !== undefined && event.key === 'Tab') {
+        const option = mentionListUntouched ? slashMatches.find((command) => !command.disabled) : slashMatches[Math.min(slashIndex, slashMatches.length - 1)]
+        if (!event.shiftKey && option && !option.disabled) {
+          event.preventDefault()
+          runSlashCommand(option)
+          return
+        }
+      } else if (event.key === 'Tab' || (event.key === 'Enter' && !mentionListUntouched)) {
         event.preventDefault()
         runSlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)])
         return
       }
       if (event.key === 'Escape') {
         event.preventDefault()
+        // Escape closes the @ palette and leaves the typed text as it is.
+        if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`)
         if (activeSlashToken) setDraft(replaceSlashAction(draft, activeSlashToken, '', slashSubPalette))
         setPermissionMenuOpen(false)
         return
@@ -3497,7 +3519,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   </>
                 )}
               >
-                YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.
+                {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
               </Notice>
             )}
             {rollbackConfirmation && (
@@ -3558,7 +3580,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </span>
               </div>
             )}
-            {claudePlanPrompt !== null && (
+            {CLAUDE_ENABLED && claudePlanPrompt !== null && (
               <Notice
                 tone="warning"
                 title="Claude Plan mode"
@@ -3773,8 +3795,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
             >
-            {editingMessageIndex === null && <ComposerContextReferences key={`${session.id}:${session.createdAt.getTime()}`} chatId={session.id} draft={draft}
-              disabled={submitting || goalSubmitting || session.importedReadOnly === true} onBusyChange={setReferenceCaptureLoading} />}
+            {editingMessageIndex === null && <ComposerReferenceChips key={`${session.id}:${session.createdAt.getTime()}`} references={composerReferences} />}
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
@@ -3813,15 +3834,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   className="overflow-hidden rounded-lg animate-fade-in"
                   style={{ width: composerTextareaRef.current?.getBoundingClientRect().width ?? 320, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : variantQuery !== undefined ? 'OpenCode variants' : 'Slash commands'}
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context references' : 'Slash commands'}
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
-                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
-                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : variantQuery !== undefined ? 'OpenCode variants' : 'Commands'}
+                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : mentionQuery !== undefined ? <AtSign size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
-                    const active = index === Math.min(slashIndex, slashMatches.length - 1)
+                    const active = index === activeSlashIndex
                     return (
                       <button
                         key={command.id}
@@ -3829,6 +3850,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         type="button"
                         role="option"
                         aria-selected={active}
+                        aria-disabled={command.disabled || undefined}
                         aria-haspopup={command.groupEntries ? 'menu' : undefined}
                         aria-expanded={command.groupEntries ? slashGroup === command.id.slice('md-group:'.length) : undefined}
                         ref={(element) => {
@@ -3840,11 +3862,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         }}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
-                        style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}
+                        style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--text)' : 'var(--text-2)', cursor: command.disabled ? 'not-allowed' : undefined }}
                       >
-                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
+                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
+                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -3866,16 +3888,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 })}
               </ViewportMenu>
             })}
-            <div className="flex items-center gap-2 py-1 text-xs">
-              <Button size="sm" variant="ghost" disabled={!voice.available || dictationActive} aria-pressed={voice.active} onClick={voice.toggle}>{voice.active ? 'Stop voice mode' : 'Start voice mode'}</Button>
-              <Button size="sm" variant="ghost" disabled={!voice.available || dictationActive || (!voice.speaking && !messages.some(message => message.role === 'assistant' && !message.isStreaming && message.content.trim()))} onClick={() => {
-                if (voice.speaking) voice.stop()
-                else voice.read([...messages].reverse().find(message => message.role === 'assistant' && !message.isStreaming && message.content.trim())?.content || '')
-              }}>{voice.speaking ? 'Stop speaking' : 'Read response'}</Button>
-              {voice.status && <span role="status">{voice.status}</span>}
-              {voice.error && <span role="alert" style={{ color: 'var(--red)' }}>{voice.error}</span>}
-              {isCompanionContext() && <span>Use your keyboard microphone for dictation.</span>}
-            </div>
             {(dictationActive || dictationError) && (
               <div
                 id={`dictation-status-${session.id}`}
@@ -3924,14 +3936,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 setPermissionMenuOpen(false)
               }}
               onSelect={(event) => {
-                if (draft.includes('/')) {
+                if (draft.includes('/') || draft.includes('@')) {
                   setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
                 }
               }}
               onKeyDown={onComposerKeyDown}
+              // Leaving the input closes the @ list for this word instead of leaving it drawn over the chips.
+              onBlur={() => { if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`) }}
               onPaste={editingMessageIndex === null ? onComposerPaste : undefined}
               rows={1}
-              placeholder={`Message ${currentProviderName} · / for commands`}
+              placeholder={`Message ${currentProviderName} · / for commands · @ for context${isCompanionContext() ? ' · keyboard mic for dictation' : ''}`}
               disabled={dictationActive || session.importedReadOnly || branchingMessageIndex !== null}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
@@ -4044,7 +4058,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
-              dictationAvailable={dictationAvailable && !voice.active && !voice.speaking}
+              dictationAvailable={dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()
                 else void startDictation()

@@ -9,6 +9,7 @@ import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
+import { isSshHost } from '../../utils/remoteWorkspace'
 
 export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: StatusTone; label: string }> = {
   ready: { tone: 'success', label: 'Ready' },
@@ -46,7 +47,7 @@ function savePayload(settings: RoutingSettings) {
  * SSH routing configuration, shared by the New chat dialog ("dialog") and the Settings page ("page").
  * The dialog closes on Cancel or a successful save; the page keeps Discard/Save and guards leaving with unsaved edits.
  */
-export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void }>(
+export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void }>(
   function ExecutionRoutingSettings({ variant, onClose, onBusyChange }, ref) {
     const saved = useAppStore((state) => state.executionRouting)
     const hosts = useAppStore((state) => state.executionHosts)
@@ -125,7 +126,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
       }
       finally { busyRef.current = false; setBusy(false); onBusyChange?.(false) }
     }
-    const sshHosts = hosts.filter((host) => host.transport === 'ssh')
+    const sshHosts = hosts.filter((host) => isSshHost(host))
     const localFolders = folders.filter((folder) => folder.directory && (!matching || !folder.executionHostId || folder.executionHostId === 'local'))
     const repositoryOf = (folderId: string) => repositories?.find((item) => item.folderId === folderId)
     /** Manual override wins; otherwise the repository match from the backend. */

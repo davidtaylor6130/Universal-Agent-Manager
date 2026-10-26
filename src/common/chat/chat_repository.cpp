@@ -293,7 +293,7 @@ namespace
 
 	bool HasOwnedClaudeMaintenanceTerminalReceipt(const ChatSession& chat)
 	{
-		if (chat.provider_id != "claude-cli" || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" ||
+		if (chat.provider_id != uam::provider_ids::kClaudeCli || !chat.remote_process_exists || chat.execution_host_id.empty() || chat.execution_host_id == "local" ||
 		    !uam::uuid::IsCanonicalUuid(chat.native_session_id) || chat.execution_host_id.size() > 128 ||
 		    chat.remote_process_control_token.empty() || chat.remote_process_control_token.size() > 256 ||
 		    chat.remote_manual_compaction_boundary_json.empty() || chat.remote_manual_compaction_boundary_json.size() > 2048) return false;
@@ -2015,7 +2015,7 @@ namespace
 			    index >= 0 && index <= std::numeric_limits<int>::max() && std::floor(index) == index &&
 			    count > index && count <= std::numeric_limits<int>::max() && std::floor(count) == count &&
 			    !owner.id.empty() && owner.id.size() <= 128 && owner.context.size() <= 32768 && owner.accepted_message_digest.size() == 16 &&
-			    owner.chat_id == chat.id && owner.native_session_id == chat.native_session_id && chat.provider_id == "claude-cli")
+			    owner.chat_id == chat.id && owner.native_session_id == chat.native_session_id && chat.provider_id == uam::provider_ids::kClaudeCli)
 			{
 				owner.observed_at_epoch_s = static_cast<int64_t>(observed);
 				owner.resets_at_epoch_s = static_cast<int64_t>(reset);
@@ -6133,14 +6133,14 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 		if (!primary_confirmed)
 		{
 			result.state = primary.allowed ? ChatPublicationState::Uncertain : ChatPublicationState::Rejected;
-			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : primary.written.error.substr(0, 1024);
+			result.error = primary.written.error.empty() ? "Chat primary publication was not confirmed." : std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 			collect_evidence();
 			return result;
 		}
 		result.state = ChatPublicationState::Committed;
 		result.backup_degraded = primary.written.backup_degraded ||
 		    (!primary.written.success && prepared->m_mode == ChatPublicationMode::UpdateExisting);
-		if (!primary.written.error.empty()) result.error = primary.written.error.substr(0, 1024);
+		if (!primary.written.error.empty()) result.error = std::string(uam::strings::Utf8Prefix(primary.written.error, 1024));
 		if (committed_chat != nullptr) committed_chat->acp_queue_full_save_revision = legacy.published_queue_full_revision;
 		AcknowledgePreparedHistory(legacy, committed_chat);
 
@@ -6153,7 +6153,7 @@ ChatPublicationResult ChatRepository::PublishPreparedChatPublication(
 			{
 				result.secondary_degraded = true;
 				if (result.error.empty()) result.error = outcome.written.error.empty() ?
-				    "Chat primary committed; secondary publication degraded." : outcome.written.error.substr(0, 1024);
+				    "Chat primary committed; secondary publication degraded." : std::string(uam::strings::Utf8Prefix(outcome.written.error, 1024));
 			}
 			return !outcome.allowed || outcome.confirmed; // Stop subsequent secondary writes after uncertainty.
 		};

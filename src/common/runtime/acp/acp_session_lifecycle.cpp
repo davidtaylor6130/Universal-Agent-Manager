@@ -633,7 +633,7 @@ struct ColdRetryBinding
 		        (sequence && sequence->State() != cold_retry::Sequence::Phase::Prepared))) || root != app->data_root ||
 		    incarnation.expired() || incarnation.lock() != chat->metadata_incarnation ||
 		    runtime->saved_image_retry != input || chat->created_at != input->chat_created_at ||
-		    chat->provider_id != "claude-cli" || runtime->provider_id != chat->provider_id ||
+		    chat->provider_id != uam::provider_ids::kClaudeCli || runtime->provider_id != chat->provider_id ||
 		    runtime->protocol_kind != "claude-code-stream-json" || !selected || !execution_hosts::SameConnection(host, *selected) ||
 		    chat->native_session_id != publication->Graph().native_session_id ||
 		    chat->remote_process_control_token != publication->Graph().remote_process_control_token ||
@@ -2328,6 +2328,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	for (UamControlCapability& capability : app.uam_control_capabilities)
 		if (capability.id == session.uam_control_capability_id) capability.provider_configuration_directory = session.provider_configuration_directory;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (session.protocol_kind == provider_profile_constants::kProtocolOpenCodeAcp && !session.opencode_v2_native && !session.model_discovery_only && session.active_uam_agent_execution_capability != "opencode-native-agent-config")
 	{
 		const bool recovering = session.recovering_remote_turn || session.recovering_remote_process;
@@ -2377,6 +2378,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			}
 		}
 	}
+#endif
 	// Configuration preparation may yield; retain resume-only authority at the actual launch seam.
 	if (!AgentRunScheduler::ManagedResumeIdentityAllowed(app, session, chat, session.session_id))
 	{
@@ -3556,6 +3558,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (session.protocol_kind == provider_profile_constants::kProtocolOpenCodeAcp)
 	{
 		if (app.opencode_native_activity == nullptr)
@@ -3570,6 +3573,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			return true;
 		}
 	}
+#endif
 	if (app.opencode_compaction_before_dispatch)
 	{
 		std::string error;

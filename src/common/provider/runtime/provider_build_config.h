@@ -1,29 +1,6 @@
 #pragma once
 
-#ifndef UAM_ENABLE_RUNTIME_GEMINI_CLI
-#error "UAM_ENABLE_RUNTIME_GEMINI_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_CODEX_CLI
-#error "UAM_ENABLE_RUNTIME_CODEX_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_CLAUDE_CLI
-#error "UAM_ENABLE_RUNTIME_CLAUDE_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_OPENCODE_CLI
-#error "UAM_ENABLE_RUNTIME_OPENCODE_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_COPILOT_CLI
-#error "UAM_ENABLE_RUNTIME_COPILOT_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
-#ifndef UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-#error "UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI must be defined by CMake. Use 0 or 1."
-#endif
-
+#include "common/config/build_features.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/utils/string_utils.h"
@@ -60,21 +37,7 @@ namespace provider_build_config
 
 	inline constexpr const char* FirstEnabledProviderId()
 	{
-#if UAM_ENABLE_RUNTIME_GEMINI_CLI
-		return uam::provider_ids::kGeminiCli;
-#elif UAM_ENABLE_RUNTIME_CODEX_CLI
-		return uam::provider_ids::kCodexCli;
-#elif UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		return uam::provider_ids::kClaudeCli;
-#elif UAM_ENABLE_RUNTIME_OPENCODE_CLI
-		return uam::provider_ids::kOpenCodeCli;
-#elif UAM_ENABLE_RUNTIME_COPILOT_CLI
-		return uam::provider_ids::kCopilotCli;
-#elif UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-		return uam::provider_ids::kAntigravityCli;
-#else
-		return "";
-#endif
+		return uam::provider_ids::kDefaultCliProviderId;
 	}
 
 	inline constexpr const char* DefaultHistoryAdapter()

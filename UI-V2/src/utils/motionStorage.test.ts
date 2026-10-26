@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { motionAllowed } from '../components/ui/Overlay'
-import { applyMotionSpeed, readStoredMotion, writeStoredMotion } from './motionStorage'
+import { alignRowStart, applyMotionSpeed, readStoredMotion, writeStoredMotion } from './motionStorage'
 
 const styles = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
 const settleRule = (selector: string) => new RegExp(`${selector}[^{]*\\{[^}]*animation-duration:\\s*\\.01ms !important;[^}]*animation-iteration-count:\\s*1 !important;[^}]*transition-duration:\\s*\\.01ms !important`, 's')
@@ -34,6 +34,37 @@ describe('motionStorage', () => {
 
     applyMotionSpeed('default')
     expect(document.documentElement.hasAttribute('data-motion')).toBe(false)
+  })
+
+  it('aligns a row smoothly until scrollend or a still frame, and instantly with Motion Off', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    const flush = () => { for (const callback of frames.splice(0)) callback(0) }
+    const region = document.createElement('div')
+    const row = document.createElement('div')
+    const scrollIntoView = vi.fn()
+    row.scrollIntoView = scrollIntoView
+    const onEnd = vi.fn()
+
+    expect(alignRowStart(region, row, onEnd)).toBe(true)
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' })
+    region.scrollTop = 40
+    flush(); flush()
+    expect(onEnd).not.toHaveBeenCalled()
+    region.dispatchEvent(new Event('scrollend'))
+    region.dispatchEvent(new Event('scrollend'))
+    expect(onEnd).toHaveBeenCalledTimes(1)
+
+    // Nothing moved (row already in place): no scrollend ever arrives, so two still frames end the hold.
+    expect(alignRowStart(region, row, onEnd)).toBe(true)
+    flush(); flush()
+    expect(onEnd).toHaveBeenCalledTimes(2)
+
+    document.documentElement.setAttribute('data-motion', 'off')
+    expect(alignRowStart(region, row, onEnd)).toBe(false)
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'auto' })
+    flush(); flush()
+    expect(onEnd).toHaveBeenCalledTimes(2)
   })
 
   it('Motion Off stops fixed-duration animations through one shared rule, matching OS reduced motion', () => {
