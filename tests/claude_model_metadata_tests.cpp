@@ -18,6 +18,200 @@ UAM_TEST(ClaudeDiscoveryPreservesOnlyReportedModelTokenCapacities)
 #endif
 }
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+#include "common/provider/claude_preinput_observation.h"
+
+namespace
+{
+	struct ProcessFreeClaudeObservation
+	{
+		TempDir temp{"uam-cold-claude-injected-observation"};
+		uam::AppState app;
+		ChatSession chat;
+		uam::AcpSessionState session;
+		std::string process = "injected-original-claude-generation";
+		std::shared_ptr<const char> writer = std::make_shared<const char>(0);
+		std::shared_ptr<uam::claude_preinput::InjectedTransportForTests> transport;
+		std::vector<nlohmann::json> controls;
+		ProcessFreeClaudeObservation()
+		{
+			app.data_root = temp.root;
+			chat.id = "injected-observer-owner"; chat.created_at = "2026-10-23T00:00:00.000Z";
+			chat.provider_id = "claude-cli"; chat.execution_host_id = "local";
+			chat.native_session_id = "b3509391-8a4f-43e1-9d87-dd196b3a1697";
+			chat.model_id = "claude-sonnet-4-6"; chat.approval_mode = "default"; chat.command_safety_tier = "off";
+			chat.workspace_directory = temp.root.string();
+			session.chat_id = chat.id; session.provider_id = chat.provider_id; session.session_id = chat.native_session_id;
+			session.protocol_kind = "claude-code-stream-json"; session.process_execution_host_id = "local";
+			session.current_model_id = "unprojected-model"; session.current_mode_id = "unprojected-mode";
+			session.running = true; // Injected runtime DATA; no OS handle or process is created.
+			transport = std::make_shared<uam::claude_preinput::InjectedTransportForTests>();
+			transport->process = [&] { return process; };
+			transport->writer = [&]() -> std::shared_ptr<const void> { return writer; };
+			transport->write_control = [&](const nlohmann::json& request) { controls.push_back(request); return true; };
+			UAM_ASSERT(uam::claude_preinput::ArmWithInjectedTransportForTests(app, session, chat, transport));
+		}
+		void Respond(nlohmann::json payload)
+		{
+			nlohmann::json frame = {{"type", "control_response"}, {"response", {{"subtype", "success"},
+			    {"request_id", controls.back().at("request_id")}, {"response", std::move(payload)}}}};
+			if (controls.back().at("request").at("subtype") == "initialize")
+			{
+				frame["response"]["pending_permission_requests"] = nlohmann::json::array();
+				frame["response"]["pending_user_dialog_requests"] = nlohmann::json::array();
+			}
+			UAM_ASSERT(uam::claude_preinput::BeforeSharedDispatch(app, session, chat, &frame));
+		}
+		std::shared_ptr<const uam::claude_preinput::NativeWitness> Observe()
+		{
+			UAM_ASSERT(!uam::claude_preinput::CurrentWitness(app, session, chat));
+			Respond({{"claude_code_version", "2.1.302"}, {"current_permission_mode", "default"}});
+			Respond({{"sections", {{{"title", "Session"}, {"rows", {{{"label", "Session ID"}, {"value", chat.native_session_id}}}}}}}});
+			Respond({{"applied", {{"model", chat.model_id}}}});
+			const auto witness = uam::claude_preinput::CurrentWitness(app, session, chat);
+			UAM_ASSERT(witness && witness->Injected() && witness->Current(app, session, chat));
+			UAM_ASSERT(!session.stdin_writer && session.pending_request_methods.empty() && controls.size() == 3);
+			return witness;
+		}
+	};
+}
+
+UAM_TEST(ClaudeColdInjectedObserverHandoffRetainsOriginalNativeFences)
+{
+	for (const std::string fault : {"none", "epoch", "writer", "process", "stop", "model", "late-frame"})
+	{
+		ProcessFreeClaudeObservation fixture;
+		const auto witness = fixture.Observe();
+		UAM_ASSERT(!fixture.session.initialized && !fixture.session.session_ready);
+		UAM_ASSERT(witness->Handoff(fixture.app, fixture.session, fixture.chat));
+		UAM_ASSERT(fixture.session.initialized && fixture.session.session_ready);
+		UAM_ASSERT_EQ(fixture.session.current_model_id, fixture.chat.model_id);
+		const auto epoch = fixture.session.permission_review_incarnation;
+		const auto writer = fixture.writer;
+		const auto model = fixture.chat.model_id;
+		if (fault == "epoch") fixture.session.permission_review_incarnation = std::make_shared<const char>(0);
+		if (fault == "writer") fixture.writer = std::make_shared<const char>(0);
+		if (fault == "process") fixture.process = "injected-replacement-generation";
+		if (fault == "stop") fixture.session.local_stop_pending = true;
+		if (fault == "model") fixture.chat.model_id = "foreign-model";
+		const nlohmann::json late = {{"type", "assistant"}, {"session_id", fixture.chat.native_session_id}, {"message", {{"role", "assistant"}, {"content", nlohmann::json::array()}}}};
+		if (fault == "late-frame") UAM_ASSERT(uam::claude_preinput::BeforeSharedDispatch(fixture.app, fixture.session, fixture.chat, &late));
+		if (fault == "none")
+		{
+			UAM_ASSERT(witness->InputAttempted(fixture.app, fixture.session, fixture.chat));
+			UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat), uam::claude_preinput::State::InputAttempted);
+			UAM_ASSERT(!uam::claude_preinput::BeforeSharedDispatch(fixture.app, fixture.session, fixture.chat, &late));
+			UAM_ASSERT(!witness->InputAttempted(fixture.app, fixture.session, fixture.chat));
+		}
+		else
+		{
+			UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat));
+			fixture.session.permission_review_incarnation = epoch; fixture.writer = writer; fixture.chat.model_id = model;
+			fixture.session.local_stop_pending = false; fixture.process = "injected-original-claude-generation";
+			UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat));
+			UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat));
+		}
+		UAM_ASSERT_EQ(fixture.controls.size(), std::size_t{3});
+		UAM_ASSERT(!fixture.session.stdin_writer && fixture.chat.messages.empty() && fixture.app.pending_chat_save_tasks.empty());
+	}
+}
+
+UAM_TEST(ClaudeColdInjectedObservationRefusesBeforeAnyReadinessProjection)
+{
+	ProcessFreeClaudeObservation fixture;
+	fixture.Respond({{"claude_code_version", "2.1.302"}, {"current_permission_mode", "default"}});
+	fixture.Respond({{"sections", {{{"title", "Session"}, {"rows", {{{"label", "Session ID"}, {"value", fixture.chat.native_session_id}}}}}}}});
+	UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat));
+	fixture.Respond({{"applied", {{"model", "foreign-model"}}}});
+	UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat), uam::claude_preinput::State::Refused);
+	UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat));
+	UAM_ASSERT(!fixture.session.initialized && !fixture.session.session_ready && !fixture.session.stdin_writer);
+	UAM_ASSERT_EQ(fixture.session.current_model_id, std::string("unprojected-model"));
+	UAM_ASSERT_EQ(fixture.controls.size(), std::size_t{3});
+
+	ProcessFreeClaudeObservation handoff;
+	const auto witness = handoff.Observe();
+	int identity_reads = 0;
+	handoff.transport->process = [&]
+	{
+		return ++identity_reads == 1 ? handoff.process : std::string("injected-drift-at-readiness-handoff");
+	};
+	UAM_ASSERT(!witness->Handoff(handoff.app, handoff.session, handoff.chat));
+	UAM_ASSERT(!handoff.session.initialized && !handoff.session.session_ready);
+	UAM_ASSERT(!witness->Current(handoff.app, handoff.session, handoff.chat));
+	UAM_ASSERT_EQ(handoff.controls.size(), std::size_t{3});
+}
+
+UAM_TEST(ClaudeColdForeignObserverCannotMutateOrReleaseEitherRuntime)
+{
+	for (const std::string phase : {"initialize", "observed", "input-attempted"})
+	{
+		for (const std::string api : {"state", "dispatch", "consume"})
+		{
+			ProcessFreeClaudeObservation fixture;
+			if (phase != "initialize")
+			{
+				const auto witness = fixture.Observe();
+				if (phase == "input-attempted")
+				{
+					UAM_ASSERT(witness->Handoff(fixture.app, fixture.session, fixture.chat));
+					UAM_ASSERT(witness->InputAttempted(fixture.app, fixture.session, fixture.chat));
+				}
+			}
+			const auto original_state = uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat);
+			const auto original_pending = fixture.session.pending_request_methods;
+			uam::AcpSessionState foreign;
+			foreign.claude_preinput_observation = fixture.session.claude_preinput_observation;
+			foreign.native_pre_dispatch_runtime = fixture.session.native_pre_dispatch_runtime;
+			foreign.initialize_request_id = 1;
+			foreign.pending_request_methods[1] = "initialize";
+			foreign.pending_request_methods[3] = "claude/preinput_get_settings";
+			const auto foreign_pending = foreign.pending_request_methods;
+			const nlohmann::json frame = {{"type", "assistant"}};
+			if (api == "state")
+			{
+				UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, foreign, fixture.chat), uam::claude_preinput::State::Refused);
+			}
+			if (api == "dispatch") UAM_ASSERT(uam::claude_preinput::BeforeSharedDispatch(fixture.app, foreign, fixture.chat, &frame));
+			if (api == "consume") UAM_ASSERT(uam::claude_preinput::Consume(fixture.app, foreign, fixture.chat, frame));
+			UAM_ASSERT(foreign.pending_request_methods == foreign_pending);
+			UAM_ASSERT_EQ(foreign.initialize_request_id, 1);
+			UAM_ASSERT(!foreign.initialized && !foreign.session_ready && !foreign.stdin_writer);
+			UAM_ASSERT(fixture.session.pending_request_methods == original_pending);
+			UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat), original_state);
+		}
+	}
+}
+
+UAM_TEST(ClaudeColdRetiredObserverCannotRetireReplacementControlIds)
+{
+	for (const std::string drift : {"epoch", "writer", "process"})
+	{
+		ProcessFreeClaudeObservation fixture;
+		const auto original_epoch = fixture.session.permission_review_incarnation;
+		const auto original_writer = fixture.writer;
+		const auto original_process = fixture.process;
+		fixture.session.pending_request_methods[3] = "claude/preinput_get_settings";
+		const auto replacement_pending = fixture.session.pending_request_methods;
+		if (drift == "epoch") fixture.session.permission_review_incarnation = std::make_shared<const char>(0);
+		if (drift == "writer") fixture.writer = std::make_shared<const char>(0);
+		if (drift == "process") fixture.process = "injected-replacement-generation";
+		UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat), uam::claude_preinput::State::Refused);
+		UAM_ASSERT(fixture.session.pending_request_methods == replacement_pending);
+		UAM_ASSERT_EQ(fixture.session.initialize_request_id, 1);
+		fixture.session.permission_review_incarnation = original_epoch;
+		fixture.writer = original_writer;
+		fixture.process = original_process;
+		UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat), uam::claude_preinput::State::Refused);
+		UAM_ASSERT(fixture.session.pending_request_methods == replacement_pending);
+		UAM_ASSERT_EQ(fixture.session.initialize_request_id, 1);
+		UAM_ASSERT_EQ(fixture.controls.size(), std::size_t{1});
+		UAM_ASSERT(!fixture.session.initialized && !fixture.session.session_ready && !fixture.session.stdin_writer);
+	}
+}
+
+#endif
+
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI && defined(__APPLE__)
 #include "common/provider/claude_preinput_observation.h"
@@ -25,6 +219,11 @@ UAM_TEST(ClaudeDiscoveryPreservesOnlyReportedModelTokenCapacities)
 #include "common/runtime/acp/acp_polling.h"
 #include "common/chat/chat_repository.h"
 #include "common/utils/io_utils.h"
+#include <type_traits>
+
+static_assert(!std::is_default_constructible_v<uam::claude_preinput::NativeWitness>);
+static_assert(!std::is_copy_constructible_v<uam::claude_preinput::NativeWitness>);
+static_assert(!std::is_convertible_v<uam::claude_preinput::NativeTuple, uam::claude_preinput::NativeWitness>);
 
 namespace
 {
@@ -137,6 +336,7 @@ for line in sys.stdin:
 			UAM_ASSERT(uam::acp_detail::SendInitialize(session, nullptr));
 			UAM_ASSERT(uam::claude_preinput::Arm(app, session, chat()));
 			UAM_ASSERT(!uam::claude_preinput::CurrentTuple(app, session, chat()));
+			UAM_ASSERT(!uam::claude_preinput::CurrentWitness(app, session, chat()));
 		}
 		void Pump()
 		{
@@ -226,6 +426,8 @@ UAM_TEST(ClaudePreinputObservedTupleRevokesForLateTurnActualStopAndReplacement)
 	for (const std::string variant : {"late-turn", "stop", "replacement"})
 	{
 		ClaudePreinputPeerFixture fixture(variant); fixture.Begin(); fixture.Wait(uam::claude_preinput::State::Observed);
+		const auto witness = uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat());
+		UAM_ASSERT(witness && witness->Current(fixture.app, fixture.session, fixture.chat()));
 		if (variant == "late-turn")
 		{
 			UAM_ASSERT(uam::io::WriteTextFile(fixture.temp.root / "release-turn", "release")); fixture.Wait(uam::claude_preinput::State::Refused);
@@ -237,10 +439,100 @@ UAM_TEST(ClaudePreinputObservedTupleRevokesForLateTurnActualStopAndReplacement)
 			if (variant == "replacement") UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(fixture.session, fixture.temp.root, fixture.argv));
 		}
 		UAM_ASSERT(!uam::claude_preinput::CurrentTuple(fixture.app, fixture.session, fixture.chat()));
+		UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat()));
+		UAM_ASSERT_EQ(witness->Tuple().NativeId(), fixture.native); // Retained DATA survives loss of current proof.
+		UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat()));
 		UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat()), uam::claude_preinput::State::Refused);
 		UAM_ASSERT(!uam::claude_preinput::Arm(fixture.app, fixture.session, fixture.chat())); fixture.AssertUnprojected();
 	}
 }
+
+UAM_TEST(ClaudePreinputWitnessRequiresOriginalObserverAndDoesNotRetainItsLifetime)
+{
+	for (const bool reattach : {false, true})
+	{
+		ClaudePreinputPeerFixture fixture("healthy");
+		UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat()));
+		fixture.Begin(); fixture.Wait(uam::claude_preinput::State::Observed);
+		const auto witness = uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat());
+		UAM_ASSERT(witness && witness->Current(fixture.app, fixture.session, fixture.chat()));
+		const auto tuple = witness->Tuple(); // Freely copied DATA cannot manufacture a witness.
+		UAM_ASSERT_EQ(tuple.NativeId(), fixture.native); UAM_ASSERT_EQ(tuple.Model(), fixture.selected_model);
+		auto retained = reattach ? fixture.session.claude_preinput_observation : nullptr;
+		const std::weak_ptr<uam::claude_preinput::Observation> observer = fixture.session.claude_preinput_observation;
+		fixture.session.claude_preinput_observation.reset();
+		UAM_ASSERT_EQ(observer.expired(), !reattach);
+		UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat()));
+		if (reattach)
+		{
+			fixture.session.claude_preinput_observation = std::move(retained);
+			UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat()), uam::claude_preinput::State::Observed);
+			UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat())); // Refused handle cannot revive.
+		}
+		fixture.AssertUnprojected();
+	}
+}
+
+UAM_TEST(ClaudePreinputWitnessCannotAdoptCopiedOwnerOrTouchForeignRequests)
+{
+	ClaudePreinputPeerFixture fixture("healthy"); fixture.Begin(); fixture.Wait(uam::claude_preinput::State::Observed);
+	const auto witness = uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat());
+	UAM_ASSERT(witness && witness->Current(fixture.app, fixture.session, fixture.chat()));
+	uam::AcpSessionState other;
+	other.chat_id = fixture.session.chat_id; other.provider_id = fixture.session.provider_id;
+	other.session_id = fixture.session.session_id; other.protocol_kind = fixture.session.protocol_kind;
+	other.claude_preinput_observation = fixture.session.claude_preinput_observation;
+	other.native_pre_dispatch_runtime = fixture.session.native_pre_dispatch_runtime;
+	other.initialize_request_id = 777; other.pending_request_methods.emplace(777, "foreign-control");
+	UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, other, fixture.chat()));
+	UAM_ASSERT(!witness->Current(fixture.app, other, fixture.chat()));
+	UAM_ASSERT_EQ(other.initialize_request_id, 777);
+	UAM_ASSERT_EQ(other.pending_request_methods.at(777), std::string("foreign-control"));
+	UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat()), uam::claude_preinput::State::Observed);
+	UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat()));
+	fixture.AssertUnprojected();
+}
+
+UAM_TEST(ClaudePreinputWitnessRefusesOwnerDriftWithoutRevivalFromRestoredMetadata)
+{
+	for (const std::string field : {"root", "incarnation", "epoch", "model", "token"})
+	{
+		ClaudePreinputPeerFixture fixture("healthy"); fixture.Begin(); fixture.Wait(uam::claude_preinput::State::Observed);
+		const auto witness = uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat());
+		UAM_ASSERT(witness && witness->Current(fixture.app, fixture.session, fixture.chat()));
+		const auto incarnation = fixture.chat().metadata_incarnation;
+		const auto epoch = fixture.session.permission_review_incarnation;
+		if (field == "root")
+		{
+			fixture.app.data_root /= "foreign-root";
+		}
+		else if (field == "incarnation")
+		{
+			fixture.chat().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		}
+		else if (field == "epoch")
+		{
+			fixture.session.permission_review_incarnation = std::make_shared<const char>(0);
+		}
+		else if (field == "model")
+		{
+			fixture.chat().model_id = "foreign-model";
+		}
+		else
+		{
+			fixture.session.remote_output_delivery_token = "foreign-token";
+		}
+		UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat()));
+		fixture.app.data_root = fixture.temp.root; fixture.chat().metadata_incarnation = incarnation;
+		fixture.session.permission_review_incarnation = epoch; fixture.chat().model_id = fixture.selected_model;
+		fixture.session.remote_output_delivery_token.clear();
+		UAM_ASSERT(!witness->Current(fixture.app, fixture.session, fixture.chat()));
+		UAM_ASSERT(!uam::claude_preinput::CurrentWitness(fixture.app, fixture.session, fixture.chat()));
+		UAM_ASSERT_EQ(uam::claude_preinput::CurrentState(fixture.app, fixture.session, fixture.chat()), uam::claude_preinput::State::Refused);
+		fixture.AssertUnprojected();
+	}
+}
+
 UAM_TEST(ClaudePreinputQueriesRefuseUnsettledSetupAndSelectedOwnerDrift)
 {
 	for (const std::string control : {"fast", "reasoning", "model-drift", "mode-drift"})

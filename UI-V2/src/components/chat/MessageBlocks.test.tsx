@@ -490,6 +490,34 @@ describe('working transcript', () => {
     window.cefQuery = previousCefQuery
   })
 
+  it('pins recovered tool requests to the displayed history and resets an older modal', async () => {
+    const previousCefQuery = window.cefQuery
+    const digests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const payload = JSON.parse(request).payload
+      digests.push(payload.historyDigest)
+      onSuccess(JSON.stringify({ content: payload.historyDigest, offset: 0, nextOffset: 16,
+        previousOffset: 0, lastOffset: 0, totalBytes: 16, hasPrevious: false, hasMore: false }))
+    }
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      for (const historyDigest of ['0123456789abcdef', 'fedcba9876543210']) {
+        const message = buildMessageFromCpp('chat-1', { role: 'assistant', content: '', toolCalls: [
+          { ...tools[0], content: '', contentDeferred: true, historyDigest },
+        ] }, 0)
+        expect(message.toolCalls?.[0].historyDigest).toBe(historyDigest)
+        await act(async () => root.render(<ToolCallModal chatId="chat-1" messageIndex={0}
+          tool={message.toolCalls![0]} onClose={vi.fn()} />))
+        expect(document.body.querySelector('.uam-tool-modal__output')?.textContent).toContain(historyDigest)
+      }
+      expect(digests).toEqual(['0123456789abcdef', 'fedcba9876543210'])
+    } finally {
+      act(() => root.unmount()); host.remove(); window.cefQuery = previousCefQuery
+    }
+  })
+
   it('keeps loaded deferred chunks in one continuous output', async () => {
     const previousCefQuery = window.cefQuery
     const offsets: number[] = []
