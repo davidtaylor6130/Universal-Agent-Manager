@@ -2,14 +2,155 @@
 #include "cef/state_serializer.h"
 #include <cerrno>
 #include <cstring>
+#include <future>
 #include "app/worktree_launch_preparation_service.h"
 #include "app/opencode_compaction_sync_service.h"
+#include "common/chat/native_attachment_assets.h"
+#include "common/chat/native_media_chat_save.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
 using namespace uam_test;
 
 namespace
 {
+	// DATA only: publish a retained original, but never create a provider process,
+	// poll a launch intent, acquire a native binding or write provider input.
+	struct ColdRemoteImageRetryFixture
+	{
+		TempDir temp{"uam-cold-image-retry-admission"};
+		uam::AppState app;
+		std::string original_bytes;
+
+		explicit ColdRemoteImageRetryFixture(const std::string& provider)
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			app.settings.central_provider_configuration.enabled = false;
+			app.settings.git_enabled = app.settings.git_auto_worktree = false;
+			ExecutionHost host;
+			host.id = "data-only-image-host";
+			host.transport = "ssh";
+			host.ssh_alias = "never-connect-image-admission";
+			host.platform = "linux";
+			host.runner_protocol_version = 3;
+			app.settings.execution_hosts.push_back(host);
+			ChatSession chat;
+			chat.id = "data-only-image-retry";
+			chat.created_at = "2026-10-23T12:00:00Z";
+			chat.provider_id = provider;
+			chat.execution_host_id = host.id;
+			chat.workspace_directory = "/data-only/remote-workspace";
+			chat.native_session_id = "data-only-saved-native-session";
+			chat.routing_mode = "automatic";
+			chat.model_id = "data-only-image-model";
+			chat.memory_enabled = false;
+			chat.small_model_mode = true;
+			chat.messages = {{.role = MessageRole::User, .content = "Retry the retained image.", .created_at = "2026-10-23T12:00:01Z", .interrupted = true, .acp_prompt_not_sent = true}};
+			chat.messages.back().markdown_store_files = {"captured-skill.md"};
+			chat.messages.back().markdown_store_prompt_blocks = {"Keep the original captured instructions."};
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			const auto revision = ChatRepository::ChatStorageRevision(app.data_root, chat.id);
+			UAM_ASSERT(revision);
+			const std::string png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+			UAM_ASSERT(uam::base64::Decode(png, original_bytes));
+			MessageAttachment image;
+			image.id = "retained-image"; image.name = "original.png"; image.kind = "image";
+			image.source = AttachmentSource::NativeInlinePending;
+			image.native_part_key = "v1:data-only/user/image/0";
+			image.native_source_field = "data-only/user/attachments/0";
+			image.origin_execution_host_id = host.id;
+			std::string error;
+			image.native_inline_payload = uam::native_assets::MakeInlinePayload(std::string(png), "image/png", std::make_shared<uam::native_assets::PayloadBudget>(), error);
+			UAM_ASSERT(image.native_inline_payload && error.empty());
+			image.mime_type = image.native_inline_payload->MimeType();
+			image.content_digest = image.native_inline_payload->Digest();
+			image.size_bytes = image.native_inline_payload->DecodedSize();
+			chat.messages.back().attachments.push_back(std::move(image));
+			auto published = std::async(std::launch::async, [root = app.data_root, chat = std::move(chat), revision = *revision]() mutable
+			{
+				std::string error;
+				auto prepared = uam::PreparedNativeMediaChatSave::Prepare(root, std::move(chat), revision, error);
+				UAM_ASSERT(prepared && error.empty());
+				UAM_ASSERT(prepared->Publish(error) && error.empty());
+				UAM_ASSERT(prepared->AcknowledgeOriginals(error) && error.empty());
+				return prepared->TakeCommittedChat();
+			}).get();
+			UAM_ASSERT(published);
+			app.chats.push_back(std::move(*published));
+		}
+
+		void HoldOriginal()
+		{
+			ChatSession& chat = app.chats.front();
+			const Message& row = chat.messages.front();
+			uam::AcpQueuedUserPromptState prompt;
+			prompt.id = "held-original-image";
+			prompt.text = row.content;
+			prompt.attachments = row.attachments;
+			prompt.markdown_store_files = row.markdown_store_files;
+			prompt.markdown_store_prompt_blocks = row.markdown_store_prompt_blocks;
+			prompt.direct_admission = true;
+			prompt.append_user_message = false;
+			prompt.existing_user_message_index = 0;
+			prompt.existing_user_message_created_at = row.created_at;
+			chat.acp_queued_prompts = {prompt};
+			chat.acp_queue_held = true;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		}
+
+		void CheckRefusal(bool indexed)
+		{
+			CheckActionRefusal([&](std::string& error)
+			{
+				const std::string& id = app.chats.front().id;
+				return indexed ? uam::RetryFailedAcpMessage(app, id, 0, &error) : uam::RetryLastAcpPrompt(app, id, &error);
+			}, "Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.");
+		}
+
+		void CheckActionRefusal(const std::function<bool(std::string&)>& action, const std::string& expected_error)
+		{
+			ChatSession& chat = app.chats.front();
+			const ChatSession before = chat;
+			const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+			const std::string primary_before = ReadFile(primary);
+			const auto outbox = app.data_root / "queue-outboxes" / (chat.id + ".json");
+			const bool outbox_existed = fs::exists(outbox);
+			const std::string outbox_before = outbox_existed ? ReadFile(outbox) : std::string{};
+			const std::size_t sessions_before = app.acp_sessions.size();
+			std::string error;
+			UAM_ASSERT(!action(error));
+			UAM_ASSERT_EQ(error, expected_error);
+			UAM_ASSERT_EQ(ReadFile(primary), primary_before);
+			UAM_ASSERT_EQ(fs::exists(outbox), outbox_existed);
+			if (outbox_existed) UAM_ASSERT_EQ(ReadFile(outbox), outbox_before);
+			UAM_ASSERT_EQ(chat.messages, before.messages);
+			UAM_ASSERT(chat.goals.empty() && chat.active_goal_id.empty());
+			UAM_ASSERT_EQ(chat.acp_queued_prompts, before.acp_queued_prompts);
+			UAM_ASSERT_EQ(chat.acp_queue_held, before.acp_queue_held);
+			UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, before.acp_dispatched_queued_prompt_count);
+			UAM_ASSERT_EQ(chat.native_session_id, before.native_session_id);
+			UAM_ASSERT_EQ(chat.execution_host_id, before.execution_host_id);
+			UAM_ASSERT_EQ(chat.workspace_directory, before.workspace_directory);
+			UAM_ASSERT_EQ(chat.svn_update_pending, before.svn_update_pending);
+			UAM_ASSERT(!chat.remote_process_exists && chat.remote_process_control_token.empty());
+			UAM_ASSERT_EQ(chat.metadata_incarnation, before.metadata_incarnation);
+			UAM_ASSERT_EQ(app.acp_sessions.size(), sessions_before);
+			UAM_ASSERT(app.cli_terminals.empty() && app.worktree_launch_preparations.empty() && app.execution_routing_waits.empty());
+			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty() && app.pending_chat_save_tasks.empty() && app.claude_input_tasks.empty());
+			for (const auto& session : app.acp_sessions)
+			{
+				UAM_ASSERT(!session->running && !session->processing && !session->session_ready && !session->reconnect_pending);
+				UAM_ASSERT(!session->saved_image_retry && !session->pending_prompt_delivery && !session->pending_local_launch && !session->stdin_writer);
+				UAM_ASSERT_EQ(session->session_id, chat.native_session_id);
+				UAM_ASSERT_EQ(std::vector<uam::AcpQueuedUserPromptState>(session->queued_user_prompts.begin(), session->queued_user_prompts.end()), chat.acp_queued_prompts);
+			}
+			const auto& image = chat.messages.front().attachments.front();
+			UAM_ASSERT(image.source == AttachmentSource::OwnedNativeAsset && image.path.empty());
+			const auto original = uam::native_assets::ReadOwned(app.data_root, chat.id, image.native_asset_key);
+			UAM_ASSERT(original.ok && original.bytes == original_bytes);
+		}
+	};
+
 	struct RetryWorkspaceFixture
 	{
 		TempDir temp{"uam-durable-workspace-retry"};
@@ -125,6 +266,111 @@ namespace
 			session->session_ready = false;
 		}
 	};
+}
+
+UAM_TEST(AcpColdRemoteImageRetryRefusesBeforeGoalOrSessionMutation)
+{
+	for (const std::string provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		for (const bool stopped_session : {false, true})
+		{
+			ColdRemoteImageRetryFixture fixture(provider);
+			if (stopped_session)
+			{
+				auto session = std::make_unique<uam::AcpSessionState>();
+				session->chat_id = fixture.app.chats.front().id;
+				session->provider_id = provider;
+				session->session_id = fixture.app.chats.front().native_session_id;
+				const auto& runtime = ProviderRuntimeRegistry::ResolveById(provider);
+				session->protocol_kind = runtime.AcpProtocolKind();
+				// A recognized protocol must still refuse a stopped holder. These
+				// capability fields are DATA, with no process or native binding.
+				session->initialized = session->prompt_image_supported = true;
+				UAM_ASSERT(!session->protocol_kind.empty());
+				UAM_ASSERT_EQ(runtime.SupportsSavedImageRetry(*session), provider != uam::provider_ids::kAntigravityCli);
+				fixture.app.acp_sessions.push_back(std::move(session));
+			}
+			fixture.CheckRefusal(false);
+		}
+	}
+}
+
+UAM_TEST(AcpColdRemoteIndexedImageRetryPreservesPlaceholderAndHeldQueue)
+{
+	for (const std::string provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		for (const bool held_queue : {false, true})
+		{
+			ColdRemoteImageRetryFixture fixture(provider);
+			ChatSession& chat = fixture.app.chats.front();
+			chat.svn_update_pending = true;
+			chat.messages.push_back({.role = MessageRole::Assistant, .created_at = "2026-10-23T12:00:02Z"});
+			if (held_queue)
+			{
+				uam::AcpQueuedUserPromptState future;
+				future.id = "held-unrelated-future";
+				future.text = "Keep this held input independent of Retry.";
+				future.append_user_message = true;
+				chat.acp_queued_prompts = {future};
+				chat.acp_queue_held = true;
+				auto session = std::make_unique<uam::AcpSessionState>();
+				session->chat_id = chat.id;
+				session->provider_id = chat.provider_id;
+				session->session_id = chat.native_session_id;
+				session->queue_held = true;
+				session->queued_user_prompts.push_back(future);
+				fixture.app.acp_sessions.push_back(std::move(session));
+			}
+			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+			fixture.CheckRefusal(true);
+		}
+	}
+}
+
+UAM_TEST(AcpRemoteOwnedImageReceiptRetryDoesNotAcquireColdRuntime)
+{
+	for (const std::string provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		ColdRemoteImageRetryFixture fixture(provider);
+		fixture.HoldOriginal();
+		const ChatSession& chat = fixture.app.chats.front();
+		const auto receipt = chat.acp_queued_prompts.front();
+		fixture.CheckActionRefusal([&](std::string& error) { return uam::RetryQueuedAcpPrompt(fixture.app, chat.id, {receipt.id, receipt.revision}, &error); },
+		    "Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.");
+	}
+}
+
+UAM_TEST(AcpRemoteOwnedImageQueueResumeKeepsRevokedInvocationHeld)
+{
+	for (const std::string provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		ColdRemoteImageRetryFixture fixture(provider);
+		fixture.HoldOriginal();
+		ChatSession& chat = fixture.app.chats.front();
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = provider;
+		session->session_id = chat.native_session_id;
+		session->queue_held = true;
+		session->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+		// Retaining copied DATA after revocation cannot reconstruct input authority.
+		auto retired = std::make_shared<uam::SavedImageRetryPermission>();
+		retired->root = fixture.app.data_root;
+		retired->incarnation = chat.metadata_incarnation;
+		retired->chat_id = chat.id;
+		retired->provider_id = chat.provider_id;
+		retired->execution_host_id = chat.execution_host_id;
+		retired->row_index = 0;
+		retired->content = chat.messages.front().content;
+		retired->attachments = chat.messages.front().attachments;
+		session->saved_image_retry = retired;
+		uam::acp_detail::RevokeSavedImageRetry(*session);
+		UAM_ASSERT(retired && !session->saved_image_retry);
+		fixture.app.acp_sessions.push_back(std::move(session));
+		const auto receipt = chat.acp_queued_prompts.front();
+		fixture.CheckActionRefusal([&](std::string& error) { return uam::ResumeQueuedAcpPrompts(fixture.app, chat.id, {{receipt.id, receipt.revision}}, &error); },
+		    "Saved image Retry needs fresh saved-message verification before this queue can resume. Your input remains held.");
+	}
 }
 
 UAM_TEST(AcpWorkspaceRetryPersistsOneRawReferencedIntent)

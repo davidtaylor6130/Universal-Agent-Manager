@@ -1,0 +1,29 @@
+.uam-update-notes {
+    min-width: 0;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+}
+
+.uam-update-notes > summary {
+    cursor: pointer;
+    padding: var(--sp-1);
+    margin: calc(-1 * var(--sp-1));
+    border-radius: var(--r-sm);
+}
+
+.uam-update-notes > summary:hover {
+    color: var(--text);
+    background: var(--surface-high);
+}
+
+.uam-update-notes > summary:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.uam-update-notes > p {
+    margin-top: var(--sp-2);
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
