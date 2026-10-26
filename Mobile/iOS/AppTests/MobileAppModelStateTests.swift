@@ -58,6 +58,205 @@ import UAMKit
     private func page(_ id: String, _ text: String) -> WireObject
     { ["chatId": id, "startIndex": 0, "totalCount": 1, "messagesDigest": text, "messages": [["role": "assistant", "content": text]]] }
 
+    private func nativeRoutingChat(lifetime: String = "owner") -> WireObject
+    {
+        ["id": "a", "providerId": "copilot-cli", "executionHostId": "local", "modelId": "auto",
+         "acpSession": ["providerId": "copilot-cli", "protocolKind": "copilot-sdk", "sessionId": "native",
+                        "running": true, "lifecycleState": "ready", "nativeModelOptions": ["autoRouting": [
+                            "ownership": ["chatId": "a", "nativeSessionId": "native", "executionHostId": "local", "lifetime": lifetime],
+                            "catalogStatus": "ready", "stateStatus": "ready", "eligibleTiers": ["present": true, "value": [
+                                ["id": " Vendor/Fast:V2 ", "displayName": "Fast", "description": "", "type": "auto", "status": ["enabled": true]]]],
+                            "providerDefault": ["present": false], "currentModel": ["present": true, "value": "auto"],
+                            "effective": ["present": false], "pending": ["present": false], "activating": ["present": false],
+                            "requestPending": false, "available": true, "disabledCode": "", "disabledReason": "", "lastError": "", "lastAckStatus": ""]]]]
+    }
+
+    func testCatalogModelsUseHostPlatformAndExactProviderWorkspaceScope() throws
+    {
+        let gate = Gate(), model = try model(gate)
+        model.settings = ["executionHosts": [["id": "windows-main", "platform": "windows"], ["id": "linux-main", "platform": "linux"]]]
+        model.catalogs = [
+            ["providerId": "codex-cli", "executionHostId": "windows-main", "workspaceDirectory": "C:/Work/Project/", "availableModels": [["id": " Vendor/ExactCase:V2 "]]],
+            ["providerId": "codex-cli", "executionHostId": "windows-main", "workspaceDirectory": "C:/Work/Other", "availableModels": [["id": "OtherWorkspace/Model"]]],
+            ["providerId": "codex-cli", "executionHostId": "other-main", "workspaceDirectory": "C:/Work/Project", "availableModels": [["id": "OtherHost/Model"]]],
+            ["providerId": "copilot-cli", "executionHostId": "windows-main", "workspaceDirectory": "C:/Work/Project", "availableModels": [["id": "OtherProvider/Model"]]],
+            ["providerId": "codex-cli", "executionHostId": "linux-main", "workspaceDirectory": "/work/Project", "availableModels": [["id": "POSIX/Model"]]]
+        ]
+        XCTAssertEqual(model.catalogModels(providerID: "codex-cli", hostID: "windows-main", workspace: #"c:\work\project"#).map { $0.text("id") }, [" Vendor/ExactCase:V2 "])
+        XCTAssertEqual(model.catalogModels(providerID: "codex-cli", hostID: "linux-main", workspace: "/work/Project/").map { $0.text("id") }, ["POSIX/Model"])
+        XCTAssertTrue(model.catalogModels(providerID: "codex-cli", hostID: "linux-main", workspace: "/work/project").isEmpty)
+        XCTAssertTrue(model.catalogModels(providerID: "codex-cli", hostID: "windows-main", workspace: "C:/Unrelated").isEmpty)
+        XCTAssertTrue(gate.seenActions.isEmpty, "Catalogue matching neither requests nor authorizes mutations")
+    }
+
+    func testNativeModelOptionsRequireCapabilitiesAndCurrentOwnershipWithoutSending() async throws
+    {
+        let gate = Gate(), model = try model(gate)
+        model.chats = [MobileChat(raw: nativeRoutingChat())]; model.activeChatID = "a"; model.connected = true
+        let context = model.draftContextID, owner = try XCTUnwrap(model.chat?.nativeAutoRouting?.ownership)
+        let unsupported = await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context)
+        XCTAssertFalse(unsupported, "Old hosts cannot gain the new actions from the legacy fallback list")
+        model.capabilities = ["actions": [["action": "setNativeModelOption"], ["action": "refreshNativeModelOptions"]]]
+        model.chats = [MobileChat(raw: nativeRoutingChat(lifetime: "replacement"))]
+        let replaced = await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context)
+        XCTAssertFalse(replaced)
+        model.chats = [MobileChat(raw: nativeRoutingChat())]; model.connected = false
+        let disconnected = await model.requestNativeAutoRouting(.absent, ownership: owner, contextID: context)
+        XCTAssertFalse(disconnected)
+        model.connected = true
+        model.busyActions.insert("refreshNativeModelOptions")
+        let busy = await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context)
+        XCTAssertFalse(busy)
+        model.busyActions.removeAll()
+        model.closeChat(); model.activeChatID = "a"
+        let retired = await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context)
+        XCTAssertFalse(retired)
+        XCTAssertTrue(gate.seenActions.isEmpty, "Rejected targets must never reach the companion")
+    }
+
+    func testNativeModelOptionsSendOnlyExactContractAndPreserveComposerDraft() async throws
+    {
+        let chat = nativeRoutingChat()
+        var requests: [(String, WireObject)] = []
+        let model = try model(handler: { action, payload in
+            requests.append((action, payload))
+            if action == "getInitialState" { return ["chats": [chat], "folders": [], "bootId": "test"] }
+            if action == "getCompanionCapabilities" { return ["actions": ["setNativeModelOption", "refreshNativeModelOptions"]] }
+            if action == "getChatMessages" { return ["chatId": "a", "startIndex": 0, "totalCount": 0, "messages": []] }
+            return ["pending": true]
+        })
+        model.chats = [MobileChat(raw: chat)]; model.activeChatID = "a"; model.connected = true
+        model.capabilities = ["actions": ["setNativeModelOption", "refreshNativeModelOptions"]]
+        model.draft = ComposerDraft(text: "Keep my independent draft")
+        let context = model.draftContextID, owner = try XCTUnwrap(model.chat?.nativeAutoRouting?.ownership)
+        let chosen = await model.requestNativeAutoRouting(.value(" Vendor/Fast:V2 "), ownership: owner, contextID: context)
+        XCTAssertTrue(chosen)
+        let defaults = await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context)
+        XCTAssertTrue(defaults)
+        let refreshed = await model.requestNativeAutoRouting(.absent, ownership: owner, contextID: context)
+        XCTAssertTrue(refreshed)
+        let controls = requests.filter { ["setNativeModelOption", "refreshNativeModelOptions"].contains($0.0) }
+        XCTAssertEqual(controls.count, 3)
+        XCTAssertEqual(controls[0].1.text("value"), " Vendor/Fast:V2 ")
+        XCTAssertEqual(Set(controls[0].1.keys), Set(["chatId", "nativeSessionId", "executionHostId", "lifetime", "optionId", "value"]))
+        XCTAssertTrue(controls[1].1["value"] is NSNull)
+        XCTAssertEqual(Set(controls[2].1.keys), Set(["chatId", "nativeSessionId", "executionHostId", "lifetime"]))
+        XCTAssertEqual(model.chat?.nativeAutoRouting?.effective, .absent, "Transport acceptance cannot invent an effective preference")
+        XCTAssertEqual(model.draft.text, "Keep my independent draft")
+        XCTAssertFalse(requests.contains { $0.0 == "sendAcpPrompt" })
+    }
+
+    func testNativeModelOptionLateReplyCannotSettleAnotherPhoneContext() async throws
+    {
+        let gate = Gate(), model = try model(gate)
+        gate.heldActions = ["setNativeModelOption"]
+        model.chats = [MobileChat(raw: nativeRoutingChat()), MobileChat(raw: ["id": "b"])]; model.activeChatID = "a"; model.connected = true
+        model.capabilities = ["actions": ["setNativeModelOption"]]
+        let context = model.draftContextID, owner = try XCTUnwrap(model.chat?.nativeAutoRouting?.ownership)
+        let pending = Task { await model.requestNativeAutoRouting(.value(nil), ownership: owner, contextID: context) }
+        await waitForCalls(1, gate)
+        model.closeChat(); model.activeChatID = "b"; model.draft = ComposerDraft(text: "Other chat draft")
+        gate.release(0, ["pending": true])
+        let settled = await pending.value
+        XCTAssertFalse(settled)
+        XCTAssertEqual(model.activeChatID, "b"); XCTAssertEqual(model.draft.text, "Other chat draft")
+        XCTAssertEqual(gate.seenActions, ["setNativeModelOption"], "Navigation cannot refresh or replay a stale mutation")
+        XCTAssertNil(model.error)
+    }
+
+    func testModelSettingsUseExactValuesAndRefuseStaleProviderOrContext() async throws
+    {
+        let gate = Gate(), model = try model(gate)
+        gate.heldActions = ["setChatModel"]
+        model.activeChatID = "a"; model.connected = true
+        model.chats = [MobileChat(raw: ["id": "a", "providerId": "codex-cli", "modelId": "Existing/Model"])]
+        model.capabilities = ["actions": ["setChatModel", "setChatCodexOptions"]]
+        let context = model.draftContextID
+        let stale = await model.performChatModelSetting("setChatCodexOptions", chatID: "a", contextID: context,
+            values: ["reasoningEffort": "deep/custom"], expectedProviderID: "claude-cli", expectedModelID: "Existing/Model")
+        XCTAssertFalse(stale); XCTAssertTrue(gate.seenActions.isEmpty)
+        let pending = Task { await model.performChatModelSetting("setChatModel", chatID: "a", contextID: context,
+            values: ["modelId": "Vendor/ExactCase:V2"], expectedProviderID: "codex-cli", expectedModelID: "Existing/Model") }
+        await waitForCalls(1, gate)
+        XCTAssertEqual(gate.calls[0].payload.text("modelId"), "Vendor/ExactCase:V2")
+        XCTAssertEqual(Set(gate.calls[0].payload.keys), Set(["chatId", "modelId"]), "Local stale checks do not invent companion fields")
+        model.closeChat(); model.activeChatID = "b"; model.draft = ComposerDraft(text: "Parent-independent draft")
+        gate.release(0)
+        let result = await pending.value
+        XCTAssertFalse(result); XCTAssertEqual(model.draft.text, "Parent-independent draft")
+        XCTAssertEqual(gate.seenActions, ["setChatModel"])
+    }
+
+    func testModelSettingsRejectChangedHostWorkspaceFolderAndRootIncarnation() async throws
+    {
+        let original: WireObject = ["id": "a", "providerId": "codex-cli", "modelId": "Vendor/ExactCase:V2",
+            "executionHostId": "synthetic-host-a", "workspaceDirectory": "synthetic-workspace-a", "folderId": "synthetic-project-a",
+            "createdAt": "2026-10-23T12:00:00Z"]
+        let origin = MobileChat(raw: original)
+        let replacements = [("executionHostId", "synthetic-host-b"), ("workspaceDirectory", "synthetic-workspace-b"),
+                            ("folderId", "synthetic-project-b"), ("createdAt", "2026-10-24T12:00:00Z"), ("", "")]
+        for (field, value) in replacements
+        {
+            let gate = Gate()
+            gate.heldActions = []
+            var sent: [WireObject] = []
+            var current = original
+            if !field.isEmpty { current[field] = value }
+            let model = try model(gate, handler: { action, payload in
+                if action == "setChatCodexOptions" { sent.append(payload) }
+                if action == "getInitialState" { return ["chats": [current], "folders": [], "providers": [], "bootId": "synthetic-context"] }
+                return await gate.request(action, payload)
+            })
+            model.activeChatID = "a"; model.connected = true
+            model.chats = [MobileChat(raw: current)]
+            model.capabilities = ["actions": ["setChatCodexOptions"]]
+            model.draft = ComposerDraft(text: "Independent parent draft")
+            let result = await model.performChatModelSetting("setChatCodexOptions", chatID: origin.id, contextID: model.draftContextID,
+                values: ["reasoningEffort": "Vendor/Deep:V2"], expectedProviderID: origin.providerID,
+                expectedModelID: origin.modelID, expectedContext: origin.modelSettingsContext)
+            if field.isEmpty
+            {
+                XCTAssertTrue(result)
+                XCTAssertEqual(sent.count, 1)
+                XCTAssertEqual(sent.first?.text("reasoningEffort"), "Vendor/Deep:V2")
+                XCTAssertEqual(Set(sent.first?.keys.map { $0 } ?? []), Set(["chatId", "reasoningEffort"]), "Local ownership never expands companion payloads")
+            }
+            else
+            {
+                XCTAssertFalse(result, "A changed \(field) must retire the original setting intent")
+                XCTAssertTrue(sent.isEmpty, "A changed \(field) must not reach the companion")
+            }
+            XCTAssertEqual(model.draft.text, "Independent parent draft")
+        }
+    }
+
+    func testModelSettingLateReplyCannotSettleChangedExecutionContext() async throws
+    {
+        let gate = Gate(), model = try model(gate)
+        gate.heldActions = ["setChatCodexOptions"]
+        var raw: WireObject = ["id": "a", "providerId": "codex-cli", "modelId": "Vendor/ExactCase:V2",
+            "executionHostId": "synthetic-host-a", "workspaceDirectory": "synthetic-workspace-a", "folderId": "synthetic-project-a",
+            "createdAt": "2026-10-23T12:00:00Z"]
+        let origin = MobileChat(raw: raw)
+        model.chats = [origin]; model.activeChatID = "a"; model.connected = true
+        model.capabilities = ["actions": ["setChatCodexOptions"]]
+        let context = model.draftContextID
+        let pending = Task { await model.performChatModelSetting("setChatCodexOptions", chatID: origin.id, contextID: context,
+            values: ["reasoningEffort": "Vendor/Deep:V2"], expectedProviderID: origin.providerID,
+            expectedModelID: origin.modelID, expectedContext: origin.modelSettingsContext) }
+        await waitForCalls(1, gate)
+        raw["executionHostId"] = "synthetic-host-b"; model.chats = [MobileChat(raw: raw)]
+        model.draft = ComposerDraft(text: "Newer context draft")
+        gate.release(0)
+        let acceptedHere = await pending.value
+        XCTAssertFalse(acceptedHere)
+        XCTAssertEqual(model.draftContextID, context, "The execution context changed without phone navigation")
+        XCTAssertEqual(model.chat?.hostID, "synthetic-host-b")
+        XCTAssertEqual(model.draft.text, "Newer context draft")
+        XCTAssertEqual(gate.seenActions, ["setChatCodexOptions"], "A late old-context reply cannot refresh or settle the replacement context")
+        XCTAssertNil(model.error)
+    }
+
     @MainActor private final class RefreshFixture
     {
         var stateFailure: CompanionError?

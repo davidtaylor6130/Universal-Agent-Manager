@@ -487,6 +487,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	}
 	if (session.cancel_requested && method == uam::acp_methods::kSessionPrompt)
 	{
+		if (const nlohmann::json* result = uam::nlohmann_json::FindObjectField(message, "result"))
+			ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpObserveCancelledPromptResult(app, session, chat, *result);
+		if (const nlohmann::json* error = uam::nlohmann_json::FindField(message, "error"); error != nullptr &&
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
+		        JsonDiagnosticStringValueOr(*error, "message", "Cancellation returned an unconfirmed prompt error.")))
+			return;
 		if (session.inactivity_timeout_pending)
 		{
 			FinalizeAcpTurnInactivityTimeout(app, session, chat);
