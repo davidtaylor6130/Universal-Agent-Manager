@@ -51,6 +51,10 @@ This page records the isolated documentation trial and subsequent provider imple
 
 Do not reassign the owners of these existing V5 tasks or mark them fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
+## Stalled goal loop cap
+
+**Source-confirmed implementation gap; behavioral regression pending.** The [goal iteration cap](settings/goal-loops.md) must bound automatic UAM worker continuation. Review-driven continuation checks it before worker queueing, including after a transient blocker. The separate stalled-loop auto-resume route can still queue a worker for an active goal already at or above the cap, including after the cap is lowered. This existing route needs its own admission check and behavioral regression; it remains outside task-0970's review-ordering correction and does not weaken the agreed bound. Ownership and acceptance remain in V5 Incomplete Work as Stalled Goal Loop Cap.
+
 ## Documentation validation
 
 The local checker validates navigation, heading targets, reachability and one explicit row for each required capability in every provider checklist. The trial passes six negative scenarios: omitted capability, acceptance used as implementation status, duplicate capability, missing local target, missing heading and unreachable feature page. A manual reading check traced provider completeness, memory Off semantics, editor actions, waking chats and build exclusion to their owning agreements. This is documentation validation, not an independent user study or application acceptance.

@@ -2,6 +2,8 @@
 
 A goal is explicitly requested continuing work with recorded progress and, when specified, a budget. UAM should retain its state across interruptions and distinguish active work, waiting for the user, blocked work and achieved completion. Automatic continuation must remain bounded by the user’s instructions, stop conditions, permissions and budget; ordinary chat input must not silently become a goal or automatically resume unrelated held input.
 
+The configured [iteration cap](../settings/goal-loops.md) applies before any further UAM-managed worker continuation, including continuation after a transient blocker. Reaching the cap blocks the goal instead of starting another iteration; terminal blockers retain their own stop reason. **Implementation gap:** Review-driven continuation enforces this bound; [stalled-loop auto-resume](../documentation-review.md#stalled-goal-loop-cap) still needs a cap admission check.
+
 [Agents](../settings/central-setup/agents.md) · [Current session reference](../reference/architecture/provider-sessions.md).
 
 [Goal Loops settings](../settings/goal-loops.md).
