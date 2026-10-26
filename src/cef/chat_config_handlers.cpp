@@ -129,6 +129,7 @@ namespace
 		return uam::StopAndEraseCliTerminalForChat(app, chat_id);
 	}
 
+#if UAM_ENABLE_COMPUTER_USE
 	bool HasComputerUseOwnership(const uam::AppState& app, const std::string& chat_id, bool enabled)
 	{
 		if (enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id)) return true;
@@ -164,6 +165,8 @@ namespace
 		bool exited = false;
 		for (;;)
 		{
+			// Observe exit before reading so helper JSON written just before exit is kept.
+			if (!exited) exited = process_service.PollStdioProcessExited(process, &exit_code);
 			std::string read_error;
 			const std::ptrdiff_t read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
 			if (read > 0)
@@ -187,7 +190,6 @@ namespace
 					return uam::query_handler_async::AsyncFailure(502, "Computer Use helper returned too much diagnostic output.");
 				}
 			}
-			if (!exited) exited = process_service.PollStdioProcessExited(process, &exit_code);
 			if (exited && read <= 0 && error_read <= 0) break;
 			if (std::chrono::steady_clock::now() >= deadline)
 			{
@@ -215,6 +217,7 @@ namespace
 			result = RunComputerUseSettingsHelperOnce(action, permission);
 		return result;
 	}
+#endif
 }
 
 using namespace uam::query_handler_internal;
@@ -1977,6 +1980,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 	cb->Success(nlohmann::json{{"commandSafetyTier", chat->command_safety_tier}}.dump());
 }
 
+#if UAM_ENABLE_COMPUTER_USE
 void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> browser,
     const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -2157,7 +2161,7 @@ void UamQueryHandler::HandleGetComputerUseSettings(CefRefPtr<CefBrowser> browser
 	nlohmann::json allowed = nlohmann::json::array();
 	for (const auto& rule : m_app.settings.computer_use_allowed_applications)
 		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
-	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"computerUseRevocationPending", !m_app.computer_use_revocation_pending_chat_ids.empty()}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
 }
 
 void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2227,7 +2231,7 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"computerUseRevocationPending", !m_app.computer_use_revocation_pending_chat_ids.empty()}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
 }
 
 void UamQueryHandler::HandleListComputerUseApplications(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
@@ -2271,6 +2275,7 @@ void UamQueryHandler::HandleRequestComputerUsePermission(CefRefPtr<CefBrowser>, 
 		return RunComputerUseSettingsHelper("request", helper_permission);
 	});
 }
+#endif
 
 void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -2309,6 +2314,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	cb->Success("{}");
 }
 
+#if UAM_ENABLE_SSH
 void UamQueryHandler::HandleSetChatRemoteRecovery(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	ChatSession* chat = FindChatOrFail(m_app, payload.value("chatId", ""), cb, "Chat not found.");
@@ -2331,6 +2337,7 @@ void UamQueryHandler::HandleSetChatRemoteRecovery(CefRefPtr<CefBrowser> browser,
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+#endif
 
 void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {

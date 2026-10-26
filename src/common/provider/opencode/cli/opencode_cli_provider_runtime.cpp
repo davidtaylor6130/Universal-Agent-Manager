@@ -122,6 +122,7 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpS
 	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
 	usage.total.total_tokens += last.total_tokens;
 	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	uam::acp_detail::RecordGoalReviewTurnUsage(session, last.total_tokens);
 	return false;
 }
 
@@ -608,9 +609,7 @@ namespace
 		if (remote_host != nullptr)
 		{
 			child.remote = std::make_unique<uam::remote::RunnerClient>(service,
-			    uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version,
-			                               remote_host->runner_directory, remote_host->runner_protocol_version),
-			    remote_host->runner_version, remote_host->runner_protocol_version);
+			    *remote_host);
 			const std::string operation_id = service.GenerateUuid();
 			if (operation_id.empty()) return fail("Could not allocate a remote OpenCode creation request.");
 			child.remote_process_id = "opencode-create-" + operation_id;
@@ -642,6 +641,9 @@ namespace
 		{
 			if (stop_token.stop_requested()) return fail("OpenCode session creation was canceled.");
 			bool received = false;
+			// A session reply written just before exit is still read.
+			int exit_code = -1;
+			const bool exit_observed = !child.remote && service.PollStdioProcessExited(child.process, &exit_code);
 			uam::remote::ProcessPollResult remote_poll;
 			if (child.remote)
 			{
@@ -736,8 +738,7 @@ namespace
 				if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				continue;
 			}
-			int exit_code = -1;
-			if (!received && service.PollStdioProcessExited(child.process, &exit_code))
+			if (!received && exit_observed)
 			{
 				// A confirmed session survives a teardown failure; retrying would create another.
 				if (!session_id.empty()) return session_id;

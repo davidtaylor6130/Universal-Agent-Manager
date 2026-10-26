@@ -17,6 +17,7 @@
 #include "common/config/settings_store.h"
 #include "common/models/app_models.h"
 #include "common/provider/codex/codex_options.h"
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
 
@@ -36,7 +37,8 @@ namespace uam::settings_frontend_json
 		{
 			const std::string chat_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(entry.first);
 			const std::string worker_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(entry.second.worker_provider_id);
-			if (chat_provider_id.empty() || worker_provider_id.empty())
+			// A binding that names an excluded provider is saved data only; the interface shows the default (the chat's own provider).
+			if (chat_provider_id.empty() || worker_provider_id.empty() || excluded_provider_data::IsExcluded(chat_provider_id) || excluded_provider_data::IsExcluded(worker_provider_id))
 			{
 				continue;
 			}
@@ -165,6 +167,7 @@ namespace uam::settings_frontend_json
 		}
 		settings_json["providerAvailability"] = provider_availability::Serialize(settings.provider_availability);
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
+		settings_json["windowsPowerShell"] = settings.windows_powershell;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);

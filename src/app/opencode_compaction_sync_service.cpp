@@ -400,8 +400,7 @@ namespace
 		{
 			const ExecutionHost& host = *query.host;
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version),
-			    host.runner_version, host.runner_protocol_version);
+			    host);
 			const std::string nonce = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 			if (nonce.empty()) return {.error = "Native compaction query identity could not be created."};
 			const std::string id = "compaction-metadata-" + nonce;
@@ -542,13 +541,37 @@ struct OpenCodeCompactionSyncService::State
 		return changed;
 	}
 
+	bool RetainsSummaryIdentity(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const Context& context) const
+	{
+		const Identity& identity = context.identity;
+		return app.data_root == identity.root && chat.id == identity.chat_id && session.chat_id == identity.chat_id &&
+		    chat.metadata_incarnation == identity.incarnation && chat.created_at == identity.created &&
+		    session.session_id == identity.native && session.last_process_id == identity.process &&
+		    chat.native_session_id == identity.stored_native && chat.provider_id == identity.provider && session.provider_id == identity.provider;
+	}
+
 	/// <summary>Collapse only retained text with previously verified native compaction identity after interruption.</summary>
 	bool InterruptNativeSummaries(AppState& app, AcpSessionState& session, ChatSession& chat, Context& context,
 	    std::set<std::string> interrupted)
 	{
-		if (!context.owner || session.turn_serial != context.owner->serial ||
-		    session.turn_assistant_message_index != context.owner->assistant || session.session_id != context.identity.native ||
-		    session.last_process_id != context.identity.process) return false;
+		if (!context.owner || session.turn_serial != context.owner->serial || !RetainsSummaryIdentity(app, session, chat, context)) return false;
+		const int assistant = session.turn_assistant_message_index;
+		if (context.owner->live && context.owner->assistant < 0 && !context.adopted && assistant >= 0 &&
+		    assistant < static_cast<int>(chat.messages.size()) && chat.messages[assistant].role == MessageRole::Assistant &&
+		    (session.current_assistant_message_index == assistant || AcpSessionHasPendingCancel(session) || (!session.processing && session.prompt_request_id == 0 &&
+		        session.last_settled_turn_serial == session.turn_serial)) &&
+		    acp_detail::MessageBlocksEqual(chat.messages[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))
+		{
+			// The first owned chunk can be followed by Stop before the next metadata poll binds its row.
+			context.owner->assistant = assistant;
+			context.owner->created = chat.messages[assistant].created_at;
+			if (context.native_marker_turn == session.turn_serial && context.native_marker_assistant < 0)
+				context.native_marker_assistant = assistant;
+		}
+		if (assistant != context.owner->assistant) return false;
+		if (assistant >= 0 && (assistant >= static_cast<int>(chat.messages.size()) ||
+		    chat.messages[assistant].role != MessageRole::Assistant || chat.messages[assistant].created_at != context.owner->created ||
+		    !acp_detail::MessageBlocksEqual(chat.messages[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))) return false;
 		bool changed = false;
 		std::vector<AcpTurnEventState> events;
 		events.reserve(session.turn_events.size());
@@ -572,7 +595,8 @@ struct OpenCodeCompactionSyncService::State
 		if (context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat.messages.size()) &&
 		    chat.messages[context.owner->assistant].role == MessageRole::Assistant)
 		{
-			if (acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session))
+			// Settlement clears current_assistant_message_index; the captured turn still owns this row.
+			if (acp_detail::SyncMessageBlocksFromTurnEvents(chat.messages[context.owner->assistant], session))
 				acp_detail::ScheduleChatSave(app, chat, 0.0);
 			context.owner->message = MessageOwnership(chat.messages[context.owner->assistant]);
 		}
@@ -1133,6 +1157,29 @@ void OpenCodeCompactionSyncService::Stop()
 void OpenCodeCompactionSyncService::ObserveBeforeTurnReset(AppState& app, AcpSessionState& session, const ChatSession& chat)
 {
 	if (session.provider_id != provider_ids::kOpenCodeCli || session.model_discovery_only || m_state->stopped) return;
+	const auto previous = m_state->contexts.find(chat.id);
+	const bool retiring = !session.running && !session.processing && session.prompt_request_id == 0 &&
+	    session.lifecycle_state == acp_detail::kAcpLifecycleStopped;
+	if (previous != m_state->contexts.end() && (retiring || (!session.processing && session.prompt_request_id == 0 &&
+	    session.last_settled_turn_serial == session.turn_serial && session.last_turn_outcome == "failed")))
+	{
+		ChatSession* current = ChatDomainService().FindChatById(app, chat.id);
+		if (current == &chat)
+		{
+			// Finalize retained summary evidence before CaptureOwner retires the failed turn and its stream is reset.
+			if (m_state->InterruptNativeSummaries(app, session, *current, previous->second, previous->second.native_summary_ids))
+				(void)m_state->SyncNativePending(app, session, *current, previous->second, {});
+		}
+	}
+	if (retiring)
+	{
+		if (previous != m_state->contexts.end() && m_state->RetainsSummaryIdentity(app, session, chat, previous->second))
+		{
+			if (m_state->active && m_state->active->identity == previous->second.identity) m_state->active->cancellation.request_stop();
+			m_state->contexts.erase(previous);
+		}
+		return; // Retiring a stream never starts another native query or establishes continuation authority.
+	}
 	std::string error;
 	State::Context* context = m_state->FindOrCreate(app, session, chat, error);
 	if (context)

@@ -6,7 +6,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
-import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
+import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -25,9 +25,10 @@ import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../type
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import type { ResourceCollection } from '../../types/resourceCollection'
-import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable } from '../../utils/remoteWorkspace'
+import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { usePresence } from '../ui/Overlay'
+import { SSH_ENABLED } from '../../config/buildFeatures'
 
 interface FolderTreeProps {
   onSessionOpen?: (sessionId: string) => void
@@ -182,7 +183,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const rescanFolderChats    = useAppStore((s) => s.rescanFolderChats)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
-  const openFolderMemoryLibrary = useAppStore((s) => s.openFolderMemoryLibrary)
   const reorderFolders = useAppStore((s) => s.reorderFolders)
   const reorderResourceReferences = useAppStore((s) => s.reorderResourceReferences)
   const createResourceCollection = useAppStore((s) => s.createResourceCollection)
@@ -200,7 +200,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [newFolderExecutionHostId, setNewFolderExecutionHostId] = useState('local')
   const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
   const newFolderExecutionHost = executionHosts.find((host) => host.id === newFolderExecutionHostId) ?? executionHosts[0]
-  const newFolderIsRemote = newFolderExecutionHost?.transport === 'ssh'
+  const newFolderIsRemote = isSshHost(newFolderExecutionHost)
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null)
   const [editFolderName, setEditFolderName] = useState('')
   const [editFolderDirectory, setEditFolderDirectory] = useState('')
@@ -565,7 +565,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     if (!name || !directory || !executionHost) {
       return
     }
-    if (executionHost.transport === 'ssh' && !isAbsoluteRemoteWorkspace(executionHost.platform, directory)) {
+    if (isSshHost(executionHost) && !isAbsoluteRemoteWorkspace(executionHost.platform, directory)) {
       setActionError(`Enter an absolute ${executionHost.platform.toLowerCase() === 'windows' ? 'Windows' : 'Linux'} directory.`)
       return
     }
@@ -647,7 +647,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const chooseNewFolderDirectory = async () => {
     const host = executionHosts.find((candidate) => candidate.id === newFolderExecutionHostId)
-    if (host?.transport === 'ssh') {
+    if (isSshHost(host)) {
       setRemoteBrowserOpen(true)
       return
     }
@@ -724,7 +724,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         activityFolderName={folder?.name}
         activityFolderIcon={folder?.customIcon}
         activityHostLabel={`Runs on ${host?.label || hostId}`}
-        activityHostRemote={hostId !== 'local'}
+        activityHostRemote={SSH_ENABLED && hostId !== 'local'}
         onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
       />
     )
@@ -771,7 +771,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       onCancelEdit={() => setEditingFolderId(null)}
       onChooseDirectory={() => void chooseEditFolderDirectory()}
       onCreateChat={() => setNewChatModalOpen(true, folder.id)}
-      onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
       sessionsById={sessionsById}
       familySessionIdsByRootId={familySessionIdsByRootId}
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
@@ -1253,7 +1252,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         )}
       </div>
 
-      {remoteBrowserOpen && newFolderExecutionHost?.transport === 'ssh' && (
+      {remoteBrowserOpen && isSshHost(newFolderExecutionHost) && (
         <RemoteDirectoryBrowser
           host={newFolderExecutionHost}
           initialPath={newFolderDirectory}
@@ -1840,7 +1839,6 @@ interface FolderRowProps {
   onCancelEdit: () => void
   onChooseDirectory: () => void
   onCreateChat: () => void
-  onOpenMemory: () => void
   sessionsById: Map<string, Session>
   familySessionIdsByRootId: Map<string, string[]>
   selectedSessionIds: Set<string>
@@ -1877,7 +1875,6 @@ const FolderRow = memo(function FolderRow({
   onCancelEdit,
   onChooseDirectory,
   onCreateChat,
-  onOpenMemory,
   sessionsById,
   familySessionIdsByRootId,
   selectedSessionIds,
@@ -2072,7 +2069,6 @@ const FolderRow = memo(function FolderRow({
           onClick={(e) => e.stopPropagation()}
         >
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
-          <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
           {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />

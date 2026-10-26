@@ -43,6 +43,7 @@ UAM_TEST(NativeMediaPreparedSavePublishesOriginalsOnlyWithActualPrimaryReceipt)
 	std::string error;
 	auto save = uam::PreparedNativeMediaChatSave::Prepare(temp.root, chat, SavedRevision(temp.root, chat), error);
 	UAM_ASSERT(save && error.empty()); UAM_ASSERT_EQ(uam_test::ReadFile(primary), before);
+	UAM_ASSERT(!save->PrimaryPublicationState());
 	UAM_ASSERT(!save->PrimaryAcknowledged()); UAM_ASSERT(!save->AcknowledgeOriginals(error));
 	UAM_ASSERT(!save->TakeCommittedChat());
 	const auto& staged = save->Candidate().messages.front().attachments.front();
@@ -51,9 +52,11 @@ UAM_TEST(NativeMediaPreparedSavePublishesOriginalsOnlyWithActualPrimaryReceipt)
 	UAM_ASSERT(staged.path.empty()); UAM_ASSERT(uam::native_assets::IsKeyForOwner(chat.id, staged.native_asset_key));
 	UAM_ASSERT(!uam::native_assets::IsKeyForOwner(chat.native_session_id, staged.native_asset_key));
 	UAM_ASSERT(save->Publish(error, [] { return true; })); UAM_ASSERT(save->PrimaryAcknowledged());
+	UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Committed);
 	UAM_ASSERT(save->AcknowledgeOriginals(error));
 	auto committed = save->TakeCommittedChat(); UAM_ASSERT(committed); UAM_ASSERT(!save->TakeCommittedChat());
 	UAM_ASSERT(!save->Publish(error));
+	UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Committed); // A repeated attempt cannot erase the native commit fact.
 	const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id); UAM_ASSERT(loaded);
 	const auto& a = loaded->messages.front().attachments.front();
 	UAM_ASSERT_EQ(a, committed->messages.front().attachments.front());
@@ -93,7 +96,10 @@ UAM_TEST(NativeMediaPreparedSaveRetainsUnacknowledgedOriginalsOnRejectedPublicat
 	chat.messages.front().attachments.push_back(PendingOriginal()); std::string error;
 	auto save = uam::PreparedNativeMediaChatSave::Prepare(temp.root, chat, SavedRevision(temp.root, chat), error);
 	UAM_ASSERT(save); const auto key = save->Candidate().messages.front().attachments.front().native_asset_key;
-	UAM_ASSERT(!save->Publish(error, [] { return false; })); UAM_ASSERT(!save->PrimaryAcknowledged());
+	bool write_reached = false;
+	UAM_ASSERT(!save->Publish(error, [] { return false; }, true, [&](auto) { write_reached = true; return true; }));
+	UAM_ASSERT(!write_reached); UAM_ASSERT(!save->PrimaryAcknowledged());
+	UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Rejected);
 	UAM_ASSERT(!save->AcknowledgeOriginals(error)); UAM_ASSERT(!save->Publish(error));
 	save.reset(); UAM_ASSERT_EQ(uam_test::ReadFile(primary), before);
 	UAM_ASSERT(uam::native_assets::ReadOwned(temp.root, chat.id, key).ok);
@@ -132,7 +138,75 @@ UAM_TEST(NativeMediaPreparedSaveRevalidatesStorageBeforePublication)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, changed));
 	const auto before = uam_test::ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id));
 	UAM_ASSERT(!save->Publish(error)); UAM_ASSERT(!save->AcknowledgeOriginals(error));
+	UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Rejected);
 	UAM_ASSERT_EQ(uam_test::ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)), before);
+}
+
+UAM_TEST(NativeMediaPreparedSaveKeepsCommittedOutcomeWhenOriginalAckFails)
+{
+	uam_test::TempDir temp("uam-native-media-committed-ack-failure"); auto chat = MediaOwner(temp.root);
+	const auto primary = AppPaths::UamChatFilePath(temp.root, chat.id); const auto before = uam_test::ReadFile(primary);
+	chat.messages.front().attachments.push_back(PendingOriginal()); std::string error;
+	auto save = uam::PreparedNativeMediaChatSave::Prepare(temp.root, chat, SavedRevision(temp.root, chat), error);
+	UAM_ASSERT(save && save->Publish(error, [] { return true; }, false));
+	UAM_ASSERT(save->PrimaryAcknowledged()); UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Committed);
+	const auto key = save->Candidate().messages.front().attachments.front().native_asset_key;
+	const auto committed_primary = uam_test::ReadFile(primary); UAM_ASSERT(committed_primary != before);
+	std::vector<std::filesystem::path> generations;
+	for (const auto& owner : std::filesystem::directory_iterator(temp.root / std::string(uam::native_assets::kStoreDirectory)))
+		for (const auto& generation : std::filesystem::directory_iterator(owner.path()))
+			if (generation.is_directory()) generations.push_back(generation.path());
+	UAM_ASSERT_EQ(generations.size(), std::size_t{1});
+	UAM_ASSERT(std::filesystem::is_regular_file(generations.front() / "attempted.receipt"));
+	const auto obstruction = generations.front() / "published.receipt";
+	UAM_ASSERT(std::filesystem::create_directory(obstruction));
+	UAM_ASSERT(uam::io::WriteTextFile(obstruction / "keep", "Private acknowledgement obstruction"));
+	UAM_ASSERT(!save->AcknowledgeOriginals(error)); UAM_ASSERT(!error.empty());
+	UAM_ASSERT(save->PrimaryAcknowledged()); UAM_ASSERT(save->PrimaryPublicationState() == ChatPublicationState::Committed);
+	const auto committed = save->TakeCommittedChat(); UAM_ASSERT(committed);
+	save.reset(); // Unconfirmed original acknowledgement must not delete the saved conversation or originals.
+	UAM_ASSERT_EQ(uam_test::ReadFile(primary), committed_primary);
+	const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id); UAM_ASSERT(loaded);
+	UAM_ASSERT_EQ(loaded->messages, committed->messages);
+	std::string original; UAM_ASSERT(uam::base64::Decode(kPreparedPng, original));
+	const auto retained = uam::native_assets::ReadOwned(temp.root, chat.id, key);
+	UAM_ASSERT(retained.ok); UAM_ASSERT_EQ(retained.bytes, original);
+	UAM_ASSERT_EQ(uam_test::ReadFile(obstruction / "keep"), std::string("Private acknowledgement obstruction"));
+}
+
+UAM_TEST(NativeMediaPreparedSaveUnconfirmedPrimaryNeverAcknowledgesOrAdopts)
+{
+	for (const auto stage : {uam::io::AtomicWriteStage::BeforeReplace, uam::io::AtomicWriteStage::AfterReplaceBeforeDirectorySync})
+		for (const bool throws : {false, true})
+		{
+			uam_test::TempDir temp("uam-native-media-primary-uncertainty"); auto chat = MediaOwner(temp.root);
+			const auto primary = AppPaths::UamChatFilePath(temp.root, chat.id); const auto before = uam_test::ReadFile(primary);
+			chat.messages.front().attachments.push_back(PendingOriginal()); std::string error;
+			auto save = uam::PreparedNativeMediaChatSave::Prepare(temp.root, chat, SavedRevision(temp.root, chat), error);
+			UAM_ASSERT(save); const auto key = save->Candidate().messages.front().attachments.front().native_asset_key;
+			bool fault_reached = false;
+			UAM_ASSERT(!save->Publish(error, [] { return true; }, false, [&](auto point)
+			{
+				if (point != stage) return true;
+				fault_reached = true;
+				if (throws) throw std::runtime_error("Opaque injected native publication failure");
+				return false;
+			}));
+			UAM_ASSERT(fault_reached); UAM_ASSERT(!save->PrimaryAcknowledged());
+#if defined(_WIN32)
+			const auto observed = stage == uam::io::AtomicWriteStage::BeforeReplace || throws ? ChatPublicationState::Uncertain : ChatPublicationState::Committed;
+#else
+			const auto observed = ChatPublicationState::Uncertain;
+#endif
+			UAM_ASSERT(save->PrimaryPublicationState() == observed);
+			UAM_ASSERT(!save->TakeCommittedChat()); UAM_ASSERT(!save->AcknowledgeOriginals(error));
+			const auto after = uam_test::ReadFile(primary);
+			UAM_ASSERT_EQ(after == before, stage == uam::io::AtomicWriteStage::BeforeReplace);
+			save.reset(); UAM_ASSERT_EQ(uam_test::ReadFile(primary), after);
+			const auto retained = uam::native_assets::ReadOwned(temp.root, chat.id, key);
+			std::string original; UAM_ASSERT(uam::base64::Decode(kPreparedPng, original));
+			UAM_ASSERT(retained.ok); UAM_ASSERT_EQ(retained.bytes, original);
+		}
 }
 #endif
 

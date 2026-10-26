@@ -1,5 +1,6 @@
 #include "common/provider/provider_text_worker.h"
 #include "app/provider_worker_command.h"
+#include "common/config/execution_host_config.h"
 #include "common/config/provider_availability.h"
 
 #include "common/platform/platform_services.h"
@@ -12,6 +13,7 @@
 #include "common/utils/io_utils.h"
 #include "remote/runner_client.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <iterator>
@@ -239,12 +241,31 @@ namespace
 		result.ok = result.error.empty() && result.exit_code == 0;
 		return result;
 	}
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export to --sync-session=off; older CLIs reject the new flag.
+	// ponytail: trusts the last version check; a CLI self-updated across 1.0.103 gets the right flags after its next check.
+	void UseLegacyCopilotWorkerFlagsBefore103(const uam::AppState& app, std::string_view host_id, std::vector<std::string>& argv)
+	{
+		const auto state = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, host_id));
+		if (state == app.runtime_cli_versions_by_provider_id.end() || state->second.installed_version.empty() ||
+		    CliProviderVersionAtLeast(state->second.installed_version, "1.0.103"))
+		{
+			return;
+		}
+		// Skip "copilot -p <prompt>" so a prompt equal to the flag is never rewritten.
+		const auto sync = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(3, argv.size())), argv.end(), std::string_view("--sync-session=off"));
+		if (sync != argv.end())
+		{
+			*sync = "--no-remote-export";
+			argv.insert(sync, "--no-remote");
+		}
+	}
 } // namespace
 
 namespace uam
 {
-	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out, bool remote_target)
+	ProviderWorkerInvocation BuildProviderWorkerInvocation(const AppState& app, const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id, ProviderWorkerPathMode path_mode, std::string* error_out, std::string_view remote_host_id)
 	{
+		const bool remote_target = !remote_host_id.empty() && remote_host_id != uam::execution_hosts::kLocalHostId;
 		if (error_out != nullptr)
 		{
 			error_out->clear();
@@ -270,6 +291,10 @@ namespace uam
 
 		const auto& runtime = ProviderRuntimeRegistry::Resolve(profile);
 		auto argv = runtime.BuildWorkerArgv(profile, settings, prompt, model_id);
+		if (IsProvider(profile, uam::provider_ids::kCopilotCli))
+		{
+			UseLegacyCopilotWorkerFlagsBefore103(app, remote_host_id, argv);
+		}
 		if (argv.empty())
 		{
 			SetError(error_out, "This provider does not support text workers.");
@@ -347,7 +372,7 @@ namespace uam
 		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
 		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version, remote_host->runner_directory, remote_host->runner_protocol_version), remote_host->runner_version, remote_host->runner_protocol_version);
+		uam::remote::RunnerClient client(service, *remote_host);
 		const std::string id = service.GenerateUuid();
 		std::filesystem::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;

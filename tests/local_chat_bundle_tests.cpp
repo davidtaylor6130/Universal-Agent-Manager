@@ -1174,3 +1174,203 @@ UAM_TEST(LocalChatBundleNonemptyActiveQueueKeepsExistingConversionReadCeiling)
 	UAM_ASSERT_EQ(nlohmann::json::parse(passive->passive_queued_prompt_archive->canonical_prompts_json), archive);
 }
 #endif
+
+namespace
+{
+	// Field set written by v4.9.0 ChatRepository::SaveChatImpl for an ordinary local chat.
+	nlohmann::json V49ChatDocument(const std::string& id, const std::string& title, const std::string& folder_id)
+	{
+		return {
+		    {"id", id}, {"execution_host_id", "local"}, {"provider_id", "codex-cli"}, {"native_session_id", ""},
+		    {"remote_turn_reconnect_pending", false}, {"remote_process_exists", false}, {"remote_stop_cleanup_pending", false},
+		    {"remote_restart_pending", false}, {"remote_process_control_token", ""}, {"remote_delivered_stdout_cursor", 0},
+		    {"remote_delivered_stderr_cursor", 0}, {"remote_source_exit_pending", false}, {"remote_source_exit_code", 0},
+		    {"remote_uam_control_channel_id", ""}, {"remote_interaction_responses", nlohmann::json::array()},
+		    {"remote_prompt_delivery_id", ""}, {"remote_prompt_delivery_payload", ""}, {"remote_prompt_delivery_session_id", ""},
+		    {"remote_active_turn_id", ""}, {"remote_turn_serial", 0}, {"remote_turn_user_message_index", -1},
+		    {"remote_next_request_id", 1}, {"remote_pending_requests", nlohmann::json::array()},
+		    {"acp_queued_prompts", nlohmann::json::array()}, {"acp_dispatched_queued_prompt_count", 0},
+		    {"parent_chat_id", ""}, {"branch_root_chat_id", ""}, {"branch_from_message_index", -1},
+		    {"branch_message_edited", false}, {"branch_operation_id", ""}, {"branch_retry_error", ""},
+		    {"folder_id", folder_id}, {"title", title}, {"created_at", "2026-06-01 10:00:00"},
+		    {"updated_at", "2026-06-02 11:00:00"}, {"last_opened_at", "2026-06-02 11:00:00"}, {"pinned", true},
+		    {"linked_files", nlohmann::json::array()}, {"workspace_directory", ""}, {"workspace_isolation_kind", ""},
+		    {"workspace_source_directory", ""}, {"workspace_base_ref", ""}, {"workspace_branch_name", ""},
+		    {"workspace_worktree_directory", ""}, {"imported_read_only", false}, {"approval_mode", "default"},
+		    {"uam_agent_id", "build"}, {"last_prompt_agent_definition_hash", ""}, {"agent_run_id", ""},
+		    {"goal_owner_chat_id", ""}, {"goal_iteration_goal_id", ""}, {"goal_iteration_turn_kind", ""},
+		    {"goal_iteration_repair_attempts", 0}, {"commandSafetyTier", "standard"}, {"computer_use_backend", "auto"},
+		    {"model_id", ""}, {"reviewer_model_id", ""}, {"reasoning_effort", ""}, {"service_tier", ""},
+		    {"service_tier_explicit", false}, {"extra_flags", ""}, {"memory_level", "off"}, {"memory_enabled", false},
+		    {"memory_last_processed_message_count", 0}, {"memory_last_processed_at", ""}, {"small_model_mode", false},
+		    {"uamControlEnabled", false},
+		    {"messages", nlohmann::json::array({
+		        {{"role", "user"}, {"content", "Old question"}, {"created_at", "2026-06-01 10:00:00"}},
+		        {{"role", "assistant"}, {"content", "Old answer"}, {"created_at", "2026-06-01 10:00:05"}, {"provider", "codex-cli"}},
+		    })},
+		};
+	}
+
+	// Minimal v4.9.0 data root: settings.txt, folders.txt and chats/<id>.json.
+	fs::path WriteV49DataRoot(const fs::path& root)
+	{
+		fs::create_directories(AppPaths::UamChatsRootPath(root));
+		UAM_ASSERT(uam::io::WriteTextFile(root / "settings.txt", "active_provider_id=codex-cli\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(root / "folders.txt",
+		    "folders_format_version=1\n\n[folder]\nid=legacy-folder\ntitle=Old work\ndirectory=\ncollapsed=0\nexecution_host_id=local\n\nfolders_complete=1\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(root, "legacy-chat-a"), V49ChatDocument("legacy-chat-a", "Old chat A", "legacy-folder").dump(2)));
+		UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(root, "legacy-chat-b"), V49ChatDocument("legacy-chat-b", "Old chat B", "").dump(2)));
+		return root;
+	}
+
+	std::map<std::string, std::string> TreeBytes(const fs::path& root)
+	{
+		std::map<std::string, std::string> bytes;
+		for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root))
+			if (entry.is_regular_file()) bytes[fs::relative(entry.path(), root).generic_string()] = ReadFile(entry.path());
+		return bytes;
+	}
+}
+
+UAM_TEST(LegacyDataRootImportCopiesV49ChatsOnceWithoutTouchingSource)
+{
+	TempDir temp("uam-legacy-data-root");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "old-exe" / "data");
+	const fs::path target = temp.root / "target";
+	ChatSession existing;
+	existing.id = "legacy-chat-b";
+	existing.provider_id = "codex-cli";
+	existing.title = "Already here";
+	existing.messages.push_back(Message{MessageRole::User, "Keep me"});
+	UAM_ASSERT(ChatRepository::SaveChat(target, existing));
+	const std::map<std::string, std::string> source_before = TreeBytes(legacy);
+	UAM_ASSERT(uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, target));
+
+	const uam::LocalChatBundleImportResult first = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(first.ok);
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT_EQ(first.total_count, std::size_t{2});
+	UAM_ASSERT_EQ(first.imported_count, std::size_t{1});
+	UAM_ASSERT_EQ(first.imported_folders.size(), std::size_t{1});
+	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
+
+	const std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(target);
+	UAM_ASSERT_EQ(chats.size(), std::size_t{2});
+	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(target, "legacy-chat-a");
+	UAM_ASSERT(imported.has_value());
+	UAM_ASSERT_EQ(imported->title, std::string("Old chat A"));
+	UAM_ASSERT_EQ(imported->folder_id, std::string("legacy-folder"));
+	UAM_ASSERT(imported->pinned);
+	UAM_ASSERT_EQ(imported->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(imported->messages[1].content, std::string("Old answer"));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(target, "legacy-chat-b")->title, std::string("Already here"));
+	const std::vector<ChatFolder> folders = ChatFolderStore::Load(target);
+	UAM_ASSERT_EQ(folders.size(), std::size_t{1});
+	UAM_ASSERT_EQ(folders[0].id, std::string("legacy-folder"));
+
+	// Once complete, the source is never imported again, even after the user deletes its chats.
+	std::error_code ec;
+	fs::remove(AppPaths::UamChatFilePath(target, "legacy-chat-a"), ec);
+	fs::remove(AppPaths::UamChatSummaryFilePath(target, "legacy-chat-a"), ec);
+	const uam::LocalChatBundleImportResult second = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(second.ok);
+	UAM_ASSERT_EQ(second.imported_count, std::size_t{0});
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(target, "legacy-chat-a").has_value());
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatSummaries(target).size(), std::size_t{1});
+	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
+}
+
+UAM_TEST(LegacyDataRootImportRetriesWhenAChatCannotBeRead)
+{
+	TempDir temp("uam-legacy-data-root-retry");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "legacy");
+	const fs::path target = temp.root / "target";
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(legacy, "legacy-chat-broken"), "{not json"));
+
+	const uam::LocalChatBundleImportResult first = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(!first.ok);
+	UAM_ASSERT_EQ(first.imported_count, std::size_t{2});
+	UAM_ASSERT_EQ(first.failed_count, std::size_t{1});
+
+	// A chat deleted between attempts stays deleted when the source is retried.
+	std::error_code ec;
+	fs::remove(AppPaths::UamChatFilePath(target, "legacy-chat-a"), ec);
+	fs::remove(AppPaths::UamChatSummaryFilePath(target, "legacy-chat-a"), ec);
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(legacy, "legacy-chat-broken"), V49ChatDocument("legacy-chat-broken", "Fixed", "").dump()));
+	const uam::LocalChatBundleImportResult second = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(second.ok);
+	UAM_ASSERT_EQ(second.imported_count, std::size_t{1});
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(target, "legacy-chat-a").has_value());
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatSummaries(target).size(), std::size_t{2});
+}
+
+UAM_TEST(LegacyDataRootImportKeepsDeletedNativeSessionsDeleted)
+{
+	TempDir temp("uam-legacy-data-root-tombstone");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "legacy");
+	const fs::path target = temp.root / "target";
+	fs::create_directories(target);
+	nlohmann::json deleted = V49ChatDocument("legacy-chat-native", "Deleted here", "");
+	// Codex keeps only canonical thread IDs; no workspace exercises the provider||session key.
+	deleted["native_session_id"] = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(legacy, "legacy-chat-native"), deleted.dump()));
+	const std::optional<ChatSession> deleted_chat = ChatRepository::LoadLocalChat(legacy, "legacy-chat-native");
+	UAM_ASSERT(deleted_chat.has_value());
+	std::vector<std::string> added;
+	UAM_ASSERT(ChatHistorySyncService().AddNativeImportTombstones(target, {*deleted_chat}, added));
+	UAM_ASSERT_EQ(added.size(), std::size_t{1});
+
+	const uam::LocalChatBundleImportResult result = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT_EQ(result.imported_count, std::size_t{2});
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(target, "legacy-chat-native").has_value());
+}
+
+UAM_TEST(LegacyDataRootBrandNewStopsAskingWithoutCopying)
+{
+	TempDir temp("uam-legacy-data-root-brand-new");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "legacy");
+	const fs::path target = temp.root / "target";
+	fs::create_directories(target);
+	const std::map<std::string, std::string> source_before = TreeBytes(legacy);
+	UAM_ASSERT(uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(uam::LocalChatBundleService::DeclineLegacyDataRoot(target, legacy));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+	UAM_ASSERT(ChatRepository::LoadLocalChatSummaries(target).empty());
+	UAM_ASSERT(ChatFolderStore::Load(target).empty());
+	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
+
+	// A damaged ledger cannot record any answer, so the prompt is not shown at all.
+	const fs::path damaged = temp.root / "damaged";
+	fs::create_directories(damaged);
+	UAM_ASSERT(uam::io::WriteTextFile(damaged / "legacy-data-imports.json", "{not json"));
+	UAM_ASSERT(!uam::LocalChatBundleService::LegacyDataRootPending(damaged, legacy));
+}
+
+UAM_TEST(LegacyDataRootDiscoveryFindsDefaultAppDataAndExecutableRoots)
+{
+	TempDir temp("uam-legacy-data-root-discovery");
+	const fs::path local_default = WriteV49DataRoot(temp.root / "Local" / "Universal Agent Manager");
+	const fs::path roaming = WriteV49DataRoot(temp.root / "Roaming" / "Universal Agent Manager");
+	const fs::path beside_exe = WriteV49DataRoot(temp.root / "old-exe" / "data");
+	const fs::path executable = temp.root / "old-exe" / "universal_agent_manager.exe";
+	const fs::path current = temp.root / "chosen-root";
+	fs::create_directories(current);
+	ScopedEnvVar app_data("APPDATA", uam::paths::Utf8PathString(temp.root / "Roaming"));
+
+	// UAM_DATA_DIR or a chosen folder elsewhere: every earlier root is offered once, in order.
+	const std::vector<fs::path> pending = uam::LocalChatBundleService::PendingLegacyDataRoots(current, local_default, executable);
+	UAM_ASSERT_EQ(pending.size(), std::size_t{3});
+	UAM_ASSERT(pending[0] == local_default);
+	UAM_ASSERT(pending[1] == roaming);
+	UAM_ASSERT(pending[2] == beside_exe);
+
+	// The default root in use is never offered to itself, and answered roots stop appearing.
+	UAM_ASSERT_EQ(uam::LocalChatBundleService::PendingLegacyDataRoots(local_default, local_default, executable).size(), std::size_t{2});
+	UAM_ASSERT(uam::LocalChatBundleService::DeclineLegacyDataRoot(current, roaming));
+	UAM_ASSERT(uam::LocalChatBundleService::ImportLegacyDataRoot(current, local_default).ok);
+	const std::vector<fs::path> remaining = uam::LocalChatBundleService::PendingLegacyDataRoots(current, local_default, executable);
+	UAM_ASSERT_EQ(remaining.size(), std::size_t{1});
+	UAM_ASSERT(remaining[0] == beside_exe);
+}

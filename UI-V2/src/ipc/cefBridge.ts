@@ -1,4 +1,5 @@
 import { companionPlatformAction } from './companionPlatform'
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
 
 /**
  * Routes requests through the C++ CefMessageRouter when hosted in CEF.
@@ -19,7 +20,7 @@ declare global {
 
 /** Identifies the companion route sharing the desktop UI and store. */
 export function isCompanionContext(): boolean {
-  return typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
+  return MOBILE_COMPANION_ENABLED && typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/companion'
 }
 
 export function isCefContext(): boolean {
@@ -36,6 +37,8 @@ export interface CEFResponse<T = unknown> {
   ok: boolean
   data?: T
   error?: string
+  /** Native CEF failure code; absent for companion and transport failures. */
+  code?: number
   requestId?: string
 }
 
@@ -159,7 +162,7 @@ export async function sendToCEF<T = unknown>(
         },
         onFailure: (code, message) => {
           if (logFailures) console.error(`[CEF] Error ${code}: ${message}`)
-          resolve({ ok: false, error: message, requestId })
+          resolve({ ok: false, error: message, code, requestId })
         },
       })
     }).catch((cause: unknown) => {
@@ -197,45 +200,4 @@ export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   return reportFailure({ ...response, error: 'The remote stop timed out.' })
-}
-
-export interface SpeechVoice {
-  id: string
-  name: string
-  language: string
-}
-
-export interface SpeechOutputOptions {
-  speechId: string
-  text: string
-  voiceId?: string
-  language?: string
-  /** Native playback speed, between 0.5 and 2. */
-  rate?: number
-  /** Native playback volume, between 0 and 1. */
-  volume?: number
-}
-
-export interface SpeechOutputState {
-  speechId: string
-  speaking: boolean
-  error: string
-}
-
-/** Enumerates installed native voices without activating input or playback. */
-export function listSpeechVoices(): Promise<CEFResponse<{ voices: SpeechVoice[] }>> {
-  return sendToCEF({ action: 'listSpeechVoices' })
-}
-
-/** Input must be stopped first; retain speechId for cancellation and state ownership. */
-export function startSpeechOutput(options: SpeechOutputOptions): Promise<CEFResponse<{ started: boolean; speechId: string }>> {
-  return sendToCEF({ action: 'startSpeechOutput', payload: options })
-}
-
-export function stopSpeechOutput(speechId: string): Promise<CEFResponse<{ stopped: boolean }>> {
-  return sendToCEF({ action: 'stopSpeechOutput', payload: { speechId } })
-}
-
-export function getSpeechOutputState(): Promise<CEFResponse<SpeechOutputState>> {
-  return sendToCEF({ action: 'getSpeechOutputState' })
 }

@@ -3,6 +3,7 @@
 #include "app/attachment_preview_service.h"
 #include "app/chat_domain_service.h"
 #include "common/config/execution_host_config.h"
+#include "common/chat/chat_repository.h"
 #include "common/utils/base64.h"
 #include <algorithm>
 #include <limits>
@@ -31,6 +32,20 @@ void UamQueryHandler::HandleGetAttachmentImagePreview(CefRefPtr<CefBrowser>, con
 		cb->Failure(404, "Preview message is unavailable.");
 		return;
 	}
+	if (HandleReadUnconfirmedNativeMediaDetail(chat_id, payload, index, cb,
+	    [root = m_app.data_root, chat_id, attachment_id](const ChatMessagePage& page)
+	    {
+		    const auto& attachments = page.chat.messages.front().attachments;
+		    const auto found = std::ranges::find(attachments, attachment_id, &MessageAttachment::id);
+		    if (found == attachments.end() || std::ranges::count(attachments, attachment_id, &MessageAttachment::id) != 1)
+			    return uam::query_handler_async::AsyncFailure(404, "Preview attachment identity is unavailable or ambiguous.");
+		    // The saved attachment resolves original ownership; renderer metadata
+		    // cannot supply a path, asset key or execution environment for this read.
+		    const auto image = uam::attachment_preview::Read(root, *found, page.chat.execution_host_id == uam::execution_hosts::kLocalHostId, chat_id);
+		    if (image.png.empty()) return uam::query_handler_async::AsyncSuccess({{"available", false}});
+		    return uam::query_handler_async::AsyncSuccess({{"available", true}, {"mimeType", "image/png"},
+		        {"width", image.width}, {"height", image.height}, {"dataBase64", uam::base64::Encode(image.png)}});
+	    })) return;
 	const auto data_root = m_app.data_root;
 	const auto incarnation = chat->metadata_incarnation;
 	const auto birth = chat->created_at;

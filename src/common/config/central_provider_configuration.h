@@ -12,11 +12,16 @@
 
 namespace uam::central_configuration
 {
+	inline constexpr std::string_view kOpenCodeProgressiveMcpSetting = "opencode-progressive-mcp";
+
 	inline nlohmann::json Serialize(const CentralProviderConfiguration& configuration)
 	{
 		nlohmann::json overrides = nlohmann::json::array();
 		for (const ProviderMcpOverride& entry : configuration.mcp_overrides)
+		{
 			overrides.push_back({{"providerId", entry.provider_id}, {"executionHostId", entry.execution_host_id}, {"serverId", entry.server_id}, {"enabled", entry.enabled}});
+			if (entry.is_preference) overrides.back()["kind"] = "preference";
+		}
 		return {{"mcpOverrides", overrides}, {"enabled", configuration.enabled}, {"instructions", configuration.instructions},
 		        {"instructionFiles", configuration.instruction_files}, {"skillDirectories", configuration.skill_directories}, {"defaultSkills", configuration.default_skills}, {"defaultAgents", configuration.default_agents},
 		        {"defaultAgentId", configuration.default_agent_id}, {"uamControlEnabled", configuration.uam_control_enabled}};
@@ -74,26 +79,50 @@ namespace uam::central_configuration
 		if (value.contains("mcpOverrides"))
 		{
 			if (!value["mcpOverrides"].is_array() || value["mcpOverrides"].size() > 4096) { error = "Provider MCP settings exceed the configuration limit."; return false; }
-			std::set<std::tuple<std::string, std::string, std::string>> scopes;
+			std::set<std::tuple<std::string, std::string, std::string, bool>> scopes;
 			for (const nlohmann::json& entry : value["mcpOverrides"])
 			{
 				if (!entry.is_object() || !entry.contains("enabled") || !entry["enabled"].is_boolean()) { error = "Provider MCP switches must be booleans."; return false; }
 				for (const char* key : {"providerId", "executionHostId", "serverId"})
 					if (!entry.contains(key) || !entry[key].is_string() || entry[key].get_ref<const std::string&>().empty() || entry[key].get_ref<const std::string&>().size() > 128 || entry[key].get_ref<const std::string&>().find('\0') != std::string::npos) { error = "Provider MCP settings require valid provider, host and server identifiers."; return false; }
 				ProviderMcpOverride item{entry["providerId"].get<std::string>(), entry["executionHostId"].get<std::string>(), entry["serverId"].get<std::string>(), entry["enabled"].get<bool>()};
-				if (!uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, item.provider_id) || !scopes.emplace(item.provider_id, item.execution_host_id, item.server_id).second) { error = "Provider MCP settings contain an unknown provider or duplicate scope."; return false; }
+				if (entry.contains("kind") && (!entry["kind"].is_string() || entry["kind"] != "preference"))
+				{ error = "Unknown provider MCP setting kind."; return false; }
+				item.is_preference = entry.contains("kind");
+				// A build that excludes providers keeps their saved switches as inert data; McpEnabled is only asked about included providers.
+				const bool retained = uam::provider_ids::IsRetainedExcludedProviderId(item.provider_id);
+				const bool known = uam::provider_ids::IsKnownCliProviderId(item.provider_id) || retained;
+				if (!retained && item.is_preference && (item.provider_id != provider_ids::kOpenCodeCli || item.server_id != kOpenCodeProgressiveMcpSetting))
+				{ error = "Unknown provider preference."; return false; }
+				if (!known || !scopes.emplace(item.provider_id, item.execution_host_id, item.server_id, item.is_preference).second) { error = "Provider MCP settings contain an unknown provider or duplicate scope."; return false; }
 				parsed.mcp_overrides.push_back(std::move(item));
 			}
 		}
 		configuration = std::move(parsed);
 		return true;
 	}
+	/// <summary>The interface edits included providers only, so saved switches of excluded providers carry over unchanged.</summary>
+	inline void KeepExcludedProviderOverrides(const CentralProviderConfiguration& previous, CentralProviderConfiguration& next)
+	{
+		std::erase_if(next.mcp_overrides, [](const ProviderMcpOverride& entry) { return uam::provider_ids::IsRetainedExcludedProviderId(entry.provider_id); });
+		for (const ProviderMcpOverride& entry : previous.mcp_overrides)
+			if (uam::provider_ids::IsRetainedExcludedProviderId(entry.provider_id)) next.mcp_overrides.push_back(entry);
+	}
+
 	/// Per-provider host settings affect only subsequent launches; chat permissions remain separate.
 	inline bool McpEnabled(const CentralProviderConfiguration& configuration, std::string_view provider, std::string_view host, std::string_view server, bool fallback)
 	{
 		for (const ProviderMcpOverride& entry : configuration.mcp_overrides)
-			if (entry.provider_id == provider && entry.execution_host_id == (host.empty() ? "local" : host) && entry.server_id == server) return entry.enabled;
+			if (!entry.is_preference && entry.provider_id == provider && entry.execution_host_id == (host.empty() ? "local" : host) && entry.server_id == server) return entry.enabled;
 		return fallback;
+	}
+
+	/// Saved next-launch opt-in; native version admission and explicit environment values still apply.
+	inline bool OpenCodeProgressiveMcpEnabled(const CentralProviderConfiguration& configuration, std::string_view host)
+	{
+		for (const ProviderMcpOverride& entry : configuration.mcp_overrides)
+			if (entry.is_preference && entry.provider_id == provider_ids::kOpenCodeCli && entry.execution_host_id == (host.empty() ? "local" : host) && entry.server_id == kOpenCodeProgressiveMcpSetting) return entry.enabled;
+		return true;
 	}
 
 }

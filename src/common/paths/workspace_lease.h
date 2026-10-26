@@ -62,7 +62,7 @@ namespace uam
 	{
 		static constexpr std::string_view actions[] = {
 		    "createSession", "createSideChat", "branchFromMessage", "openNativeSessionChat", "moveChatWorkspace",
-		    "importLocalChats", "resolveStartupNativeImports", "createFolder", "deleteFolder", "deleteFolders",
+		    "importLocalChats", "resolveLegacyChatImport", "resolveStartupNativeImports", "createFolder", "renameFolder", "deleteFolder", "deleteFolders",
 		    "deleteSession", "deleteSessions", "rescanFolderChats", "rebuildUnsortedWorkspaceFolders", "applyOrganizationAction",
 		    "createChatWorktree", "discardChatWorktreeChanges", "portChatWorktreeChanges", "rollbackChatTurn",
 		    "addResourceReference", "setMarkdownStoreDirectory"};

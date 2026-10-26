@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/config/approval_modes.h"
 #include "app/chat_domain_service.h"
@@ -59,7 +60,7 @@ AcpSessionState::CodexGoalOwner CaptureCodexNativeGoalOwner(const AppState& app,
 bool CodexGoalReceiptMatchesOwner(const AcpSessionState& session, const ChatSession& chat,
 	const AcpSessionState::CodexGoalOwner& owner, const std::string& thread_id, bool require_active)
 {
-	if (!session.running || !session.session_ready || session.provider_id != "codex-cli" || chat.provider_id != "codex-cli" ||
+	if (!session.running || !session.session_ready || session.provider_id != uam::provider_ids::kCodexCli || chat.provider_id != uam::provider_ids::kCodexCli ||
 		!owner.parent_incarnation || owner.parent_incarnation != chat.metadata_incarnation ||
 		owner.chat_id.empty() || owner.goal_id.empty() || owner.revision.empty() || owner.thread_id.empty() ||
 		owner.chat_id != chat.id || session.chat_id != chat.id || thread_id != owner.thread_id ||
@@ -233,7 +234,7 @@ namespace
 bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat, Goal& goal,
 	bool user_action, std::string* error_out, bool replace_native)
 {
-	if (session.provider_id != "codex-cli" || session.session_id.empty() || !session.session_ready ||
+	if (session.provider_id != uam::provider_ids::kCodexCli || session.session_id.empty() || !session.session_ready ||
 		!session.running || chat.imported_read_only || !chat.messages_loaded || session.current_mode_id == uam::approval_modes::kPlanApprovalMode ||
 		chat.approval_mode == uam::approval_modes::kPlanApprovalMode || session.cancel_requested ||
 		session.active_uam_agent_workspace_access == "read" || session.goal_review_turn || session.goal_internal_session ||
@@ -359,7 +360,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 
 bool StopCodexNativeGoal(AcpSessionState& session, const ChatSession& chat, bool user_action, const std::string& goal_id, bool clear_native)
 {
-	if (session.provider_id != "codex-cli" || !chat.metadata_incarnation) return true;
+	if (session.provider_id != uam::provider_ids::kCodexCli || !chat.metadata_incarnation) return true;
 	const bool has_owned_goal = session.codex_goal_owner.parent_incarnation == chat.metadata_incarnation &&
 		!session.codex_goal_owner.goal_id.empty() &&
 		(goal_id.empty() || session.codex_goal_owner.goal_id == goal_id);
@@ -1002,6 +1003,73 @@ int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& s
 		}
 	}
 	return std::max<int64_t>(1, tokens);
+}
+
+void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session)
+{
+	session.goal_review_usage = {};
+	auto& receipt = session.goal_review_usage;
+	receipt.turn_serial = session.turn_serial;
+	receipt.fresh_session = fresh_session;
+	auto& usage = session.provider_usage.token_usage;
+	if (fresh_session)
+	{
+		// The internal review requests a new native context, with no resumed history.
+		receipt.cumulative_baseline = 0;
+		usage.goal_cumulative_total.reset();
+		usage.goal_cumulative_session_id.clear();
+	}
+	else
+	{
+		receipt.session_id = session.session_id;
+		if (!session.session_id.empty() && usage.goal_cumulative_session_id == session.session_id)
+			receipt.cumulative_baseline = usage.goal_cumulative_total;
+	}
+}
+
+void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental)
+{
+	auto& receipt = session.goal_review_usage;
+	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
+	if (session.session_id.empty() || (!receipt.session_id.empty() && receipt.session_id != session.session_id))
+	{
+		receipt.tokens.reset();
+		receipt.cumulative_baseline.reset();
+		receipt.turn_serial = -1;
+		return;
+	}
+	if (receipt.session_id.empty()) receipt.session_id = session.session_id;
+	const std::int64_t previous = incremental ? receipt.tokens.value_or(0) : 0;
+	receipt.tokens = tokens > std::numeric_limits<std::int64_t>::max() - previous
+	    ? std::numeric_limits<std::int64_t>::max() : previous + tokens;
+}
+
+void RecordGoalReviewCumulativeUsage(AcpSessionState& session, std::int64_t tokens)
+{
+	if (tokens < 0 || session.session_id.empty()) return;
+	// Only validated adapter receipts reach this collector. Display telemetry is not a baseline.
+	auto& usage = session.provider_usage.token_usage;
+	if (usage.goal_cumulative_session_id != session.session_id)
+	{
+		usage.goal_cumulative_total.reset();
+		usage.goal_cumulative_session_id = session.session_id;
+	}
+	usage.goal_cumulative_total = std::max(usage.goal_cumulative_total.value_or(0), tokens);
+	auto& receipt = session.goal_review_usage;
+	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
+	if (receipt.fresh_session && receipt.session_id.empty()) receipt.session_id = session.session_id;
+	if (session.session_id.empty() || receipt.session_id != session.session_id ||
+	    !receipt.cumulative_baseline)
+	{
+		receipt.tokens.reset();
+		receipt.cumulative_baseline.reset();
+		return;
+	}
+	// A late older snapshot cannot erase usage already observed for this same receipt.
+	if (tokens < *receipt.cumulative_baseline) return;
+	const std::int64_t delta = tokens - *receipt.cumulative_baseline;
+	if (receipt.tokens && delta < *receipt.tokens) return;
+	RecordGoalReviewTurnUsage(session, delta);
 }
 
 bool CanQueueGoalInternalPrompt(const AcpSessionState& session)

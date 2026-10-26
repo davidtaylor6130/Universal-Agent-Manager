@@ -133,9 +133,7 @@ namespace
 			return result;
 		}
 		uam::remote::RunnerClient client(service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		        host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		const auto finish = [&]() -> ProcessExecutionResult
 		{
 			if (remote_connected_out != nullptr && !result.canceled)
@@ -1205,20 +1203,20 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 					task.command_preview = install_command;
 					task.state = std::make_shared<AsyncProcessTaskState>();
 					const std::shared_ptr<AsyncProcessTaskState> launch_state = task.state;
-					task.worker = std::make_unique<std::jthread>([terminal, nonce, launch_state](std::stop_token stop)
+					task.worker = std::make_unique<std::jthread>([terminal, nonce, launch_state, powershell = app.settings.windows_powershell](std::stop_token stop)
 					{
 						if (stop.stop_requested())
 						{
 							launch_state->result.canceled = true;
 							launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal launch was canceled.";
 						}
-						else if (PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(terminal, &launch_state->result.error))
+						else if (PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(terminal, &launch_state->result.error, powershell))
 						{
 							launch_state->result.ok = true;
 							launch_state->result.exit_code = 0;
 							launch_state->result.output = std::string(kInteractiveInstallMarker) + nonce + "\nComplete the update in the terminal, then check this host's CLI version.";
 						}
-						else launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal could not be opened.";
+						else launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal could not be opened." + (launch_state->result.error.empty() ? "" : " " + launch_state->result.error);
 						launch_state->completed.store(true, std::memory_order_release);
 					});
 					for (auto& [other_key, other_task] : app.runtime_cli_install_tasks)

@@ -1,11 +1,22 @@
 import type { Provider } from '../types/provider'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../config/buildFeatures'
 
-export const DEFAULT_PROVIDER_ID = 'gemini-cli'
-export const CODEX_CLI_PROVIDER_ID = 'codex-cli'
-export const CLAUDE_CLI_PROVIDER_ID = 'claude-cli'
-export const OPENCODE_CLI_PROVIDER_ID = 'opencode-cli'
-export const COPILOT_CLI_PROVIDER_ID = 'copilot-cli'
-export const ANTIGRAVITY_CLI_PROVIDER_ID = 'antigravity-cli'
+// ponytail: a provider excluded by its build flag gets an id no chat or setting can carry, so shared
+// comparisons stay valid while the bundler drops the real id, metadata and every branch guarded by its flag.
+const EXCLUDED_PROVIDER_ID = '\u0000'
+export const GEMINI_CLI_PROVIDER_ID = GEMINI_ENABLED ? 'gemini-cli' : EXCLUDED_PROVIDER_ID
+export const CODEX_CLI_PROVIDER_ID = CODEX_ENABLED ? 'codex-cli' : EXCLUDED_PROVIDER_ID
+export const CLAUDE_CLI_PROVIDER_ID = CLAUDE_ENABLED ? 'claude-cli' : EXCLUDED_PROVIDER_ID
+export const OPENCODE_CLI_PROVIDER_ID = OPENCODE_ENABLED ? 'opencode-cli' : EXCLUDED_PROVIDER_ID
+export const COPILOT_CLI_PROVIDER_ID = COPILOT_ENABLED ? 'copilot-cli' : EXCLUDED_PROVIDER_ID
+export const ANTIGRAVITY_CLI_PROVIDER_ID = ANTIGRAVITY_ENABLED ? 'antigravity-cli' : EXCLUDED_PROVIDER_ID
+/** First provider in canonical order that this build includes (CMake requires at least one). */
+export const DEFAULT_PROVIDER_ID = GEMINI_ENABLED ? GEMINI_CLI_PROVIDER_ID
+  : CODEX_ENABLED ? CODEX_CLI_PROVIDER_ID
+  : CLAUDE_ENABLED ? CLAUDE_CLI_PROVIDER_ID
+  : OPENCODE_ENABLED ? OPENCODE_CLI_PROVIDER_ID
+  : COPILOT_ENABLED ? COPILOT_CLI_PROVIDER_ID
+  : ANTIGRAVITY_CLI_PROVIDER_ID
 
 export interface ProviderCapabilities {
   supportsTextWorkers: boolean
@@ -22,7 +33,6 @@ export interface ProviderCapabilities {
   memoryModelIds: string[]
   memoryModelLabels: Record<string, { label: string; detail: string }>
   memoryModelDefaultId: string
-  claudePlanPrompt: boolean
   reasoningOptions: { id: string; label: string; detail: string }[]
   speedOptions: { id: string; label: string; detail: string }[]
 }
@@ -37,7 +47,7 @@ export interface ProviderMetadata {
   capabilities: ProviderCapabilities
 }
 
-export const GEMINI_DEFAULT_MODEL_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = {
+export const GEMINI_DEFAULT_MODEL_LABELS: Record<string, { label: string; shortLabel: string; detail: string }> = !GEMINI_ENABLED ? {} : {
   '': { label: 'Default', shortLabel: 'Default', detail: 'Use Gemini settings' },
   'auto-gemini-3': { label: 'Auto 3', shortLabel: 'Auto 3', detail: 'Gemini 3 routing' },
   'auto-gemini-2.5': { label: 'Auto 2.5', shortLabel: 'Auto 2.5', detail: 'Gemini 2.5 routing' },
@@ -66,7 +76,7 @@ export const CODEX_SPEED_LABELS: Record<string, { label: string; shortLabel: str
 }
 
 export const CODEX_REASONING_OPTIONS = [
-  { id: '', label: 'Default', detail: 'Use Codex default reasoning' },
+  { id: '', label: 'Default', detail: CODEX_ENABLED ? 'Use Codex default reasoning' : 'Use provider default reasoning' },
   { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
   { id: 'low', label: 'Low', detail: 'Faster responses' },
   { id: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
@@ -76,7 +86,7 @@ export const CODEX_REASONING_OPTIONS = [
   { id: 'ultra', label: 'Ultra', detail: 'Maximum reasoning with automatic delegation' },
 ]
 
-export const COPILOT_REASONING_OPTIONS = [
+export const COPILOT_REASONING_OPTIONS = !COPILOT_ENABLED ? [] : [
   { id: '', label: 'Default', detail: 'Use Copilot default reasoning' },
   { id: 'none', label: 'None', detail: 'No extra reasoning' },
   { id: 'minimal', label: 'Minimal', detail: 'Fastest reasoning' },
@@ -87,7 +97,7 @@ export const COPILOT_REASONING_OPTIONS = [
   { id: 'max', label: 'Max', detail: 'Maximum available reasoning' },
 ]
 
-export const CODEX_SPEED_OPTIONS = [
+export const CODEX_SPEED_OPTIONS = !CODEX_ENABLED ? [] : [
   { id: '', label: 'Default', detail: 'Use Codex default speed' },
   { id: 'fast', label: 'Fast', detail: 'Prioritize latency' },
   { id: 'flex', label: 'Flex', detail: 'Use flexible service tier' },
@@ -119,168 +129,174 @@ const GENERIC_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: strin
 }
 
 const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
-  [DEFAULT_PROVIDER_ID]: {
-    id: DEFAULT_PROVIDER_ID,
-    name: 'Gemini CLI',
-    shortName: 'Gemini',
-    structuredProtocol: 'gemini-acp',
-    runtimeDescription: 'Gemini ACP + CLI',
-    npmPackage: '@google/gemini-cli',
-    capabilities: {
-      supportsTextWorkers: true,
-      hasReasoningEffort: false,
-      hasServiceTier: false,
-      hasAcceptEditsMode: true,
-      structuredPermissionControl: 'uam',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: true,
-      showPlanActionButtons: false,
-      autoLabel: 'Yolo',
-      acceptEditsLabel: 'Accept Edits',
-      defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
-      memoryModelIds: GEMINI_MEMORY_MODEL_IDS,
-      memoryModelLabels: GEMINI_MEMORY_MODEL_LABELS,
-      memoryModelDefaultId: '',
-      claudePlanPrompt: false,
-      reasoningOptions: [],
-      speedOptions: [],
-    },
-  },
-  [CODEX_CLI_PROVIDER_ID]: {
-    id: CODEX_CLI_PROVIDER_ID,
-    name: 'Codex CLI',
-    shortName: 'Codex',
-    structuredProtocol: 'codex-app-server',
-    runtimeDescription: 'Codex app-server + CLI',
-    npmPackage: '@openai/codex',
-    capabilities: {
-      supportsTextWorkers: true,
-      hasReasoningEffort: true,
-      hasServiceTier: true,
-      hasAcceptEditsMode: true,
-      structuredPermissionControl: 'uam',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: false,
-      showPlanActionButtons: true,
-      autoLabel: 'Yolo',
-      acceptEditsLabel: 'Accept Edits',
-      defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
-      memoryModelIds: CODEX_MEMORY_MODEL_IDS,
-      memoryModelLabels: CODEX_MEMORY_MODEL_LABELS,
-      memoryModelDefaultId: '',
-      claudePlanPrompt: false,
-      reasoningOptions: CODEX_REASONING_OPTIONS,
-      speedOptions: CODEX_SPEED_OPTIONS,
-    },
-  },
-  [CLAUDE_CLI_PROVIDER_ID]: {
-    id: CLAUDE_CLI_PROVIDER_ID,
-    name: 'Claude Code',
-    shortName: 'Claude',
-    structuredProtocol: 'claude-code-stream-json',
-    runtimeDescription: 'Claude stream + CLI',
-    npmPackage: '@anthropic-ai/claude-code',
-    capabilities: {
-      supportsTextWorkers: true,
-      hasReasoningEffort: false,
-      hasServiceTier: true,
-      hasAcceptEditsMode: true,
-      structuredPermissionControl: 'uam',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: false,
-      showPlanActionButtons: false,
-      autoLabel: 'Auto',
-      acceptEditsLabel: 'Accept Edits',
-      defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
-      memoryModelIds: ['', 'sonnet', 'opus'],
-      memoryModelLabels: CLAUDE_MEMORY_MODEL_LABELS,
-      memoryModelDefaultId: '',
-      claudePlanPrompt: true,
-      reasoningOptions: [],
-      speedOptions: [],
-    },
-  },
-  [OPENCODE_CLI_PROVIDER_ID]: {
-    id: OPENCODE_CLI_PROVIDER_ID,
-    name: 'OpenCode',
-    shortName: 'OpenCode',
-    structuredProtocol: 'opencode-acp',
-    runtimeDescription: 'OpenCode ACP + CLI',
-    npmPackage: 'opencode-ai',
-    capabilities: {
-      supportsTextWorkers: true,
-      hasReasoningEffort: false,
-      hasServiceTier: false,
-      hasAcceptEditsMode: true,
-      structuredPermissionControl: 'uam',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: false,
-      showPlanActionButtons: false,
-      autoLabel: 'Yolo',
-      acceptEditsLabel: 'Accept Edits',
-      defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
-      memoryModelIds: [''],
-      memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
-      memoryModelDefaultId: '',
-      claudePlanPrompt: false,
-      reasoningOptions: [],
-      speedOptions: [],
-    },
-  },
-  [COPILOT_CLI_PROVIDER_ID]: {
-    id: COPILOT_CLI_PROVIDER_ID,
-    name: 'GitHub Copilot CLI',
-    shortName: 'Copilot',
-    structuredProtocol: 'copilot-sdk',
-    runtimeDescription: 'Copilot SDK + CLI',
-    npmPackage: '@github/copilot',
-    capabilities: {
-      supportsTextWorkers: true,
-      hasReasoningEffort: true,
-      hasServiceTier: false,
-      hasAcceptEditsMode: true,
-      structuredPermissionControl: 'uam',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: false,
-      showPlanActionButtons: false,
-      autoLabel: 'Yolo',
-      acceptEditsLabel: 'Accept Edits',
-      defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
-      memoryModelIds: [''],
-      memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
-      memoryModelDefaultId: '',
-      claudePlanPrompt: false,
-      reasoningOptions: COPILOT_REASONING_OPTIONS,
-      speedOptions: [],
-    },
-  },
-  [ANTIGRAVITY_CLI_PROVIDER_ID]: {
-    id: ANTIGRAVITY_CLI_PROVIDER_ID,
-    name: 'Antigravity CLI',
-    shortName: 'Antigravity',
-    structuredProtocol: 'antigravity-stream-json',
-    runtimeDescription: 'Antigravity Stream + CLI',
-    npmPackage: '',
-    capabilities: {
-      supportsTextWorkers: false,
-      hasReasoningEffort: true,
-      hasServiceTier: false,
-      hasAcceptEditsMode: false,
-      structuredPermissionControl: 'provider',
-      terminalPermissionControl: 'provider',
-      usesFriendlyModelLabels: false,
-      showPlanActionButtons: false,
-      autoLabel: 'Auto',
-      acceptEditsLabel: undefined,
-      defaultModelLabels: {},
-      memoryModelIds: [],
-      memoryModelLabels: {},
-      memoryModelDefaultId: '',
-      claudePlanPrompt: false,
-      reasoningOptions: [],
-      speedOptions: [],
-    },
-  },
+  ...(GEMINI_ENABLED ? {
+    [GEMINI_CLI_PROVIDER_ID]: {
+      id: GEMINI_CLI_PROVIDER_ID,
+      name: 'Gemini CLI',
+      shortName: 'Gemini',
+      structuredProtocol: 'gemini-acp',
+      runtimeDescription: 'Gemini ACP + CLI',
+      npmPackage: '@google/gemini-cli',
+      capabilities: {
+        supportsTextWorkers: true,
+        hasReasoningEffort: false,
+        hasServiceTier: false,
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: true,
+        showPlanActionButtons: false,
+        autoLabel: 'Yolo',
+        acceptEditsLabel: 'Accept Edits',
+        defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
+        memoryModelIds: GEMINI_MEMORY_MODEL_IDS,
+        memoryModelLabels: GEMINI_MEMORY_MODEL_LABELS,
+        memoryModelDefaultId: '',
+        reasoningOptions: [],
+        speedOptions: [],
+      },
+    }
+  } : {}),
+  ...(CODEX_ENABLED ? {
+    [CODEX_CLI_PROVIDER_ID]: {
+      id: CODEX_CLI_PROVIDER_ID,
+      name: 'Codex CLI',
+      shortName: 'Codex',
+      structuredProtocol: 'codex-app-server',
+      runtimeDescription: 'Codex app-server + CLI',
+      npmPackage: '@openai/codex',
+      capabilities: {
+        supportsTextWorkers: true,
+        hasReasoningEffort: true,
+        hasServiceTier: true,
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: true,
+        autoLabel: 'Yolo',
+        acceptEditsLabel: 'Accept Edits',
+        defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
+        memoryModelIds: CODEX_MEMORY_MODEL_IDS,
+        memoryModelLabels: CODEX_MEMORY_MODEL_LABELS,
+        memoryModelDefaultId: '',
+        reasoningOptions: CODEX_REASONING_OPTIONS,
+        speedOptions: CODEX_SPEED_OPTIONS,
+      },
+    }
+  } : {}),
+  ...(CLAUDE_ENABLED ? {
+    [CLAUDE_CLI_PROVIDER_ID]: {
+      id: CLAUDE_CLI_PROVIDER_ID,
+      name: 'Claude Code',
+      shortName: 'Claude',
+      structuredProtocol: 'claude-code-stream-json',
+      runtimeDescription: 'Claude stream + CLI',
+      npmPackage: '@anthropic-ai/claude-code',
+      capabilities: {
+        supportsTextWorkers: true,
+        hasReasoningEffort: false,
+        hasServiceTier: true,
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: false,
+        autoLabel: 'Auto',
+        acceptEditsLabel: 'Accept Edits',
+        defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
+        memoryModelIds: ['', 'sonnet', 'opus'],
+        memoryModelLabels: CLAUDE_MEMORY_MODEL_LABELS,
+        memoryModelDefaultId: '',
+        reasoningOptions: [],
+        speedOptions: [],
+      },
+    }
+  } : {}),
+  ...(OPENCODE_ENABLED ? {
+    [OPENCODE_CLI_PROVIDER_ID]: {
+      id: OPENCODE_CLI_PROVIDER_ID,
+      name: 'OpenCode',
+      shortName: 'OpenCode',
+      structuredProtocol: 'opencode-acp',
+      runtimeDescription: 'OpenCode ACP + CLI',
+      npmPackage: 'opencode-ai',
+      capabilities: {
+        supportsTextWorkers: true,
+        hasReasoningEffort: false,
+        hasServiceTier: false,
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: false,
+        autoLabel: 'Yolo',
+        acceptEditsLabel: 'Accept Edits',
+        defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
+        memoryModelIds: [''],
+        memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
+        memoryModelDefaultId: '',
+        reasoningOptions: [],
+        speedOptions: [],
+      },
+    }
+  } : {}),
+  ...(COPILOT_ENABLED ? {
+    [COPILOT_CLI_PROVIDER_ID]: {
+      id: COPILOT_CLI_PROVIDER_ID,
+      name: 'GitHub Copilot CLI',
+      shortName: 'Copilot',
+      structuredProtocol: 'copilot-sdk',
+      runtimeDescription: 'Copilot SDK + CLI',
+      npmPackage: '@github/copilot',
+      capabilities: {
+        supportsTextWorkers: true,
+        hasReasoningEffort: true,
+        hasServiceTier: false,
+        hasAcceptEditsMode: true,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: false,
+        autoLabel: 'Yolo',
+        acceptEditsLabel: 'Accept Edits',
+        defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
+        memoryModelIds: [''],
+        memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
+        memoryModelDefaultId: '',
+        reasoningOptions: COPILOT_REASONING_OPTIONS,
+        speedOptions: [],
+      },
+    }
+  } : {}),
+  ...(ANTIGRAVITY_ENABLED ? {
+    [ANTIGRAVITY_CLI_PROVIDER_ID]: {
+      id: ANTIGRAVITY_CLI_PROVIDER_ID,
+      name: 'Antigravity CLI',
+      shortName: 'Antigravity',
+      structuredProtocol: 'antigravity-stream-json',
+      runtimeDescription: 'Antigravity Stream + CLI',
+      npmPackage: '',
+      capabilities: {
+        supportsTextWorkers: false,
+        hasReasoningEffort: true,
+        hasServiceTier: false,
+        hasAcceptEditsMode: false,
+        structuredPermissionControl: 'provider',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: false,
+        autoLabel: 'Auto',
+        acceptEditsLabel: undefined,
+        defaultModelLabels: {},
+        memoryModelIds: [],
+        memoryModelLabels: {},
+        memoryModelDefaultId: '',
+        reasoningOptions: [],
+        speedOptions: [],
+      },
+    }
+  } : {}),
 }
 
 export const SUPPORTED_CLI_PROVIDER_IDS = Object.keys(PROVIDER_METADATA_BY_ID)
@@ -292,25 +308,15 @@ export function providerSupportsTextWorkers(providerId: string): boolean {
 
 /** Supported provider IDs in catalogue order, shared by provider selection controls. */
 
-const GEMINI_METADATA = PROVIDER_METADATA_BY_ID[DEFAULT_PROVIDER_ID]
+const DEFAULT_METADATA = PROVIDER_METADATA_BY_ID[DEFAULT_PROVIDER_ID]
 
 const PROVIDER_ID_ALIASES: Record<string, string> = {
-  agy: ANTIGRAVITY_CLI_PROVIDER_ID,
-  antigravity: ANTIGRAVITY_CLI_PROVIDER_ID,
-  [ANTIGRAVITY_CLI_PROVIDER_ID]: ANTIGRAVITY_CLI_PROVIDER_ID,
-  gemini: DEFAULT_PROVIDER_ID,
-  [DEFAULT_PROVIDER_ID]: DEFAULT_PROVIDER_ID,
-  codex: CODEX_CLI_PROVIDER_ID,
-  [CODEX_CLI_PROVIDER_ID]: CODEX_CLI_PROVIDER_ID,
-  claude: CLAUDE_CLI_PROVIDER_ID,
-  'claude-code': CLAUDE_CLI_PROVIDER_ID,
-  [CLAUDE_CLI_PROVIDER_ID]: CLAUDE_CLI_PROVIDER_ID,
-  opencode: OPENCODE_CLI_PROVIDER_ID,
-  'open-code': OPENCODE_CLI_PROVIDER_ID,
-  [OPENCODE_CLI_PROVIDER_ID]: OPENCODE_CLI_PROVIDER_ID,
-  copilot: COPILOT_CLI_PROVIDER_ID,
-  'github-copilot': COPILOT_CLI_PROVIDER_ID,
-  [COPILOT_CLI_PROVIDER_ID]: COPILOT_CLI_PROVIDER_ID,
+  ...(ANTIGRAVITY_ENABLED ? { agy: ANTIGRAVITY_CLI_PROVIDER_ID, antigravity: ANTIGRAVITY_CLI_PROVIDER_ID, [ANTIGRAVITY_CLI_PROVIDER_ID]: ANTIGRAVITY_CLI_PROVIDER_ID } : {}),
+  ...(GEMINI_ENABLED ? { gemini: GEMINI_CLI_PROVIDER_ID, [GEMINI_CLI_PROVIDER_ID]: GEMINI_CLI_PROVIDER_ID } : {}),
+  ...(CODEX_ENABLED ? { codex: CODEX_CLI_PROVIDER_ID, [CODEX_CLI_PROVIDER_ID]: CODEX_CLI_PROVIDER_ID } : {}),
+  ...(CLAUDE_ENABLED ? { claude: CLAUDE_CLI_PROVIDER_ID, 'claude-code': CLAUDE_CLI_PROVIDER_ID, [CLAUDE_CLI_PROVIDER_ID]: CLAUDE_CLI_PROVIDER_ID } : {}),
+  ...(OPENCODE_ENABLED ? { opencode: OPENCODE_CLI_PROVIDER_ID, 'open-code': OPENCODE_CLI_PROVIDER_ID, [OPENCODE_CLI_PROVIDER_ID]: OPENCODE_CLI_PROVIDER_ID } : {}),
+  ...(COPILOT_ENABLED ? { copilot: COPILOT_CLI_PROVIDER_ID, 'github-copilot': COPILOT_CLI_PROVIDER_ID, [COPILOT_CLI_PROVIDER_ID]: COPILOT_CLI_PROVIDER_ID } : {}),
 }
 
 export function normalizeCliProviderIdAlias(providerId: string): string {
@@ -322,9 +328,9 @@ export function normalizeCliProviderIdAlias(providerId: string): string {
 export function providerMetadataForId(providerId: string): ProviderMetadata {
   const normalizedProviderId = normalizeCliProviderIdAlias(providerId)
   return PROVIDER_METADATA_BY_ID[normalizedProviderId] ?? {
-    ...GEMINI_METADATA,
-    id: normalizedProviderId || GEMINI_METADATA.id,
-    capabilities: { ...GEMINI_METADATA.capabilities },
+    ...DEFAULT_METADATA,
+    id: normalizedProviderId || DEFAULT_METADATA.id,
+    capabilities: { ...DEFAULT_METADATA.capabilities },
   }
 }
 
@@ -365,7 +371,7 @@ export function providerShortName(provider?: Provider, fallbackId = ''): string 
 
 export function providerRuntimeDescription(provider?: Provider, fallbackId = ''): string {
   const rawProtocol = provider?.structuredProtocol?.trim()
-  const protocol = rawProtocol === 'copilot-acp' ? 'copilot-sdk' : rawProtocol
+  const protocol = COPILOT_ENABLED && rawProtocol === 'copilot-acp' ? 'copilot-sdk' : rawProtocol
   const metadata = protocol
     ? Object.values(PROVIDER_METADATA_BY_ID).find((candidate) => candidate.structuredProtocol === protocol)
     : undefined
@@ -374,34 +380,34 @@ export function providerRuntimeDescription(provider?: Provider, fallbackId = '')
 
 export function providerRuntimeKindLabel(provider?: Provider, protocolKind = ''): string {
   const protocol = protocolKind || provider?.structuredProtocol || providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol
-  if (protocol === providerMetadataForId(CODEX_CLI_PROVIDER_ID).structuredProtocol) return 'App Server'
-  if (protocol === providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).structuredProtocol) return 'Claude Stream'
-  if (protocol === providerMetadataForId(ANTIGRAVITY_CLI_PROVIDER_ID).structuredProtocol) return 'Antigravity Stream'
-  if (protocol === 'copilot-sdk') return 'Copilot SDK'
+  if (CODEX_ENABLED && protocol === providerMetadataForId(CODEX_CLI_PROVIDER_ID).structuredProtocol) return 'App Server'
+  if (CLAUDE_ENABLED && protocol === providerMetadataForId(CLAUDE_CLI_PROVIDER_ID).structuredProtocol) return 'Claude Stream'
+  if (ANTIGRAVITY_ENABLED && protocol === providerMetadataForId(ANTIGRAVITY_CLI_PROVIDER_ID).structuredProtocol) return 'Antigravity Stream'
+  if (COPILOT_ENABLED && protocol === 'copilot-sdk') return 'Copilot SDK'
   if (protocol === 'none') return 'CLI'
   return 'ACP'
 }
 
 export function providerUsesProtocol(provider: Provider | undefined, providerId: string, fallbackProviderId: string): boolean {
   const metadata = providerMetadataForId(fallbackProviderId)
-  const protocol = provider?.structuredProtocol === 'copilot-acp' ? 'copilot-sdk' : provider?.structuredProtocol
+  const protocol = COPILOT_ENABLED && provider?.structuredProtocol === 'copilot-acp' ? 'copilot-sdk' : provider?.structuredProtocol
   return normalizeCliProviderIdAlias(providerId) === metadata.id || protocol === metadata.structuredProtocol
 }
 
 export function isCodexProvider(provider?: Provider, providerId = ''): boolean {
-  return providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
+  return CODEX_ENABLED && providerUsesProtocol(provider, providerId, CODEX_CLI_PROVIDER_ID)
 }
 
 export function isClaudeProvider(provider?: Provider, providerId = ''): boolean {
-  return providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
+  return CLAUDE_ENABLED && providerUsesProtocol(provider, providerId, CLAUDE_CLI_PROVIDER_ID)
 }
 
 export function isCopilotProvider(provider?: Provider, providerId = ''): boolean {
-  return providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
+  return COPILOT_ENABLED && providerUsesProtocol(provider, providerId, COPILOT_CLI_PROVIDER_ID)
 }
 
 export function isOpenCodeProvider(provider?: Provider, providerId = ''): boolean {
-  return providerUsesProtocol(provider, providerId, OPENCODE_CLI_PROVIDER_ID)
+  return OPENCODE_ENABLED && providerUsesProtocol(provider, providerId, OPENCODE_CLI_PROVIDER_ID)
 }
 
 export function providerNpmPackageName(providerId: string, provider?: Provider): string {

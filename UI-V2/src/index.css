@@ -9,7 +9,7 @@
 
 /* ── Theme Tokens ─────────────────────────────────────────── */
 :root {
-  --provider-logo-codex-filter: none;
+  --provider-logo-mono-filter: none;
   --desktop-bg:      #e9edf5;
   --window-bg:       #f8f9fb;
   --bg:              #f7f8fa;
@@ -69,7 +69,7 @@
 }
 
 [data-theme="dark"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
   --desktop-bg:      #31435b;
   --window-bg:       #0c0d11;
   --bg:              #0f1117;
@@ -108,7 +108,7 @@
 }
 
 [data-theme="focus"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
   --desktop-bg:      #151720;
   --window-bg:       #090a0d;
   --bg:              #0b0c0f;
@@ -155,7 +155,7 @@
 [data-theme="contrast"] { --desktop-bg:#000; --window-bg:#000; --bg:#000; --surface:#000; --surface-up:#111; --surface-high:#222; --border:#fff; --border-bright:#fff; --text:#fff; --text-2:#fff; --text-3:#d9d9d9; --accent:#00ffff; --accent-dim:rgba(0,255,255,.32); --accent-glow:rgba(0,255,255,.65); --teal:#00ffff; --teal-dim:rgba(0,255,255,.28); --blue:#6ea8ff; --blue-dim:rgba(110,168,255,.28); --green:#75ff75; --red:#ff8a8a; --yellow:#ffff4d; --message-user-bg:#001f2a; --message-assistant-bg:#000; --sidebar-bg:#000; --sidebar-item-hover:#222; --sidebar-item-active:#004c59; --scroll-thumb:#fff; --scroll-track:#000; --term-bg:#000; --term-fg:#fff; --term-cursor:#00ffff; --term-selection:rgba(0,255,255,.48); --success-dim:rgba(117,255,117,.28); --warning-dim:rgba(255,255,77,.30); --error-dim:rgba(255,138,138,.30); }
 
 [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
-  --provider-logo-codex-filter: invert(1);
+  --provider-logo-mono-filter: invert(1);
 }
 
 /* Token categories on dark surfaces: bright enough for --bg label text inside segments. */
@@ -175,7 +175,7 @@
   --border-bright: color-mix(in srgb, var(--text) 45%, transparent);
 }
 
-.uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-codex-filter); }
+.uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-mono-filter); }
 
 /* ── Design System Scales (theme-independent) ─────────────────
    Redesign token layer. UI text is proportional sans; JetBrains Mono
@@ -1323,6 +1323,13 @@ summary,
   .uam-working-ring { animation: none; }
 }
 
+/* Reference capture in progress: the spinner turns while reading; the text alone carries the state without motion. */
+.uam-reference-pending__spinner { flex-shrink: 0; color: var(--text-3); animation: uam-status-spin 1s linear infinite; }
+[data-motion="off"] .uam-reference-pending__spinner { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-reference-pending__spinner { animation: none; }
+}
+
 @keyframes uam-status-spin {
   to { transform: rotate(360deg); }
 }
@@ -1960,6 +1967,7 @@ button.uam-commit-check { cursor: pointer; }
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .uam-field::placeholder { color: var(--text-3); }
+.uam-field:disabled { opacity: 0.5; cursor: not-allowed; }
 .uam-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .uam-field[type="number"]::-webkit-inner-spin-button,
 .uam-field[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }

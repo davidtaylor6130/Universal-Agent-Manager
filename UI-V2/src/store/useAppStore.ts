@@ -19,8 +19,10 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
@@ -43,7 +45,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -67,7 +69,7 @@ const initialProviders: Provider[] = [
   { ...fallbackProviderForId(CLAUDE_CLI_PROVIDER_ID), color: '#7c3aed' },
   { ...fallbackProviderForId(OPENCODE_CLI_PROVIDER_ID), color: '#14b8a6' },
   { ...fallbackProviderForId(COPILOT_CLI_PROVIDER_ID), color: '#22c55e' },
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let lastPushStatusUpdateAtMs = 0
 
@@ -127,6 +129,7 @@ function deserializeState(
     defaultNewChatProviderId: string
     providerChatDefaults: Record<string, ProviderChatDefaults>
     fileExplorerApplication: string
+    windowsPowerShell: WindowsPowerShellPreference
     defaultEditorPresetId: string
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
@@ -333,9 +336,10 @@ function deserializeState(
     memoryActivity: cpp.memoryActivity ?? sanitizeMemoryActivity(undefined, cpp.settings.memoryLastStatus),
     cliVersionManager: cpp.cliVersionManager ?? existing.cliVersionManager,
     markdownStoreDirectory: cpp.settings.markdownStoreDirectory ?? '',
-    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? cpp.settings.defaultNewChatProviderId ?? cpp.settings.activeProviderId ?? DEFAULT_PROVIDER_ID,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? cpp.settings.providerChatDefaults ?? {},
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
+    windowsPowerShell: cpp.settings.windowsPowerShell ?? 'auto',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
     voiceInputMode: cpp.settings.voiceInputMode ?? existing.voiceInputMode,
@@ -363,6 +367,8 @@ function deserializeState(
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
+    computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
+    computerUseSettingsStateRevision: cppStateRevision(cpp),
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
     branchSwitching: cpp.settings.branchSwitching === true,
@@ -396,7 +402,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     : current.providers
   const visibleProviders = providers.length > 0
     ? providers
-    : [{ id: GEMINI_CLI_PROVIDER_ID }]
+    : [{ id: DEFAULT_PROVIDER_ID }]
 
   const patchedSessionsById = new Map(current.sessions.filter((session) => !removedChatIds.has(session.id)).map((session) => [session.id, session]))
   for (const chat of patch.chats ?? []) {
@@ -568,6 +574,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     defaultNewChatProviderId: pendingProviderChatDefaults?.defaultNewChatProviderId ?? patch.settings?.defaultNewChatProviderId ?? current.defaultNewChatProviderId,
     providerChatDefaults: pendingProviderChatDefaults?.providerChatDefaults ?? patch.settings?.providerChatDefaults ?? current.providerChatDefaults,
     fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
+    windowsPowerShell: patch.settings?.windowsPowerShell ?? current.windowsPowerShell,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
     voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
@@ -595,6 +602,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
     computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
+    computerUseRevocationPending: patch.settings?.computerUseRevocationPending ?? current.computerUseRevocationPending,
+    computerUseSettingsStateRevision: typeof patch.settings?.computerUseGloballyEnabled === 'boolean' || typeof patch.settings?.computerUseRevocationPending === 'boolean'
+      ? nextRevision : current.computerUseSettingsStateRevision,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
     branchSwitching: patch.settings?.branchSwitching ?? current.branchSwitching,
@@ -800,6 +810,7 @@ export const useAppStore = create<AppState>((set, get) => {
             backupLogRetentionDays: current.backupLogRetentionDays,
             httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
             fileExplorerApplication: current.fileExplorerApplication,
+            windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
             centralProviderConfiguration: current.centralProviderConfiguration,
@@ -1137,6 +1148,7 @@ export const useAppStore = create<AppState>((set, get) => {
         backupLogRetentionDays: current.backupLogRetentionDays,
         httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
         fileExplorerApplication: current.fileExplorerApplication,
+        windowsPowerShell: current.windowsPowerShell,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
         centralProviderConfiguration: current.centralProviderConfiguration,

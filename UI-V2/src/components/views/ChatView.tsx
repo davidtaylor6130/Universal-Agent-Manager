@@ -1,12 +1,11 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
-import { useVoiceMode } from '../../hooks/useVoiceMode'
-import { buildChatSearchSessionGroups } from '../sidebar/chatSearch'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
-import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
+import { formatContextReferences } from '../../utils/contextReferences'
+import { acknowledgeComposerReferences, captureComposerReferenceSubmission, composerReferenceSubmissionIsCurrent, type ComposerReferenceSubmission } from '../../utils/composerReferenceSubmission'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
@@ -23,7 +22,7 @@ import type { ConversationDelivery } from '../chat/ConversationTurn'
 import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
 import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
-import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
+import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -35,7 +34,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -47,15 +46,22 @@ import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, Compose
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
-import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { composerWorkspaceName } from '../../utils/workspacePresentation'
+import { AlertTriangle, ArrowDown, AtSign, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
-import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
+import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerContextReferences'
+import { draftFileMentions } from '../../utils/fileContextReferences'
+import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { getTopmostModal } from '../../utils/modalFocus'
+
+// Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
+const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
+const UNSENT_PROMPT_MESSAGE = "The chat's workspace or provider changed, so this prompt wasn't sent. Review the selected references, then send again."
 
 interface ChatViewProps {
   session: Session
@@ -73,6 +79,8 @@ type SlashCommand = {
   icon: ReactNode
   run: () => void
   groupEntries?: SlashCommand[]
+  /** Listed with its reason but not selectable. */
+  disabled?: boolean
 }
 
 function manualCompactionForChat(session: Session | undefined, acp: AcpBinding | undefined): ManualCompactionAvailability | undefined {
@@ -132,6 +140,13 @@ export function matchesUamAgentCycleShortcut(
 interface SelectedToolCallRef {
   id: string
   messageId?: string
+}
+
+interface PendingClaudePlanPrompt {
+  prompt: string
+  draft: string
+  attachments: Attachment[]
+  context: ComposerReferenceSubmission
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -357,7 +372,10 @@ type ParentViewportDetails = {
 }
 const parentViewportVisits = new Map<string, ParentViewportDetails & { top: number; nearBottom: boolean; renderedCount: number }>()
 
+const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
+
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
+  const sessionBirth = session.createdAt.getTime()
   const showComposerRef = useRef(showComposer)
   showComposerRef.current = showComposer
   const viewportKey = JSON.stringify([session.id, session.createdAt.getTime(), session.providerId, session.executionHostId, navigationKey, isCompanionContext() ? 'companion' : 'desktop'])
@@ -376,6 +394,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [referenceCaptureLoading, setReferenceCaptureLoading] = useState(false)
+  // The @ word the list was closed for (position and text); editing the word reopens the list.
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null)
+  const [mentionNavigated, setMentionNavigated] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
@@ -387,7 +409,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [remoteMoveFolderId, setRemoteMoveFolderId] = useState('')
   const [remoteBrowseKey, setRemoteBrowseKey] = useState('')
-  const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
+  const [claudePlanPrompt, setClaudePlanPrompt] = useState<PendingClaudePlanPrompt | null>(null)
+  const claudePlanResolvingRef = useRef<PendingClaudePlanPrompt | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
@@ -461,6 +484,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const searchNavigationRef = useRef(searchNavigation)
   searchNavigationRef.current = searchNavigation
   const storedHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const historyRefreshFailed = useAppStore((s) => s.chatHistoryErrorWasRefreshBySessionId?.[session.id] === true) && Boolean(storedHistoryError)
   const historyPageMissing = useAppStore((s) => s.messages[session.id] === undefined)
   const historyRead = useAppStore((s) => s.chatHistoryReadBySessionId?.[session.id])
   const historyReadPending = Boolean(historyRead && historyRead.birth === session.createdAt.getTime())
@@ -748,7 +772,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
-  // Takes already-formed input: goal, plan and Claude plan actions must not inherit composer references.
+  // Generated actions take already-formed input; user-authored sends explicitly supply their frozen references.
   const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean) => {
     // Display only: an idle direct send occupies its transcript slot before ACK and keeps it after settling. It never enters
     // messages[] or ACP state; ACK records admission only, and a failed request stays visible as unconfirmed.
@@ -800,29 +824,46 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendAcpPrompt])
-  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
-    const references = sanitizeContextReferences(readChatComposerDraft(chatId).references)
-    const context = formatContextReferences(references)
+  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    if (!composerReferenceSubmissionIsCurrent(submission)) return false
+    const context = formatContextReferences(submission.references)
     const submittedText = context ? `${text}\n\n${context}` : text
-    const accepted = await sendSubmittedPrompt(chatId, submittedText, attachments, steerNow)
-    if (accepted && references.length > 0 && useAppStore.getState().sessions.some((candidate) => candidate.id === chatId)) {
-      const sentIds = new Set(references.map((reference) => reference.id))
-      const current = readChatComposerDraft(chatId)
-      writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => !sentIds.has(reference.id)) })
+    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow)
+    if (accepted) {
+      acknowledgeComposerReferences(submission)
+      // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
+      if (mountedRef.current && currentSessionIdRef.current === submission.chatId && composerReferenceSubmissionIsCurrent(submission)) {
+        setSlashMessage((message) => UNSENT_PROMPT_NOTICE.test(message) ? '' : message)
+      }
     }
     return accepted
   }, [sendSubmittedPrompt])
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    const submission = captureComposerReferenceSubmission(chatId)
+    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow) : false
+  }, [sendCapturedComposerPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
   // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
-  const [composerVcsBranch, setComposerVcsBranch] = useState({ scope: '', branch: '' })
+  const [composerVcsBranch, setComposerVcsBranch] = useState<{
+    scope: string
+    status: Pick<VcsCommitStatus, 'available' | 'activeVcsType' | 'branchOrRevision'> | null
+  }>({ scope: '', status: null })
   const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
   // The composer's own read (refreshed after a branch switch) wins over the last completed-turn snapshot.
-  const composerBranch = (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
-    || (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
-    || session.workspaceBranchName
+  const composerRepository = composerVcsBranch.scope === composerBranchScope && composerVcsBranch.status
+    ? composerVcsBranch.status
+    : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
+  const composerBranch = composerRepository
+    ? composerRepository.available ? composerRepository.branchOrRevision : ''
+    : session.workspaceBranchName
+  const composerVcsType = composerRepository?.activeVcsType ?? 'git'
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
+  // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
+  const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
+    && !session.importedReadOnly && !session.temporaryParentChatId
+    && (composerVcsType === 'git' ? session.workspaceIsolationKind === 'gitWorktree' : !session.workspaceIsolationKind && !session.workspaceWorktreeDirectory)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const retryUnsentAcpPrompt = useAppStore((s) => s.retryUnsentAcpPrompt)
@@ -861,9 +902,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setSessionComputerUseEnabled = useAppStore((s) => s.setSessionComputerUseEnabled)
   const setSessionComputerUseControl = useAppStore((s) => s.setSessionComputerUseControl)
   const computerUseMode = COMPUTER_USE_ENABLED && Boolean(session.computerUseEnabled)
-  const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
+  const remoteComputerUseDisabled = SSH_ENABLED && (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const workspaceFolders = useAppStore((s) => s.folders)
+  const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
   const remoteContextKey = JSON.stringify([session.id, session.createdAt.getTime(), session.executionHostId, workspaceDirectory, recoveryHost?.sshAlias, recoveryHost?.platform, recoveryHost?.runnerDirectory, recoveryHost?.runnerVersion, recoveryHost?.runnerProtocolVersion])
   useEffect(() => { setRemoteMoveFolderId(''); setRemoteBrowseKey('') }, [remoteContextKey])
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
@@ -929,6 +971,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
+  const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
+    previousComposerIdentityRef.current.birth !== sessionBirth && submitInFlightRef.current
   const compactRequestIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef(session.id)
   const mountedRef = useRef(true)
@@ -966,6 +1011,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [])
 
   useEffect(() => {
+    previousComposerIdentityRef.current = { id: session.id, birth: sessionBirth }
     currentSessionIdRef.current = session.id
     isNearBottomRef.current = restoredViewport?.nearBottom ?? true
     showScrollToBottomRef.current = false
@@ -978,7 +1024,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setProviderHandoffTargetId('')
     setConfirmYolo(false)
     setRollbackConfirmation(null)
-  }, [session.id])
+  }, [session.id, sessionBirth])
 
   const renderedCountRef = useRef(renderedMessageCount)
   renderedCountRef.current = renderedMessageCount
@@ -1217,7 +1263,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
-    setSlashMessage('')
+    setSlashMessage(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '')
     setPermissionMenuOpen(false)
     messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
@@ -1232,7 +1278,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')
-  }, [session.id])
+  }, [session.id, sessionBirth])
 
   useEffect(() => {
     if (!acp?.lastError && !acp?.promptActionError) setDismissedAcpErrorKey('')
@@ -1450,18 +1496,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }) => {
     const submittedSessionId = session.id
     const submittedDraft = draft
+    const submittedContext = captureComposerReferenceSubmission(submittedSessionId)
+    if (!submittedContext) { setGoalError("The chat's workspace or provider changed, so this goal wasn't sent. Review the selected references, then send again."); return }
     const generation = ++goalMutationGenerationRef.current
-    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedContext.birth
     submitInFlightRef.current = true
     goalMutationInFlightRef.current = true
     setSubmitting(true)
     setGoalSubmitting(true)
     try {
       const result = await setGoalStore(submittedSessionId, request.objective, request.tokenBudget, request.executionOwner)
-      // Creation already admitted this prompt; changing panes must not cancel its native operation.
-      const sent = result.ok ? await (request.steerNow
-        ? sendSubmittedPrompt(submittedSessionId, request.prompt, request.attachments, true)
-        : sendSubmittedPrompt(submittedSessionId, request.prompt, request.attachments)) : false
+      // A pane switch alone does not cancel the first prompt; its original target/context must still match.
+      const sent = result.ok ? await sendCapturedComposerPrompt(submittedContext, request.prompt, request.attachments, request.steerNow) : false
       const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
       if (sent && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
         acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: submittedDraft, attachments: request.attachments })
@@ -1584,7 +1631,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!showComposerRef.current) return
     const prompt = (promptOverride ?? draft).trim()
     if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
-    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || referenceCaptureLoading ||
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
+      composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -1609,15 +1658,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
       await createGoalAndSend({ objective: prompt, tokenBudget: defaultGoalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
         prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
-        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow, disarm: true })
+        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined, disarm: true })
       return
     }
 
     if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
-      setClaudePlanPrompt(prompt)
+      const context = captureComposerReferenceSubmission(session.id)
+      if (!context) { setSlashMessage(UNSENT_PROMPT_MESSAGE); return }
+      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
       return
     }
     const submittedSessionId = session.id
+    const submittedBirth = sessionBirth
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedBirth
     submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) setSteering(true)
@@ -1630,15 +1684,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       ok = false
     }
     const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
-    if (ok && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
-      acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: draft, attachments: readyAttachments })
+    if (ok && acknowledgedSession?.createdAt.getTime() === submittedBirth) {
+      acknowledgeChatComposerDraft(submittedSessionId, submittedBirth, { text: draft, attachments: readyAttachments })
     }
-    if (currentSessionIdRef.current === submittedSessionId) {
+    if (ownsFeedback()) {
       submitInFlightRef.current = false
       setSubmitting(false)
       if (steerNow) setSteering(false)
     }
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
+    if (ok && ownsFeedback()) {
       setDraft((current) => current === draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) =>
         attachmentsEquivalent([attachment], [sentAttachment]))))
@@ -1681,14 +1735,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // One light read per chat/workspace open (no polling): feeds the composer's repository branch.
     void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
       if (cancelled) return
-      setComposerVcsBranch({ scope: composerBranchScope, branch: status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision : '' })
+      setComposerVcsBranch({ scope: composerBranchScope, status })
     })
     return () => { cancelled = true }
   }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
-  const handleBranchSwitched = (branch: string) => {
-    setComposerVcsBranch({ scope: composerBranchScope, branch })
-    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
-      if (status?.available && status.activeVcsType !== 'svn') setComposerVcsBranch({ scope: composerBranchScope, branch: status.branchOrRevision })
+  const handleBranchSwitched = (branch: string, vcsType: 'git' | 'svn' = 'git') => {
+    setComposerVcsBranch({ scope: composerBranchScope, status: { available: true, activeVcsType: vcsType, branchOrRevision: branch } })
+    void getVcsCommitStatus(session.id, vcsType, { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (status?.available && status.activeVcsType === vcsType) setComposerVcsBranch({ scope: composerBranchScope, status })
     })
   }
   const sideBusyRef = useRef(false)
@@ -1881,12 +1935,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
-    : /working|unavailable|provider-managed/i.test(slashMessage)
+    : /working|unavailable|provider-managed|send the prompt again|send again|wasn't sent|could not confirm the prompt|chat was replaced/i.test(slashMessage)
       ? 'warning'
       : 'success'
+  const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
+    : `${currentProviderName} is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
@@ -1941,7 +1996,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     return retryUnsentAcpPrompt(session.id, receipt)
   }
-  const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     const generation = ++messageBranchGenerationRef.current
@@ -2064,57 +2118,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
+    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !referenceCaptureLoading && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
   const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
-  const selectedChatId = useAppStore(s => s.activeSessionId)
-  const voiceContextKey = JSON.stringify([session.id, session.createdAt?.getTime(), session.providerId, session.viewMode, session.executionHostId])
-  const voice = useVoiceMode({
-    contextKey: voiceContextKey,
-    enabled: showComposer && providerSupported && !session.importedReadOnly && selectedChatId === session.id,
-    blocked: dictationActive,
-    messages,
-    processing: Boolean(acp?.processing || cli?.processing || cli?.turnState === 'busy'),
-    append: text => setDraft(previous => joinedDictationText(previous, text, '')),
-    send: () => { if (canSend) void submit(undefined, draft) },
-    stopResponse: () => { void cancelAcpTurn(session.id) },
-    navigate: direction => {
-      const state = useAppStore.getState()
-      const eligible = state.sessions.filter(chat => !chat.importedReadOnly)
-      const groups = buildChatSearchSessionGroups(eligible, {}, [])
-      const ids = [...new Set([...groups.pinnedSessionIds, ...Array.from(groups.sessionIdsByFolderId.values()).flat(), ...groups.unfolderedSessionIds])]
-      const index = ids.indexOf(session.branchRootChatId || session.parentChatId || session.id)
-      const next = index >= 0 ? state.sessions.find(chat => chat.id === ids[index + direction]) : undefined
-      if (next) setActiveSession(next.id)
-    },
-  })
-
-  const previousVoiceRuntime = useRef({ key: voiceContextKey, acp, cli })
-  useEffect(() => {
-    const previous = previousVoiceRuntime.current
-    previousVoiceRuntime.current = { key: voiceContextKey, acp, cli }
-    if (previous.key !== voiceContextKey) return
-    // Initial startup and native ID assignment keep the same voice conversation.
-    // A runtime shutdown or a new failure ends its owned input and playback.
-    const acpStopped = acp?.lifecycleState === 'stopped' && previous.acp && previous.acp.lifecycleState !== 'stopped'
-    const cliStopped = cli?.lifecycleState === 'stopped' && previous.cli && previous.cli.lifecycleState !== 'stopped' && previous.cli.lifecycleState !== 'disabled'
-    if (acpStopped || cliStopped ||
-      (previous.acp?.running && !acp?.running && acp?.lifecycleState !== 'starting') ||
-      (previous.cli?.running && !cli?.running) ||
-      (acp?.lifecycleState === 'error' && previous.acp?.lifecycleState !== 'error') ||
-      (cli?.lifecycleState === 'shuttingDown' && previous.cli?.lifecycleState !== 'shuttingDown') ||
-      (acp?.lastError && acp.lastError !== previous.acp?.lastError) ||
-      (cli?.lastError && cli.lastError !== previous.cli?.lastError)) voice.stop()
-  }, [voiceContextKey, acp, cli])
-
   submitDictatedPromptRef.current = (prompt) => {
     void submit(undefined, prompt)
   }
 
   const startDictation = async () => {
     if (!showComposerRef.current) return
-    if (!dictationAvailable || dictationActiveRef.current || voice.active || voice.speaking) return
+    if (!dictationAvailable || dictationActiveRef.current) return
     const dictationId = createRequestId('dictation')
     dictationIdRef.current = dictationId
     dictationActiveRef.current = true
@@ -2236,12 +2250,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         session.reasoningEffort ?? '',
         isCopilotProvider(currentProvider, currentProviderId)
           ? currentProviderCapabilities.reasoningOptions.map((option) => option.id)
-          : currentProviderId === 'codex-cli' ? undefined : []
+          : currentProviderId === CODEX_CLI_PROVIDER_ID ? undefined : []
       )
     : [], [currentModel.id, currentProvider, currentProviderId, currentProviderCapabilities, providerAcp, runtimeSupportsReasoning, session.reasoningEffort])
   const serviceTierExplicit = session.serviceTierExplicit ?? (session.serviceTier ?? '') !== ''
   const speedOptions = useMemo(() => currentProviderCapabilities.hasServiceTier
-    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === 'codex-cli')
+    ? buildCodexSpeedOptions(providerAcp, currentModel.id, session.serviceTier ?? '', currentProviderId === CODEX_CLI_PROVIDER_ID)
     : [], [currentModel.id, currentProviderId, currentProviderCapabilities.hasServiceTier, providerAcp, session.serviceTier])
   const currentModeId = configuredApprovalMode || session.approvalMode || providerAcp?.currentModeId || 'default'
   const providerModes = useMemo(() => {
@@ -2388,18 +2402,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canShowPlanActions = supportsPlanActions && latestPlanMessageIndex >= 0 && !latestPlanHasLaterUser
   const planActionBlockedByRuntime = runtimeBlocksControlChanges
   const planActionsDisabled = Boolean(submitting || planActionBlockedByRuntime)
-  const planActionsDisabledTitle = planActionBlockedByRuntime
+  const planActionsDisabledTitle = CODEX_ENABLED && planActionBlockedByRuntime
     ? 'Codex is still working.'
     : 'Plan action is unavailable.'
   const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
     if (planActionsDisabled) return
+    const submittedBirth = sessionBirth
     setSubmitting(true)
     const modeOk = await setSessionApprovalMode(session.id, nextModeId)
     if (modeOk) {
       await sendSubmittedPrompt(session.id, prompt)
     }
-    setSubmitting(false)
-  }, [planActionsDisabled, sendSubmittedPrompt, session.id, setSessionApprovalMode])
+    if (mountedRef.current && currentSessionIdRef.current === session.id &&
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() === submittedBirth) setSubmitting(false)
+  }, [planActionsDisabled, sendSubmittedPrompt, session.id, sessionBirth, setSessionApprovalMode])
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
   const goalOwner = displayedGoal ? `${session.id}:${displayedGoal.id}` : ''
@@ -2508,6 +2524,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
 
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
+    if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
     if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
     return result
@@ -2569,9 +2586,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ] : []),
         ...(manualCompactionAvailable ? [{ id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose Codex reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose Codex speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
-        ...(providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: CODEX_ENABLED ? 'Choose Codex reasoning' : 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: CODEX_ENABLED ? 'Choose Codex speed' : 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        ...(OPENCODE_ENABLED && providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
         ...(COMPUTER_USE_ENABLED ? [{ id: 'computer', label: '/computer', hint: `${computerUseMode ? 'Turn off' : 'Turn on'} computer use`, icon: <MousePointer2 size={15} />, run: () => void setComputerUseActive(!computerUseMode) }] : []),
@@ -2604,7 +2621,45 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [session.id, session.providerId, session.modelId, manualCompactionAvailable, providerAcp?.sessionId, providerAcp?.manualCompaction, session.temporaryParentChatId, liveSideChatId, currentMemoryLevel, session.commandSafetyTier, session.reasoningEffort, session.serviceTier, session.serviceTierExplicit, session.computerUseEnabled, session.computerUseTargetId, markdownStoreEntries, providerAcp?.availableCommands, currentModeId, permissionModes, providerSupported, currentProviderName, reasoningOptions, speedOptions, providerVariants, activeGoal?.id, displayedGoal?.id, displayedGoal?.status]
   )
+  const composerReferences = useComposerReferences({ chatId: session.id, ownerKey: `${session.id}:${session.createdAt.getTime()}`,
+    disabled: submitting || goalSubmitting || session.importedReadOnly === true, onBusyChange: setReferenceCaptureLoading })
   const activeSlashToken = slashActionToken(draft, composerSelection.start, composerSelection.end)
+  // `@` offers context references (current branch, chat worktree or a file path); `/` stays for commands and skills.
+  const typedMentionToken = activeSlashToken ? null : mentionActionToken(draft, composerSelection.start, composerSelection.end)
+  const activeMentionToken = typedMentionToken && `${typedMentionToken.start}:${typedMentionToken.query}` !== dismissedMention ? typedMentionToken : null
+  const mentionQuery = activeMentionToken?.query
+  useEffect(() => { if (!typedMentionToken) setDismissedMention(null) }, [typedMentionToken === null])
+  useEffect(() => { setMentionNavigated(false) }, [activeMentionToken?.start, mentionQuery])
+  const removeMentionToken = (token: NonNullable<typeof activeMentionToken>) => {
+    setDraft((current) => current.slice(token.start, token.end) === draft.slice(token.start, token.end)
+      ? `${current.slice(0, token.start)}${current.slice(token.end).replace(/^ /, '')}` : current)
+    setComposerSelection({ start: token.start, end: token.start })
+    requestAnimationFrame(() => composerTextareaRef.current?.setSelectionRange(token.start, token.start))
+  }
+  const mentionMatches: SlashCommand[] = mentionQuery === undefined || !activeMentionToken ? [] : [
+    ...(['branch', 'worktree'] as const).filter((kind) => kind.startsWith(mentionQuery.toLowerCase())).map((kind) => {
+      const unavailable = kind === 'worktree' && !composerReferences.worktreeConfigured ? 'Needs a configured worktree for this chat'
+        : composerReferences.actionsDisabled ? composerReferences.unavailableReason : ''
+      return {
+        id: `mention:${kind}`,
+        label: `@${kind}`,
+        hint: unavailable || (kind === 'branch' ? 'Quote the current branch · does not switch it' : 'Quote this chat\u2019s worktree · does not switch it'),
+        icon: kind === 'branch' ? <GitBranch size={15} /> : <FolderGit2 size={15} />,
+        disabled: Boolean(unavailable),
+        run: () => { if (unavailable) return; removeMentionToken(activeMentionToken); composerReferences.captureRepository(kind) },
+      }
+    }),
+    // Only path-like mentions are offered as files, so prose @handles and @Annotations stay plain text.
+    ...(mentionQuery && composerReferences.pending !== mentionQuery && (activeMentionToken.quoted || /[./\\]/.test(mentionQuery)) && draftFileMentions(draft.slice(activeMentionToken.start, activeMentionToken.end))[0] === mentionQuery && !composerReferences.fileCaptured(mentionQuery) ? [{
+      id: 'mention:file',
+      label: activeMentionToken.quoted ? `@"${mentionQuery}"` : `@${mentionQuery}`,
+      hint: composerReferences.actionsDisabled ? composerReferences.unavailableReason : 'Quote this file\u2019s current text',
+      icon: <FileText size={15} />,
+      disabled: composerReferences.actionsDisabled,
+      // Close the list for this word so the reading/error state beside the chips stays visible.
+      run: () => { if (composerReferences.actionsDisabled) return; setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`); composerReferences.captureFile(mentionQuery) },
+    }] : []),
+  ]
   const slashSubPalette = Boolean(activeSlashToken && activeSlashToken.queryStart > activeSlashToken.commandStart + 1)
   const slashQuery = activeSlashToken && !slashSubPalette ? activeSlashToken.query : null
   const permissionModeQuery = permissionMenuOpen ? '' : slashSubPalette && activeSlashToken?.command === 'permission' ? activeSlashToken.query : undefined
@@ -2659,16 +2714,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           }))
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
-      : []
-  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
-  const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
+      : mentionMatches
+  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const commandPaletteVisible = slashPaletteVisible && mentionQuery === undefined
   useEffect(() => {
-    if (slashPaletteVisible && markdownStoreEntries.length === 0) {
+    if (commandPaletteVisible && markdownStoreEntries.length === 0) {
       void refreshMarkdownStore()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slashPaletteVisible])
+  }, [commandPaletteVisible])
   const runSlashCommand = (command: SlashCommand) => {
+    if (command.disabled) return
     if (command.id === 'compact') {
       void runCompact(draft, true)
       return
@@ -2703,7 +2760,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return groups
   }, []) : []
   const activeSlashGroup = activeSlashGroups[activeSlashGroups.length - 1]
-  const activeSlashOptionId = !slashOpen
+  // The @ list has no active option until the user arrows into it, so Enter keeps sending the message.
+  const mentionListUntouched = mentionQuery !== undefined && !mentionNavigated
+  const activeSlashIndex = mentionListUntouched ? -1 : Math.min(slashIndex, slashMatches.length - 1)
+  const activeSlashOptionId = !slashOpen || (mentionListUntouched && !activeSlashGroup?.groupEntries)
     ? undefined
     : activeSlashGroup?.groupEntries
       ? `${slashListboxId}-group-${activeSlashGroups.length - 1}-option-${Math.min(slashGroupIndex, activeSlashGroup.groupEntries.length - 1)}`
@@ -2724,7 +2784,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
 		!event.repeat &&
 		!appModalOpen && !selectedToolCallRef && !modelOpen && !workspaceMenuOpen &&
-		!slashPaletteVisible && !permissionMenuOpen && !slashGroup) {
+		!commandPaletteVisible && !slashOpen && !permissionMenuOpen && !slashGroup) {
 	  event.preventDefault()
 	  const currentIndex = uamAgentCycle.indexOf(selectedUamAgentId)
 	  void setSessionUamAgent(session.id, uamAgentCycle[currentIndex < 0 ? 0 : (currentIndex + 1) % uamAgentCycle.length])
@@ -2756,11 +2816,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (slashOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(0); return }
         setSlashIndex((i) => (i + 1) % slashMatches.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        if (mentionListUntouched) { setMentionNavigated(true); setSlashIndex(slashMatches.length - 1); return }
         setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
         return
       }
@@ -2772,13 +2834,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           return
         }
       }
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // In the @ list, Enter still sends unless the user arrowed to an option. Tab accepts the chosen option, or the
+      // first available one before arrowing; Shift+Tab and Tab on an unavailable option keep their normal focus move.
+      if (mentionQuery !== undefined && event.key === 'Tab') {
+        const option = mentionListUntouched ? slashMatches.find((command) => !command.disabled) : slashMatches[Math.min(slashIndex, slashMatches.length - 1)]
+        if (!event.shiftKey && option && !option.disabled) {
+          event.preventDefault()
+          runSlashCommand(option)
+          return
+        }
+      } else if (event.key === 'Tab' || (event.key === 'Enter' && !mentionListUntouched)) {
         event.preventDefault()
         runSlashCommand(slashMatches[Math.min(slashIndex, slashMatches.length - 1)])
         return
       }
       if (event.key === 'Escape') {
         event.preventDefault()
+        // Escape closes the @ palette and leaves the typed text as it is.
+        if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`)
         if (activeSlashToken) setDraft(replaceSlashAction(draft, activeSlashToken, '', slashSubPalette))
         setPermissionMenuOpen(false)
         return
@@ -2814,172 +2887,73 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       }
     : undefined, [canShowPlanActions, planActionsDisabled, planActionsDisabledTitle, providerSupported, sendPlanAction])
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
-    const prompt = claudePlanPrompt?.trim()
-    if (!prompt) {
-      setClaudePlanPrompt(null)
+    const submission = claudePlanPrompt
+    if (!submission || claudePlanResolvingRef.current === submission) return
+    const submittedSessionId = submission.context.chatId
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submission.context.birth
+    const refuseStaleSubmission = () => {
+      if (mountedRef.current) setClaudePlanPrompt((current) => current === submission ? null : current)
+      if (ownsFeedback()) setSlashMessage(UNSENT_PROMPT_MESSAGE)
+    }
+    if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+      refuseStaleSubmission()
       return
     }
-
-    const submittedSessionId = session.id
-    const submittedDraft = draft
+    claudePlanResolvingRef.current = submission
+    submitInFlightRef.current = true
     setSubmitting(true)
-    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
-    if (!modeOk) {
-      setSlashMessage('Failed to change provider mode.')
-      setSubmitting(false)
-      return
-    }
-    const permissionResult = nextModeId === 'acceptEdits'
-      ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(session.id, 'acceptEdits'))
-      : { ok: true }
-    if (!permissionResult.ok) {
-      if (!permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
-      setSubmitting(false)
-      return
-    }
-    const readyAttachments = composerAttachments
-      .filter((attachment) => attachment.status === 'ready')
-      .map(({ status, error, ...attachment }) => attachment)
-    const ok = readyAttachments.length > 0
-      ? await sendSubmittedPrompt(session.id, prompt, readyAttachments)
-      : await sendSubmittedPrompt(session.id, prompt)
-    const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
-    if (ok && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
-      acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: submittedDraft, attachments: readyAttachments })
-    }
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
-      setDraft((current) => current === submittedDraft ? '' : current)
+    try {
+      const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
+      if (!modeOk) { if (ownsFeedback()) setSlashMessage('Failed to change provider mode.'); return }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const permissionResult = nextModeId === 'acceptEdits'
+        ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
+        : { ok: true }
+      if (!permissionResult.ok) {
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
+        return
+      }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const readyAttachments = submission.attachments
+      const ok = await sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined)
+      const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
+      if (ok && acknowledgedSession?.createdAt.getTime() === submission.context.birth) {
+        acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
+      }
+      if (!ownsFeedback()) return
+      if (!ok) { setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.'); return }
+      setDraft((current) => current === submission.draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
       setClaudePlanPrompt(null)
+    } catch {
+      if (ownsFeedback()) setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.')
+    } finally {
+      if (claudePlanResolvingRef.current === submission) {
+        if (ownsFeedback()) { submitInFlightRef.current = false; setSubmitting(false) }
+        claudePlanResolvingRef.current = null
+      }
     }
-    setSubmitting(false)
   }
 
-  return (
-    <FileInspectionProvider chatId={session.id}>
-    <div className="relative h-full flex overflow-hidden"
-      onPointerDownCapture={() => {
-        const revision = session.attentionRevision
-        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
-      }}
-      onKeyDownCapture={() => {
-        const revision = session.attentionRevision
-        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
-      }}
-      style={{ background: 'var(--bg)' }}>
-      {providerHandoffTarget && (
-        <ProviderHandoffDialog
-          sourceName={currentProviderName}
-          targetName={providerHandoffTargetName}
-          blockedReason={providerHandoffBlockedReason}
-          onCancel={() => setProviderHandoffTargetId('')}
-          onConfirm={async () => {
-            const changed = await setSessionProvider(session.id, providerHandoffTarget.id)
-            if (!changed) return false
-            if (currentSessionIdRef.current !== session.id) return false
-            if (providerHandoffModelId !== null && !await setSessionModel(session.id, providerHandoffModelId)) return false
-            setProviderHandoffTargetId('')
-            setProviderHandoffModelId(null)
-            return true
-          }}
-        />
-      )}
-      {selectedToolCall && (
-        <ToolCallModal
-          tool={selectedToolCall}
-          chatId={session.id}
-          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) + historyStartIndex : undefined}
-          onClose={() => setSelectedToolCallRef(null)}
-          onOpenSubAgent={selectedToolCall.isSubAgent && !isManagedSubagentTool(selectedToolCall) ? () => void openSelectedSubAgentSession() : undefined}
-          accentColor={accentColor}
-        />
-      )}
-      {!chatWorking && !historyIncomplete && selectedRepositoryFile && repositoryChanges && (
-        <RepositoryDiffDialog
-          chatId={session.id}
-          file={selectedRepositoryFile}
-          vcsType={repositoryChanges.activeVcsType}
-          comparisonRef={repositoryComparisonRef}
-          getDiff={getVcsFileDiff}
-          onClose={() => setSelectedRepositoryFile(null)}
-        />
-      )}
-      <div className="relative flex-1 flex flex-col min-w-0"
-        style={showComposer ? undefined : { '--composer-dock-h': '0px' } as React.CSSProperties}>
-        {showSubagentLineage && subagentParent && <nav aria-label="Subagent lineage" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
-          <button type="button" className="uam-btn uam-btn--ghost uam-btn--sm" onClick={() => showChatInPane(subagentParent.id)}>
-            <CornerUpLeft size={14} aria-hidden /><span>Subagent of {subagentParent.name}</span>
-          </button>
-        </nav>}
-        <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
-          <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
-            <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
-              {chatHistoryError && (
-                <Notice
-                  key={`chat-history:${session.id}:${chatHistoryError}`}
-                  tone="error"
-                  title="Chat history unavailable"
-                  dismissLabel="Dismiss chat history error"
-                  actions={(
-                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
-                      Retry
-                    </Button>
-                  )}
-                >
-                  {chatHistoryError}
-                </Notice>
-              )}
-              <InlineSubagentProvider key={session.id} sourceChatId={session.id} onOpenManagedRun={runId => {
-                const parent = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
-                if (parent) {
-                  useAppStore.getState().setActiveSession(parent.id)
-                  openSubagentView(parent, { kind: 'managed', runId })
-                }
-              }}>
-              <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
-              <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
-              {historyLoading && <div role="status" className="conversation-empty">
-                <div className="conversation-skeleton" aria-hidden>
-                  <span className="conversation-skeleton__bubble" />
-                  <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
-                  </div>
-                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
-                  <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
-                  </div>
-                </div>
-                <span>Loading chat history…</span>
-              </div>}
-              {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
-                <div className="flex justify-center">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    loading={olderHistoryLoading}
-                    onClick={() => {
-                      if (earliestRenderedMessageIndex > 0) {
-                        setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
-                      } else if (!olderHistoryLoading) {
-                        setOlderHistoryLoading(true)
-                        void loadOlderSessionMessages(session.id).then((loaded) => {
-                          if (loaded) setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
-                        }).finally(() => {
-                          setOlderHistoryLoading(false)
-                        })
-                      }
-                    }}
-                  >
-                    Show earlier messages
-                  </Button>
-                </div>
-              )}
-              {(() => {
+  // Draft keystrokes re-render ChatView; the transcript only depends on conversation state, so keep its rows.
+  // Unsent actions run at click time and read the latest render through this ref.
+  const unsentActionsRef = useRef({ removeUnsent, retryUnsent, retryUnsentReceipt })
+  useLayoutEffect(() => { unsentActionsRef.current = { removeUnsent, retryUnsent, retryUnsentReceipt } })
+  // Today/Yesterday dividers read the clock, so a new local day rebuilds the rows on the next render.
+  const transcriptDay = new Date().toDateString()
+  // Turn times format in local time, so a timezone change also rebuilds the rows.
+  const transcriptTimezoneOffset = new Date().getTimezoneOffset()
+  // formatWorkedDuration rounds to whole seconds, so rounding here keeps the label identical.
+  const turnWorkedDisplaySeconds = turnWorkedSeconds === undefined ? undefined : Math.round(turnWorkedSeconds)
+  const transcriptRows = useMemo(() => {
                 // One keyed list: messages, unmaterialized receipts and display-only attempts share the same row shape,
                 // so an attempt's alias key keeps the same outer row and article from click through ACK and native push.
                 const outgoingSlot = (key: string, message: Message, delivery: ConversationDelivery, actions?: ReactNode, receiptId?: string) => (
@@ -3063,9 +3037,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 return (
                   <WorkSectionContext.Provider key={outgoingAlias?.key ?? message.id} value={sectionControl}>
                   <div className="space-y-1" data-message-index={index + historyStartIndex} data-unsent-message-index={unsentByLoadedIndex.has(index) ? index + historyStartIndex : undefined} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
-                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
+                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt, new Date(transcriptDay))}</span></div>}
                     {turnStart && <TurnStartTime
                       timestamp={turnStart.createdAt.getTime()}
+                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
                       identity={turnIdentity}
                       showIdentity={showTurnIdentity}
                     />}
@@ -3101,7 +3076,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
                           workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
+                          workedSeconds={turnWorkedDisplaySeconds}
                         />
                       </MessageFrame>
                     ) : (
@@ -3115,14 +3090,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
                         deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
                           onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
-                          onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => retryUnsent(index + historyStartIndex) : undefined}
-                          onRemove={() => removeUnsent(index + historyStartIndex)}
+                          onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
+                          onRemove={() => unsentActionsRef.current.removeUnsent(index + historyStartIndex)}
                           editDisabled={unsentActionsDisabled} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
                           : nativeDirectReceipt && !nativeDirectReceipt.sending && !isCompanionContext() ? <OutgoingRecoveryActions
                             retryUnavailable={!receiptRetryAvailable(nativeDirectReceipt.prompt)}
-                            onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
+                            onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => unsentActionsRef.current.retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
                             retryDisabled={unsentReceiptDeleteDisabled}
-                            onRemove={() => removeUnsent(-1, { id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! })}
+                            onRemove={() => unsentActionsRef.current.removeUnsent(-1, { id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! })}
                             removeDisabled={unsentReceiptDeleteDisabled} /> : undefined}
                         disclosureState={disclosureState}
                         index={index + historyStartIndex}
@@ -3175,7 +3150,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
                           workingMode={workingDisplayMode}
-                          workedSeconds={turnWorkedSeconds}
+                          workedSeconds={turnWorkedDisplaySeconds}
                         />
                       </MessageFrame>
                       </div>
@@ -3197,9 +3172,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     prompt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY,
                     !prompt.sending && prompt.receipt && !isCompanionContext() ? <OutgoingRecoveryActions
                       retryUnavailable={!nativeReceipt || !receiptRetryAvailable(nativeReceipt)}
-                      onRetry={nativeReceipt && receiptRetryAvailable(nativeReceipt) ? () => retryUnsentReceipt(prompt.receipt!) : undefined}
+                      onRetry={nativeReceipt && receiptRetryAvailable(nativeReceipt) ? () => unsentActionsRef.current.retryUnsentReceipt(prompt.receipt!) : undefined}
                       retryDisabled={unsentReceiptDeleteDisabled}
-                      onRemove={() => removeUnsent(prompt.messageIndex, prompt.receipt)} removeDisabled={unsentReceiptDeleteDisabled} /> : undefined,
+                      onRemove={() => unsentActionsRef.current.removeUnsent(prompt.messageIndex, prompt.receipt)} removeDisabled={unsentReceiptDeleteDisabled} /> : undefined,
                     prompt.receipt?.id) }
                 }), ...outgoingPresentation.tail.map((attempt) => ({ attempt,
                   node: outgoingSlot(attempt.key, outgoingMessage(attempt.key, attempt.text, attempt.attachments, attempt.createdAt),
@@ -3237,7 +3212,132 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
                 return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
-              })()}
+  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+
+  return (
+    <FileInspectionProvider chatId={session.id}>
+    <div className="relative h-full flex overflow-hidden"
+      onPointerDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      onKeyDownCapture={() => {
+        const revision = session.attentionRevision
+        if (revision) void useAppStore.getState().acknowledgeChatAttention(session.id, revision)
+      }}
+      style={{ background: 'var(--bg)' }}>
+      {providerHandoffTarget && (
+        <ProviderHandoffDialog
+          sourceName={currentProviderName}
+          targetName={providerHandoffTargetName}
+          blockedReason={providerHandoffBlockedReason}
+          onCancel={() => setProviderHandoffTargetId('')}
+          onConfirm={async () => {
+            const changed = await setSessionProvider(session.id, providerHandoffTarget.id)
+            if (!changed) return false
+            if (currentSessionIdRef.current !== session.id) return false
+            if (providerHandoffModelId !== null && !await setSessionModel(session.id, providerHandoffModelId)) return false
+            setProviderHandoffTargetId('')
+            setProviderHandoffModelId(null)
+            return true
+          }}
+        />
+      )}
+      {selectedToolCall && (
+        <ToolCallModal
+          tool={selectedToolCall}
+          chatId={session.id}
+          messageIndex={selectedToolCallRef?.messageId ? messages.findIndex((message) => message.id === selectedToolCallRef.messageId) + historyStartIndex : undefined}
+          onClose={() => setSelectedToolCallRef(null)}
+          onOpenSubAgent={selectedToolCall.isSubAgent && !isManagedSubagentTool(selectedToolCall) ? () => void openSelectedSubAgentSession() : undefined}
+          accentColor={accentColor}
+        />
+      )}
+      {!chatWorking && !historyIncomplete && selectedRepositoryFile && repositoryChanges && (
+        <RepositoryDiffDialog
+          chatId={session.id}
+          file={selectedRepositoryFile}
+          vcsType={repositoryChanges.activeVcsType}
+          comparisonRef={repositoryComparisonRef}
+          getDiff={getVcsFileDiff}
+          onClose={() => setSelectedRepositoryFile(null)}
+        />
+      )}
+      <div className="relative flex-1 flex flex-col min-w-0"
+        style={showComposer ? undefined : { '--composer-dock-h': '0px' } as React.CSSProperties}>
+        {showSubagentLineage && subagentParent && <nav aria-label="Subagent lineage" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
+          <button type="button" className="uam-btn uam-btn--ghost uam-btn--sm" onClick={() => showChatInPane(subagentParent.id)}>
+            <CornerUpLeft size={14} aria-hidden /><span>Subagent of {subagentParent.name}</span>
+          </button>
+        </nav>}
+        <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
+          <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
+            <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
+              {chatHistoryError && (
+                <Notice
+                  key={`chat-history:${session.id}:${historyRefreshFailed ? 'refresh' : 'load'}:${chatHistoryError}`}
+                  tone="error"
+                  title={historyRefreshFailed ? 'History refresh failed' : 'Chat history unavailable'}
+                  dismissLabel="Dismiss chat history error"
+                  actions={(
+                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                      {historyRefreshFailed ? 'Reload history' : 'Retry'}
+                    </Button>
+                  )}
+                >
+                  {chatHistoryError}
+                </Notice>
+              )}
+              <InlineSubagentProvider key={session.id} sourceChatId={session.id} onOpenManagedRun={runId => {
+                const parent = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
+                if (parent) {
+                  useAppStore.getState().setActiveSession(parent.id)
+                  openSubagentView(parent, { kind: 'managed', runId })
+                }
+              }}>
+              <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
+              <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
+              {historyLoading && <div role="status" className="conversation-empty">
+                <div className="conversation-skeleton" aria-hidden>
+                  <span className="conversation-skeleton__bubble" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
+                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
+                </div>
+                <span>Loading chat history…</span>
+              </div>}
+              {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
+                <div className="flex justify-center">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={olderHistoryLoading}
+                    onClick={() => {
+                      if (earliestRenderedMessageIndex > 0) {
+                        setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                      } else if (!olderHistoryLoading) {
+                        setOlderHistoryLoading(true)
+                        void loadOlderSessionMessages(session.id).then((loaded) => {
+                          if (loaded) setRenderedMessageCount((current) => current + RENDERED_MESSAGE_BATCH_SIZE)
+                        }).finally(() => {
+                          setOlderHistoryLoading(false)
+                        })
+                      }
+                    }}
+                  >
+                    Show earlier messages
+                  </Button>
+                </div>
+              )}
+              {transcriptRows}
               {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
@@ -3416,7 +3516,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   </>
                 )}
               >
-                YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.
+                {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
               </Notice>
             )}
             {rollbackConfirmation && (
@@ -3477,7 +3577,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </span>
               </div>
             )}
-            {claudePlanPrompt !== null && (
+            {CLAUDE_ENABLED && claudePlanPrompt !== null && (
               <Notice
                 tone="warning"
                 title="Claude Plan mode"
@@ -3513,10 +3613,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 )}
               >
                 Claude Plan mode is read-only. Choose how to proceed with this prompt.
+                {claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
               </Notice>
             )}
             {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title="Command" dismissLabel="Dismiss command feedback" onDismiss={() => setSlashMessage('')}>
+              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashMessage('')}>
                 {slashMessage}
               </Notice>
             )}
@@ -3629,10 +3730,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   )}
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {composerBranch && (branchSwitching
-                    ? <ChatBranchPicker chatId={session.id} branch={composerBranch} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>)}
+                  <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
+                  {composerBranch && (canSwitchComposerBranch
+                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                      </span>
+                    </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>
@@ -3687,6 +3792,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
             >
+            {editingMessageIndex === null && <ComposerReferenceChips key={`${session.id}:${session.createdAt.getTime()}`} references={composerReferences} />}
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
@@ -3725,15 +3831,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   className="overflow-hidden rounded-lg animate-fade-in"
                   style={{ width: composerTextareaRef.current?.getBoundingClientRect().width ?? 320, border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
                   role="listbox"
-                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : variantQuery !== undefined ? 'OpenCode variants' : 'Slash commands'}
+                  aria-label={permissionModeQuery !== undefined ? 'Permission modes' : codexOptionKind === 'reasoning' ? 'Reasoning options' : codexOptionKind === 'speed' ? 'Speed options' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context references' : 'Slash commands'}
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--text-3)', borderBottom: '1px solid var(--border)' }}>
-                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
-                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : variantQuery !== undefined ? 'OpenCode variants' : 'Commands'}
+                    {permissionModeQuery !== undefined ? <Shield size={12} aria-hidden /> : codexOptionKind !== undefined || variantQuery !== undefined ? <Cpu size={12} aria-hidden /> : mentionQuery !== undefined ? <AtSign size={12} aria-hidden /> : <BookOpen size={12} aria-hidden />}
+                    {permissionModeQuery !== undefined ? 'Permission mode' : codexOptionKind === 'reasoning' ? 'Reasoning' : codexOptionKind === 'speed' ? 'Speed' : OPENCODE_ENABLED && variantQuery !== undefined ? 'OpenCode variants' : mentionQuery !== undefined ? 'Context' : 'Commands'}
                   </div>
                   <div className="overflow-y-auto" style={{ maxHeight: 360 }}>
                   {slashMatches.map((command, index) => {
-                    const active = index === Math.min(slashIndex, slashMatches.length - 1)
+                    const active = index === activeSlashIndex
                     return (
                       <button
                         key={command.id}
@@ -3741,6 +3847,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         type="button"
                         role="option"
                         aria-selected={active}
+                        aria-disabled={command.disabled || undefined}
                         aria-haspopup={command.groupEntries ? 'menu' : undefined}
                         aria-expanded={command.groupEntries ? slashGroup === command.id.slice('md-group:'.length) : undefined}
                         ref={(element) => {
@@ -3752,11 +3859,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         }}
                         onMouseDown={(e) => { e.preventDefault(); runSlashCommand(command) }}
                         className={`uam-menu-select__option flex w-full items-start gap-2.5 px-3 py-2 text-left${active ? ' is-selected' : ''}`}
-                        style={{ color: active ? 'var(--text)' : 'var(--text-2)' }}
+                        style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--text)' : 'var(--text-2)', cursor: command.disabled ? 'not-allowed' : undefined }}
                       >
-                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
+                        <span aria-hidden className="mt-0.5 shrink-0" style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text-2)' }}>{command.icon}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
+                          <span className={permissionModeQuery === undefined && codexOptionKind === undefined && variantQuery === undefined ? 'block font-mono text-sm' : 'block text-sm'} style={{ color: command.disabled ? 'var(--text-3)' : active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[command.id.slice('md-group:'.length)] = element }} data-slash-group-anchor=""><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>
                           <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span>
                         </span>
                       </button>
@@ -3778,16 +3885,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 })}
               </ViewportMenu>
             })}
-            <div className="flex items-center gap-2 py-1 text-xs">
-              <Button size="sm" variant="ghost" disabled={!voice.available || dictationActive} aria-pressed={voice.active} onClick={voice.toggle}>{voice.active ? 'Stop voice mode' : 'Start voice mode'}</Button>
-              <Button size="sm" variant="ghost" disabled={!voice.available || dictationActive || (!voice.speaking && !messages.some(message => message.role === 'assistant' && !message.isStreaming && message.content.trim()))} onClick={() => {
-                if (voice.speaking) voice.stop()
-                else voice.read([...messages].reverse().find(message => message.role === 'assistant' && !message.isStreaming && message.content.trim())?.content || '')
-              }}>{voice.speaking ? 'Stop speaking' : 'Read response'}</Button>
-              {voice.status && <span role="status">{voice.status}</span>}
-              {voice.error && <span role="alert" style={{ color: 'var(--red)' }}>{voice.error}</span>}
-              {isCompanionContext() && <span>Use your keyboard microphone for dictation.</span>}
-            </div>
             {(dictationActive || dictationError) && (
               <div
                 id={`dictation-status-${session.id}`}
@@ -3836,14 +3933,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 setPermissionMenuOpen(false)
               }}
               onSelect={(event) => {
-                if (draft.includes('/')) {
+                if (draft.includes('/') || draft.includes('@')) {
                   setComposerSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })
                 }
               }}
               onKeyDown={onComposerKeyDown}
+              // Leaving the input closes the @ list for this word instead of leaving it drawn over the chips.
+              onBlur={() => { if (activeMentionToken) setDismissedMention(`${activeMentionToken.start}:${activeMentionToken.query}`) }}
               onPaste={editingMessageIndex === null ? onComposerPaste : undefined}
               rows={1}
-              placeholder={`Message ${currentProviderName} · / for commands`}
+              placeholder={`Message ${currentProviderName} · / for commands · @ for context${isCompanionContext() ? ' · keyboard mic for dictation' : ''}`}
               disabled={dictationActive || session.importedReadOnly || branchingMessageIndex !== null}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
@@ -3956,7 +4055,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               dictationState={dictationState}
               dictationError={dictationError}
               dictationElapsedSeconds={dictationElapsedSeconds}
-              dictationAvailable={dictationAvailable && !voice.active && !voice.speaking}
+              dictationAvailable={dictationAvailable}
               onToggleDictation={() => {
                 if (dictationActiveRef.current) void stopDictation()
                 else void startDictation()

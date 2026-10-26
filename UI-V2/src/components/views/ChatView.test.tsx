@@ -1,12 +1,12 @@
 import { clearSubagentView, subagentRouteFor } from '../../utils/subagentNavigation'
 import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
-import { captureContextReference } from '../../utils/contextReferences'
+import { captureContextReference, formatContextReferences } from '../../utils/contextReferences'
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, projectUnsentPrompts, reviewAssistantLabel } from './ChatView'
-import { useAppStore } from '../../store/useAppStore'
+import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
 import type { CppChat } from '../../store/cpp/types'
@@ -69,6 +69,41 @@ function enableSupportedManualCompactionFixture() {
 }
 
 describe('ChatView', () => {
+  it.each([
+    { name: 'clean remote refusal', refresh: true, guidance: 'The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.' },
+    { name: 'unconfirmed remote save', refresh: true, guidance: 'UAM could not confirm that the refreshed history was saved. Reopen the chat before retrying.' },
+    { name: 'ordinary saved read with identical text', refresh: false, guidance: 'The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.' },
+  ])('labels the saved-history recovery action from request context: $name', async ({ refresh, guidance }) => {
+    const previousLoad = useAppStore.getState().loadSessionMessages
+    const loadSessionMessages = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({
+      messages: { 'chat-1': [{ id: 'retained', role: 'user', content: 'Retained authored history', createdAt: new Date() }] },
+      chatHistoryErrorBySessionId: { 'chat-1': guidance },
+      chatHistoryErrorWasRefreshBySessionId: { 'chat-1': refresh },
+      statusLine: 'Earlier retained warning',
+      loadSessionMessages,
+    })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const notice = host.querySelector<HTMLElement>('.uam-notice')!
+      expect(notice.getAttribute('role')).toBe('alert')
+      expect(notice.textContent).toContain(refresh ? 'History refresh failed' : 'Chat history unavailable')
+      expect(notice.textContent).toContain(guidance)
+      const actionLabel = refresh ? 'Reload history' : 'Retry'
+      const action = Array.from(notice.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
+      expect(action).toBeTruthy()
+      expect(host.textContent).toContain('Retained authored history')
+      await act(async () => action.click())
+      expect(loadSessionMessages).toHaveBeenCalledExactlyOnceWith('chat-1', true)
+      expect(useAppStore.getState().statusLine).toBe('Earlier retained warning')
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {}, chatHistoryErrorWasRefreshBySessionId: {} })
+    }
+  })
+
   it('shows loading for missing history, preserves the draft and distinguishes empty history from failure', async () => {
     const previousLoad = useAppStore.getState().loadSessionMessages
     const loadSessionMessages = vi.fn().mockResolvedValue(false)
@@ -527,6 +562,7 @@ describe('ChatView', () => {
         ],
       },
       chatHistoryErrorBySessionId: {},
+      chatHistoryErrorWasRefreshBySessionId: {},
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
         { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' },
@@ -595,6 +631,7 @@ describe('ChatView', () => {
       },
       cliBindingBySessionId: {},
       getVcsCommitStatus: vi.fn(() => Promise.resolve(null)),
+      branchSwitching: undefined,
     })
   })
 
@@ -978,6 +1015,18 @@ describe('ChatView', () => {
     act(() => textarea.dispatchEvent(exactShortcut))
     expect(exactShortcut.defaultPrevented).toBe(true)
     expect(setSessionUamAgent).toHaveBeenCalledWith('chat-1', 'reviewer')
+
+    // A prose @mention at the caret must not disable the agent shortcut.
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'thanks @claude')
+      textarea.setSelectionRange(14, 14)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const mentionShortcut = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => textarea.dispatchEvent(mentionShortcut))
+    expect(mentionShortcut.defaultPrevented).toBe(true)
+    expect(setSessionUamAgent).toHaveBeenCalledTimes(2)
+    expect(textarea.value).toBe('thanks @claude')
 
     act(() => root.unmount())
     host.remove()
@@ -1943,7 +1992,7 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-workspace-row')).toBeNull()
     expect(host.querySelector('button[aria-label="Select provider"]')).toBeNull()
     const workspaceTab = host.querySelector('.uam-composer-workspace-tab')
-    expect(workspaceTab?.textContent).toContain('project')
+    expect(workspaceTab?.textContent).toContain('Project')
     expect(workspaceTab?.querySelector('svg')).toBeTruthy()
     expect(workspaceTab?.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
     expect(workspaceTab?.parentElement?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
@@ -3625,7 +3674,7 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Codex')
     expect(host.textContent).not.toContain('App Server')
     expect(host.querySelector('button[aria-label="Select provider and model"]')?.textContent).toContain('Default')
-    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands')
+    expect(host.querySelector('textarea')?.getAttribute('placeholder')).toBe('Message Codex · / for commands · @ for context')
 
     act(() => {
       root.unmount()
@@ -4189,6 +4238,219 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('offers context references from @ in the composer: branch and worktree remove the token, a typed file path keeps its text', async () => {
+    const previousCefQuery = window.cefQuery
+    const requests: { action: string; payload?: Record<string, unknown> }[] = []
+    window.cefQuery = ({ request }) => { requests.push(JSON.parse(request)) }
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace', workspaceIsolationKind: undefined, workspaceWorktreeDirectory: undefined } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      expect(textarea.placeholder).toContain('@ for context')
+      // No reference or voice actions sit above the input.
+      expect(Array.from(host.querySelectorAll('button')).some((button) => /Reference (branch|worktree)|voice mode|Read response/.test(button.textContent ?? ''))).toBe(false)
+      const type = async (value: string) => act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const palette = () => document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Context references"]')
+      const option = (label: string) => Array.from(palette()?.querySelectorAll<HTMLElement>('[role="option"]') ?? []).find((item) => item.textContent?.startsWith(label))
+
+      await type('Check @')
+      expect(textarea.getAttribute('aria-expanded')).toBe('true')
+      // No option is active until the user arrows into the list.
+      expect(textarea.hasAttribute('aria-activedescendant')).toBe(false)
+      expect(palette()?.querySelector('[aria-selected="true"]')).toBeNull()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await Promise.resolve() })
+      expect(palette()).toBeNull()
+      expect(textarea.value).toBe('Check @')
+      // Editing the closed word reopens the list.
+      await type('Check @b')
+      expect(palette()).toBeTruthy()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await Promise.resolve() })
+      await type('Check ')
+      await type('Check @')
+      expect(palette()).toBeTruthy()
+      expect(option('@branch')?.textContent).toContain('does not switch it')
+      expect(option('@worktree')?.textContent).toContain('Needs a configured worktree')
+      expect(option('@worktree')?.getAttribute('aria-disabled')).toBe('true')
+      expect(option('@branch')?.hasAttribute('aria-disabled')).toBe(false)
+      act(() => option('@worktree')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      // Tab on an unavailable option keeps normal focus movement; Shift+Tab never accepts.
+      await type('Check @w')
+      const tabOnUnavailable = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      await act(async () => { textarea.dispatchEvent(tabOnUnavailable); await Promise.resolve() })
+      expect(tabOnUnavailable.defaultPrevented).toBe(false)
+      await type('Check @b')
+      const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+      await act(async () => { textarea.dispatchEvent(shiftTab); await Promise.resolve() })
+      expect(textarea.value).toBe('Check @b')
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+      expect(textarea.getAttribute('aria-activedescendant')).toBe(option('@branch')?.id)
+
+      // Keyboard: Tab picks the highlighted @branch option (Enter keeps sending until the user arrows through the list).
+      // Moving the caret off the @ word closes the list, so Enter/Tab cannot act on text the caret has left.
+      await type('Check @br')
+      await act(async () => { textarea.focus(); textarea.setSelectionRange(0, 0); textarea.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); textarea.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); await Promise.resolve() })
+      expect(palette()).toBeNull()
+      await type('Check @b now')
+      // Caret inside the word, with text after it, so a lost caret restore would leave it at the end.
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Check @br now')
+        textarea.setSelectionRange(9, 9)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      expect(option('@worktree')).toBeUndefined()
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })); await Promise.resolve() })
+      expect(requests.find((request) => request.action === 'captureChatReferenceContext')?.payload).toEqual({ chatId: 'chat-1', kind: 'branch' })
+      expect(textarea.value).toBe('Check now')
+      // The real caret returns to where the @ word was.
+      await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => resolve(null))) })
+      expect(textarea.selectionStart).toBe(6)
+      expect(palette()).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.cefQuery = previousCefQuery
+    }
+  })
+
+  it('tells companion users about the keyboard microphone in the placeholder and the mic tooltip', () => {
+    const previousPath = window.location.pathname
+    const previousDiscovery = useAppStore.getState().discoverProviderModels
+    useAppStore.setState({ discoverProviderModels: vi.fn(async () => true) })
+    window.history.replaceState(null, '', '/companion')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect((host.querySelector('textarea') as HTMLTextAreaElement).placeholder.endsWith('· keyboard mic for dictation')).toBe(true)
+      expect(host.querySelector('button[data-dictation-state="idle"]')?.getAttribute('title')).toContain('or use your keyboard microphone')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.history.replaceState(null, '', previousPath)
+      useAppStore.setState({ discoverProviderModels: previousDiscovery })
+    }
+  })
+
+  it('still sends with Enter on a prose @mention and only picks an @ option after arrowing to it', async () => {
+    const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+    const previousCefQuery = window.cefQuery
+    const requests: { action: string }[] = []
+    window.cefQuery = ({ request }) => { requests.push(JSON.parse(request)) }
+    useAppStore.setState({ sendAcpPrompt })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      const type = async (value: string) => act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const options = () => Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).map((option) => option.textContent ?? '')
+      // A prose handle is not offered as a file.
+      await type('thanks @claude')
+      expect(options()).toEqual([])
+      await type('meet @b')
+      expect(options().some((label) => label.startsWith('@branch'))).toBe(true)
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+      expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'meet @b', [], undefined, expect.any(Function))
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(false)
+      await type('Check @')
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await Promise.resolve() })
+      expect(requests.some((request) => request.action === 'captureChatReferenceContext')).toBe(true)
+      expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.cefQuery = previousCefQuery
+    }
+  })
+
+  it('offers a quoted @"path with spaces" as a file reference', async () => {
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace' } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      const value = 'Read @"release notes/draft one.md"'
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length - 4, value.length - 4)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const file = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).find((item) => item.textContent?.startsWith('@"release notes/draft one.md"'))!
+      await act(async () => { file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await Promise.resolve() })
+      expect(getWorkspaceFilePreview).toHaveBeenCalledWith('chat-1', 'release notes/draft one.md')
+      expect(textarea.value).toBe(value)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('offers a typed @file path as a reference and keeps the mention in the message', async () => {
+    const getWorkspaceFilePreview = vi.fn(() => new Promise<never>(() => {}))
+    useAppStore.setState((state) => ({ getWorkspaceFilePreview, sessions: state.sessions.map((chat, index) => index === 0 ? { ...chat, workspaceDirectory: '/workspace' } : chat) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'Summarise @docs/readme.md')
+        textarea.setSelectionRange(25, 25)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const file = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label="Context references"] [role="option"]')).find((item) => item.textContent?.startsWith('@docs/readme.md'))!
+      expect(file.textContent).toContain('current text')
+      await act(async () => { file.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await Promise.resolve() })
+      expect(getWorkspaceFilePreview).toHaveBeenCalledWith('chat-1', 'docs/readme.md')
+      expect(textarea.value).toBe('Summarise @docs/readme.md')
+      expect(host.querySelector('[data-reference-status]')?.textContent).toContain('Reading docs/readme.md')
+      expect(document.body.querySelector('[aria-label="Context references"]')).toBeNull()
+      // A path after four prose handles is still offered, and leaving the input closes the list.
+      await act(async () => {
+        const value = 'cc @alice @bob @carol @dave review @src/app.ts'
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+        textarea.setSelectionRange(value.length, value.length)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        await Promise.resolve()
+      })
+      const offered = Array.from(document.body.querySelectorAll('[aria-label="Context references"] [role="option"]')).map((item) => item.textContent ?? '')
+      expect(offered).toHaveLength(1)
+      expect(offered[0].startsWith('@src/app.ts')).toBe(true)
+      await act(async () => { textarea.dispatchEvent(new FocusEvent('blur')); textarea.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); await Promise.resolve() })
+      expect(document.body.querySelector('[aria-label="Context references"]')).toBeNull()
+      expect(textarea.getAttribute('aria-expanded')).toBe('false')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('closes the slash palette at once when /compact is chosen, with no success notice', async () => {
@@ -6230,7 +6492,7 @@ describe('ChatView', () => {
       branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '',
     }))
     useAppStore.setState((state) => ({
-      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceBranchName: '' } : session),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'gitWorktree', workspaceBranchName: '' } : session),
       getVcsCommitStatus,
       branchSwitching: false,
     }))
@@ -6238,10 +6500,10 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
-    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')).toBeNull()
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
     expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
     await act(async () => { useAppStore.setState({ branchSwitching: true }) })
-    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')?.textContent).toContain('feature/composer')
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')?.textContent).toContain('feature/composer')
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ branchSwitching: undefined })
@@ -6265,6 +6527,98 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('shows the source workspace name before the branch while preserving the worktree path', async () => {
+    const directory = '/tmp/worktrees/chat-random'
+    useAppStore.setState((state) => ({
+      folders: state.folders.map((folder) => ({ ...folder, name: 'Original project' })),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: directory, workspaceSourceDirectory: '/tmp/project', workspaceIsolationKind: 'gitWorktree' } : session),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: directory, branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const tab = host.querySelector('.uam-composer-workspace-tab')!
+      expect(tab.textContent).toContain('Original projectfeature/composer')
+      expect(tab.textContent).not.toContain('chat-random')
+      expect(tab.querySelector('[title="/tmp/worktrees/chat-random"]')).toBeTruthy()
+      expect(useAppStore.getState().sessions[0].workspaceDirectory).toBe(directory)
+      act(() => useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, name: 'Renamed project' })) })))
+      expect(tab.textContent).toContain('Renamed projectfeature/composer')
+      expect(useAppStore.getState().sessions[0].workspaceDirectory).toBe(directory)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { label: 'plain workspace', workspaceIsolationKind: '', executionHostId: 'local', temporaryParentChatId: undefined },
+    { label: 'remote worktree', workspaceIsolationKind: 'gitWorktree', executionHostId: 'remote', temporaryParentChatId: undefined },
+    { label: 'side chat', workspaceIsolationKind: 'gitWorktree', executionHostId: 'local', temporaryParentChatId: 'parent' },
+  ])('keeps the branch read-only for a $label despite the global capability', async (context) => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, ...context, workspaceBranchName: 'feature/composer' } : session),
+      branchSwitching: true,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
+      expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('displays an SVN revision without offering Git selection or a stale saved branch', async () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceIsolationKind: 'gitWorktree', workspaceBranchName: 'old-git-branch' } : session),
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['svn'], activeVcsType: 'svn', workspaceDirectory: '/tmp/project', branchOrRevision: '42', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const tab = host.querySelector('.uam-composer-workspace-tab')!
+      expect(tab.querySelector('button[aria-haspopup="dialog"]')).toBeNull()
+      expect(tab.querySelector('[aria-label="SVN revision 42"]')?.textContent).toBe('SVN r42')
+      expect(tab.textContent).not.toContain('old-git-branch')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('offers SVN folder selection for an editable plain local working copy', async () => {
+    useAppStore.setState({
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['svn'], activeVcsType: 'svn', workspaceDirectory: '/tmp/project', branchOrRevision: '42', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const trigger = host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')
+      expect(trigger?.getAttribute('aria-label')).toBe('Switch SVN folder, current revision 42')
+      expect(trigger?.textContent).toBe('SVN r42')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('clears a stale saved branch when the current workspace has no repository', async () => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceIsolationKind: 'gitWorktree', workspaceBranchName: 'old-git-branch' } : session),
+      branchSwitching: true,
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: false, vcsTypes: [], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).not.toContain('old-git-branch')
+      expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="dialog"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('selects the per-chat memory level from options and /memory', async () => {
@@ -8770,82 +9124,6 @@ describe('ChatView', () => {
     }
   })
 
-  it('keeps voice mode through the first provider startup, reads the first response, and stops on runtime shutdown', async () => {
-    const requests: { action: string; payload?: { dictationId?: string; speechId?: string; text?: string } }[] = []
-    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
-    window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request); requests.push(parsed)
-      if (parsed.action === 'startDictation') onSuccess(JSON.stringify({ started: true }))
-      else if (parsed.action === 'stopDictation') {
-        onSuccess(JSON.stringify({ stopped: true }))
-        window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', dictationId: parsed.payload.dictationId, event: 'end' } }))
-      } else onSuccess(JSON.stringify({ started: true, stopped: true, speechId: parsed.payload?.speechId }))
-    }
-    const session = useAppStore.getState().sessions[0]
-    const binding = { ...useAppStore.getState().acpBindingBySessionId[session.id], sessionId: '', running: false, lifecycleState: 'stopped' as const, processing: false, pendingPermission: null, turnEvents: [], lastError: '' }
-    useAppStore.setState({ sendAcpPrompt, acpBindingBySessionId: { [session.id]: binding }, cliBindingBySessionId: {}, messages: { [session.id]: [] } })
-    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<ChatView session={session}/>))
-    const voiceButton = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Stop voice mode')
-    await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!.click())
-    const dictationId = requests.find(request => request.action === 'startDictation')?.payload?.dictationId
-    const say = async (text: string) => { await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', event: 'final', dictationId, text } })) }) }
-    await say('First prompt'); await say('send message')
-    expect(sendAcpPrompt).toHaveBeenCalledWith(session.id, 'First prompt', [], undefined, expect.any(Function))
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, running: true, lifecycleState: 'starting' } } }))
-    expect(voiceButton()).toBeTruthy()
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', running: true, lifecycleState: 'processing', processing: true } } }))
-    expect(voiceButton()).toBeTruthy()
-    await act(async () => useAppStore.setState({
-      acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', running: true, lifecycleState: 'ready' } },
-      messages: { [session.id]: [{ id: 'first-response', sessionId: session.id, role: 'assistant', content: 'First response', createdAt: new Date() }] },
-    }))
-    expect(requests.find(request => request.action === 'startSpeechOutput')?.payload?.text).toBe('First response')
-    await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, sessionId: 'first-native-session', lifecycleState: 'stopped' } } }))
-    expect(voiceButton()).toBeFalsy()
-    expect(requests.some(request => request.action === 'stopSpeechOutput')).toBe(true)
-    for (const lifecycleState of ['error', 'stopped'] as const) {
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: binding } }))
-      await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!.click())
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, lifecycleState: 'starting' } } }))
-      expect(voiceButton()).toBeTruthy()
-      const stopsBeforeFailure = requests.filter(request => request.action === 'stopDictation').length
-      await act(async () => useAppStore.setState({ acpBindingBySessionId: { [session.id]: { ...binding, lifecycleState, lastError: lifecycleState === 'error' ? 'Provider startup failed' : '' } } }))
-      expect(voiceButton()).toBeFalsy()
-      expect(requests.filter(request => request.action === 'stopDictation')).toHaveLength(stopsBeforeFailure + 1)
-    }
-    act(() => root.unmount()); host.remove(); delete window.cefQuery
-  })
-
-  it('connects voice commands to the selected chat draft and existing send/navigation actions', async () => {
-    const requests: { action: string; payload?: { dictationId?: string } }[] = []
-    const originalSelection = useAppStore.getState().setActiveSession
-    const setActiveSession = vi.fn((id: string | null) => useAppStore.setState({ activeSessionId: id }))
-    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
-    window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request); requests.push(parsed)
-      onSuccess(JSON.stringify(parsed.action === 'startDictation' ? { started: true } : { stopped: true }))
-    }
-    const session = useAppStore.getState().sessions[0]
-    useAppStore.setState({ sendAcpPrompt, setActiveSession, sessions: [session, { ...session, id: 'imported', importedReadOnly: true }, { ...session, id: 'chat-hidden', parentChatId: session.id }, { ...session, id: 'chat-2', name: 'Second chat' }] })
-    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<ChatView session={session}/>))
-    const button = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Start voice mode')!
-    expect(button.disabled).toBe(false)
-    await act(async () => button.click())
-    const dictationId = requests.find(request => request.action === 'startDictation')?.payload?.dictationId
-    const say = async (text: string) => { await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', event: 'final', dictationId, text } })) }) }
-    await say('Voice draft')
-    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Voice draft')
-    await say('send message')
-    expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Voice draft', [], undefined, expect.any(Function))
-    await say('next chat')
-    expect(setActiveSession).toHaveBeenCalledWith('chat-2')
-    expect(useAppStore.getState().activeSessionId).toBe('chat-2')
-    expect(requests.some(request => request.action === 'stopDictation' && request.payload?.dictationId === dictationId)).toBe(true)
-    act(() => root.unmount()); host.remove(); delete window.cefQuery; useAppStore.setState({ setActiveSession: originalSelection })
-  })
-
   it('keeps stopped dictation as a draft and only submits when Send stops it', async () => {
     const requests: Array<{ action: string; payload?: { locale?: string; dictationId?: string } }> = []
     const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
@@ -9546,40 +9824,75 @@ describe('ChatView', () => {
       const occurrences = () => (host.querySelector('.uam-message-list')?.textContent?.split(outgoing.content).length ?? 1) - 1
       const cleanup = () => { act(() => root.unmount()); host.remove(); delete window.cefQuery; useAppStore.setState({ sendAcpPrompt: previousSend }) }
       return { host, pending, sends, inputIdentity, sideEffects, occurrences, cleanup, remount,
+        renderCurrentSession: () => act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)),
         send: () => act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click()) }
     }
 
-    it.each(['goal', 'claude-plan'] as const)('sends exact direct %s input and attachments without borrowing composer quoted references', async route => {
+    // David's 2026-10-23 task-1217 decision supersedes the prior goal/Claude exclusion assertion.
+    // Generated plan action exclusion remains covered separately below.
+    // Contract: docs/documentation-review.md#referenced-context-action-sends.
+    it.each(['goal', 'claude-plan', 'claude-proceed', 'claude-review'] as const)('sends the frozen composer references with user-authored %s input and preserves later selections', async route => {
       const previous = useAppStore.getState()
       const exactPrompt = 'Exact direct request, including  internal spacing.'
       const attachment = { id: 'direct-file', name: 'direct.txt', type: 'file', size: 4, path: '/private-fixture/direct.txt' }
-      const reference = captureContextReference({ id: 'unrelated-composer-reference', kind: 'message', sourceChatId: 'unrelated-chat', sourceMessageIndex: 7,
-        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Unrelated composer quote', text: 'THIS COMPOSER QUOTE MUST NOT ENTER A DIRECT INPUT' })!
-      const createGoal = vi.fn(async () => ({ ok: true, goalId: 'direct-goal-fixture' }))
+      const reference = captureContextReference({ id: 'selected-composer-reference', kind: 'message', sourceChatId: 'source-chat', sourceMessageIndex: 7,
+        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Selected composer quote', text: 'Selected context for the original authored request' })!
+      const later = { ...reference, id: 'later-composer-reference', text: 'NEWER CONTEXT MUST WAIT FOR THE NEXT MESSAGE' }
+      let finishGoal!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finishGoal = () => resolve({ ok: true, goalId: 'direct-goal-fixture' }) }))
+      let finishMode!: () => void
+      const changeMode = vi.fn(() => new Promise<boolean>((resolve) => { finishMode = () => resolve(true) }))
+      const changeSafety = vi.fn(async () => true)
+      const duringMode = { ...reference, id: 'mode-wait-reference', text: 'ADDED DURING THE MODE WAIT' }
+      let remaining = [later]
       const draftText = route === 'goal' ? `/goal ${exactPrompt}` : exactPrompt
       const f = mount({ text: draftText, attachments: [attachment], references: [reference] }, () => {
         useAppStore.setState({ setGoal: createGoal })
-        if (route === 'claude-plan') useAppStore.setState(state => ({
+        if (route !== 'goal') useAppStore.setState(state => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
           sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
           acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
             acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
         }))
       })
       try {
-        if (route === 'claude-plan') expect(useAppStore.getState().providers.find(provider => provider.id === 'claude-cli')).toMatchObject({
+        if (route !== 'goal') expect(useAppStore.getState().providers.find(provider => provider.id === 'claude-cli')).toMatchObject({
           supportsStructured: true, structuredProtocol: 'claude-code-stream-json',
         })
         await f.send()
-        if (route === 'claude-plan') {
+        expect(f.sends()).toHaveLength(0)
+        const newerDraft = 'A different request for the next message'
+        act(() => {
+          const textarea = f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, newerDraft)
+          textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), text: newerDraft, references: [reference, later] }))
+        // R1 P2-1: a branch/base label refresh must not discard this already frozen authored input.
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, workspaceBranchName: 'refreshed-label', workspaceBaseRef: 'refreshed-base' } : session) })))
+        if (route !== 'goal') {
           expect(f.sends()).toHaveLength(0)
-          const keepPlanning = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Keep planning')
-          expect(keepPlanning).toBeTruthy()
-          await act(async () => keepPlanning!.click())
-        } else expect(createGoal).toHaveBeenCalledWith('chat-1', exactPrompt, expect.any(Number), 'uam')
+          const label = route === 'claude-plan' ? 'Keep planning' : route === 'claude-proceed' ? 'Accept edits and proceed' : 'Review each edit'
+          const choice = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
+          expect(choice).toBeTruthy()
+          await act(async () => choice!.click())
+          if (route !== 'claude-plan') {
+            expect(f.sends()).toHaveLength(0)
+            act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), references: [reference, later, duringMode] }))
+            remaining = [later, duringMode]
+            await act(async () => finishMode())
+            expect(changeMode).toHaveBeenCalledWith('chat-1', 'default')
+          }
+          expect(changeSafety).toHaveBeenCalledTimes(route === 'claude-proceed' ? 1 : 0)
+        } else {
+          expect(createGoal).toHaveBeenCalledWith('chat-1', exactPrompt, expect.any(Number), 'uam')
+          await act(async () => finishGoal())
+        }
         expect(f.sends()).toHaveLength(1)
-        expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [attachment], steerNow: false })
-        expect(f.sends()[0].payload.text).not.toContain('Referenced context')
-        expect(f.sends()[0].payload.text).not.toContain(reference.text)
+        expect(f.sends()[0].payload).toMatchObject({ text: `${exactPrompt}\n\n${formatContextReferences([reference])}`, attachments: [attachment], steerNow: false })
+        expect(f.sends()[0].payload.text).not.toContain(later.text)
+        expect(f.sends()[0].payload.text).not.toContain(duringMode.text)
         const row = f.host.querySelector('[data-outgoing-message]')!
         const article = row.querySelector('article')!
         expect(row.textContent).toContain(exactPrompt)
@@ -9589,18 +9902,278 @@ describe('ChatView', () => {
         expect(row.querySelector('article')).toBe(article)
         expect(article.getAttribute('data-delivery')).toBe('sending')
         expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
-        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
-        expect(readChatComposerDraft('chat-1').references).toEqual([reference])
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(newerDraft)
+        expect(readChatComposerDraft('chat-1').text).toBe(newerDraft)
+        expect(readChatComposerDraft('chat-1').references).toEqual(remaining)
         expect(f.sends()).toHaveLength(1)
         expect(f.sideEffects()).toEqual([])
       } finally {
         await act(async () => f.pending[0]?.ack())
         f.cleanup()
-        useAppStore.setState({ setGoal: previous.setGoal })
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
       }
     })
 
-    it('sends the exact Codex Deny plan action without borrowing or consuming the independent composer draft', async () => {
+    it.each((['goal', 'claude-proceed', 'claude-permission'] as const).flatMap((route) => (['birth', 'host', 'workspace', 'provider', 'fallback-workspace'] as const).map((change) => ({ route, change }))))('refuses $route first-send after target $change changes without consuming its draft or snapshots', async ({ route, change }) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'stale-target-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Selected source context' })!
+      const prompt = route === 'goal' ? '/goal Preserve this original input' : 'Preserve this original input'
+      let finish!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finish = () => resolve({ ok: true, goalId: 'stale-target-goal' }) }))
+      const changeMode = vi.fn(() => route === 'claude-permission' ? Promise.resolve(true)
+        : new Promise<boolean>((resolve) => { finish = () => resolve(true) }))
+      const changeSafety = vi.fn(() => route === 'claude-permission'
+        ? new Promise<boolean>((resolve) => { finish = () => resolve(true) }) : Promise.resolve(true))
+      const f = mount({ text: prompt, attachments: [], references: [reference] }, () => {
+        useAppStore.setState({ setGoal: createGoal })
+        if (change === 'fallback-workspace') useAppStore.setState((state) => ({
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, executionHostId: 'local', folderId: 'fallback-folder', workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '', workspaceDirectory: '/workspace' } : session),
+          folders: [{ id: 'fallback-folder', name: 'Fallback', parentId: null, directory: '/unused-folder', executionHostId: 'local', isExpanded: true, createdAt: new Date() }],
+        }))
+        if (route !== 'goal') useAppStore.setState((state) => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+            acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+        }))
+      })
+      try {
+        await f.send()
+        if (route !== 'goal') await act(async () => Array.from(f.host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        expect(finish).toBeTypeOf('function')
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id !== 'chat-1' ? session : { ...session,
+          ...(change === 'birth' ? { createdAt: new Date(session.createdAt.getTime() + 1000) } : {}),
+          ...(change === 'host' ? { executionHostId: 'different-host' } : {}),
+          ...(change === 'provider' ? { providerId: 'opencode-cli' } : {}),
+          ...(change === 'workspace' || change === 'fallback-workspace' ? { workspaceDirectory: '/different-workspace' } : {}),
+        }) })))
+        await act(async () => finish())
+        expect(f.sends()).toHaveLength(0)
+        expect(changeSafety).toHaveBeenCalledTimes(route === 'claude-permission' ? 1 : 0)
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: prompt, attachments: [], references: [reference] })
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(prompt)
+        if (route !== 'goal') {
+          expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
+          if (change !== 'birth') {
+            const refusal = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
+              notice.textContent?.includes("so this prompt wasn't sent. Review the selected references, then send again."))
+            expect(refusal).toBeTruthy()
+            expect(refusal!.textContent).toContain('Message not sent')
+            // A prevented send asks for recovery; it must not use the green completion treatment.
+            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+          }
+        }
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it('keeps the replacement warning when the abandoned send is accepted late', async () => {
+      const reference = captureContextReference({ id: 'late-accept-reference', kind: 'branch', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T12:00:00Z', executionHostId: 'local', workspaceDirectory: '/workspace',
+        branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured branch', text: 'Original ordinary context' })!
+      const f = mount({ text: 'Late accepted draft', attachments: [], references: [reference] })
+      try {
+        await f.send()
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        f.renderCurrentSession()
+        await act(async () => f.pending[0].ack())
+        const notice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((item) => item.textContent?.includes('Check the earlier input before sending again.'))
+        expect(notice).toBeTruthy()
+        expect(notice!.textContent).toContain('Check earlier message')
+        expect(notice!.textContent).not.toContain('Message not sent')
+      } finally {
+        await act(async () => { for (const request of f.pending) request.ack() })
+        f.cleanup()
+      }
+    })
+
+    it.each([true, false])('keeps the replacement draft and newer ordinary send busy after an abandoned bridge send settles (accepted=%s)', async (accepted) => {
+      const attachment = { id: 'matching-recreated-attachment', name: 'retained.txt', type: 'file' as const, size: 4, path: '/fixture/retained.txt' }
+      const reference = captureContextReference({ id: 'original-ordinary-reference', kind: 'branch', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T12:00:00Z', executionHostId: 'local', workspaceDirectory: '/workspace',
+        branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured branch', text: 'Original ordinary context' })!
+      const text = 'Identical draft after recreation'
+      const f = mount({ text, attachments: [attachment], references: [reference] })
+      try {
+        await f.send()
+        expect(f.sends()).toHaveLength(1)
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        f.renderCurrentSession()
+        const replacementNotice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) => notice.textContent?.includes('Check the earlier input before sending again.'))
+        expect(replacementNotice).toBeTruthy()
+        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
+        act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
+        await f.send()
+        expect(f.sends()).toHaveLength(2)
+        expect(f.sends()[1].payload).toMatchObject({ text: text + '\n\n' + formatContextReferences([fresh]), attachments: [attachment] })
+        await act(async () => accepted ? f.pending[0].ack() : f.pending[0].reject('Abandoned synthetic send refused'))
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(text)
+        expect(f.host.querySelector('[aria-label="Remove retained.txt attachment"]')).toBeTruthy()
+        expect(readChatComposerDraft('chat-1')).toEqual({ text, attachments: [attachment], references: [fresh] })
+        expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.disabled).toBe(true)
+        act(() => f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+        expect(f.sends()).toHaveLength(2)
+        await act(async () => f.pending[1].ack())
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        await act(async () => { for (const request of f.pending) request.ack() })
+        f.cleanup()
+      }
+    })
+
+    it.each(['goal', 'claude-proceed', 'claude-permission'] as const)('recovers the composer after a same-id birth change during %s without releasing a newer send', async (route) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'recreated-chat-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Saved before recreation', text: 'Original captured context' })!
+      const original = { text: route === 'goal' ? '/goal Original held input' : 'Original held input', attachments: [], references: [reference] }
+      let finish!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finish = () => resolve({ ok: true, goalId: 'held-goal' }) }))
+      const changeMode = vi.fn(() => route === 'claude-permission' ? Promise.resolve(true)
+        : new Promise<boolean>((resolve) => { finish = () => resolve(true) }))
+      const changeSafety = vi.fn(() => route === 'claude-permission'
+        ? new Promise<boolean>((resolve) => { finish = () => resolve(true) }) : Promise.resolve(true))
+      const f = mount(original, () => {
+        useAppStore.setState({ setGoal: createGoal })
+        if (route !== 'goal') useAppStore.setState((state) => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+            acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+        }))
+      })
+      try {
+        await f.send()
+        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        const finishOriginal = finish
+        expect(finishOriginal).toBeTypeOf('function')
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        // MainPanel updates this prop without remounting when only the birth changes.
+        f.renderCurrentSession()
+        expect(f.sends()).toHaveLength(0)
+        expect(readChatComposerDraft('chat-1')).toEqual(original)
+        expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
+        const send = () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!
+        expect(send().disabled).toBe(false)
+
+        const freshPrompt = 'Fresh input after recreation'
+        const fresh = { ...reference, id: 'new-birth-reference', sourceChatCreatedAt: useAppStore.getState().sessions[0].createdAt.toISOString(), text: 'New birth context' }
+        const freshDraft = route === 'goal' ? `/goal ${freshPrompt}` : freshPrompt
+        act(() => {
+          const textarea = f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, freshDraft)
+          textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        act(() => writeChatComposerDraft('chat-1', { text: freshDraft, attachments: [], references: [fresh] }))
+        createGoal.mockResolvedValueOnce({ ok: true, goalId: 'new-birth-goal' })
+        await f.send()
+        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload.text).toBe(freshPrompt + '\n\n' + formatContextReferences([fresh]))
+        expect(send().disabled).toBe(true)
+        // The abandoned request may settle after a new send has acquired the busy state.
+        await act(async () => finishOriginal())
+        expect(f.sends()).toHaveLength(1)
+        expect(send().disabled).toBe(true)
+        expect(f.host.textContent).not.toContain('Goal was created, but the first prompt failed to send.')
+        await act(async () => f.pending[0].ack())
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it.each(['Keep planning', 'Review each edit', 'Accept edits and proceed'] as const)('warns after unconfirmed Claude Plan %s delivery without consuming its draft or snapshots', async (choice) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'unconfirmed-plan-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Original selected source context' })!
+      const draft = { text: 'Send this selected context', attachments: [], references: [reference] }
+      const f = mount(draft, () => useAppStore.setState((state) => ({
+        setSessionApprovalMode: vi.fn(async () => true), setSessionCommandSafetyTier: vi.fn(async () => true),
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+          acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+      })))
+      try {
+        await f.send()
+        await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
+        await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
+        const recovery = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
+          notice.textContent?.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        expect(recovery).toBeTruthy()
+        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(readChatComposerDraft('chat-1')).toEqual(draft)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it.each((['file', 'branch', 'worktree'] as const).flatMap((kind) => [true, false].map((accepted) => ({ kind, accepted }))))('sends captured $kind context and clears only its acknowledged snapshot (accepted=$accepted)', async ({ kind, accepted }) => {
+      const snapshot = captureContextReference({ kind, id: 'source-send-snapshot', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z', sourcePath: '/workspace/src/main.ts',
+        branchName: 'feature/context', worktreeDirectory: '/workspace', executionHostId: 'local', workspaceDirectory: '/workspace', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured source', text: 'The captured source text.' })!
+      const newer = { ...snapshot, id: 'newer-file-snapshot', text: 'A later snapshot for the next message.' }
+      const f = mount({ text: 'Read @src/main.ts', attachments: [], references: [snapshot] })
+      let settled = false
+      try {
+        expect(f.host.querySelector('.uam-context-chip')?.textContent).toContain('Captured source')
+        await f.send()
+        const submitted = String(f.sends()[0].payload.text)
+        expect(submitted.startsWith('Read @src/main.ts\n\nReferenced context (quoted snapshot):\n')).toBe(true)
+        const delivered = JSON.parse(submitted.split('Referenced context (quoted snapshot):\n')[1])
+        expect(delivered).toEqual(snapshot)
+        expect(delivered).not.toHaveProperty('inputWriteCompleted')
+        act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), references: [snapshot, newer] }))
+        await act(async () => accepted ? f.pending[0].ack() : f.pending[0].reject('Fixture refusal'))
+        settled = true
+        expect(readChatComposerDraft('chat-1').references).toEqual(accepted ? [newer] : [snapshot, newer])
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        if (!settled) await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+      }
+    })
+
+    it.each(['changed-snapshot', 'recreated-chat'] as const)('does not clear a newer reference after ordinary Send acknowledgement: %s', async (change) => {
+      const snapshot = captureContextReference({ kind: 'branch', id: 'ack-owned-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Captured context' })!
+      const newer = change === 'changed-snapshot' ? { ...snapshot, text: 'Newer context using the same saved ID' } : snapshot
+      const f = mount({ text: 'Read captured context', attachments: [], references: [snapshot] })
+      let settled = false
+      try {
+        await f.send()
+        act(() => {
+          if (change === 'recreated-chat') useAppStore.setState((state) => ({ sessions: state.sessions.map((chat) => chat.id === 'chat-1' ? { ...chat, createdAt: new Date(chat.createdAt.getTime() + 1000) } : chat) }))
+          writeChatComposerDraft('chat-1', { text: 'New draft', attachments: [], references: [newer] })
+        })
+        await act(async () => f.pending[0].ack())
+        settled = true
+        expect(readChatComposerDraft('chat-1').references).toEqual([newer])
+        expect(f.sends()).toHaveLength(1)
+      } finally {
+        if (!settled) await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+      }
+    })
+
+    it.each([
+      { action: 'Approve', mode: 'default', exactPrompt: 'Proceed with the plan.' },
+      { action: 'Deny', mode: 'plan', exactPrompt: 'Do not proceed with this plan. Please revise it before making changes.' },
+    ])('sends the exact Codex $action plan action without borrowing or consuming the independent composer draft', async ({ action, mode, exactPrompt }) => {
       const previous = useAppStore.getState()
       const draftText = 'Independent composer request stays here'
       const attachment = { id: 'independent-plan-file', name: 'independent.txt', type: 'file', size: 4, path: '/private-fixture/independent.txt' }
@@ -9608,7 +10181,6 @@ describe('ChatView', () => {
         executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Independent plan quote', text: 'THIS QUOTE IS NOT PART OF THE CODEX DENY ACTION' })!
       const independentDraft = { text: draftText, attachments: [attachment], references: [reference] }
       const setMode = vi.fn(async () => true)
-      const exactPrompt = 'Do not proceed with this plan. Please revise it before making changes.'
       const f = mount(independentDraft, () => useAppStore.setState(state => ({
         setSessionApprovalMode: setMode, markdownStoreAttachedBySessionId: { 'chat-1': [] },
         sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'plan' } : session),
@@ -9618,12 +10190,12 @@ describe('ChatView', () => {
       })))
       try {
         expect(useAppStore.getState().providers.find(provider => provider.id === 'codex-cli')).toMatchObject({ supportsStructured: true, structuredProtocol: 'codex-app-server' })
-        const deny = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Deny')
-        expect(deny).toBeTruthy()
+        const actionButton = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === action)
+        expect(actionButton).toBeTruthy()
         expect(f.sends()).toHaveLength(0)
-        await act(async () => deny!.click())
+        await act(async () => actionButton!.click())
         expect(setMode).toHaveBeenCalledTimes(1)
-        expect(setMode).toHaveBeenCalledWith('chat-1', 'plan')
+        expect(setMode).toHaveBeenCalledWith('chat-1', mode)
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [], markdownStoreFiles: [], steerNow: false })
         expect(f.sends()[0].payload.text).not.toContain(draftText)

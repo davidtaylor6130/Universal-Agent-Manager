@@ -82,3 +82,8 @@ __pycache__/
 /docs/reference/consolidation/
 /docs/reference/v5-*-20??????.md
 /docs/reference/v5-*-20??????.json
+
+# Generated performance fixtures and Xcode per-user state
+perf_test_data/
+xcuserdata/
+DerivedData/

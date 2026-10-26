@@ -3077,6 +3077,157 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Recovered prompt'])
   })
 
+  it.each([
+    [409, 'The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.'],
+    [500, 'UAM could not confirm that the refreshed history was saved. Reopen the chat before retrying.'],
+  ] as const)('retains loaded history and prior warnings for remote refresh outcome %s', async (status, guidance) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.statusLine = 'Earlier retained warning'
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].executionHostId = 'isolated-remote'
+    initial.chats[0].messagesDigest = 'saved-history'
+    initial.chats[0].messages = [{ role: 'user', content: 'Retained authored history', createdAt: initial.chats[0].createdAt }]
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') onFailure(status, guidance)
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const retained = store.getState().messages['chat-1']
+    expect(await store.getState().loadSessionMessages('chat-1', true, true)).toBe(false)
+    expect(store.getState().messages['chat-1']).toBe(retained)
+    expect(store.getState().chatHistoryErrorBySessionId['chat-1']).toBe(guidance)
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBe(true)
+    expect(store.getState().statusLine).toBe('Earlier retained warning')
+    expect(requests.filter(item => item.action === 'getChatMessages')).toHaveLength(1)
+    expect(requests.at(-1)?.payload?.refreshNative).toBe(true)
+    expect(requests.some(item => ['sendAcpPrompt', 'startCli', 'retryFailedMessage'].includes(item.action))).toBe(false)
+  })
+
+  it.each(['unchanged saved reload', 'saved page reload', 'unload', 'delete'])('clears native refresh error context after %s', async (recovery) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'user', content: 'Retained authored history', createdAt: initial.chats[0].createdAt }]
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        if (parsed.payload?.refreshNative) onFailure(500, 'Reopen the chat before retrying.')
+        else onSuccess(JSON.stringify({ chatId: 'chat-1', startIndex: 0, totalCount: 1, messagesDigest: 'saved-history',
+          ...(recovery === 'unchanged saved reload' ? { unchanged: true } : { messages: initial.chats[0].messages }) }))
+      } else onSuccess('{}')
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.getState().loadSessionMessages('chat-1', true, true)
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBe(true)
+    if (recovery === 'unload') store.getState().unloadSessionMessages('chat-1')
+    else if (recovery === 'delete') {
+      const { deleteSessionsFromState } = await import('./slices/sessionsSlice')
+      store.setState(state => deleteSessionsFromState(state, new Set(['chat-1'])))
+    } else await store.getState().loadSessionMessages('chat-1', true)
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBeUndefined()
+    expect(store.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+    expect(requests.filter(item => item.payload?.refreshNative)).toHaveLength(1)
+    expect(requests.some(item => ['sendAcpPrompt', 'startCli', 'retryFailedMessage'].includes(item.action))).toBe(false)
+  })
+
+  it('clears refresh failure context when cancelling a pending search recovers the latest saved page', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'user', content: 'Retained authored history', createdAt: initial.chats[0].createdAt }]
+    initial.statusLine = 'Earlier retained warning'
+    let finishSearch: ((value: string) => void) | undefined
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const saved = { chatId: 'chat-1', startIndex: 0, totalCount: 1, messagesDigest: 'saved-history', messages: initial.chats[0].messages }
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        if (parsed.payload?.refreshNative) onFailure(500, 'Reopen the chat before retrying.')
+        else if (parsed.payload?.expectedMessagesDigest) finishSearch = onSuccess
+        else onSuccess(JSON.stringify(saved))
+      } else onSuccess('{}')
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.getState().loadSessionMessages('chat-1', true, true)
+    const pending = store.getState().jumpToChatSearchHit({ chatId: 'chat-1', messageIndex: 0, messagesDigest: 'saved-history', field: 'content', excerpt: 'Retained' }, 'pending-search')
+    expect(store.getState().chatSearchNavigation?.phase).toBe('loading')
+    expect(finishSearch).toBeTypeOf('function')
+    await store.getState().clearChatSearchNavigation()
+    expect(store.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBeUndefined()
+    expect(store.getState().messages['chat-1'].map(message => message.content)).toEqual(['Retained authored history'])
+    expect(store.getState().statusLine).toBe('Earlier retained warning')
+    finishSearch!(JSON.stringify(saved))
+    await expect(pending).resolves.toBe(false)
+    expect(requests.filter(item => item.payload?.refreshNative)).toHaveLength(1)
+    expect(requests.some(item => ['sendAcpPrompt', 'startCli', 'retryFailedMessage'].includes(item.action))).toBe(false)
+  })
+
+  it('keeps ordinary history failure context distinct even when the diagnostic text is identical', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'user', content: 'Retained authored history', createdAt: initial.chats[0].createdAt }]
+    testWindow.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') onFailure(409, 'Identical diagnostic text')
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.getState().loadSessionMessages('chat-1', true, true)
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBe(true)
+    await store.getState().loadSessionMessages('chat-1', true)
+    expect(store.getState().chatHistoryErrorBySessionId['chat-1']).toBe('Identical diagnostic text')
+    expect(store.getState().chatHistoryErrorWasRefreshBySessionId['chat-1']).toBe(false)
+  })
+
+  it('retains the native committed-save warning while adopting remote refreshed history', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'user', content: 'Retained authored history', createdAt: initial.chats[0].createdAt }]
+    const warning = 'History and attached files were kept, but UAM could not confirm the final save. Reopen the chat to check it.'
+    const requests: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed.action)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, statusLine: warning } })
+        onSuccess(JSON.stringify({ chatId: 'chat-1', startIndex: 0, totalCount: 2, messagesDigest: 'committed-remote', warning,
+          messages: [...initial.chats[0].messages!, { role: 'assistant', content: 'Committed native answer', createdAt: '2026-01-01T00:00:02.000Z' }] }))
+      }
+    }
+    const { useAppStore: store } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.getState().loadSessionMessages('chat-1', true, true)
+    expect(store.getState().messages['chat-1'].map(message => message.content)).toEqual(['Retained authored history', 'Committed native answer'])
+    expect(store.getState().statusLine).toBe(warning)
+    expect(store.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+    expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
+  })
+
   it.each(['newer messages', 'unloaded chat'])('keeps %s when native refresh resolves late', async (change) => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -6264,12 +6415,30 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().fileExplorerApplication).toBe(previous)
   })
 
+  it('saves and rolls back the Windows PowerShell choice', async () => {
+    useAppStore.setState({ windowsPowerShell: 'auto' })
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'PowerShell must be auto, windows-powershell or pwsh.')
+    }
+    await expect(useAppStore.getState().setEditorSettings({
+      defaultEditorPresetId: 'vscode', editorFileAssociations: [], windowsPowerShell: 'pwsh',
+    })).resolves.toBe(false)
+    expect(requests[0].payload.windowsPowerShell).toBe('pwsh')
+    expect(useAppStore.getState().windowsPowerShell).toBe('auto')
+  })
+
   it('hydrates central resources and restores them after a rejected save', async () => {
     const configuration = {
       enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],
       skillDirectories: ['/skills'], defaultAgentId: 'plan', uamControlEnabled: true,
       defaultSkills: ['review'], defaultAgents: ['build'],
-      mcpOverrides: [{ providerId: 'codex-cli', executionHostId: 'local', serverId: 'uam-mcp', enabled: false }],
+      mcpOverrides: [
+        { providerId: 'codex-cli', executionHostId: 'local', serverId: 'uam-mcp', enabled: false },
+        { providerId: 'opencode-cli', executionHostId: 'local', serverId: 'opencode-progressive-mcp', enabled: false },
+        { providerId: 'opencode-cli', executionHostId: 'local', serverId: 'opencode-progressive-mcp', enabled: true, kind: 'preference' as const },
+      ],
     }
     const state = makeCppState(1)
     state.settings.centralProviderConfiguration = configuration
@@ -6393,6 +6562,28 @@ describe('useAppStore Gemini CLI slice', () => {
     })
     expect(useAppStore.getState().showProviderIconsInSidebar).toBe(true)
     expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
+  })
+
+  it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.settings.computerUseGloballyEnabled = false
+    initial.settings.computerUseRevocationPending = true
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(cefStore.getState()).toMatchObject({ computerUseEnabled: false, computerUseRevocationPending: true })
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(1)
+    testWindow.uamPush!({ type: 'statePatch', data: sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })! })
+    expect(cefStore.getState().computerUseRevocationPending).toBe(true)
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(1)
+    testWindow.uamPush!({ type: 'statePatch', data: sanitizeCppStatePatch({ stateRevision: 3, settings: { computerUseRevocationPending: false } })! })
+    expect(cefStore.getState()).toMatchObject({ computerUseEnabled: false, computerUseRevocationPending: false })
+    expect(cefStore.getState().computerUseSettingsStateRevision).toBe(3)
+    cefStore.getState().loadFromCef(makeCppState(4))
+    expect(cefStore.getState().computerUseRevocationPending).toBeUndefined()
   })
 
   it('hydrates persisted VCS switches and enables them for older settings files', () => {

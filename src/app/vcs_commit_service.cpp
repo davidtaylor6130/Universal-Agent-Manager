@@ -127,11 +127,7 @@ namespace uam
 				}
 				m_client = std::make_unique<uam::remote::RunnerClient>(
 				    PlatformServicesFactory::Instance().process_service,
-				    uam::remote::SshBridgeArgv(m_host->ssh_alias, m_host->platform,
-				                               m_host->runner_version,
-				                               m_host->runner_directory,
-				                               m_host->runner_protocol_version),
-				    m_host->runner_version, m_host->runner_protocol_version);
+				    *m_host);
 			}
 
 			const std::string& WorkspaceDirectory() const { return m_workspace; }

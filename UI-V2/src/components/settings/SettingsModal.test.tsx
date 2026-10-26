@@ -50,6 +50,9 @@ describe('SettingsModal memory settings', () => {
       favoriteUamAgentIds: ['writer', 'reviewer'],
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
+      computerUseEnabled: undefined,
+      computerUseRevocationPending: undefined,
+      computerUseSettingsError: '',
       computerUseAllowedApplications: [],
       uamAgentsBySessionId: {
         'chat-1': [
@@ -2473,6 +2476,38 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it.each(['Computer Use', 'MCP Servers'])('retries global cleanup from %s without changing OS permissions or target ownership', async page => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'setComputerUseSettings'
+        ? { computerUseGloballyEnabled: parsed.payload.computerUseGloballyEnabled, computerUseRevocationPending: false }
+        : {}))
+    }
+    useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: true })
+    const { host, root } = renderModal()
+    try {
+      await act(async () => host.querySelector<HTMLButtonElement>(`nav button[aria-label="${page}"]`)!.click())
+      const toggle = () => host.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')!
+      expect(toggle().checked).toBe(false)
+      expect(toggle().disabled).toBe(true)
+      expect(host.textContent).toContain('Cleanup pending.')
+      const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry disabling')!
+      await act(async () => retry.click())
+      expect(host.textContent).toContain('Off. UAM grants cleared.')
+      expect(toggle().disabled).toBe(false)
+      await act(async () => toggle().click())
+      expect(toggle().checked).toBe(true)
+      expect(requests.filter(request => request.action === 'setComputerUseSettings')).toEqual([
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false }, requestId: expect.any(String) },
+        { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: true }, requestId: expect.any(String) },
+      ])
+      expect(requests.some(request => /ComputerUsePermission|ComputerUseSystemSettings|ChatComputerUse/.test(request.action))).toBe(false)
+      expect(useAppStore.getState().sessions[0].computerUseTargetId).toBeUndefined()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('checks Computer Use readiness honestly and persists friendly application selections', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }: { request: string; onSuccess: (value: string) => void }) => {
@@ -2495,6 +2530,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer Use"]')!.click())
+    expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
     expect(uamControlToggle?.disabled).toBe(false)
@@ -2534,6 +2570,27 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
     expect(host.textContent).toContain('File explorer could not be saved.')
     act(() => root.unmount()); host.remove()
+  })
+
+  it('chooses the Windows PowerShell only on Windows and reports rejected saves', async () => {
+    const platform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    useAppStore.setState({ windowsPowerShell: 'auto', setEditorSettings: vi.fn().mockResolvedValue(false) })
+    const mac = renderModal()
+    openEditorsSection(mac.host)
+    expect(mac.host.querySelector('button[title="Terminal shell"]')).toBeNull()
+    act(() => mac.root.unmount()); mac.host.remove()
+
+    platform.mockReturnValue('Win32')
+    const { host, root } = renderModal()
+    openEditorsSection(host)
+    expect(host.textContent).toContain("Uses Windows PowerShell 5.1, or PowerShell 7 if it's missing.")
+    act(() => host.querySelector<HTMLButtonElement>('button[title="Terminal shell"]')!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).map(button => button.textContent)).toEqual(['Automatic', 'Windows PowerShell 5.1', 'PowerShell 7'])
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent === 'PowerShell 7')!.click())
+    expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ windowsPowerShell: 'pwsh' }))
+    expect(host.textContent).toContain('Terminal shell could not be saved.')
+    act(() => root.unmount()); host.remove()
+    platform.mockRestore()
   })
 
   it('disables unsupported dictation modes and refuses invalid server URLs without saving', async () => {

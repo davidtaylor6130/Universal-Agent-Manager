@@ -2,6 +2,8 @@
 #include <cmath>
 #include <utility>
 #include "common/runtime/acp/claude_quota_continuation.h"
+// Builds without this provider use the inline stubs in the header; test targets may still list this file.
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 
 #include "app/chat_domain_service.h"
 #include "app/execution_routing_integration.h"
@@ -301,6 +303,19 @@ namespace uam::acp_detail
 		    chat.uam_agent_id, chat.last_prompt_agent_definition_hash, chat.goal_command_revision}).dump();
 	}
 
+	bool IsCurrentClaudeQuotaContinuationInput(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const AcpQueuedUserPromptState& input)
+	{
+		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
+		return session.provider_id == "claude-cli" && chat.provider_id == session.provider_id &&
+		    !app.claude_quota_dispatch_id.empty() && app.claude_quota_dispatch_id == owner.id && owner.state == "claimed" &&
+		    owner.chat_id == chat.id && !owner.native_session_id.empty() &&
+		    owner.native_session_id == session.session_id && owner.native_session_id == chat.native_session_id &&
+		    owner.context == ClaudeQuotaContext(app, chat) && input.text == kClaudeQuotaContinuationPrompt &&
+		    input.uam_agent_id == owner.agent_id && input.uam_agent_definition_hash == owner.agent_definition_hash &&
+		    input.uam_agent_workspace_access == owner.agent_workspace_access &&
+		    input.uam_agent_execution_capability == owner.agent_execution_capability;
+	}
+
 	void ObserveClaudeQuota(AcpSessionState& session, const ChatSession& chat, const nlohmann::json& message, int64_t now_epoch_s)
 	{
 		if (!session.processing || session.turn_serial <= 0 || !session.queued_prompt.empty() || AcpSessionHasPendingCancel(session) ||
@@ -527,3 +542,4 @@ namespace uam::acp_detail
 		return changed;
 	}
 }
+#endif // UAM_ENABLE_RUNTIME_CLAUDE_CLI

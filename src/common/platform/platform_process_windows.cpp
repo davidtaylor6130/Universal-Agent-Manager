@@ -1,6 +1,8 @@
+#include "common/platform/data_root_lock.h"
 #include "platform_services_windows_impl_internal.h"
 
 #include <atomic>
+#include "common/platform/powershell_selection.h"
 #include "remote/remote_workspace_terminal.h"
 
 using namespace uam::platform_windows_impl;
@@ -294,6 +296,7 @@ class WindowsProcessService final : public IPlatformProcessService
 	ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 	{
 		ProcessExecutionResult result;
+		RefreshProcessPathFromRegistry();
 		std::vector<wchar_t> environment_block;
 		if (!BuildEnvironmentBlock({}, environment_block, &result.error, true))
 		{
@@ -806,34 +809,7 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 	{
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create data root lock directory: " + ec.message();
-			}
-			return nullptr;
-		}
-
-		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const HANDLE handle = CreateFileW(lock_path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-		if (handle == INVALID_HANDLE_VALUE)
-		{
-			if (error_out != nullptr)
-			{
-				const DWORD error = GetLastError();
-				*error_out = (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? "Another Universal Agent Manager instance is already using this data root." : "Failed to open data root lock file.";
-			}
-			return nullptr;
-		}
-
-		const std::string pid_text = std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + "\n";
-		DWORD written = 0;
-		SetFilePointer(handle, 0, nullptr, FILE_BEGIN);
-		SetEndOfFile(handle);
-		WriteFile(handle, pid_text.data(), static_cast<DWORD>(pid_text.size()), &written, nullptr);
-		return std::make_unique<WindowsDataRootLock>(handle);
+		return uam::platform::AnchoredDataRootLock::TryAcquire(data_root, error_out);
 	}
 
 	uintmax_t NativeGeminiSessionMaxFileBytes() const override
@@ -872,20 +848,25 @@ class WindowsProcessService final : public IPlatformProcessService
 		SetThreadExecutionState(keep_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
 	}
 
-	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out) const override
+	bool LaunchTerminalCommand(const std::vector<std::string>& argv, std::string* error_out, std::string_view powershell_preference) const override
 	{
 		if (argv.empty())
 		{
 			if (error_out != nullptr) *error_out = "The terminal command is empty.";
 			return false;
 		}
+		const std::optional<std::string> windows_powershell = ResolveInstalledPowerShellPath(false);
+		const std::optional<std::string> pwsh = ResolveInstalledPowerShellPath(true);
+		const std::string selected = uam::powershell::Select(powershell_preference, windows_powershell.has_value(), pwsh.has_value(), error_out);
+		if (selected.empty()) return false;
+		const std::wstring executable = WideFromUtf8(selected == "pwsh.exe" ? *pwsh : *windows_powershell);
 		const std::string encoded_arguments = "-NoLogo -NoProfile -NoExit -EncodedCommand " + uam::remote::WindowsTerminalEncodedCommand(argv);
 		const std::wstring arguments(encoded_arguments.begin(), encoded_arguments.end());
 		SHELLEXECUTEINFOW launch{};
 		launch.cbSize = sizeof(launch);
 		launch.fMask = SEE_MASK_NOCLOSEPROCESS;
 		launch.lpVerb = L"open";
-		launch.lpFile = L"powershell.exe";
+		launch.lpFile = executable.c_str();
 		launch.lpParameters = arguments.c_str();
 		launch.nShow = SW_SHOWNORMAL;
 		if (!ShellExecuteExW(&launch))

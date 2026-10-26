@@ -1,4 +1,5 @@
 #include "app/storage_retention_service.h"
+#include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
@@ -27,9 +28,11 @@
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
+#include "common/platform/powershell_selection.h"
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
 #endif
+#include "common/provider/excluded_provider_data.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -107,7 +110,8 @@ namespace
 
 	std::string FallbackCliVersionProviderId(const std::string& active_provider_id)
 	{
-		return uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		const std::string provider_id = uam::provider_ids::NormalizeVersionManagedCliProviderId(active_provider_id);
+		return provider_id == uam::provider_ids::kExcludedCliProviderId ? std::string{} : provider_id; // Antigravity-only builds manage no CLI versions.
 	}
 
 	std::string CliVersionProviderFromPayloadOrSelection(const uam::AppState& app, const nlohmann::json& payload)
@@ -207,7 +211,7 @@ namespace
 	{
 		nlohmann::json bindings = nlohmann::json::object();
 		for (const auto& [id, binding] : value.memory_worker_bindings)
-			bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
+			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
 		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
@@ -378,6 +382,9 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	{
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("permissionReviewerProviderId", ""));
 		candidate.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
+		// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+		candidate.excluded_provider_selections.erase("permission_reviewer_provider_id");
+		m_app.settings.excluded_provider_selections.erase("permission_reviewer_provider_id");
 	}
 	if (payload.contains("permissionReviewerModelId"))
 	{
@@ -549,6 +556,8 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		{
 			if (scope.empty()) m_app.settings.default_new_chat_provider_id = provider->id;
 			else m_app.settings.host_scoped_settings[scope].default_new_chat_provider_id = provider->id;
+			// An explicit choice replaces a remembered excluded provider (see AppSettings::excluded_provider_selections).
+			m_app.settings.excluded_provider_selections.erase(scope.empty() ? std::string("default_new_chat_provider_id") : "host:" + scope);
 		}
 	}
 
@@ -663,6 +672,15 @@ void UamQueryHandler::HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, con
 			return;
 		}
 		m_app.settings.file_explorer_application = application;
+	}
+	if (payload.contains("windowsPowerShell"))
+	{
+		if (!payload["windowsPowerShell"].is_string() || !uam::powershell::IsPreference(payload["windowsPowerShell"].get_ref<const std::string&>()))
+		{
+			cb->Failure(400, "PowerShell must be auto, windows-powershell or pwsh.");
+			return;
+		}
+		m_app.settings.windows_powershell = payload["windowsPowerShell"].get<std::string>();
 	}
 	const std::string default_editor_preset_id = uam::strings::Trim(payload.value("defaultEditorPresetId", m_app.settings.default_editor_preset_id));
 	m_app.settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(default_editor_preset_id);
@@ -807,6 +825,7 @@ void UamQueryHandler::ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser,
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	if (!payload.is_object() || !payload.empty())
@@ -887,6 +906,7 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 	catch (...) {}
 	cb->Success(response.dump());
 }
+#endif
 
 void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -970,6 +990,7 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 #endif
 }
 
+#if UAM_ENABLE_MOBILE_COMPANION
 void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 #if defined(__APPLE__)
@@ -1002,6 +1023,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
 #endif
 }
+#endif
 
 void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1092,6 +1114,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 		return;
 	}
 	const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
+	uam::central_configuration::KeepExcludedProviderOverrides(previous, configuration);
 	m_app.settings.central_provider_configuration = std::move(configuration);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
@@ -1103,6 +1126,7 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
+#if UAM_ENABLE_SSH
 void UamQueryHandler::HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	nlohmann::json confirmed_payload = payload;
@@ -1193,6 +1217,7 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+#endif
 
 void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
@@ -1202,19 +1227,12 @@ void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> br
 		const std::string provider = payload.at("providerId").get<std::string>();
 		const std::string server = payload.at("serverId").get<std::string>();
 		const bool enabled = payload.at("enabled").get<bool>();
-		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr || !uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, provider))
-		{ cb->Failure(404, "Provider or execution host not found."); return; }
-		if (server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(uam::host_scoped_settings::McpServers(m_app.settings, host), [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
-		{ cb->Failure(404, "MCP server is not configured on this host."); return; }
-		const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
-		CentralProviderConfiguration candidate = previous;
-		std::erase_if(candidate.mcp_overrides, [&](const ProviderMcpOverride& item) { return item.provider_id == provider && item.execution_host_id == host && item.server_id == server; });
-		candidate.mcp_overrides.push_back({provider, host, server, enabled});
+		const std::string kind = payload.value("kind", std::string("server"));
+		if (kind != "server" && kind != "preference") { cb->Failure(400, "Unknown provider MCP setting kind."); return; }
 		std::string error;
-		if (!uam::central_configuration::Parse(uam::central_configuration::Serialize(candidate), candidate, error)) { cb->Failure(400, error); return; }
-		m_app.settings.central_provider_configuration = std::move(candidate);
-		if (!PersistenceCoordinator().SaveSettings(m_app))
-		{ m_app.settings.central_provider_configuration = previous; cb->Failure(500, "Could not save provider MCP settings."); return; }
+		const int failure = uam::provider_mcp_settings::SetConfiguration(m_app.settings, host, provider, server, enabled, kind == "preference",
+		    [&]() { return PersistenceCoordinator().SaveSettings(m_app); }, error);
+		if (failure != 0) { cb->Failure(failure, error); return; }
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Success(uam::provider_mcp_settings::Status(m_app, host, "").dump());
 	}
@@ -1240,6 +1258,7 @@ void UamQueryHandler::HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, 
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	(void)browser;
@@ -1280,6 +1299,60 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 	{
 		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
 	}
+}
+#endif
+
+namespace
+{
+	nlohmann::json DataFolderSnapshot(const uam::DataFolderSettingsService::Snapshot& value)
+	{
+		return {{"currentFolder", uam::paths::Utf8PathString(value.current_folder)}, {"pendingFolder", uam::paths::Utf8PathString(value.pending_folder)}, {"revision", value.revision}, {"lastOperationId", value.last_operation_id}, {"transitionState", value.state}, {"externalOverride", value.external_override}, {"canChange", value.can_change}, {"restartReady", value.restart_ready}, {"message", value.message}};
+	}
+} // namespace
+
+void UamQueryHandler::HandleDataFolderSettings(std::string_view action, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	// Called only from trusted-main-frame OnQuery, never from the companion dispatcher.
+	const auto service = m_app.data_folder_settings;
+	if (!service || service->StartupRoot() != m_app.data_root)
+	{
+		cb->Failure(409, "The data-folder owner is unavailable or changed. Restart UAM before changing its profile.");
+		return;
+	}
+	const bool read = action == "getDataFolderSettings";
+	const bool choose = action == "chooseDataFolder";
+	const bool rollback = action == "rollbackDataFolderTransfer";
+	if (rollback && !uam::DataFolderSettingsService::kTransfersValidated)
+	{
+		cb->Failure(409, "Data-folder recovery controls remain disabled pending native transaction validation.");
+		return;
+	}
+	if (!payload.is_object() || (read ? !payload.empty() : payload.size() != (choose ? 3 : 2) || !payload.contains("expectedRevision") || !payload["expectedRevision"].is_string() || payload["expectedRevision"].get_ref<const std::string&>().size() > 300 || !payload.contains("operationId") || !payload["operationId"].is_string() || payload["operationId"].get_ref<const std::string&>().empty() || payload["operationId"].get_ref<const std::string&>().size() > 128 || (choose && (!payload.contains("folder") || !payload["folder"].is_string() || payload["folder"].get_ref<const std::string&>().size() > 32768))))
+	{
+		cb->Failure(400, "Folder changes require the observed revision and an action identity; selection also requires a folder string.");
+		return;
+	}
+	const std::string revision = read ? std::string{} : payload["expectedRevision"].get<std::string>();
+	const std::string folder = choose ? payload["folder"].get<std::string>() : std::string{};
+	const std::string operation_id = read ? std::string{} : payload["operationId"].get<std::string>();
+	// Read mutable runtime state only on the UI thread. Readiness is an observation;
+	// the restart action and final shutdown barrier independently recheck it.
+	const bool runtime_dormant = std::none_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) &&
+	    std::none_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; });
+	(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	                                                 [service, read, choose, rollback, revision, folder, operation_id, runtime_dormant]()
+	                                                 {
+		                                                 const auto snapshot = [runtime_dormant](uam::DataFolderSettingsService::Snapshot value)
+		                                                 {
+			                                                 value.restart_ready = value.restart_ready && runtime_dormant;
+			                                                 return DataFolderSnapshot(value);
+		                                                 };
+		                                                 if (read)
+			                                                 return uam::query_handler_async::AsyncSuccess(snapshot(service->Read()));
+		                                                 const auto result = choose ? service->Choose(uam::paths::PathFromUtf8(folder), revision, operation_id) : rollback ? service->RollbackPendingTransfer(revision) : service->Cancel(revision, operation_id);
+		                                                 // Persistence rejection and uncertainty carry authoritative state, never an empty success body.
+		                                                 return uam::query_handler_async::AsyncSuccess(nlohmann::json{{"committed", result.committed}, {"settings", snapshot(result.settings)}, {"error", result.error}});
+	                                                 });
 }
 
 void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

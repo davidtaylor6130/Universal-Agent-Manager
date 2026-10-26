@@ -1,4 +1,5 @@
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -249,6 +250,25 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "Another goal is already active in this chat.";
 		return false;
 	}
+	std::string resume_error;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat->provider_id);
+	if (!runtime.OnAcpValidateGoalResume(*chat, *goal, app.settings, restart, resume_error))
+	{
+		if (error_out != nullptr)
+		{
+			*error_out = uam::strings::NonEmptyOrFallback(resume_error, "This provider cannot resume this goal.");
+		}
+		return false;
+	}
+	// A metered turn's captured revision owns its usage until retirement. Resetting
+	// the budget during that turn would discard charges from the old revision.
+	const bool current_turn = session && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 || AcpSessionHasPendingCancel(*session) || !session->queued_prompt.empty());
+	if (restart && runtime.AcpAccountsGoalUsage() && (current_turn || AcpStopInProgress(app, chat_id)))
+	{
+		if (error_out)
+			*error_out = "Pause the current turn and wait for it to stop before restarting the goal budget.";
+		return false;
+	}
 	if (!GoalService::IsProviderManaged(*goal) && (session == nullptr || !AcpSessionHasActiveTurn(*session)))
 	{
 		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, *chat);
@@ -321,7 +341,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			return false;
 		}
 		const bool active_turn = AcpSessionHasActiveTurn(*session);
-		chat->goal_pending_continuation_id = active_turn && !(chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal)) ? goal_id : "";
+		chat->goal_pending_continuation_id = active_turn && !(chat->provider_id == uam::provider_ids::kCodexCli && GoalService::IsProviderManaged(*goal)) ? goal_id : "";
 		if (stage == GoalResumeStage::PrepareOnly)
 		{
 			// The poll loop must not execute this continuation before the CEF receipt.
@@ -337,7 +357,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	}
 	const std::string model_id = GoalService::IsProviderManaged(*goal) ? chat->model_id : GoalService::WorkerModelId(*chat, *goal);
 	const bool active_turn = AcpSessionHasActiveTurn(*session);
-	if (chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal))
+	if (chat->provider_id == uam::provider_ids::kCodexCli && GoalService::IsProviderManaged(*goal))
 	{
 		chat->goal_pending_continuation_id.clear();
 		return StartCodexNativeGoal(app, *session, *chat, *goal, user_action, error_out, replace_native || restart);
@@ -390,6 +410,12 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 
 	const std::string owner_chat_id = GoalOwnerChatId(chat);
 	const std::string goal_id = iteration_review ? chat.goal_iteration_goal_id : session.goal_review_goal_id;
+	if (session.goal_review_usage.consumed) return true;
+	const std::optional<std::int64_t> review_tokens = session.goal_review_usage.turn_serial == session.turn_serial &&
+	    !session.goal_review_usage.session_id.empty() && session.goal_review_usage.session_id == session.session_id
+	    ? session.goal_review_usage.tokens : std::nullopt;
+	session.goal_review_usage.turn_serial = session.turn_serial;
+	session.goal_review_usage.consumed = true;
 	const std::string review_user_prompt = session.goal_review_user_prompt;
 	const std::string review_assistant_text = session.goal_review_assistant_text;
 	const std::string review_text = MessageTextForGoalReview(chat, session.turn_assistant_message_index);
@@ -397,6 +423,26 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	                                     ? chat.goal_iteration_repair_attempts
 	                                     : session.goal_review_repair_attempts;
 	ClearGoalReviewState(session);
+	Goal* active_review_goal = GoalService::FindActiveGoal(app, owner_chat_id);
+	if (active_review_goal != nullptr && active_review_goal->id == goal_id)
+	{
+		if (review_tokens)
+		{
+			GoalService::RecordTurnCompletion(app, owner_chat_id, goal_id, *review_tokens);
+			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
+			// Account the completed review before admitting a repair or consuming a decision.
+			if (GoalService::FindActiveGoal(app, owner_chat_id) == nullptr)
+			{
+				StopCompletedGoalIterationRuntime(app, chat, session);
+				if (browser) uam::PushStateUpdateIfChanged(browser, app);
+				return true;
+			}
+		}
+		else
+		{
+			AppendGoalLoopDiagnostic(session, "goal_review_usage_unknown", goal_id);
+		}
+	}
 
 	const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
 	if (!parsed.has_value())
@@ -465,6 +511,26 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		}
 		return true;
 	}
+	const auto stop_at_loop_cap = [&](Goal& active_goal) {
+		AppSettings bounded_settings = app.settings;
+		uam::settings::ClampGoalSettings(bounded_settings);
+		if (active_goal.loop_count < bounded_settings.goal_max_loop_iterations)
+		{
+			return false;
+		}
+		constexpr const char* blocker = "Maximum goal loop iterations reached";
+		active_goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker);
+		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
+		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
+		StopCompletedGoalIterationRuntime(app, chat, session);
+		if (browser)
+		{
+			uam::PushStateUpdateIfChanged(browser, app);
+		}
+		return true;
+	};
 	if (decision.decision == "blocked")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -480,6 +546,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 		if (Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id); active_goal != nullptr && active_goal->id == goal_id && !GoalBlockerStopsImmediately(decision.blocker_kind) && session.queued_user_prompts.empty())
 		{
+			if (stop_at_loop_cap(*active_goal)) return true;
 			const ChatSession* model_chat = GoalOwnerChat(app, chat);
 			if (model_chat == nullptr) model_chat = &chat;
 			const std::string worker_prompt = GoalService::BuildContinuationPrompt(*active_goal, active_goal->tokens_used, active_goal->token_budget, model_chat->small_model_mode, active_goal->current_step);
@@ -508,21 +575,8 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	active_goal->blocked_turn_count = 0;
 	active_goal->last_blocker.clear();
 	active_goal->last_blocker_kind.clear();
-	AppSettings bounded_settings = app.settings;
-	uam::settings::ClampGoalSettings(bounded_settings);
-	if (active_goal->loop_count >= bounded_settings.goal_max_loop_iterations)
+	if (stop_at_loop_cap(*active_goal))
 	{
-		constexpr const char* blocker = "Maximum goal loop iterations reached";
-		active_goal->last_diagnostic = "goal_blocked_max_loop_iterations_reached";
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker);
-		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
-		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
-		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
-		StopCompletedGoalIterationRuntime(app, chat, session);
-		if (browser)
-		{
-			uam::PushStateUpdateIfChanged(browser, app);
-		}
 		return true;
 	}
 	const std::string follow_up = NormalizeGoalNextPrompt(decision.next_prompt);
@@ -638,7 +692,8 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "goal_loop_detected_review_notified", active_goal->id, worker_text);
 	}
 
-	GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
+	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpAccountsGoalUsage())
+		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
 	active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 	if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 	if (active_goal == nullptr)
@@ -788,7 +843,7 @@ namespace
 			const std::string provider_goal_id = active_goal->id;
 			ClearGoalReviewState(session);
 			session.goal_turn_kind.clear();
-			if (chat.provider_id == "codex-cli" && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
+			if (chat.provider_id == uam::provider_ids::kCodexCli && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
 				return;
 			// A completed chat turn does not prove a provider goal has completed or been verified.
 			AppendGoalLoopDiagnostic(session, "provider_managed_turn_complete_unverified", provider_goal_id);
@@ -952,7 +1007,7 @@ bool PollPendingGoalIterations(AppState& app)
 	for (ChatSession& chat : app.chats)
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-		if (session == nullptr || session->provider_id != "codex-cli" || chat.active_goal_id.empty()) continue;
+		if (session == nullptr || session->provider_id != uam::provider_ids::kCodexCli || chat.active_goal_id.empty()) continue;
 		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
 			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
 			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))

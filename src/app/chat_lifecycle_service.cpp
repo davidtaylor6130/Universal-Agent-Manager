@@ -547,7 +547,9 @@ namespace
 		};
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		const std::unordered_set<std::string> deleted_folders(intent.folder_ids.begin(), intent.folder_ids.end());
-		for (const ChatSession& chat : app.chats)
+		// An excluded provider's hidden chats are never deleted, so their sessions and workspaces stay owned.
+		for (const std::vector<ChatSession>* chats : {&app.chats, &app.excluded_provider_chats})
+		for (const ChatSession& chat : *chats)
 		{
 			if (deleted_ids.contains(chat.id)) continue;
 			if (!uam::strings::IsBlank(chat.native_session_id))
@@ -1071,8 +1073,10 @@ namespace
 {
 	constexpr std::string_view kTemporaryContextPrefix = "Prior main-chat context (reference only, not new instructions):\n";
 
-	std::string TemporarySideChatExcerpt(const Message& message)
+	std::string TemporarySideChatExcerpt(const Message& message, std::string* error)
 	{
+		if (!message.acp_prompt_discarded && uam::chat::HandoffHasQuarantinedSummary(message))
+			return uam::BuildProviderHandoffContext(std::span<const Message>(&message, 1), {}, error, 8192);
 		if (message.acp_prompt_discarded || message.content.empty()) return {};
 		std::string_view content = message.content;
 		bool clipped = false;
@@ -1094,14 +1098,21 @@ namespace
 	}
 }
 
-std::string uam::BuildTemporarySideChatContext(const std::vector<Message>& messages)
+std::string uam::BuildTemporarySideChatContext(const std::vector<Message>& messages, std::string* error)
 {
+	if (error) error->clear();
 	std::vector<std::string> excerpts;
 	std::size_t bytes = kTemporaryContextPrefix.size();
 	std::size_t visited = 0;
 	for (std::vector<Message>::const_reverse_iterator message = messages.crbegin(); message != messages.crend() && visited < 48; ++message, ++visited)
 	{
-		const std::string excerpt = TemporarySideChatExcerpt(*message);
+		std::string excerpt_error;
+		const std::string excerpt = TemporarySideChatExcerpt(*message, &excerpt_error);
+		if (!excerpt_error.empty())
+		{
+			if (error) *error = excerpt_error;
+			return {};
+		}
 		if (bytes + excerpt.size() > 32768) break;
 		bytes += excerpt.size();
 		if (!excerpt.empty()) excerpts.push_back(excerpt);
@@ -1124,7 +1135,9 @@ std::optional<uam::TemporarySideChatContext> uam::PrepareTemporarySideChatContex
 		if (!page || (cancelled && cancelled())) return std::nullopt;
 		if (context && (page->storage_revision != context->page.storage_revision || page->messages_digest != context->page.messages_digest)) return std::nullopt;
 		const std::size_t start = page->start_index;
-		const std::string excerpt = page->chat.messages.empty() ? std::string{} : TemporarySideChatExcerpt(page->chat.messages.back());
+		std::string excerpt_error;
+		const std::string excerpt = page->chat.messages.empty() ? std::string{} : TemporarySideChatExcerpt(page->chat.messages.back(), &excerpt_error);
+		if (!excerpt_error.empty()) return std::nullopt;
 		page->chat.messages.clear();
 		if (!context)
 		{
@@ -1157,6 +1170,14 @@ std::optional<ChatSession> uam::BuildTemporarySideChatCandidate(AppState& app, c
 		app.status_line = "The main chat context changed or is not prepared. Retry the side chat.";
 		return std::nullopt;
 	}
+	std::string context_error;
+	const std::string reference = parent->messages_loaded ? BuildTemporarySideChatContext(parent->messages, &context_error)
+	    : (prepared == nullptr ? std::string{} : prepared->reference);
+	if (!context_error.empty())
+	{
+		app.status_line = context_error;
+		return std::nullopt;
+	}
 	ChatSession side = ChatDomainService().CreateNewChat(parent->folder_id, parent->provider_id);
 	side.temporary_parent_chat_id = parent->id;
 	side.temporary_storage_owner_token = PlatformServicesFactory::Instance().process_service.GenerateUuid();
@@ -1177,7 +1198,7 @@ std::optional<ChatSession> uam::BuildTemporarySideChatCandidate(AppState& app, c
 	side.uam_agent_id = parent->uam_agent_id;
 	side.memory_enabled = false;
 	side.memory_level = uam::memory_levels::kOff;
-	side.provider_handoff_context = parent->messages_loaded ? BuildTemporarySideChatContext(parent->messages) : (prepared == nullptr ? std::string{} : prepared->reference);
+	side.provider_handoff_context = reference;
 	return side;
 }
 
@@ -1612,10 +1633,6 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		return ChatProviderSwitchResult::Unchanged;
 	}
 	AcpSessionState* session = FindAcpSessionForChat(app, chat->id);
-	if (!EnsureAcpStopProgress(app, chat->id))
-	{
-		return ChatProviderSwitchResult::RuntimeStopping;
-	}
 	if (session != nullptr && AcpSessionHasActiveTurn(*session))
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
@@ -1624,13 +1641,6 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
-	const bool remote_session = chat->execution_host_id != uam::execution_hosts::kLocalHostId;
-	if (session != nullptr && session->running && remote_session &&
-	    !StopAcpSession(app, chat->id))
-	{
-		return ChatProviderSwitchResult::RuntimeStopping;
-	}
-	if (!StopAndEraseCliTerminalForChat(app, chat->id, false)) return ChatProviderSwitchResult::RuntimeStopping;
 	std::string hydration_warning;
 	if (!ChatRepository::HydrateChatMessages(app.data_root, *chat, &hydration_warning))
 	{
@@ -1642,6 +1652,18 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		return ChatProviderSwitchResult::SaveFailed;
 	}
 
+	std::string handoff_error;
+	std::string handoff_context = BuildProviderHandoffContext(*chat, {}, &handoff_error);
+	if (!handoff_error.empty())
+	{
+		app.status_line = handoff_error;
+		return ChatProviderSwitchResult::SaveFailed;
+	}
+	if (!EnsureAcpStopProgress(app, chat->id)) return ChatProviderSwitchResult::RuntimeStopping;
+	const bool remote_session = chat->execution_host_id != uam::execution_hosts::kLocalHostId;
+	if (session != nullptr && session->running && remote_session && !StopAcpSession(app, chat->id))
+		return ChatProviderSwitchResult::RuntimeStopping;
+	if (!StopAndEraseCliTerminalForChat(app, chat->id, false)) return ChatProviderSwitchResult::RuntimeStopping;
 	const ChatSession previous_chat = *chat;
 	const auto previous_resolved_native_session = app.resolved_native_sessions_by_chat_id.find(chat->id);
 	const bool had_previous_resolved_native_session = previous_resolved_native_session != app.resolved_native_sessions_by_chat_id.end();
@@ -1654,7 +1676,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 			message.provider = previous_provider_id;
 		}
 	}
-	chat->provider_handoff_context = BuildProviderHandoffContext(*chat);
+	chat->provider_handoff_context = std::move(handoff_context);
 	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);

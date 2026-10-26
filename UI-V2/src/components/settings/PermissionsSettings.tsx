@@ -47,7 +47,8 @@ export function PermissionsSettings() {
     setBusy(true)
     setMessage('')
     try {
-      const response = await sendToCEF({ action: helper
+      // The define folds even where this chunk's cycle with the entry keeps the imported constant opaque.
+      const response = await sendToCEF({ action: __UAM_FEATURE_COMPUTER_USE__ && helper
         ? request ? 'requestComputerUsePermission' : 'openComputerUseSystemSettings'
         : request ? 'requestAppPermission' : 'openAppPermissionSettings', payload: { permission } })
       if (!response.ok) throw new Error(response.error || 'Could not open permission settings.')

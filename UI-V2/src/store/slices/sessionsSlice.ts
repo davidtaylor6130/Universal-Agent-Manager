@@ -16,20 +16,24 @@ import { defaultsForExecutionHost, withSettingsScope } from '../../utils/setting
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
-import type { CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
+import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
-  DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
   providerCapabilities,
+  providerMetadataForId,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -92,7 +96,7 @@ const initialFolders = [
 const initialSessions: Session[] = [
   {
     id: 's1',
-    name: 'Gemini CLI',
+    name: providerMetadataForId(DEFAULT_PROVIDER_ID).name,
     viewMode: 'chat',
     folderId: 'default',
     createdAt: new Date(),
@@ -110,7 +114,7 @@ const initialProviders: Provider[] = [
   initialProvider(CLAUDE_CLI_PROVIDER_ID, '#7c3aed'),
   initialProvider(OPENCODE_CLI_PROVIDER_ID, '#14b8a6'),
   initialProvider(COPILOT_CLI_PROVIDER_ID, '#22c55e'),
-]
+].filter((provider) => SUPPORTED_CLI_PROVIDER_IDS.includes(provider.id))
 
 let sessionCounter = 10
 
@@ -152,9 +156,23 @@ function unsentProjectionFromPage(state: AppState, chatId: string, data: ChatMes
     ? { acpBindingBySessionId: { ...state.acpBindingBySessionId, [chatId]: { ...binding, ...indices } } } : undefined
 }
 
-function historyChangedDuringLoad(state: AppState, chatId: string) {
-  return { chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
-    [chatId]: 'Chat history changed while loading. Retry to refresh it.' } }
+function historyReadFailure(state: AppState, chatId: string, error: string, refreshNative = false) {
+  return {
+    chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId, [chatId]: error },
+    chatHistoryErrorWasRefreshBySessionId: { ...state.chatHistoryErrorWasRefreshBySessionId, [chatId]: refreshNative },
+  }
+}
+
+function clearHistoryReadFailure(state: AppState, chatId: string) {
+  const cleared = new Set([chatId])
+  return {
+    chatHistoryErrorBySessionId: withoutDeletedKeys(state.chatHistoryErrorBySessionId, cleared),
+    chatHistoryErrorWasRefreshBySessionId: withoutDeletedKeys(state.chatHistoryErrorWasRefreshBySessionId ?? {}, cleared),
+  }
+}
+
+function historyChangedDuringLoad(state: AppState, chatId: string, refreshNative = false) {
+  return historyReadFailure(state, chatId, 'Chat history changed while loading. Retry to refresh it.', refreshNative)
 }
 
 export function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
@@ -169,6 +187,7 @@ export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>
     messages: withoutDeletedKeys(state.messages, deletedIds),
     historyStartIndexBySessionId: withoutDeletedKeys(state.historyStartIndexBySessionId, deletedIds),
     chatHistoryErrorBySessionId: withoutDeletedKeys(state.chatHistoryErrorBySessionId, deletedIds),
+    chatHistoryErrorWasRefreshBySessionId: withoutDeletedKeys(state.chatHistoryErrorWasRefreshBySessionId ?? {}, deletedIds),
     chatHistoryReadBySessionId: withoutDeletedKeys(state.chatHistoryReadBySessionId ?? {}, deletedIds),
     chatHistoryPageBySessionId: withoutDeletedKeys(state.chatHistoryPageBySessionId ?? {}, deletedIds),
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
@@ -306,12 +325,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           if (fresh) return fresh
         }
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
-        set((state) => ({
-          chatHistoryErrorBySessionId: {
-            ...state.chatHistoryErrorBySessionId,
-            [chatId]: response.error ?? `Failed to load chat history for ${chatName}.`,
-          },
-        }))
+        set((state) => historyReadFailure(state, chatId, response.error ?? `Failed to load chat history for ${chatName}.`, refreshNative))
         return false as const
       }
 
@@ -346,7 +360,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
       if (data.unchanged) {
         set((state) => {
-          if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId)
+          if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId, refreshNative)
           const projection = state.messages[chatId] === messagesAtRequestStart ? unsentProjectionFromPage(state, chatId, data, bindingAtRequestStart) : undefined
           const cachedDigest = loadedMessagesDigestByChatId.get(chatId)
           if (requestedDigest && cachedDigest === requestedDigest && data.messagesDigest === requestedDigest && state.messages[chatId] === messagesAtRequestStart &&
@@ -356,9 +370,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           }
           const evidence = accepted ? { chatHistoryPageBySessionId: { ...state.chatHistoryPageBySessionId, [chatId]: accepted } } : undefined
           if (!state.chatHistoryErrorBySessionId[chatId]) return evidence || projection ? { ...evidence, ...projection } : state
-          const chatHistoryErrorBySessionId = { ...state.chatHistoryErrorBySessionId }
-          delete chatHistoryErrorBySessionId[chatId]
-          return { ...evidence, ...projection, chatHistoryErrorBySessionId }
+          return { ...evidence, ...projection, ...clearHistoryReadFailure(state, chatId) }
         })
         return acceptedCurrent()
       }
@@ -370,7 +382,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           pageStart + data.messages.length !== totalCount) return false as const
 
       set((state) => {
-        if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId)
+        if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId, refreshNative)
         let streamedTail: Message | undefined
         if ((force || data.startIndex !== undefined) && state.messages[chatId] !== messagesAtRequestStart) {
           const existing = state.messages[chatId] ?? []
@@ -424,14 +436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             )
           : state.sessions
         const sessionsChanged = sessions !== state.sessions && sessions.some((candidate, index) => candidate !== state.sessions[index])
-        const chatHistoryErrorBySessionId = state.chatHistoryErrorBySessionId[chatId]
-          ? (() => {
-              const next = { ...state.chatHistoryErrorBySessionId }
-              delete next[chatId]
-              return next
-            })()
-          : state.chatHistoryErrorBySessionId
-        const historyErrorChanged = chatHistoryErrorBySessionId !== state.chatHistoryErrorBySessionId
+        const historyErrorChanged = Boolean(state.chatHistoryErrorBySessionId[chatId])
 
         const historyStartChanged = existingStart !== pageStart
         const projection = !streamedTail ? unsentProjectionFromPage(state, chatId, data, bindingAtRequestStart) : undefined
@@ -447,7 +452,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           } : {}),
           ...(historyStartChanged ? { historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: pageStart } } : {}),
           ...(sessionsChanged ? { sessions } : {}),
-          ...(historyErrorChanged ? { chatHistoryErrorBySessionId } : {}),
+          ...(historyErrorChanged ? clearHistoryReadFailure(state, chatId) : {}),
         }
       })
       return acceptedCurrent()
@@ -456,8 +461,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (state.chatHistoryReadBySessionId[chatId]?.requestId !== requestId ||
           (messageHydrationGenerationByChatId.get(chatId) ?? 0) !== hydrationGeneration ||
           state.sessions.find(session => session.id === chatId)?.createdAt.getTime() !== chatBirthAtRequestStart) return
-      set({ chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
-        [chatId]: 'Saved chat history could not be read. Retry to refresh it.' } })
+      set(historyReadFailure(state, chatId, 'Saved chat history could not be read. Retry to refresh it.', refreshNative))
       return false as const
     }).finally(() => {
       clearTimeout(deadline)
@@ -479,6 +483,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     historyStartIndexBySessionId: {} as Record<string, number>,
     chatSearchNavigation: null as ChatSearchNavigation | null,
     chatHistoryErrorBySessionId: {} as Record<string, string>,
+    chatHistoryErrorWasRefreshBySessionId: {} as Record<string, boolean>,
     chatHistoryReadBySessionId: {} as Record<string, { requestId: string; birth: number }>,
     chatHistoryPageBySessionId: {} as Record<string, AcceptedHistoryPage>,
     providers: inCef ? [] : initialProviders,
@@ -507,9 +512,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     permissionReviewerModelId: '',
     memoryActivity: { ...emptyMemoryActivity } as MemoryActivity,
     cliVersionManager: { ...emptyCliVersionManager } as CliVersionManager,
-    defaultNewChatProviderId: GEMINI_CLI_PROVIDER_ID,
+    defaultNewChatProviderId: DEFAULT_PROVIDER_ID,
     providerChatDefaults: {} as Record<string, ProviderChatDefaults>,
     fileExplorerApplication: '',
+    windowsPowerShell: 'auto' as WindowsPowerShellPreference,
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
     providerAvailability: [],
@@ -605,8 +611,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           // This only expires history presentation. A slow selection's mutation outcome stays unknown.
           const fail = expired && sameOwner && state.activeSessionId === id && state.messages[id] === undefined &&
             state.chatSearchNavigation?.chatId !== id
-          set({ chatHistoryReadBySessionId, ...(fail ? { chatHistoryErrorBySessionId: {
-            ...state.chatHistoryErrorBySessionId, [id]: 'Opening saved chat history timed out. Retry to refresh it; retained messages have not been resent.' } } : {}) })
+          set({ chatHistoryReadBySessionId, ...(fail ? historyReadFailure(state, id, 'Opening saved chat history timed out. Retry to refresh it; retained messages have not been resent.') : {}) })
         }
         set({ activeSessionId: id, ...(waitsForHistory ? { chatHistoryReadBySessionId: {
           ...get().chatHistoryReadBySessionId, [id!]: { requestId, birth: selected!.createdAt.getTime() } } } : {}) })
@@ -682,8 +687,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           data.startIndex < 0 || !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined ||
           data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
           hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
-        set((state) => ({ chatSearchNavigation: null, chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
-          [hit.chatId]: response.error || 'Chat history changed. Try opening the message again.' } }))
+        set((state) => ({ chatSearchNavigation: null, ...historyReadFailure(state, hit.chatId, response.error || 'Chat history changed. Try opening the message again.') }))
         return false
       }
       if (unsentIndicesFromPage(data) && current.acpBindingBySessionId[hit.chatId] !== observedBinding) {
@@ -699,7 +703,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [hit.chatId]: data.startIndex! },
         sessions: state.sessions.map((session) => session.id === hit.chatId
           ? { ...session, messageCount: data.totalCount, userMessageIndices: userMessageIndicesFromPage(data) } : session),
-        chatHistoryErrorBySessionId: Object.fromEntries(Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== hit.chatId)),
+        ...clearHistoryReadFailure(state, hit.chatId),
       }))
       return true
     },
@@ -732,8 +736,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         if (!response.ok || !data || data.chatId !== chatId || !Array.isArray(data.messages) || data.messages.length > 50 ||
             !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined || data.startIndex < 0 ||
             !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined || data.startIndex + data.messages.length !== data.totalCount) {
-          set((state) => ({ chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
-            [chatId]: response.error || 'Could not return to the latest messages. Retry chat history.' } }))
+          set((state) => historyReadFailure(state, chatId, response.error || 'Could not return to the latest messages. Retry chat history.'))
           return
         }
         if (unsentIndicesFromPage(data) && get().acpBindingBySessionId[chatId] !== observedBinding) {
@@ -744,6 +747,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         set((state) => ({ ...unsentProjectionFromPage(state, chatId, data, observedBinding), messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: data.startIndex! },
           sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount, userMessageIndices: userMessageIndicesFromPage(data) } : session),
+          ...clearHistoryReadFailure(state, chatId),
         }))
       } finally { if (boundedTailReloads.get(chatId) === reloadGeneration) boundedTailReloads.delete(chatId) }
     },
@@ -757,9 +761,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const observedBinding = get().acpBindingBySessionId[id]
       if (before <= 0 || !get().messages[id]) return false
       const fail = (error: string) => {
-        set((state) => ({ chatHistoryErrorBySessionId: {
-          ...state.chatHistoryErrorBySessionId, [id]: error,
-        } }))
+        set((state) => historyReadFailure(state, id, error))
         return false
       }
       const response = await sendToCEF<ChatMessagesResponse>({
@@ -785,9 +787,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ...unsentProjectionFromPage(state, id, data, observedBinding),
           messages: { ...state.messages, [id]: [...page, ...state.messages[id]] },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [id]: data.startIndex! },
-          chatHistoryErrorBySessionId: Object.fromEntries(
-            Object.entries(state.chatHistoryErrorBySessionId).filter(([chatId]) => chatId !== id)
-          ),
+          ...clearHistoryReadFailure(state, id),
         }
       })
       return added
@@ -798,21 +798,19 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (current.acpBindingBySessionId[id]?.processing || current.cliBindingBySessionId[id]?.processing) return
       messageHydrationGenerationByChatId.set(id, (messageHydrationGenerationByChatId.get(id) ?? 0) + 1)
       discardPendingTranscriptPushesForChat(id)
-      if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id] && !current.chatHistoryReadBySessionId[id] && !current.chatHistoryPageBySessionId?.[id]) return
+      if (current.messages[id] === undefined && current.cliTranscriptBySessionId[id] === undefined && !current.chatHistoryErrorBySessionId[id] && current.chatHistoryErrorWasRefreshBySessionId?.[id] === undefined && !current.chatHistoryReadBySessionId[id] && !current.chatHistoryPageBySessionId?.[id]) return
       loadedMessagesDigestByChatId.delete(id)
       const messages = { ...current.messages }
       const historyStartIndexBySessionId = { ...current.historyStartIndexBySessionId }
       const cliTranscriptBySessionId = { ...current.cliTranscriptBySessionId }
-      const chatHistoryErrorBySessionId = { ...current.chatHistoryErrorBySessionId }
       const chatHistoryReadBySessionId = { ...current.chatHistoryReadBySessionId }
       const chatHistoryPageBySessionId = { ...current.chatHistoryPageBySessionId }
       delete messages[id]
       delete historyStartIndexBySessionId[id]
       delete cliTranscriptBySessionId[id]
-      delete chatHistoryErrorBySessionId[id]
       delete chatHistoryReadBySessionId[id]
       delete chatHistoryPageBySessionId[id]
-      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId, chatHistoryReadBySessionId, chatHistoryPageBySessionId })
+      set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, ...clearHistoryReadFailure(current, id), chatHistoryReadBySessionId, chatHistoryPageBySessionId })
       if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
@@ -853,7 +851,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ? normalizedProviderId
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
-          : GEMINI_CLI_PROVIDER_ID
+          : DEFAULT_PROVIDER_ID
       if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
       const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
@@ -868,6 +866,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'createSession',
           payload: {
             ...(hasBaseOverride ? { gitBaseBranch } : {}),
+            // A branch was discovered for this directory; native creation rejects a remapped folder.
+            ...(hasBaseOverride ? { workspaceDirectory: selectedFolder!.directory } : {}),
             ...(hasWorktreeContext ? { sourceChatId: options.sourceChatId, expectedWorkspaceDirectory: options.expectedWorkspaceDirectory, expectedExecutionHostId: options.expectedExecutionHostId } : {}),
             title: name,
             ...(routingMode === 'automatic' ? { routingMode } : {}),
@@ -1222,9 +1222,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true) => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void) => {
       if (isCefContext()) {
-        const source = get().sessions.find(candidate => candidate.id === sourceChatId)
+        const stateAtRequest = get()
+        const source = stateAtRequest.sessions.find(candidate => candidate.id === sourceChatId)
+        const passiveRefreshChild = !selectChat && stateAtRequest.sessions.find(candidate => candidate.id === nativeSessionId &&
+          candidate.importedReadOnly && subagentParentFor(candidate, stateAtRequest.sessions)?.id === sourceChatId)
         const selectionRevision = selectChat ? ++intentionalSelectionRevision : intentionalSelectionRevision
         const response = await sendToCEF<OpenNativeSessionChatResponse>({
           action: 'openNativeSessionChat',
@@ -1239,10 +1242,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
         if (!response.ok) {
           console.error('[CEF] openNativeSessionChat failed:', response.error)
+          onFailure?.(response.error || 'The native conversation could not be read. Refresh to try again.')
           return null
         }
 
         const chatId = response.data?.chatId?.trim() ?? ''
+        // Refreshing a known passive child cannot redirect display lineage or saved reads.
+        if (passiveRefreshChild && chatId !== passiveRefreshChild.id) {
+          onFailure?.('The native conversation could not be read. Refresh to try again.')
+          return null
+        }
         if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
         const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
         if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
@@ -1427,7 +1436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     getWorkspaceFilePreview: async (id: string, path: string) => {
-      if (!isCefContext()) throw new Error('File inspection requires the desktop app or its connected companion.')
+      if (!isCefContext()) throw new Error(MOBILE_COMPANION_ENABLED ? 'File inspection requires the desktop app or its connected companion.' : 'File inspection requires the desktop app.')
       const response = await sendToCEF({ action: 'getWorkspaceFilePreview', payload: { chatId: id, path } }, false)
       if (!response.ok) throw new Error(response.error || 'Could not load this file.')
       const file = filePreviewResponse(response.data)
@@ -1632,7 +1641,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return false
       }
 
-      if ((previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID) === requestedProviderId) {
+      if ((previousSession.providerId ?? DEFAULT_PROVIDER_ID) === requestedProviderId) {
         return true
       }
 
@@ -1842,7 +1851,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 	  const acp = get().acpBindingBySessionId[id]
 	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
-	  const providerId = previousSession.providerId ?? GEMINI_CLI_PROVIDER_ID
+	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
 	  const runtimeModel = get().acpBindingBySessionId[id]?.availableModels.find((model) => model.id === (previousSession.modelId ?? ''))
@@ -2133,6 +2142,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setSessionComputerUseBackend: async (id: string, backend: ComputerUseBackend): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (session.computerUseEnabled) return computerUseFailure('Turn off computer use before changing its control method.')
@@ -2156,6 +2166,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
 	setSessionComputerUseEnabled: async (id: string, enabled: boolean): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (enabled && (session.computerUseEnabled ?? false)) return computerUseSuccess
@@ -2179,6 +2190,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setSessionComputerUseControl: async (id: string, controlState: ComputerUseControlState): Promise<ComputerUseActionResult> => {
+      if (!COMPUTER_USE_ENABLED) return computerUseFailure()
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
       if (!session.computerUseEnabled || (session.computerUseEffectiveBackend ?? 'uam') !== 'uam') return computerUseFailure()
@@ -2331,14 +2343,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
-    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>): Promise<boolean> => {
+    setEditorSettings: async (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication' | 'windowsPowerShell'>>): Promise<boolean> => {
       const previous = {
         ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: get().fileExplorerApplication } : {}),
+        ...(settings.windowsPowerShell !== undefined ? { windowsPowerShell: get().windowsPowerShell } : {}),
         defaultEditorPresetId: get().defaultEditorPresetId,
         editorFileAssociations: get().editorFileAssociations,
       }
       const next = {
         ...(settings.fileExplorerApplication !== undefined ? { fileExplorerApplication: settings.fileExplorerApplication } : {}),
+        ...(settings.windowsPowerShell !== undefined ? { windowsPowerShell: sanitizeWindowsPowerShell(settings.windowsPowerShell) } : {}),
         defaultEditorPresetId: sanitizeEditorPresetId(settings.defaultEditorPresetId),
         editorFileAssociations: sanitizeEditorFileAssociations(settings.editorFileAssociations),
       }
@@ -2352,6 +2366,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'setEditorSettings',
           payload: {
             ...(next.fileExplorerApplication !== undefined ? { fileExplorerApplication: next.fileExplorerApplication } : {}),
+            ...(next.windowsPowerShell !== undefined ? { windowsPowerShell: next.windowsPowerShell } : {}),
             defaultEditorPresetId: next.defaultEditorPresetId,
             fileAssociations: next.editorFileAssociations,
           },
@@ -2531,7 +2546,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     refreshCliProviderVersion: async (providerId?: string, executionHostId?: string): Promise<boolean> => {
-      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? GEMINI_CLI_PROVIDER_ID)
+      const targetProviderId = normalizeCliProviderIdAlias(providerId ?? get().cliVersionManager.providers[0]?.providerId ?? DEFAULT_PROVIDER_ID)
       if (!targetProviderId) return false
 
       if (isCefContext()) {
@@ -2662,6 +2677,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     stageChatContextReference: (sessionId: string, reference: ContextReference): boolean => {
       if (!get().sessions.some((session) => session.id === sessionId)) return false
       const validated = sanitizeContextReferences([reference])[0]
+      // File/repository snapshots must come from their asynchronous native readers, not caller-supplied text.
+      if (validated && validated.kind !== 'message' && validated.kind !== 'terminal') return false
       const source = get().sessions.find((session) => session.id === reference.sourceChatId)
       if (!validated || !source || (source.executionHostId || 'local') !== validated.executionHostId ||
         (source.workspaceWorktreeDirectory || source.workspaceDirectory || '') !== validated.workspaceDirectory) return false
@@ -2758,8 +2775,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               [sessionId]: {
                 ...(state.acpBindingBySessionId[sessionId] ?? {
                   sessionId: '',
-                  providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-                  protocolKind: inputRecorded ? '' : 'gemini-acp',
+                  providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+                  protocolKind: inputRecorded ? '' : providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
                   threadId: '',
                   running: false,
                   lifecycleState: (inputRecorded ? 'stopped' : 'error') as AcpLifecycleState,
@@ -2876,8 +2893,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: {
             ...(state.acpBindingBySessionId[sessionId] ?? {}),
             sessionId: state.acpBindingBySessionId[sessionId]?.sessionId ?? '',
-            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-            protocolKind: 'gemini-acp',
+            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+            protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
             threadId: state.acpBindingBySessionId[sessionId]?.threadId ?? '',
             running: false,
             lifecycleState: 'error',
@@ -3236,8 +3253,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: {
             ...(state.acpBindingBySessionId[sessionId] ?? {
               sessionId: 'dev-acp-session',
-              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? GEMINI_CLI_PROVIDER_ID,
-              protocolKind: 'gemini-acp',
+              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+              protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
               threadId: '',
               running: true,
               lifecycleState: 'ready' as AcpLifecycleState,

@@ -1,4 +1,5 @@
 #include "common/chat/managed_parent_input_history.h"
+#include "common/provider/provider_ids.h"
 #include "app/managed_parent_continuation_service.h"
 #include "app/chat_domain_service.h"
 #include "app/uam_control_service.h"
@@ -141,7 +142,7 @@ namespace
 	    const ManagedParentContinuationLease& lease)
 	{
 		return app.data_root == lease.data_root && chat.metadata_incarnation == lease.chat_birth &&
-		    chat.id == lease.chat_id && chat.provider_id == "codex-cli" && chat.execution_host_id == "local" &&
+		    chat.id == lease.chat_id && chat.provider_id == uam::provider_ids::kCodexCli && chat.execution_host_id == "local" &&
 		    chat.native_session_id == lease.native_thread && chat.messages_loaded &&
 		    managed_parent_history::ValidCollection(chat.managed_parent_input_receipts);
 	}
