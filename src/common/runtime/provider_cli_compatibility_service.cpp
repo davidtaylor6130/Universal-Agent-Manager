@@ -5,6 +5,7 @@
 #include "app/provider_resolution_service.h"
 #include "common/platform/platform_services.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/paths/path_utils.h"
 #include "remote/runner_client.h"
 #include "remote/runner_proxy.h"
@@ -745,7 +746,8 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 		{
 			const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(profile.id);
 			const std::pair<std::string, std::string> target{provider_id, host.id};
-			if (FindProviderCliPolicy(provider_id) == nullptr ||
+			// Like a build-excluded provider, one disabled on a computer is not probed there; re-enabling checks it again.
+			if (FindProviderCliPolicy(provider_id) == nullptr || !uam::provider_availability::IsEnabled(app.settings, provider_id, host.id) ||
 			    std::ranges::find(app.runtime_cli_version_check_queue, target) != app.runtime_cli_version_check_queue.end()) continue;
 			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, host.id)];
 			if (!force && state.checked && uam::execution_hosts::SameConnection(state.execution_host, host)) continue;
@@ -763,6 +765,22 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 		app.runtime_cli_version_check_queue.pop_front();
 		StartProviderVersionCheck(app, target.first, true, target.second);
 	}
+}
+
+void ProviderCliCompatibilityService::CheckReenabledProvider(uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id) const
+{
+	// Sweeps skipped this pair while it was disabled, so its installed version may have changed: probe it once more.
+	const std::string id = uam::provider_ids::CanonicalCliProviderLookupId(provider_id);
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
+	if (host == nullptr || FindProviderCliPolicy(id) == nullptr) return;
+	if (!app.runtime_cli_version_check_task.running) { StartProviderVersionCheck(app, id, true, host->id); return; }
+	// The running probe's completion drains the queue, which only starts pairs that already have a state entry.
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(id, host->id)];
+	if (!uam::execution_hosts::SameConnection(state.execution_host, *host)) state = {};
+	state.provider_id = id;
+	state.execution_host = *host;
+	const std::pair<std::string, std::string> target{id, host->id};
+	if (std::ranges::find(app.runtime_cli_version_check_queue, target) == app.runtime_cli_version_check_queue.end()) app.runtime_cli_version_check_queue.push_back(target);
 }
 
 bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id,
@@ -936,6 +954,8 @@ void ProviderCliCompatibilityService::StartInstallProviderVersions(uam::AppState
 	std::unordered_map<std::string, std::vector<std::string>> groups;
 	for (const auto& [provider, version, host_id] : targets)
 	{
+		// Updates never offers a provider disabled on that computer; this keeps automatic and Install-all requests from updating it.
+		if (!uam::provider_availability::IsEnabled(app.settings, provider, host_id)) continue;
 		std::string error;
 		if (!StartInstallProviderVersion(app, provider, version, &error, host_id, false, true, allow_interactive_elevation))
 		{
@@ -1156,7 +1176,8 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			const std::pair<std::string, std::string> target = app.runtime_cli_version_check_queue.front();
 			app.runtime_cli_version_check_queue.pop_front();
 			const auto queued = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(target.first, target.second));
-			if (queued == app.runtime_cli_versions_by_provider_id.end() || !host_matches(queued->second.execution_host)) continue;
+			if (queued == app.runtime_cli_versions_by_provider_id.end() || !host_matches(queued->second.execution_host) ||
+			    !uam::provider_availability::IsEnabled(app.settings, target.first, target.second)) continue;
 			StartProviderVersionCheck(app, target.first, true, target.second);
 		}
 	}

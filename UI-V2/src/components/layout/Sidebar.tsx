@@ -6,7 +6,7 @@ import { Button } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
-import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
+import { DEFAULT_PROVIDER_ID, providerDisabledOn } from '../../utils/providerMetadata'
 import './SidebarGlide.css'
 import { shortcutLabel } from '../../utils/shortcuts'
 import type { ChatSearchHit, SearchChatMessagesResponse } from '../../types/chatSearch'
@@ -26,12 +26,15 @@ export function Sidebar() {
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const sessions = useAppStore((s) => s.sessions)
   const providers = useAppStore((s) => s.providers)
+  const providerAvailability = useAppStore((s) => s.providerAvailability)
   const jumpToChatSearchHit = useAppStore((s) => s.jumpToChatSearchHit)
   const clearChatSearchNavigation = useAppStore((s) => s.clearChatSearchNavigation)
   const searchNavigation = useAppStore((s) => s.chatSearchNavigation)
   const clearSearch = useCallback(() => setSearchQuery(''), [])
   const providerOptions = useMemo(() => {
-    const labels = new Map(providers.map((provider) => [provider.id, provider.shortName || provider.name || provider.id]))
+    // A provider disabled on this computer stays filterable only while chats still use it.
+    const labels = new Map(providers.filter((provider) => !providerDisabledOn(providerAvailability, provider.id, 'local') || sessions.some((session) => (session.providerId || DEFAULT_PROVIDER_ID) === provider.id))
+      .map((provider) => [provider.id, provider.shortName || provider.name || provider.id]))
     for (const session of sessions) {
       const providerId = session.providerId || DEFAULT_PROVIDER_ID
       if (!labels.has(providerId)) {
@@ -41,7 +44,7 @@ export function Sidebar() {
     return Array.from(labels.entries())
       .map(([id, label]) => ({ id, label }))
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [providers, sessions])
+  }, [providers, providerAvailability, sessions])
   const toggleProviderFilter = useCallback((providerId: string) => {
     setFilters((current) => ({
       ...current,

@@ -12,6 +12,7 @@
 #include "app/computer_use_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/provider/native_agent_history.h"
 #include "common/chat/chat_branching.h"
@@ -525,6 +526,53 @@ UAM_TEST(ChatCreateSelectedWorktreeIsEmptyAndPreservesLegacyCreation)
 	UAM_ASSERT_EQ(fixture.app.chats.back().workspace_directory, fixture.repository.string());
 	UAM_ASSERT(fixture.app.chats.back().messages.empty());
 	UAM_ASSERT_EQ(GitState(fixture.repository, "worktree list --porcelain"), worktrees);
+}
+
+UAM_TEST(DisabledProviderNewAndSideChatsRejectWithoutPersisting)
+{
+	TempDir temp("uam-disabled-provider-create");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(app.data_root);
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	app.folders.push_back({.id = "folder", .title = "Folder", .directory = temp.root.string()});
+	app.chats.push_back(HandlerChat("parent"));
+	app.chats.back().folder_id = "folder";
+	app.chats.back().workspace_directory = temp.root.string();
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, "codex", "local", false));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> created = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::Create(*handler_owner, {{"folderId", "folder"}, {"providerId", "codex-cli"}, {"routingMode", "explicit"}, {"executionHostId", "local"}}, created);
+	UAM_ASSERT_EQ(created->failures, 1);
+	UAM_ASSERT_EQ(created->last_failure, 409);
+	UAM_ASSERT(created->failure_message.find("disabled") != std::string::npos);
+	CefRefPtr<RecordingIconCallback> side = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, "createSideChat", {{"chatId", "parent"}}, side));
+	UAM_ASSERT_EQ(side->failures, 1);
+	UAM_ASSERT_EQ(side->last_failure, 409);
+	UAM_ASSERT(side->failure_message.find("disabled") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatsRootPath(app.data_root)) || fs::is_empty(AppPaths::UamChatsRootPath(app.data_root)));
+}
+
+UAM_TEST(DisabledProviderAllowancesAreNeverRead)
+{
+	TempDir temp("uam-disabled-provider-allowance");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(app.data_root);
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	for (const char* id : {"codex-cli", "claude-cli", "copilot-cli", "gemini-cli", "antigravity-cli"})
+		uam::provider_availability::Set(app.settings, id, "local", false);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> read = new RecordingIconCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, "getProviderAllowances", {{"executionHostId", "local"}, {"refresh", true}}, read));
+	UAM_ASSERT_EQ(read->successes, 1);
+	const nlohmann::json snapshot = nlohmann::json::parse(read->success_message);
+	UAM_ASSERT(!snapshot["refreshing"].get<bool>());
+	for (const nlohmann::json& row : snapshot["providers"]) UAM_ASSERT_EQ(row["status"].get<std::string>(), std::string("unavailable"));
 }
 
 UAM_TEST(ChatCreateSelectedWorktreeRejectsStaleSourceScope)

@@ -25,6 +25,7 @@ class ProviderCliCompatibilityService
  public:
 	void StartVersionCheck(uam::AppState& app, bool force, bool include_remote = false) const;
 	bool StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force, std::string_view execution_host_id = {}, std::string* error_out = nullptr) const;
+	void CheckReenabledProvider(uam::AppState& app, std::string_view provider_id, std::string_view execution_host_id) const;
 	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr, std::string_view execution_host_id = {}, bool stop_sessions = false, bool prepare_only = false, bool allow_interactive_elevation = false) const;
 	void StartInstallProviderVersions(uam::AppState& app, const std::vector<std::tuple<std::string, std::string, std::string>>& targets, bool allow_interactive_elevation = false) const;
 	void Poll(uam::AppState& app) const;

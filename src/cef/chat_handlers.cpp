@@ -22,6 +22,7 @@
 #include <type_traits>
 #include <utility>
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/app_paths.h"
@@ -1698,6 +1699,12 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		cb->Failure(400, "The selected execution host no longer exists.");
 		return;
 	}
+	// Automatic routing already skips disabled host/provider pairs; an explicit choice must not persist a chat that cannot send.
+	if (routing_mode == "explicit" && !uam::provider_availability::IsEnabled(m_app.settings, provider_id, execution_host->id))
+	{
+		cb->Failure(409, uam::provider_availability::DisabledReason());
+		return;
+	}
 	if (git_base_branch_override && (execution_host->id != uam::execution_hosts::kLocalHostId || requested_folder_id.empty()))
 	{ cb->Failure(400, "Choose an existing local Git workspace for the base override."); return; }
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
@@ -2695,6 +2702,7 @@ void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const 
 		cb->Failure(409, "Choose an editable main chat to start a side chat.");
 		return;
 	}
+	if (!uam::query_handler_internal::ChatProviderAvailableOrFail(m_app, *parent, cb)) return;
 	const std::string key = "side-context:" + parent_id;
 	// Side-chat context reads saved UAM files, not provider history; a newer request still stops it.
 	const auto previous = m_nativeHistoryRequests.find(key);

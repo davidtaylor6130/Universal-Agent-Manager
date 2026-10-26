@@ -3,6 +3,9 @@
 #include "common/config/line_value_codec.h"
 #include "common/config/settings_frontend_json.h"
 #include "app/provider_worker_command.h"
+#include "app/shell_action_service.h"
+#include "app/chat_lifecycle_service.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
 using namespace uam_test;
@@ -155,4 +158,70 @@ UAM_TEST(DisabledProviderKeepsAcceptedQueuesAndRunningSessionAttached)
 	UAM_ASSERT(session.running);
 	UAM_ASSERT(uam::provider_availability::Set(fixture.app.settings, "codex", "local", true));
 	UAM_ASSERT(ProviderResolutionService().ChatProviderIsAvailable(fixture.app, chat));
+}
+
+UAM_TEST(DisabledProviderShellActionCreatesNoWorkspaceOrChat)
+{
+	AvailabilityFixture fixture;
+	const fs::path workspace = fixture.temp.root / "shell-workspace";
+	fs::create_directories(workspace);
+	fs::create_directories(fixture.app.data_root);
+	ShellAction action;
+	action.id = "open-disabled";
+	action.label = "Open in UAM";
+	action.provider_id = "codex-cli";
+	action.open_workspace = true;
+	action.accepts_files = false;
+	action.accepts_folders = true;
+	fixture.app.shell_actions.push_back(action);
+	bool recognized = false;
+	std::string error;
+	UAM_ASSERT(ShellActionService::QueueLaunchRequest(fixture.app.data_root, {"uam", "--uam-shell-action", action.id, uam::paths::Utf8PathString(workspace)}, &recognized, &error));
+	(void)ShellActionService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(fixture.app.folders.empty());
+	UAM_ASSERT(fixture.app.chats.empty());
+	UAM_ASSERT(fixture.app.shell_action_notification.find("disabled") != std::string::npos);
+}
+
+UAM_TEST(DisabledProviderRegeneratingBranchIsRefusedBeforeSaving)
+{
+	AvailabilityFixture fixture;
+	ChatSession chat = fixture.Chat("codex-cli");
+	chat.messages.push_back({.role = MessageRole::User, .content = "private fixture prompt"});
+	chat.messages_loaded = true;
+	fixture.app.chats.push_back(chat);
+	std::string branch_id, error;
+	UAM_ASSERT(!uam::BranchFromMessageAndRetry(fixture.app, chat.id, 0, std::string("edited prompt"), &branch_id, &error));
+	UAM_ASSERT(error.find("disabled") != std::string::npos);
+	UAM_ASSERT(branch_id.empty());
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+}
+
+UAM_TEST(DisabledProviderIsNeitherVersionCheckedNorAutomaticallyUpdated)
+{
+	AvailabilityFixture fixture;
+	// Every other local provider is already checked, so the sweep can only start the disabled one.
+	for (const ProviderProfile& profile : fixture.app.provider_profiles)
+	{
+		const std::string id = uam::provider_ids::CanonicalCliProviderLookupId(profile.id);
+		if (id == "codex-cli") continue;
+		uam::CliProviderVersionState& state = fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(id, "local")];
+		state.provider_id = id;
+		state.execution_host = uam::execution_hosts::LocalHost();
+		state.checked = true;
+	}
+	ProviderCliCompatibilityService().StartVersionCheck(fixture.app, false);
+	UAM_ASSERT(!fixture.app.runtime_cli_version_check_task.running);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+	UAM_ASSERT(!fixture.app.runtime_cli_versions_by_provider_id.contains(CliProviderVersionStateKey("codex-cli", "local")));
+	// Gemini is disabled on the remote fixture computer; if the guard regressed, this would only record a failed state, never install.
+	ProviderCliCompatibilityService().StartInstallProviderVersions(fixture.app, {{"gemini-cli", "latest", "lab"}}, false);
+	UAM_ASSERT(!fixture.app.runtime_cli_versions_by_provider_id.contains(CliProviderVersionStateKey("gemini-cli", "lab")));
+	// Re-enabling while another probe runs queues exactly that pair for the drain instead of dropping it.
+	fixture.app.runtime_cli_version_check_task.running = true;
+	ProviderCliCompatibilityService().CheckReenabledProvider(fixture.app, "codex", "local");
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.size() == 1);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.front() == std::make_pair(std::string("codex-cli"), std::string("local")));
+	UAM_ASSERT(fixture.app.runtime_cli_versions_by_provider_id.contains(CliProviderVersionStateKey("codex-cli", "local")));
+	fixture.app.runtime_cli_version_check_task.running = false;
 }
