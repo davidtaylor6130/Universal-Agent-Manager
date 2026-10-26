@@ -3,6 +3,33 @@
 #include "app/provider_configuration_service.h"
 #include "app/uam_control_service.h"
 #include "common/config/central_provider_configuration.h"
+#include "common/config/settings_store.h"
+
+UAM_TEST(OpenCodeProgressiveMcpStatusPersistsExactHostChoice)
+{
+	uam_test::TempDir temp("opencode-progressive-mcp-settings");
+	uam::AppState app;
+	app.settings.central_provider_configuration.instructions = "Retain shared instructions";
+	app.settings.central_provider_configuration.mcp_overrides = {
+	    {"opencode-cli", "local", "opencode-progressive-mcp", false, true},
+	    {"codex-cli", "ssh-fixture", "docs", false}};
+	const std::filesystem::path path = temp.root / "settings.txt";
+	UAM_ASSERT(SettingsStore::Save(path, app.settings));
+	AppSettings restored;
+	UAM_ASSERT(SettingsStore::Load(path, restored).loaded);
+	UAM_ASSERT_EQ(uam::central_configuration::Serialize(restored.central_provider_configuration), uam::central_configuration::Serialize(app.settings.central_provider_configuration));
+	app.settings = std::move(restored);
+	for (const std::string host : {"local", "ssh-fixture"})
+	{
+		const nlohmann::json status = uam::provider_mcp_settings::Status(app, host, "");
+		for (const nlohmann::json& row : status.at("providers"))
+		{
+			if (row.at("providerId") == "opencode-cli")
+				UAM_ASSERT_EQ(row.at("progressiveMcpDiscoveryEnabled").get<bool>(), host != "local");
+			else UAM_ASSERT(!row.contains("progressiveMcpDiscoveryEnabled"));
+		}
+	}
+}
 
 UAM_TEST(ProviderMcpImportPreservesArgumentsAndReferencesAndReportsUnsupportedEntries)
 {

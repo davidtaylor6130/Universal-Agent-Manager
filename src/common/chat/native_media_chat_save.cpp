@@ -184,14 +184,24 @@ namespace uam
 		return {};
 	}
 
-	bool PreparedNativeMediaChatSave::Publish(std::string& error, const std::function<bool()>& still_owned, bool sync_directory)
+	bool PreparedNativeMediaChatSave::Publish(std::string& error, const std::function<bool()>& still_owned, bool sync_directory, const std::function<bool(io::AtomicWriteStage)>& primary_stage_hook_for_tests)
 	{
 		error.clear();
 		if (m_publish_attempted || !m_prepared || m_prepared->primary_temp.empty())
 			return Fail(error, "This native media publication has already been attempted or is unavailable.");
 		m_publish_attempted = true;
-		if (!ChatRepository::PublishPreparedChatSave(m_prepared, sync_directory, &m_chat, still_owned))
-			return Fail(error, "Native media publication was rejected or was not acknowledged.");
+		m_primary_publication_state = ChatPublicationState::Rejected;
+		try
+		{
+			if (!ChatRepository::PublishPreparedChatSave(m_prepared, sync_directory, &m_chat, still_owned, &*m_primary_publication_state, primary_stage_hook_for_tests))
+				return Fail(error, "Native media publication was rejected or was not acknowledged.");
+		}
+		catch (...)
+		{
+			// The native observation survives a throw, including an admitted write.
+			// It is feedback only; no acknowledgement or adoption follows this path.
+			return Fail(error, "Native media publication was not acknowledged.");
+		}
 		m_primary_acknowledged = true;
 		return true;
 	}

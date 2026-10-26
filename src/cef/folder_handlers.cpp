@@ -125,11 +125,9 @@ void UamQueryHandler::HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nl
 		(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
 		    [observed_host, directory]()
 		    {
-			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			        uam::remote::SshBridgeArgv(observed_host.ssh_alias, observed_host.platform, observed_host.runner_version, observed_host.runner_directory, observed_host.runner_protocol_version), observed_host.runner_version, observed_host.runner_protocol_version);
-			    uam::remote::DirectoryListing listing;
 			    std::string error;
-			    return client.ListDirectories(uam::paths::PathFromUtf8(directory), listing, &error)
+			    return uam::remote::ValidateRemoteWorkspaceDirectory(PlatformServicesFactory::Instance().process_service,
+			        observed_host, uam::paths::PathFromUtf8(directory), &error)
 			        ? uam::query_handler_async::AsyncSuccess({}) : uam::query_handler_async::AsyncFailure(502, error);
 		    },
 		    [this, browser, observed_host, observed_folder, title, directory](uam::query_handler_async::AsyncCefResult& response)

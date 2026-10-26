@@ -173,7 +173,7 @@ namespace uam
 					std::unique_ptr<remote::RunnerClient> bridge;
 					if (!query && host)
 						bridge = std::make_unique<remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
-						    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+						    *host);
 					const Query perform = query ? query : Query([&](const opencode_native::Endpoint& target, const std::optional<ExecutionHost>&,
 					    const std::string& directory, const Json& operation, Json& value, std::string& error, std::stop_token cancel)
 					{

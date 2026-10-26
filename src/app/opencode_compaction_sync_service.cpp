@@ -400,8 +400,7 @@ namespace
 		{
 			const ExecutionHost& host = *query.host;
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version),
-			    host.runner_version, host.runner_protocol_version);
+			    host);
 			const std::string nonce = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 			if (nonce.empty()) return {.error = "Native compaction query identity could not be created."};
 			const std::string id = "compaction-metadata-" + nonce;

@@ -347,7 +347,7 @@ namespace uam
 		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
 		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version, remote_host->runner_directory, remote_host->runner_protocol_version), remote_host->runner_version, remote_host->runner_protocol_version);
+		uam::remote::RunnerClient client(service, *remote_host);
 		const std::string id = service.GenerateUuid();
 		std::filesystem::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;

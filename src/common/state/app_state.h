@@ -36,9 +36,11 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
+	namespace acp_detail { struct ColdRetryBinding; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
+	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
 	struct ManagedInitialHistoryCatalogue;
@@ -689,6 +691,8 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
+		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
+		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -705,8 +709,24 @@ namespace uam
         int64_t antigravity_input_tokens = 0;
         int64_t antigravity_output_tokens = 0;
         bool antigravity_turn_usage_complete = true;
-        int64_t antigravity_completed_turns = 0;
-        std::unordered_set<int64_t> antigravity_completed_steps;
+		bool antigravity_turn_has_usage = false;
+		int64_t antigravity_completed_turns = 0;
+		std::unordered_set<int64_t> antigravity_completed_steps;
+		struct AntigravityGoalTurn
+		{
+			std::string owner_chat_id;
+			std::string goal_id;
+			std::string revision;
+			std::string execution_host_id;
+			std::string native_conversation_id;
+			std::filesystem::path data_root;
+			std::shared_ptr<const std::uint8_t> owner_incarnation;
+			int turn_serial = -1;
+			int64_t accounted_tokens = 0;
+			std::optional<int64_t> result_tokens;
+			bool settled = false;
+		};
+		AntigravityGoalTurn antigravity_goal_turn;
 		std::string lifecycle_state = "stopped";
 		/// Volatile blocked-transport latch; last_error retains the original failure.
 		std::string transport_ownership_error;
@@ -1010,6 +1030,9 @@ namespace uam
 		bool result_consumed = false;
 		std::string native_writer_key;
 		bool observe_exit = false;
+		bool preserve_queued_prompts = false;
+		// Optional owned platform dependency; retained through asynchronous stop and exit polling.
+		std::shared_ptr<IPlatformProcessService> stop_service;
 		std::shared_ptr<std::atomic<bool>> finished;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1254,6 +1277,7 @@ namespace uam
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
+		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;

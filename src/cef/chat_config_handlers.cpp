@@ -2157,7 +2157,7 @@ void UamQueryHandler::HandleGetComputerUseSettings(CefRefPtr<CefBrowser> browser
 	nlohmann::json allowed = nlohmann::json::array();
 	for (const auto& rule : m_app.settings.computer_use_allowed_applications)
 		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
-	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"computerUseRevocationPending", !m_app.computer_use_revocation_pending_chat_ids.empty()}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
 }
 
 void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2227,7 +2227,7 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"computerUseRevocationPending", !m_app.computer_use_revocation_pending_chat_ids.empty()}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
 }
 
 void UamQueryHandler::HandleListComputerUseApplications(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)

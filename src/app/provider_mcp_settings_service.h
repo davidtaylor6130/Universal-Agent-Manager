@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <ranges>
+#include <functional>
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <fcntl.h>
@@ -293,6 +294,32 @@ namespace uam::provider_mcp_settings
 		return result;
 	}
 
+	/// Validate and publish one native-backed preference; the persistence boundary is injectable for data-only checks.
+	inline int SetConfiguration(AppSettings& settings, const std::string& host, const std::string& provider,
+	    const std::string& server, bool enabled, bool preference, const std::function<bool()>& persist, std::string& error)
+	{
+		if (execution_hosts::Find(settings.execution_hosts, host) == nullptr || !provider_ids::ContainsProviderId(provider_ids::kAllCliProviderIds, provider))
+		{ error = "Provider or execution host not found."; return 404; }
+		if (preference && (server != central_configuration::kOpenCodeProgressiveMcpSetting || provider != provider_ids::kOpenCodeCli))
+		{ error = "Unknown provider preference."; return 400; }
+		if (!preference && server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(host_scoped_settings::McpServers(settings, host), [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
+		{ error = "MCP server is not configured on this host."; return 404; }
+		const CentralProviderConfiguration previous = settings.central_provider_configuration;
+		CentralProviderConfiguration candidate = previous;
+		std::erase_if(candidate.mcp_overrides, [&](const ProviderMcpOverride& item) { return item.provider_id == provider && item.execution_host_id == host && item.server_id == server && item.is_preference == preference; });
+		candidate.mcp_overrides.push_back({provider, host, server, enabled, preference});
+		if (!central_configuration::Parse(central_configuration::Serialize(candidate), candidate, error)) return 400;
+		settings.central_provider_configuration = std::move(candidate);
+		try
+		{
+			if (persist()) return 0;
+		}
+		catch (const std::exception&) { /* A thrown persistence failure retains the same rollback as a false result. */ }
+		settings.central_provider_configuration = previous;
+		error = "Could not save provider MCP settings.";
+		return 500;
+	}
+
 	/// Current capability handshake observations only. Configuration alone is never a connection proof.
 	inline nlohmann::json Status(const AppState& app, const std::string& host, const std::string& workspace, const std::string& chat_id = {})
 	{
@@ -348,6 +375,8 @@ namespace uam::provider_mcp_settings
 					server_settings.push_back({{"id", server.id}, {"name", server.name}, {"enabled", central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, server.id, server.enabled)}});
 			providers.push_back({{"providerId", provider}, {"uamControlEnabled", enabled}, {"sharedSetupEnabled", central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "shared-setup", app.settings.central_provider_configuration.enabled)}, {"mcpServers", server_settings}, {"status", state}, {"detail", detail}, {"activeSessionCount", active},
 			    {"configuredSessionCount", configured}, {"connectedSessionCount", connected}, {"additionalServerCount", servers.size()}, {"providerSessionFailed", provider_failed}});
+			if (std::string_view(provider) == provider_ids::kOpenCodeCli)
+				providers.back()["progressiveMcpDiscoveryEnabled"] = central_configuration::OpenCodeProgressiveMcpEnabled(app.settings.central_provider_configuration, host);
 		}
 		return {{"executionHostId", host}, {"computerUseBuiltInAvailable", UAM_ENABLE_COMPUTER_USE && host == "local"}, {"providers", providers}, {"repairMode", "next-session-launch"}, {"connectedProofAvailable", true}, {"handshakeProofAvailable", true}};
 	}

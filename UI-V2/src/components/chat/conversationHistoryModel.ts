@@ -62,12 +62,17 @@ export function reviewAssistantLabel(provider: string, message?: Message) {
   return [provider, model, time].filter(Boolean).join(' · ')
 }
 
-// ponytail: WeakMap keeps composer/stream renders from re-formatting settled message dates.
-const turnTimeLabels = new WeakMap<Date, string>()
+// Turn titles use the same value/offset guard, while keeping their full date/time format.
+const turnTimeLabels = new WeakMap<Date, { timestamp: number; offset: number; label: string }>()
 export function turnTimestampLabel(date: Date) {
-  let label = turnTimeLabels.get(date)
-  if (label === undefined) turnTimeLabels.set(date, label = date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))
-  return label
+  const timestamp = date.getTime()
+  const offset = date.getTimezoneOffset()
+  let cached = turnTimeLabels.get(date)
+  if (!cached || cached.timestamp !== timestamp || cached.offset !== offset) {
+    cached = { timestamp, offset, label: date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) }
+    turnTimeLabels.set(date, cached)
+  }
+  return cached.label
 }
 
 /** Day divider wording: Today, Yesterday, or the calendar date. */
