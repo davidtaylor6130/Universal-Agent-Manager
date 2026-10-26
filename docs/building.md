@@ -123,4 +123,4 @@ Pull-request CI also runs:
 - Packaged-app smoke tests that validate the bundled UI, CEF resources, helper checksums, launch, and shutdown.
 - Separate Computer Use and provider CLI contract checks.
 
-Release tags must match the version in `UI-V2/package.json`. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.
+Release tags must match the numeric version in `UI-V2/package.json`, optionally followed by a prerelease suffix (for example `v5.0.0-alpha.1` for version `5.0.0`); suffixed tags are published as GitHub prereleases so they never replace the latest release. The release job gates native core cases like CI, through one retry and `tests/ci_quarantine.txt`. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.
