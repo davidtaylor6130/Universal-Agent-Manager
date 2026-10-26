@@ -1,7 +1,8 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
+import { sumProviderUsage, USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
+import { clearUsageHistoryCache } from '../../hooks/useUsageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { UsagePage, parseUsagePrices } from './UsagePage'
 import { UsageLimits } from './UsageLimits'
@@ -13,7 +14,7 @@ const total: UsageTotals = { inputTokens: 10, cachedInputTokens: 5, cacheWriteTo
   reportedCostUsd: 0, estimatedCostUsd: 0, estimatedCacheSavingsUsd: 0, reportedCostTokens: 0, estimatedCostTokens: 0, unpricedTokens: 17, records: 1, sessions: 1 }
 const blank = { ...total, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }
 beforeEach(() => clearProviderAllowanceCache())
-afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); values.clear() })
+afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); values.clear(); clearUsageHistoryCache() })
 function storage() {
   vi.spyOn(window, 'localStorage', 'get').mockReturnValue({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) }, clear: () => values.clear(), length: 0, key: () => null })
 }
@@ -219,6 +220,177 @@ describe('UsagePage', () => {
       expect(document.activeElement).toBe(cols[cols.length - 1])
     } finally { act(() => root.unmount()); host.remove() }
   })
+  // Codex estimated, Claude reported, Gemini read but idle; every other provider has no history reader.
+  const basisHistory = (payload: { executionHostId: string; startMs: number; endMs: number; windowDays: number }, scale = 1) => {
+    const priced = { ...total, unpricedTokens: 0, records: scale, sessions: scale }
+    const rows: Record<string, UsageTotals> = { 'codex-cli': { ...priced, estimatedCostTokens: 17, estimatedCostUsd: 1.5 * scale }, 'claude-cli': { ...priced, reportedCostTokens: 17, reportedCostUsd: 2 } }
+    const providers = USAGE_PROVIDERS.map(providerId => ({ ...(rows[providerId] ?? blank), providerId, available: providerId in rows || providerId === 'gemini-cli', files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 }))
+    return JSON.stringify({ version: 3, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, asOfMs: payload.endMs, windowDays: payload.windowDays, collecting: false, collectionError: '',
+      totals: sumProviderUsage(providers), complete: true, listingLimited: false, filesChecked: 2, filesTotal: 2, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0, providers,
+      models: Object.entries(rows).map(([providerId, row]) => ({ ...row, providerId, modelId: `${providerId}-model`, speed: 'standard' })), days: [], hours: [], providerDays: [], providerHours: [] })
+  }
+
+  it('labels each provider and model cost with its basis and gives idle and unsupported providers the same empty rows', async () => {
+    storage()
+    window.cefQuery = request => request.onSuccess(basisHistory(JSON.parse(request.request).payload))
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const row = (name: string) => Array.from(host.querySelectorAll('.uam-usage-providers tbody tr')).find(tr => tr.querySelector('th')?.textContent === name)?.textContent
+      expect(row('Codex')).toContain('$1.50Estimated')
+      expect(row('Claude')).toContain('$2.00Reported')
+      expect(row('Gemini')).toContain('No usage in this range')
+      expect(row('OpenCode')).toContain('Usage history unavailable')
+      expect(host.querySelectorAll('.uam-usage-providers tbody tr')).toHaveLength(USAGE_PROVIDERS.length)
+      const chip = (name: string) => host.querySelector(`[aria-label="Include ${name} usage"]`)?.textContent
+      expect(chip('Gemini')).toBe('GeminiNo usage')
+      expect(chip('OpenCode')).toBe('OpenCodeUnavailable')
+      expect(host.querySelector('.uam-usage-chips')?.textContent).not.toContain('$0.00')
+      expect(host.querySelector('[aria-label="Inspect Codex codex-cli-model standard"]')?.textContent).toContain('Estimated')
+      expect(host.querySelector('[aria-label="Inspect Claude claude-cli-model standard"]')?.textContent).toContain('Reported')
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Reported + estimated$3.50')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Claude usage"]')!.click())
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Estimated cost$1.50')
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('not a bill')
+      expect(row('Claude')).toBeUndefined()
+      expect(host.querySelector('.uam-usage-providers [data-basis="estimated"]')?.hasAttribute('data-estimate')).toBe(true)
+      expect(host.querySelector('.uam-usage-providers .uam-usage-basis')?.getAttribute('tabindex')).toBe('0')
+      expect(host.querySelector('.uam-usage-model-row .uam-usage-basis')?.hasAttribute('tabindex')).toBe(false)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('shows unpriced amounts as pending while history is still being read, not as having no known price', async () => {
+    storage()
+    let collecting = true
+    window.cefQuery = request => {
+      const reply = JSON.parse(basisHistory(JSON.parse(request.request).payload))
+      reply.providers = reply.providers.map((row: UsageTotals) => ({ ...row, reportedCostTokens: 0, reportedCostUsd: 0, estimatedCostTokens: 0, estimatedCostUsd: 0, unpricedTokens: row.totalTokens }))
+      reply.totals = sumProviderUsage(reply.providers); reply.models = []; reply.collecting = collecting
+      request.onSuccess(JSON.stringify(reply))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const tiles = () => host.querySelector('.uam-usage-tiles')?.textContent
+      expect(tiles()).toContain('CostPricing…Prices still loading')
+      expect(tiles()).not.toContain('Unpriced tokens')
+      expect(host.querySelector('[aria-label="Include Codex usage"]')?.textContent).toBe('CodexPricing…')
+      expect(host.textContent).not.toContain('no prices are known')
+      expect(host.textContent).not.toContain('No priced usage')
+      expect(host.textContent).toContain('Estimated cache savings: Pricing…')
+      expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(false)
+      collecting = false
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      expect(tiles()).toContain('CostUnknownNo known price')
+      expect(tiles()).toContain('Unpriced tokens')
+      expect(host.textContent).toContain('no prices are known')
+      expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('says partly priced tokens are awaiting prices while reference prices refresh', async () => {
+    storage()
+    window.cefQuery = request => {
+      const reply = JSON.parse(basisHistory(JSON.parse(request.request).payload))
+      reply.providers = reply.providers.map((row: UsageTotals & { providerId: string }) => row.providerId === 'codex-cli' ? { ...row, estimatedCostTokens: 10, unpricedTokens: 7 } : row)
+      reply.totals = sumProviderUsage(reply.providers); reply.models = []
+      reply.pricing = { refreshing: true, source: 'https://example.com/catalog', status: 'cached', fetchedAtMs: 1000, error: '', aliasError: '' }
+      request.onSuccess(JSON.stringify(reply))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Unpriced tokens7Awaiting prices')
+      expect(host.textContent).toContain('7 tokens are still awaiting prices.')
+      expect(host.querySelector('.uam-usage-providers [data-basis="partial"]')?.textContent).toContain('are still awaiting prices')
+      expect(host.textContent).not.toContain('no known price')
+      expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(false)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('keeps a reported partial cost solid and names a total with no known price', async () => {
+    storage()
+    let priced = true
+    window.cefQuery = request => {
+      const reply = JSON.parse(basisHistory(JSON.parse(request.request).payload))
+      reply.providers = reply.providers.map((row: UsageTotals & { providerId: string }) => row.providerId === 'codex-cli' ? { ...row, estimatedCostTokens: 0, estimatedCostUsd: 0, unpricedTokens: 17 } : row.providerId === 'claude-cli' && !priced ? { ...row, reportedCostTokens: 0, reportedCostUsd: 0, unpricedTokens: 17 } : row)
+      if (priced) reply.providers = reply.providers.map((row: UsageTotals & { providerId: string }) => row.providerId === 'claude-cli' ? { ...row, reportedCostTokens: 10, unpricedTokens: 7 } : row)
+      reply.totals = sumProviderUsage(reply.providers); reply.models = []
+      request.onSuccess(JSON.stringify(reply))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const claude = host.querySelector('.uam-usage-providers [data-basis="partial"]')!
+      expect(claude.textContent).toContain('Known cost')
+      expect(claude.hasAttribute('data-estimate')).toBe(false)
+      priced = false
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('CostUnknownNo known price')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('does not call a provider idle while its history is still being read or failed to read', async () => {
+    storage()
+    let collecting = true
+    window.cefQuery = request => {
+      const reply = JSON.parse(basisHistory(JSON.parse(request.request).payload))
+      reply.collecting = collecting
+      if (!collecting) reply.providers = reply.providers.map((row: { providerId: string }) => row.providerId === 'gemini-cli' ? { ...row, errors: 1 } : row)
+      request.onSuccess(JSON.stringify(reply))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const row = (name: string) => Array.from(host.querySelectorAll('.uam-usage-providers tbody tr')).find(tr => tr.querySelector('th')?.textContent === name)?.textContent
+      expect(row('Gemini')).toContain('Still reading history')
+      expect(row('Codex')).toContain('$1.50')
+      expect(host.querySelector('[aria-label="Include Gemini usage"]')?.textContent).toBe('GeminiReading…')
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('so far')
+      collecting = false
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      expect(row('Gemini')).toContain('Usage history incomplete')
+      expect(host.querySelector('[aria-label="Include Gemini usage"]')?.textContent).toBe('GeminiIncomplete')
+      expect(row('Gemini')).not.toContain('No usage')
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).not.toContain('so far')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('reopens with the cached answer at once and refreshes it in the background without blocking', async () => {
+    storage()
+    window.cefQuery = request => request.onSuccess(basisHistory(JSON.parse(request.request).payload))
+    const first = document.createElement('div'), firstRoot = createRoot(first)
+    await act(async () => firstRoot.render(<UsagePage onClose={() => {}} />))
+    act(() => firstRoot.unmount())
+    const held: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []
+    window.cefQuery = request => { held.push(request) }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsagePage onClose={() => {}} />))
+      expect(held).toHaveLength(1)
+      expect(host.querySelector('.uam-usage-skeleton')).toBeNull()
+      expect(host.querySelector('[data-kept]')).toBeNull()
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$3.50')
+      expect(host.querySelector('header .uam-usage-progress')?.textContent).toMatch(/^Updating… Showing /)
+      expect(host.querySelector('header [role="status"]')?.textContent).toBe('Updating usage')
+      const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!
+      expect(refresh.disabled).toBe(false); expect(refresh.getAttribute('aria-busy')).toBe('true')
+      await act(async () => held[0].onSuccess(basisHistory(JSON.parse(held[0].request).payload, 2)))
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$5.00')
+      expect(host.querySelector('header .uam-usage-progress')?.textContent).toBe('')
+      expect(host.querySelector('header [role="status"]')?.textContent).toBe('Usage updated')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      await act(async () => held.at(-1)!.onFailure(500, 'Machine is offline.'))
+      expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/Machine is offline\. Showing figures from /)
+      expect(host.querySelector('header [role="status"]')?.textContent).toBe('')
+      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$5.00')
+      // A period never opened before keeps the previous answer in place (dimmed only after a noticeable wait).
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '30 days')!.click())
+      expect(host.querySelector('[data-kept]')?.textContent).toContain('$5.00')
+      expect(host.querySelector('.uam-usage-skeleton')).toBeNull()
+    } finally { act(() => root.unmount()) }
+  })
+
   it('rejects malformed saved prices without treating missing fields as zero', () => {
     const price = { providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', inputPerMillion: 0, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: 1 }
     expect(parseUsagePrices([price])).toEqual([price])

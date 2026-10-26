@@ -9,7 +9,7 @@ vi.mock('../../config/buildFeatures', async (importOriginal) => ({
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const values = new Map<string, string>()
-afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); values.clear() })
+afterEach(async () => { delete window.cefQuery; vi.restoreAllMocks(); values.clear(); (await import('../../hooks/useUsageHistory')).clearUsageHistoryCache() })
 
 it("keeps an excluded provider's saved prices on the device without showing or using them", async () => {
   const { UsagePage, parseUsagePrices } = await import('./UsagePage')

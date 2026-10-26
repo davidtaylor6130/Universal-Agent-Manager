@@ -247,6 +247,14 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
 export function usageCost(totals: UsageTotals): number | null {
   return totals.totalTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens === 0 ? null : totals.reportedCostUsd + totals.estimatedCostUsd
 }
+export type UsageCostBasis = 'none' | 'unpriced' | 'reported' | 'estimated' | 'mixed' | 'partial'
+/** Where a cost figure comes from, so provider, model and total amounts can say whether it is a charge or an estimate. */
+export function usageCostBasis(totals: UsageTotals): UsageCostBasis {
+  const reported = totals.reportedCostTokens > 0 || totals.reportedCostUsd > 0, estimated = totals.estimatedCostTokens > 0
+  if (!reported && !estimated) return totals.totalTokens > 0 ? 'unpriced' : 'none'
+  if (totals.unpricedTokens > 0) return 'partial'
+  return reported && estimated ? 'mixed' : reported ? 'reported' : 'estimated'
+}
 export function formatUsageCount(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
