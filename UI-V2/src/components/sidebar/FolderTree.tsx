@@ -881,7 +881,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     >
       {!companionContext && selectedFolderIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
-          <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} workspaces selected</span>
+          <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} {selectedFolderIds.size === 1 ? 'workspace' : 'workspaces'} selected</span>
           <Button size="sm" variant="ghost" disabled={deletingFolder} onClick={clearWorkspaceSelection}>Clear</Button>
           <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${selectedFolderIds.size} selected workspaces`} onClick={() => {
             const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
@@ -902,7 +902,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       )}
       {!companionContext && selectedSessionIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-          <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
+          <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} {selectedSessionIds.size === 1 ? 'chat' : 'chats'} selected</span>
           <Button size="sm" variant="ghost" onClick={clearBulkSelection}>Clear</Button>
           <Button
             size="sm"
@@ -1527,7 +1527,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="collection" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" icon={<Pencil size={12} />} label="Rename" />
             <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }}>Change icon for {selectionTargets.length} collections</button>
-            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); onDeleteSelected() }}><Trash2 size={12} />Delete {selectionTargets.length} collections</button>
+            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); onDeleteSelected() }}><Trash2 size={12} />Delete {selectionTargets.length} collections…</button>
           </> : <>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }}>Change icon</button>
@@ -2199,7 +2199,7 @@ const FolderRow = memo(function FolderRow({
             <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} workspaces`} onClick={() => { setMenuPos(null); iconPicker.open('workspace', selectionTargets, `${selectionTargets.length} workspaces`) }} />
             <SingleOnlyMenuItem noun="workspace" icon={<Monitor size={14} aria-hidden />} label="Change host icon" />
             <SingleOnlyMenuItem noun="workspace" icon={<Pencil size={14} aria-hidden />} label="Rename folder" />
-            <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete selected workspaces" danger onClick={() => { setMenuPos(null); onDelete() }} />
+            <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={`Delete ${selectionTargets.length} workspaces…`} danger onClick={() => { setMenuPos(null); onDelete() }} />
           </> : <>
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />

@@ -1136,7 +1136,7 @@ describe('FolderTree', () => {
     act(() => first.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     act(() => second.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
 
-    expect(host.textContent).toContain('2 selected')
+    expect(host.textContent).toContain('2 chats selected')
     expect(host.querySelector('[data-testid="session-row-chat-3"][data-selected="true"]')).toBeNull()
 
     act(() => root.unmount())
@@ -1638,7 +1638,7 @@ describe('FolderTree', () => {
       act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
       act(() => host.querySelector<HTMLElement>(`[data-testid="folder-header-${target}"]`)!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
       const selectedTarget = target === 'c'
-      const menuLabel = selectedTarget ? 'Delete selected workspaces' : 'Delete folder'
+      const menuLabel = selectedTarget ? 'Delete 3 workspaces…' : 'Delete folder'
       const menuItem = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find((button) => button.textContent === menuLabel)!
       expect(menuItem).toBeTruthy()
       act(() => menuItem.click())
@@ -1825,7 +1825,7 @@ describe('FolderTree', () => {
     act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')?.click())
     act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-2"]')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    expect(host.textContent).toContain('2 selected')
+    expect(host.textContent).toContain('2 chats selected')
 
     await act(async () => {
       host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')?.click()

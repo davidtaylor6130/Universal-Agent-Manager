@@ -178,7 +178,7 @@ describe('chat multi-selection actions', () => {
   it('sets one icon on every selected chat', async () => {
     selectChats('b', 'c')
     openChatMenu('b')
-    act(() => item('Icon…').click())
+    act(() => item('Icon for 2 chats').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Icon for 2 chats"]')!
     act(() => Array.from(dialog.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent === 'Emoji')!.click())
     const input = dialog.querySelector<HTMLInputElement>('input[aria-label="Icon character"]')!
@@ -244,7 +244,7 @@ describe('workspace multi-selection actions', () => {
 
   it('deletes accepted workspaces and reports each refused workspace by name', async () => {
     selectWorkspaces()
-    act(() => item('Delete selected workspaces').click())
+    act(() => item('Delete 2 workspaces').click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete selected workspaces"]')!
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspaces')!.click(); await flush() })
     expect(sent('deleteFolders')).toEqual([{ folderIds: ['w1', 'w2'] }])

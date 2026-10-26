@@ -1076,7 +1076,7 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
       <Pin size={13} fill={pin ? 'none' : 'currentColor'} aria-hidden />{pin ? 'Pin' : 'Unpin'} {targets.length} chats
     </button>
     <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={() => { onClose(); onIcon(targets) }}>
-      <SmilePlus size={13} aria-hidden />Icon…
+      <SmilePlus size={13} aria-hidden />Icon for {targets.length} chats…
     </button>
     <MenuDivider />
     <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
