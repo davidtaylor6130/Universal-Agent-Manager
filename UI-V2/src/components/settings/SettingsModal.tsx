@@ -1,4 +1,3 @@
-import { VoiceSettings } from './VoiceSettings'
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
 import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './DataFolderSettingsSection'
@@ -3004,7 +3003,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
 
-    if (selectedSection === 'voice-input') return <div className="grid gap-6"><VoiceInputControls ref={voiceRef} /><VoiceSettings /></div>
+    if (selectedSection === 'voice-input') return <VoiceInputControls ref={voiceRef} />
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
