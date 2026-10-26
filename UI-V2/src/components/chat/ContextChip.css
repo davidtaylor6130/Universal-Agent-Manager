@@ -32,7 +32,8 @@
   border-radius: var(--r-sm);
   cursor: default;
 }
-button.uam-context-chip__body { cursor: pointer; }
+button.uam-context-chip__body { cursor: pointer; align-self: stretch; }
+button.uam-context-chip__body:hover .uam-context-chip__name { color: var(--accent); }
 .uam-context-chip__body:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .uam-context-chip__icon { display: inline-flex; flex-shrink: 0; color: var(--text-3); }
 .uam-context-chip.is-error .uam-context-chip__icon { color: var(--error); }
@@ -44,7 +45,8 @@ button.uam-context-chip__body { cursor: pointer; }
   white-space: nowrap;
   color: var(--text);
 }
-.uam-context-chip__meta { flex-shrink: 0; color: var(--text-3); }
+.uam-context-chip__meta { flex-shrink: 0; color: var(--text-2); }
+.uam-context-chip.is-partial .uam-context-chip__meta { color: var(--text); font-weight: 600; }
 .uam-context-chip .uam-context-chip__remove.uam-iconbtn--sm { width: 18px; height: 18px; border-radius: var(--r-sm); }
 .uam-context-chip__remove:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 @keyframes uam-context-chip-in {

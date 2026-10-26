@@ -403,7 +403,6 @@ namespace
 		uam::AppState app;
 		std::unique_ptr<UamQueryHandler> handler;
 		uam::AcpSessionState* session = nullptr;
-		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		InputFixture()
 		{
 			app.data_root = temp.root / "data";
@@ -422,13 +421,8 @@ namespace
 			owned->session_id = "fixture-native-session";
 			owned->protocol_kind = "gemini-acp";
 			owned->current_mode_id = "default";
-#if defined(_WIN32)
-			const std::vector<std::string> sink{"cmd", "/C", "more > NUL"};
-#else
-			const std::vector<std::string> sink{"/bin/sh", "-c", "cat >/dev/null"};
-#endif
-			std::string error;
-			UAM_ASSERT(process.StartStdioProcess(*owned, temp.root, sink, &error));
+			// Inject busy runtime state: admission/queue tests need no provider process
+			// or input handles, and must never send bytes or start a real CLI.
 			owned->running = owned->session_ready = owned->processing = true;
 			owned->prompt_request_id = 71;
 			session = owned.get();
@@ -438,13 +432,11 @@ namespace
 		~InputFixture()
 		{
 			handler.reset();
-			process.StopStdioProcess(*session, true);
-			process.CloseStdioProcessHandles(*session);
 		}
-		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment)
+		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false)
 		{
 			CefRefPtr<MediaCallback> cb = new MediaCallback;
-			NativeMediaRefreshHandlerTestAccess::Send(*handler, {{"chatId", app.chats.front().id}, {"text", "New authored request"}, {"attachments", nlohmann::json::array({attachment})}}, cb);
+			NativeMediaRefreshHandlerTestAccess::Send(*handler, {{"chatId", app.chats.front().id}, {"text", text}, {"attachments", attachment.is_array() ? attachment : nlohmann::json::array({attachment})}, {"steerNow", steer}}, cb);
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 			while (cb->successes + cb->failures == 0 && std::chrono::steady_clock::now() < deadline)
 			{
@@ -488,12 +480,14 @@ UAM_TEST(NativeInputHandlerRejectsRecordedUnknownAndMixedMetadataWithoutQueueMut
 UAM_TEST(NativeInputHandlerRetainsCleanLegacyAttachmentInBusyQueue)
 {
 	for (const bool explicit_legacy : {false, true})
+	for (const std::string text : {"New authored request", ""})
+	for (const std::string kind : {"file", "directory"})
 	{
 		InputFixture fixture;
-		nlohmann::json attachment{{"id", "authored"}, {"name", "Notes"}, {"kind", "file"}, {"path", "notes.txt"}};
+		nlohmann::json attachment{{"id", "authored"}, {"name", "Notes"}, {"kind", kind}, {"path", "notes.txt"}};
 		if (explicit_legacy)
 			attachment["source"] = "legacy_path";
-		const auto cb = fixture.Send(attachment);
+		const auto cb = fixture.Send(attachment, text);
 		UAM_ASSERT_EQ(cb->successes, 1);
 		UAM_ASSERT_EQ(cb->failures, 0);
 		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
@@ -501,7 +495,53 @@ UAM_TEST(NativeInputHandlerRetainsCleanLegacyAttachmentInBusyQueue)
 		UAM_ASSERT_EQ(attachments.size(), std::size_t{1});
 		UAM_ASSERT_EQ(attachments.front().id, std::string("authored"));
 		UAM_ASSERT_EQ(attachments.front().path, std::string("notes.txt"));
+		UAM_ASSERT_EQ(attachments.front().kind, kind);
 		UAM_ASSERT_EQ(attachments.front().source, AttachmentSource::LegacyPath);
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, text);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
+		UAM_ASSERT(saved && saved->acp_queued_prompts.size() == 1);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments, attachments);
+	}
+}
+
+UAM_TEST(NativeInputHandlerRejectsPathlessLegacyBeforeTextAdmission)
+{
+	InputFixture fixture;
+	const auto primary = AppPaths::UamChatFilePath(fixture.app.data_root, fixture.app.chats.front().id);
+	const auto before = ReadFile(primary);
+	const auto messages = fixture.app.chats.front().messages;
+	const int next_request = fixture.session->next_request_id;
+	// Missing/null/non-string/blank paths must not decode into an empty selection.
+	const std::vector<nlohmann::json> variants = {
+	    nlohmann::json::object(), {{"path", nullptr}}, {{"path", 7}}, {{"path", ""}},
+	    {{"path", " \t\r\n "}}, {{"path", std::string("bad\0path", 8)}}};
+	for (const auto& fields : variants)
+	for (const bool explicit_legacy : {false, true})
+	for (const std::string text : {"New authored request", ""})
+	for (const bool steer : {false, true})
+	for (const bool mixed_selection : {false, true})
+	{
+		nlohmann::json attachment = fields;
+		attachment["id"] = "malformed-legacy";
+		attachment["name"] = "Unavailable file";
+		attachment["kind"] = "file";
+		// Passive preview metadata cannot supply the missing source path.
+		attachment["previewOriginPath"] = "notes.txt";
+		if (explicit_legacy) attachment["source"] = "legacy_path";
+		const nlohmann::json selection = mixed_selection
+		    ? nlohmann::json::array({{{"id", "valid"}, {"kind", "file"}, {"path", "notes.txt"}}, attachment}) : attachment;
+		const auto cb = fixture.Send(selection, text, steer);
+		UAM_ASSERT_EQ(cb->status, 400);
+		UAM_ASSERT_EQ(cb->failures, 1);
+		UAM_ASSERT_EQ(cb->successes, 0);
+		UAM_ASSERT(cb->failure.find("invalid path") != std::string::npos);
+		UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+		UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages, messages);
+		UAM_ASSERT_EQ(fixture.session->next_request_id, next_request);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 71);
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 	}
 }
 #endif
@@ -11510,6 +11550,281 @@ UAM_TEST(GeminiManagedAgentDelegateRunsExactPrivateNativeLifecycle)
 	}
 	UAM_ASSERT_EQ(prompts, std::size_t{1});
 	UAM_ASSERT_EQ(denials, std::size_t{1});
+}
+#endif
+
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#include "app/transcript_retention_service.h"
+namespace
+{
+	struct ManagedGeminiInitialBindingFixture : ManagedOpenCodeCasingFixture
+	{
+		ScopedEnvVar private_home{"GEMINI_CLI_HOME", (temp.root / "gemini-home").string()};
+		struct Retirement
+		{
+			ManagedOpenCodeCasingFixture& fixture;
+			~Retirement() noexcept
+			{
+				try
+				{
+					if (!fixture.StopAndReap()) std::abort();
+				}
+				catch (...)
+				{
+					std::abort();
+				}
+			}
+		} retirement{*this}; // Stop before private home/PATH/data disappear, including failed assertions.
+		const std::string native = "b418dce0-6b32-43eb-9f4e-79d4f18f9197";
+
+		explicit ManagedGeminiInitialBindingFixture(const std::string& fault, const std::string& version) : ManagedOpenCodeCasingFixture(true, false)
+		{
+			app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+			app.provider_profiles.front().interactive_command = ShellQuoteForTest(Executable().string());
+			app.chats.front().provider_id = "gemini-cli";
+			app.chats.front().model_id = "gemini-3.1-pro-preview";
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			auto config = nlohmann::json::parse(ReadFile(temp.root / "peer-config.json"));
+			config["fault"] = fault;
+			config["native_version"] = version;
+			config["canonical_model"] = config["requested_model"] = app.chats.front().model_id;
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "peer-config.json", config.dump()));
+			std::string peer = ManagedOpenCodeCasingPeer();
+			const auto replace = [&](const std::string& before, const std::string& after)
+			{
+				const auto position = peer.find(before);
+				UAM_ASSERT(position != std::string::npos && peer.find(before, position + before.size()) == std::string::npos);
+				peer.replace(position, before.size(), after);
+			};
+			replace("native = 'ses_private_managed_model_casing'", "native = '" + native + "' if config['fault'] != 'noncanonical-id' else 'not-a-native-uuid'");
+			replace("print('1.18.35', flush=True)", "print(config['native_version'], flush=True)");
+			const auto begin = peer.find("    assert sys.argv[1:] == ['acp']");
+			const auto end = peer.find("    for line in sys.stdin:", begin);
+			UAM_ASSERT(begin != std::string::npos && end != std::string::npos);
+			peer.replace(begin, end - begin, R"GEMINI(
+    assert sys.argv[1:] == ['--acp', '--approval-mode', 'plan', '--model', config['requested_model']]
+    agent = 'plan'
+    model = config['canonical_model']
+    run, turn, transcript = state()
+    store('launch-witness.json', dict(pid=os.getpid(), args=sys.argv[1:], run=run))
+)GEMINI");
+			replace("agentInfo=dict(name='opencode', title='Private OpenCode ACP', version='1.18.35')",
+			    "agentInfo=dict(name='gemini-cli' if config['fault'] != 'wrong-agent' else 'other-agent', title='Gemini CLI', version=config['native_version'])");
+			replace("            respond(request, dict(sessionId=native, configOptions=options(model)))", R"GEMINI(            result = dict(sessionId=native,
+                models=dict(currentModelId=model, availableModels=[dict(modelId=model, name=model)]),
+                modes=dict(currentModeId='plan', availableModes=[dict(id='plan', name='Plan')]))
+            if config['fault'] == 'missing-model':
+                del result['models']['currentModelId']
+            elif config['fault'] == 'missing-policy':
+                del result['modes']['currentModeId']
+            elif config['fault'] == 'normalized-model':
+                result['models']['currentModelId'] = ' ' + model + ' '
+            elif config['fault'] == 'config-options':
+                result['configOptions'] = options(model)
+            elif config['fault'] == 'unadvertised-model':
+                result['models']['availableModels'] = []
+            elif config['fault'] == 'duplicate-model':
+                result['models']['availableModels'] *= 2
+            elif config['fault'] == 'unadvertised-plan':
+                result['modes']['availableModes'] = []
+            store('native-proof.json', result)
+            respond(request, result))GEMINI");
+			// Native Gemini setters return empty acknowledgements, unlike the base
+			// OpenCode peer's configuration readback. They cannot fill missing proof.
+			replace("            store('model-ack.json', dict(id=request['id'], native_id=native, model=model))\n            respond(request, dict(configOptions=options(model)))",
+			    "            store('model-ack.json', dict(id=request['id'], native_id=native, model=model))\n            respond(request, {})");
+			replace("            assert request['params']['sessionId'] == native and request['params']['modeId'] == agent\n            respond(request, dict(configOptions=options(model)))",
+			    "            assert request['params']['sessionId'] == native and request['params']['modeId'] == agent\n            respond(request, {})");
+			replace("            emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId=native,\n                update=dict(sessionUpdate='agent_message_chunk'", R"GEMINI(            if config['fault'] == 'transient-policy':
+                for mode in ['default', 'plan']:
+                    emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId=native,
+                        update=dict(sessionUpdate='current_mode_update', currentModeId=mode))))
+            elif config['fault'] == 'late-config':
+                emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId=native,
+                    update=dict(sessionUpdate='config_option_update', configOptions=options(model)))))
+            elif config['fault'] == 'foreign-update':
+                emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId='44444444-4444-4444-8444-444444444444',
+                    update=dict(sessionUpdate='agent_message_chunk', content=dict(type='text', text='')))))
+            elif config['fault'] == 'native-text-policy':
+                for mode in ['default', 'plan']:
+                    emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId=native,
+                        update=dict(sessionUpdate='agent_message_chunk', content=dict(type='text', text='[MODE_UPDATE] ' + mode)))))
+            emit(dict(jsonrpc='2.0', method='session/update', params=dict(sessionId=native,
+                update=dict(sessionUpdate='agent_message_chunk')GEMINI");
+			// Tagged 0.55.1/0.64.0 prompt responses report executed per-model usage;
+			// the earlier setup selection is deliberately insufficient for publication.
+			replace("            respond(request, dict(stopReason='end_turn'))", R"GEMINI(            counts = dict(input_tokens=11, output_tokens=7)
+            result = dict(stopReason='end_turn', _meta=dict(quota=dict(token_count=dict(counts),
+                model_usage=[dict(model=model, token_count=dict(counts))])))
+            if config['native_version'] == '0.64.0':
+                result['usage'] = dict(inputTokens=11, outputTokens=7, totalTokens=18)
+            if config['fault'] == 'missing-execution-model':
+                del result['_meta']['quota']['model_usage']
+            elif config['fault'] == 'changed-execution-model':
+                result['_meta']['quota']['model_usage'][0]['model'] = 'different-native-model'
+            elif config['fault'] == 'mixed-execution-models':
+                result['_meta']['quota']['model_usage'].append(dict(model='other-native-model', token_count=dict(counts)))
+            elif config['fault'] == 'zero-work':
+                result['_meta']['quota']['token_count'] = dict(input_tokens=0, output_tokens=0)
+                result['_meta']['quota']['model_usage'][0]['token_count'] = dict(input_tokens=0, output_tokens=0)
+            elif config['fault'] == 'contradictory-counts':
+                result['_meta']['quota']['token_count']['input_tokens'] += 1
+            elif config['fault'] == 'contradictory-standard-usage':
+                result['usage']['inputTokens'] += 1
+            store('execution-model-proof.json', result)
+            respond(request, result))GEMINI");
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "peer.py", peer));
+			fs::permissions(temp.root / "peer.py", fs::perms::owner_all, fs::perm_options::replace);
+			const auto executable = temp.root / "bin" / "gemini";
+			UAM_ASSERT(uam::io::WriteTextFile(executable, ReadFile(Executable())));
+			fs::permissions(executable, fs::perms::owner_all, fs::perm_options::replace);
+			UAM_ASSERT(fs::is_regular_file(executable) && !fs::is_symlink(executable));
+			AssertIsolated();
+		}
+	};
+
+	void CheckManagedGeminiInitialBinding(const std::string& fault, const std::string& version = "0.55.1")
+	{
+		ManagedGeminiInitialBindingFixture fixture(fault, version);
+		auto completion = std::make_shared<std::optional<uam::ManagedInitialMentionResult>>();
+		std::string error;
+		UAM_ASSERT_EQ(uam::AgentRunScheduler::TryBeginInitialMention(fixture.app, fixture.root_id,
+		    "@" + fixture.definition.id + " " + fixture.task,
+		    [completion](const auto& result) { *completion = result; return true; }, &error), uam::ManagedInitialMentionAdmission::Pending);
+		fixture.Await([&] { return completion->has_value(); });
+		UAM_ASSERT((*completion)->input_recorded && (*completion)->delegation_state == uam::ManagedInitialDelegationState::Committed);
+		const auto initial = fixture.ReadRun();
+		UAM_ASSERT(initial.managed_continuation && !initial.managed_continuation->execution);
+		fixture.Await([&] { return fs::exists(fixture.temp.root / "input-witness.json"); });
+		const auto input = nlohmann::json::parse(ReadFile(fixture.temp.root / "input-witness.json"));
+		const auto child_pid = input.at("pid").get<pid_t>();
+		UAM_ASSERT(child_pid > 0 && !fixture.ReadRun().managed_continuation->execution);
+		UAM_ASSERT_EQ(fixture.PromptCount(), std::size_t{1});
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.temp.root / "allow-completion", "release owned Gemini initial proof\n"));
+		fixture.Await([&]
+		{
+			const auto run = fixture.ReadRun();
+			return run.status == "completed" && run.root_result_delivered && fixture.app.managed_initial_runtime_owners.empty() && fixture.app.acp_sessions.empty();
+		});
+		const auto completed = fixture.ReadRun();
+		const auto proof = nlohmann::json::parse(ReadFile(fixture.temp.root / "native-proof.json"));
+		const auto execution_proof = nlohmann::json::parse(ReadFile(fixture.temp.root / "execution-model-proof.json"));
+		const bool bound = fault == "none";
+		UAM_ASSERT_EQ(completed.managed_continuation->execution.has_value(), bound);
+		UAM_ASSERT_EQ(completed.id, initial.id);
+		UAM_ASSERT_EQ(completed.managed_continuation->owner, initial.managed_continuation->owner);
+		UAM_ASSERT_EQ(completed.managed_continuation->turns.size(), std::size_t{1});
+		if (fault == "native-text-policy")
+			UAM_ASSERT(completed.result_excerpt.find(fixture.answer) != std::string::npos);
+		else
+			UAM_ASSERT_EQ(completed.result_excerpt, fixture.answer);
+		UAM_ASSERT_EQ(fixture.PromptCount(), std::size_t{1});
+		if (bound)
+		{
+			const auto& binding = *completed.managed_continuation->execution;
+			UAM_ASSERT_EQ(binding.native_session_id, proof.at("sessionId").get<std::string>());
+			UAM_ASSERT_EQ(binding.effective_model_id, proof.at("models").at("currentModelId").get<std::string>());
+			UAM_ASSERT_EQ(binding.effective_model_id, execution_proof.at("_meta").at("quota").at("model_usage").front().at("model").get<std::string>());
+			UAM_ASSERT_EQ(binding.approval_mode, proof.at("modes").at("currentModeId").get<std::string>());
+			UAM_ASSERT_EQ(binding.workspace_directory, input.at("transcript").at("workspace_directory").get<std::string>());
+			UAM_ASSERT_EQ(binding.model_identity_source, std::string("exact-requested"));
+		}
+		const auto state = uam::ManagedSubagentFollowupService::GetState(fixture.app, fixture.root_id, completed.id);
+		UAM_ASSERT(!state.can_send);
+		UAM_ASSERT_EQ(state.code, bound ? uam::ManagedFollowupCode::NativeResumeUnavailable : uam::ManagedFollowupCode::ModelIdentityUnverified);
+		int status = 0;
+		errno = 0;
+		UAM_ASSERT(waitpid(child_pid, &status, WNOHANG) == -1 && errno == ECHILD);
+		errno = 0;
+		UAM_ASSERT(kill(child_pid, 0) == -1 && errno == ESRCH);
+		if (!bound) return;
+		// Cross the production producer -> saved ledger -> restart inspection route.
+		// Copy only this fixture's three owned primary/backup pairs, never provider history.
+		TempDir restart_root("uam-gemini-bound-inspection");
+		std::map<fs::path, std::string> originals;
+		for (const auto& primary : {fixture.app.data_root / "agent-runs" / (completed.id + ".json"), AppPaths::UamChatFilePath(fixture.app.data_root, fixture.root_id), AppPaths::UamChatFilePath(fixture.app.data_root, completed.transcript_chat_id)})
+			for (const auto& path : {primary, uam::io::MakeBackupPath(primary)})
+				if (fs::exists(path))
+				{
+					const auto relative = path.lexically_relative(fixture.app.data_root);
+					originals.emplace(relative, ReadFile(path));
+					UAM_ASSERT(uam::io::WriteTextFile(restart_root.root / relative, originals.at(relative)));
+				}
+		const auto refuse_continuation = [&](uam::AppState& app, uam::ManagedFollowupCode expected)
+		{
+			uam::ManagedFollowupRequest request;
+			request.after_turn_id = completed.managed_continuation->current_turn_id;
+			request.client_request_id = "1dd8a611-7462-4ac4-869c-3d80c4bab477";
+			request.text = "This initial binding does not authorize another input.";
+			bool called = false;
+			uam::ManagedFollowupCode rejection = uam::ManagedFollowupCode::None;
+			UAM_ASSERT_EQ(uam::ManagedSubagentFollowupService::TrySubmit(app, fixture.root_id, completed.id, request,
+			    [&](const auto&) { called = true; return true; }, &rejection), uam::ManagedFollowupAdmission::Rejected);
+			UAM_ASSERT_EQ(rejection, expected);
+			UAM_ASSERT(!called && app.managed_followups.empty() && app.managed_followup_completed_owners.empty() && app.queued_agent_run_ids.empty() && app.acp_sessions.empty());
+		};
+		refuse_continuation(fixture.app, uam::ManagedFollowupCode::NativeResumeUnavailable);
+		uam::AppState restarted;
+		restarted.data_root = restart_root.root;
+		restarted.settings = fixture.app.settings;
+		restarted.provider_profiles = fixture.app.provider_profiles;
+		auto startup = uam::AgentRunLedger::LoadAll(restarted.data_root);
+		UAM_ASSERT(uam::AgentRunLedger::MarkNonterminalInterrupted(restarted.data_root, &startup.runs, "manager_restarted", &startup.errors));
+		restarted.agent_runs = std::move(startup.runs);
+		UAM_ASSERT(restarted.agent_runs.empty());
+		ChatHistorySyncService().LoadSidebarChats(restarted);
+		UAM_ASSERT(restarted.managed_initial_history);
+		std::unordered_map<std::string, std::size_t> history_counts;
+		uam::ManagedSubagentControlService::AddRestartInspectionCounts(restarted, history_counts);
+		UAM_ASSERT_EQ(history_counts.at(fixture.root_id), std::size_t{1});
+		uam::ManagedSubagentPage page;
+		if (!uam::ManagedSubagentControlService::List(restarted, fixture.root_id, &page, &error))
+			throw TestFailure("Gemini restart inspection: " + error);
+		UAM_ASSERT_EQ(page.total_count, std::size_t{1});
+		UAM_ASSERT_EQ(page.runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(page.runs.front().run_id, completed.id);
+		UAM_ASSERT_EQ(page.runs.front().provider_id, completed.provider_id);
+		UAM_ASSERT_EQ(page.runs.front().model_id, completed.model_id);
+		UAM_ASSERT_EQ(page.runs.front().status, completed.status);
+		UAM_ASSERT_EQ(page.runs.front().task_title, fixture.task);
+		UAM_ASSERT(page.runs.front().last_reported && !page.runs.front().can_cancel);
+		const auto display = uam::ManagedSubagentControlService::ToJson(page).dump();
+		UAM_ASSERT(display.find("connectionConfigurationJson") == std::string::npos && display.find("providerConfigurationJson") == std::string::npos);
+		const auto identity = uam::CaptureManagedAgentTranscriptRead(restarted, fixture.root_id, completed.transcript_chat_id);
+		UAM_ASSERT(identity && identity->initial_history && identity->history_error.empty());
+		const auto read = std::async(std::launch::async, [&] { return uam::LoadManagedAgentTranscriptDetached(restarted.data_root, *identity); }).get();
+		UAM_ASSERT_EQ(read.status, uam::ManagedAgentTranscriptReadStatus::Ready);
+		UAM_ASSERT(uam::MatchesManagedAgentTranscriptRead(restarted, *identity, read.transcript));
+		UAM_ASSERT_EQ(read.transcript.native_session_id, fixture.native);
+		UAM_ASSERT_EQ(std::ranges::count(read.transcript.messages, fixture.task, &Message::content), 1);
+		UAM_ASSERT_EQ(std::ranges::count(read.transcript.messages, fixture.answer, &Message::content), 1);
+		UAM_ASSERT(!uam::ManagedSubagentFollowupService::GetState(restarted, fixture.root_id, completed.id).can_send);
+		refuse_continuation(restarted, uam::ManagedFollowupCode::ScopeChanged);
+		UAM_ASSERT(restarted.agent_runs.empty() && restarted.queued_agent_run_ids.empty() && restarted.acp_sessions.empty() && restarted.managed_initial_runtime_owners.empty() && restarted.managed_followup_completed_owners.empty());
+		for (const auto& [relative, bytes] : originals)
+		{
+			UAM_ASSERT_EQ(ReadFile(restart_root.root / relative), bytes);
+			UAM_ASSERT_EQ(ReadFile(fixture.app.data_root / relative), bytes);
+		}
+		const auto ledger = uam::AgentRunLedger::LoadAllReadOnly(restarted.data_root);
+		UAM_ASSERT(ledger.errors.empty() && ledger.runs.size() == 1);
+		UAM_ASSERT_EQ(ledger.runs.front().managed_continuation, completed.managed_continuation);
+		UAM_ASSERT_EQ(fixture.PromptCount(), std::size_t{1});
+	}
+}
+
+UAM_TEST(ManagedInitialGeminiRawPlanReplyBindsOnlyAfterOwnedCompletionSaveAndReap)
+{
+	for (const std::string version : {"0.55.1", "0.64.0"})
+		CheckManagedGeminiInitialBinding("none", version);
+}
+
+UAM_TEST(ManagedInitialGeminiMissingNormalizedOrChangedProofStaysUnbound)
+{
+	for (const std::string fault : {"missing-model", "missing-policy", "normalized-model", "config-options", "transient-policy", "late-config", "noncanonical-id", "foreign-update", "unadvertised-model", "duplicate-model", "unadvertised-plan", "wrong-agent", "native-text-policy", "missing-execution-model", "changed-execution-model", "mixed-execution-models", "zero-work", "contradictory-counts"})
+		CheckManagedGeminiInitialBinding(fault);
+	CheckManagedGeminiInitialBinding("unqualified-version", "0.55.2");
+	CheckManagedGeminiInitialBinding("contradictory-standard-usage", "0.64.0");
 }
 #endif
 

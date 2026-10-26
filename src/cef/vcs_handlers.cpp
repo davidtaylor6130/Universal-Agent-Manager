@@ -3,6 +3,7 @@
 #include "cef/uam_query_handler_async.h"
 
 #include "app/chat_domain_service.h"
+#include "app/chat_reference_context.h"
 #include "app/git_worktree_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
@@ -18,6 +19,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -725,6 +727,71 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	                 });
 }
 
+void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	const std::string kind = payload.value("kind", "");
+	if ((kind != "branch" && kind != "worktree") || chat->imported_read_only || chat->created_at.empty())
+	{ cb->Failure(400, "Choose an editable chat and a branch or worktree reference."); return; }
+	if (m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(chat->id))
+	{ cb->Failure(409, "The workspace is changing. Try again shortly."); return; }
+	if (kind == "worktree" && !uam::paths::HasGitWorktreeDirectory(*chat))
+	{ cb->Failure(400, "This chat has no configured Git worktree to reference."); return; }
+	if (!uam::BoundedChatReferenceValue(chat->id, 128) || !uam::BoundedChatReferenceValue(chat->created_at, 64) ||
+	    !uam::BoundedChatReferenceValue(chat->execution_host_id, 256) ||
+	    !uam::BoundedChatReferenceValue(chat->workspace_source_directory, 4096) ||
+	    !uam::BoundedChatReferenceValue(chat->workspace_base_ref, 1024))
+	{ cb->Failure(400, "This chat context exceeds the reference limits."); return; }
+	std::shared_ptr<void> slot = uam::AcquireWorkspaceVcsContextSlot(m_pendingWorkspaceVcsContexts);
+	if (!slot) { cb->Failure(429, "Repository context is busy. Try again shortly."); return; }
+	ChatSession captured = uam::CaptureVcsChatContext(*chat);
+	captured.metadata_incarnation = chat->metadata_incarnation;
+	captured.created_at = chat->created_at;
+	captured.workspace_base_ref = chat->workspace_base_ref;
+	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
+	if (workspace.empty() || host == nullptr)
+	{ cb->Failure(409, "The chat workspace or execution host is unavailable."); return; }
+	const ExecutionHost expected_host = *host;
+	const std::filesystem::path data_root = m_app.data_root;
+	ReadOnlyAppSnapshotInputs inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::shared_ptr<void> remote_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [inputs = std::move(inputs), captured, kind, slot = std::move(slot), remote_lease]() mutable
+	    {
+		    const std::shared_ptr<void> active_slot = std::move(slot);
+		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
+		    const uam::VcsCommitStatus status = uam::VcsCommitService().Status(snapshot, captured, uam::VcsType::Git, false, {}, true);
+		    if (!status.available || status.active_vcs_type != uam::VcsType::Git || !status.error.empty() || status.workspace_directory.empty())
+		    { return AsyncFailure(409, "Git context is unavailable for this chat workspace."); }
+		    if (kind == "branch" && status.branch_or_revision.empty())
+		    { return AsyncFailure(409, "This workspace has no named current branch (it may have a detached HEAD)."); }
+		    if (!uam::BoundedChatReferenceValue(status.branch_or_revision, 1024) ||
+		        !uam::BoundedChatReferenceValue(status.workspace_directory, 4096))
+		    { return AsyncFailure(409, "This repository context exceeds the reference limits."); }
+		    // This is a historical observation of the configured association, never a checkout/control token.
+		    return AsyncSuccess({{"kind", kind}, {"chatId", captured.id}, {"chatCreatedAt", captured.created_at},
+		        {"executionHostId", uam::strings::NonEmptyOrFallback(captured.execution_host_id, "local")},
+		        {"workspaceDirectory", status.workspace_directory}, {"branchName", status.branch_or_revision},
+		        {"worktreeDirectory", kind == "worktree" ? status.workspace_directory : std::string{}},
+		        {"sourceDirectory", captured.workspace_source_directory}, {"baseRef", captured.workspace_base_ref},
+		        {"capturedAt", uam::time::IsoUtcTimestampNow()}});
+	    },
+	    [this, captured, workspace, expected_host, data_root](AsyncCefResult& result)
+	    {
+		    if (!result.ok) return;
+		    const ChatSession* current = ChatDomainService().FindChatById(m_app, captured.id);
+		    const ExecutionHost* current_host = current == nullptr ? nullptr : uam::execution_hosts::Find(m_app.settings.execution_hosts, current->execution_host_id);
+		    if (current == nullptr || current_host == nullptr || m_app.data_root != data_root ||
+		        m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(captured.id) ||
+		        !uam::SameChatReferenceContext(*current, captured) ||
+		        !uam::execution_hosts::SameConnection(*current_host, expected_host) ||
+		        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace)
+		        result = AsyncFailure(409, "The chat, workspace or execution host changed while capturing context. Try again.");
+	    }, TID_FILE_USER_VISIBLE);
+}
+
 void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	if (!payload.contains("chatId") || !payload["chatId"].is_string() || !payload.contains("path") || !payload["path"].is_string())
@@ -740,6 +807,8 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 	if (workspace.empty() || path.empty() || path.size() > 16384 || path.find('\0') != std::string::npos)
 	{ cb->Failure(400, "Choose a file in this chat's workspace."); return; }
 	const std::string host_id = uam::strings::NonEmptyOrFallback(chat->execution_host_id, "local");
+	const std::string chat_created_at = chat->created_at;
+	const auto chat_incarnation = chat->metadata_incarnation;
 	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
 	if (host_id != "local" && (!expected_host || expected_host->transport != "ssh" || expected_host->runner_status != "ready"))
@@ -747,7 +816,7 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 	const std::filesystem::path data_root = m_app.data_root;
 	++m_pendingFilePreviews;
 	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [workspace, path, host_id, expected_host]()
+	    [workspace, path, host_id, expected_host, chat_id = chat->id, chat_created_at]()
 	    {
 		    nlohmann::json preview;
 		    if (host_id == "local")
@@ -759,22 +828,24 @@ void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*brow
 		    else
 		    {
 			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			        uam::remote::SshBridgeArgv(expected_host->ssh_alias, expected_host->platform, expected_host->runner_version,
-			            expected_host->runner_directory, expected_host->runner_protocol_version), expected_host->runner_version, expected_host->runner_protocol_version);
+			        *expected_host);
 			    std::string error;
 			    if (!client.ReadWorkspaceFile(workspace, path, preview, &error)) return AsyncFailure(503, error);
 		    }
 		    preview["workspace"] = workspace;
 		    preview["executionHostId"] = host_id;
+		    preview["chatId"] = chat_id;
+		    preview["chatCreatedAt"] = chat_created_at;
 		    return AsyncSuccess(std::move(preview));
 	    },
-	    [this, chat_id = chat->id, workspace, host_id, expected_host, data_root](AsyncCefResult& result)
+	    [this, chat_id = chat->id, chat_created_at, chat_incarnation, workspace, host_id, expected_host, data_root](AsyncCefResult& result)
 	    {
 		    --m_pendingFilePreviews;
 		    if (!result.ok) return;
 		    const ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
 		    const ExecutionHost* current_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
-		    if (current == nullptr || m_app.data_root != data_root || m_workspaceDeletionPending ||
+		    if (current == nullptr || current->created_at != chat_created_at || current->metadata_incarnation != chat_incarnation ||
+		        m_app.data_root != data_root || m_workspaceDeletionPending ||
 		        m_app.worktree_operation_chat_ids.contains(chat_id) ||
 		        uam::strings::NonEmptyOrFallback(current->execution_host_id, "local") != host_id || FilePreviewWorkspace(m_app, *current) != workspace ||
 		        (host_id != "local" && (!current_host || !expected_host || !uam::execution_hosts::SameConnection(*current_host, *expected_host))))

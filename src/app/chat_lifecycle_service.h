@@ -101,7 +101,7 @@ namespace uam
 		std::string reference;
 	};
 	/// <summary>Builds a bounded reference from recent messages without copying full message bodies.</summary>
-	std::string BuildTemporarySideChatContext(const std::vector<Message>& messages);
+	std::string BuildTemporarySideChatContext(const std::vector<Message>& messages, std::string* error = nullptr);
 	/// <summary>Reads a detached tail page on a worker; the parent remains unhydrated.</summary>
 	std::optional<TemporarySideChatContext> PrepareTemporarySideChatContext(const std::filesystem::path& data_root,
 	    const ChatSession& parent, const std::function<bool()>& cancelled = {});

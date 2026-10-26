@@ -243,8 +243,7 @@ namespace
 		{
 			const ExecutionHost& host = *query.host;
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version),
-			    host.runner_version, host.runner_protocol_version);
+			    host);
 			return OpenCodeCompactionHistoryService::CollectBoundedPages(query,
 			    [&](const OpenCodeCompactionHistoryService::Query& page, std::stop_token cancellation)
 			{

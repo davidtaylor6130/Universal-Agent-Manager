@@ -5,6 +5,8 @@
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
+#include "app/data_folder_settings_service.h"
+#include "cef/uam_query_handler_async.h"
 
 #include "include/cef_task.h"
 #include "include/views/cef_browser_view.h"
@@ -12,6 +14,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -91,6 +94,47 @@ namespace
 		callback->Success(state.dump());
 		if (command == "close") CefPostTask(TID_UI, new CloseWindowTask(window));
 	}
+}
+
+void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!uam::DataFolderSettingsService::kTransfersValidated)
+	{
+		cb->Failure(409, "Restart to apply a data folder remains disabled until native handoff validation is adequate.");
+		return;
+	}
+	const auto view = browser && !browser->IsPopup() ? CefBrowserView::GetForBrowser(browser) : nullptr;
+	const auto window = view ? view->GetWindow() : nullptr;
+	const auto service = m_app.data_folder_settings;
+	if (!window || !service || service->StartupRoot() != m_app.data_root || !payload.is_object() || payload.size() != 1 || !payload.contains("expectedRevision") || !payload["expectedRevision"].is_string() || payload["expectedRevision"].get_ref<const std::string&>().empty() || payload["expectedRevision"].get_ref<const std::string&>().size() > 300)
+	{
+		cb->Failure(400, "Restart requires the exact observed local folder revision and native window owner.");
+		return;
+	}
+	const auto revision = payload["expectedRevision"].get<std::string>();
+	if (std::any_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) || std::any_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; }))
+	{
+		cb->Failure(409, "Stop active provider sessions before requesting a data-folder transfer. Their teardown has no generic confirmed-stop receipt.");
+		return;
+	}
+	(void)uam::query_handler_async::RunAsyncCefQuery(
+	    m_asyncLifetime, cb,
+	    [service, revision]()
+	    {
+		    const auto armed = service->ArmRestart(revision);
+		    return armed.committed ? uam::query_handler_async::AsyncSuccess(nlohmann::json::object()) : uam::query_handler_async::AsyncFailure(409, armed.error);
+	    },
+	    [window](uam::query_handler_async::AsyncCefResult& result)
+	    {
+		    if (!result.ok)
+			    return;
+		    if (!uam::platform::RequestApplicationRestart(true))
+		    {
+			    result = uam::query_handler_async::AsyncFailure(409, "Supervised restart is unavailable. The folder choice remains pending; no transfer occurred.");
+			    return;
+		    }
+		    CefPostTask(TID_UI, new CloseWindowTask(window));
+	    });
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +405,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
 		{"getWorkspaceVcsContext", &UamQueryHandler::HandleGetWorkspaceVcsContext},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
+		{"captureChatReferenceContext", &UamQueryHandler::HandleCaptureChatReferenceContext},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
@@ -438,6 +483,17 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
+		return true;
+	}
+	// Local profile selection is desktop-only, outside the companion DispatchAction path.
+	if (action == "restartToApplyDataFolder")
+	{
+		HandleRestartToApplyDataFolder(browser, payload, callback);
+		return true;
+	}
+	if (action == "getDataFolderSettings" || action == "chooseDataFolder" || action == "cancelDataFolderChoice" || action == "rollbackDataFolderTransfer")
+	{
+		HandleDataFolderSettings(action, payload, callback);
 		return true;
 	}
 

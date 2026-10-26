@@ -30,6 +30,14 @@ namespace uam
 		       execution_hosts::SameConnection(version->second.execution_host, host) ? version->second.installed_version : std::string{};
 	}
 
+	inline bool ShouldEnableOpenCodeV1ProgressiveMcp(const CentralProviderConfiguration& configuration, std::string_view provider, std::string_view host, std::string_view checked_version)
+	{
+		// Only fixture-verified versions; extend after discovery and permission checks pass.
+		return provider_ids::IsCliProviderAliasOf(provider, provider_ids::kOpenCodeCli) &&
+		    central_configuration::OpenCodeProgressiveMcpEnabled(configuration, host) &&
+		    (checked_version == "1.17.20" || checked_version == "1.18.35");
+	}
+
 	/// <summary>Compile native launch resources; preserve the queued agent instructions when supplied. SSH receives bytes and unresolved secret references.</summary>
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
@@ -54,9 +62,7 @@ namespace uam
 		    candidates, uam::paths::Utf8PathString(workspace), host.id);
 		CentralProviderConfiguration configuration = settings.central_provider_configuration;
 		configuration.enabled = central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "shared-setup", configuration.enabled);
-		// shortcut: only fixture-verified OpenCode versions; extend after discovery and permission checks pass.
-		const bool open_code_discovery = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
-		    (checked_provider_version == "1.17.20" || checked_provider_version == "1.18.35");
+		const bool open_code_discovery = ShouldEnableOpenCodeV1ProgressiveMcp(configuration, chat.provider_id, host.id, checked_provider_version);
 		// The disabled per-server deadline metadata shape is source-checked only for this native version.
 		const bool open_code_uam_control_deadline = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
 		    checked_provider_version == "1.19.3" && !chat.uam_control_explicitly_disabled &&

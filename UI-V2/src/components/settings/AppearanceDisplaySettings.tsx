@@ -39,6 +39,9 @@ export function AppearanceDisplaySettings() {
           <MenuSelect label="Added and removed line colours" value={preferences.diffPalette} options={DIFF_OPTIONS}
             onChange={(value) => update({ diffPalette: value as DiffPalette })} />
         </div>} />
+      <SettingRow title="Model token limits" description="Show each model's reported context window and maximum output in the model picker."
+        control={<Switch hideLabel label="Show model token limits" checked={preferences.modelTokenLimits}
+          onChange={(event) => update({ modelTokenLimits: event.target.checked })} />} />
       <SettingRow title="Animation speed" description="Off removes transitions entirely."
         control={
           <MenuSelect

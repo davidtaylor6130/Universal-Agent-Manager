@@ -122,6 +122,7 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpS
 	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
 	usage.total.total_tokens += last.total_tokens;
 	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	uam::acp_detail::RecordGoalReviewTurnUsage(session, last.total_tokens);
 	return false;
 }
 
@@ -608,9 +609,7 @@ namespace
 		if (remote_host != nullptr)
 		{
 			child.remote = std::make_unique<uam::remote::RunnerClient>(service,
-			    uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version,
-			                               remote_host->runner_directory, remote_host->runner_protocol_version),
-			    remote_host->runner_version, remote_host->runner_protocol_version);
+			    *remote_host);
 			const std::string operation_id = service.GenerateUuid();
 			if (operation_id.empty()) return fail("Could not allocate a remote OpenCode creation request.");
 			child.remote_process_id = "opencode-create-" + operation_id;

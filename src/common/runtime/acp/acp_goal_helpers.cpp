@@ -1004,6 +1004,73 @@ int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& s
 	return std::max<int64_t>(1, tokens);
 }
 
+void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session)
+{
+	session.goal_review_usage = {};
+	auto& receipt = session.goal_review_usage;
+	receipt.turn_serial = session.turn_serial;
+	receipt.fresh_session = fresh_session;
+	auto& usage = session.provider_usage.token_usage;
+	if (fresh_session)
+	{
+		// The internal review requests a new native context, with no resumed history.
+		receipt.cumulative_baseline = 0;
+		usage.goal_cumulative_total.reset();
+		usage.goal_cumulative_session_id.clear();
+	}
+	else
+	{
+		receipt.session_id = session.session_id;
+		if (!session.session_id.empty() && usage.goal_cumulative_session_id == session.session_id)
+			receipt.cumulative_baseline = usage.goal_cumulative_total;
+	}
+}
+
+void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental)
+{
+	auto& receipt = session.goal_review_usage;
+	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
+	if (session.session_id.empty() || (!receipt.session_id.empty() && receipt.session_id != session.session_id))
+	{
+		receipt.tokens.reset();
+		receipt.cumulative_baseline.reset();
+		receipt.turn_serial = -1;
+		return;
+	}
+	if (receipt.session_id.empty()) receipt.session_id = session.session_id;
+	const std::int64_t previous = incremental ? receipt.tokens.value_or(0) : 0;
+	receipt.tokens = tokens > std::numeric_limits<std::int64_t>::max() - previous
+	    ? std::numeric_limits<std::int64_t>::max() : previous + tokens;
+}
+
+void RecordGoalReviewCumulativeUsage(AcpSessionState& session, std::int64_t tokens)
+{
+	if (tokens < 0 || session.session_id.empty()) return;
+	// Only validated adapter receipts reach this collector. Display telemetry is not a baseline.
+	auto& usage = session.provider_usage.token_usage;
+	if (usage.goal_cumulative_session_id != session.session_id)
+	{
+		usage.goal_cumulative_total.reset();
+		usage.goal_cumulative_session_id = session.session_id;
+	}
+	usage.goal_cumulative_total = std::max(usage.goal_cumulative_total.value_or(0), tokens);
+	auto& receipt = session.goal_review_usage;
+	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
+	if (receipt.fresh_session && receipt.session_id.empty()) receipt.session_id = session.session_id;
+	if (session.session_id.empty() || receipt.session_id != session.session_id ||
+	    !receipt.cumulative_baseline)
+	{
+		receipt.tokens.reset();
+		receipt.cumulative_baseline.reset();
+		return;
+	}
+	// A late older snapshot cannot erase usage already observed for this same receipt.
+	if (tokens < *receipt.cumulative_baseline) return;
+	const std::int64_t delta = tokens - *receipt.cumulative_baseline;
+	if (receipt.tokens && delta < *receipt.tokens) return;
+	RecordGoalReviewTurnUsage(session, delta);
+}
+
 bool CanQueueGoalInternalPrompt(const AcpSessionState& session)
 {
 	return !session.remote_source_exit_reported && session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty() && session.queued_user_prompts.empty();

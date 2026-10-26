@@ -133,9 +133,7 @@ namespace
 			return result;
 		}
 		uam::remote::RunnerClient client(service,
-		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
-		        host.runner_directory, host.runner_protocol_version),
-		    host.runner_version, host.runner_protocol_version);
+		    host);
 		const auto finish = [&]() -> ProcessExecutionResult
 		{
 			if (remote_connected_out != nullptr && !result.canceled)

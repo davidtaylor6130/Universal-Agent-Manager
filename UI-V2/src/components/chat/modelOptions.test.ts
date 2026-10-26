@@ -1,6 +1,37 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildProviderReasoningOptions, buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, modelCatalogForDefaults, reasoningEffortForModel, searchModelOptions, selectedRuntimeModel } from './modelOptions'
+import { buildProviderReasoningOptions, buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, FRIENDLY_MODEL_LABELS, modelCatalogForDefaults, reasoningEffortForModel, searchModelOptions, selectedRuntimeModel } from './modelOptions'
+
+describe('reported model capacity options', () => {
+  it('retains reported token limits for every provider, including friendly labels and explicit zero', () => {
+    const modelId = Object.keys(FRIENDLY_MODEL_LABELS).find(Boolean)!
+    const source = { availableModels: [{ id: modelId, name: 'Reported model', description: '', contextWindowTokens: 200000, maxOutputTokens: 0 }] }
+    for (const providerId of ['gemini-cli', 'codex-cli', 'claude-cli', 'opencode-cli', 'copilot-cli', 'antigravity-cli']) {
+      expect(buildModelOptions(source, '', undefined, providerId)[0]).toMatchObject({ id: modelId, contextWindowTokens: 200000, maxOutputTokens: 0 })
+    }
+    expect(buildModelOptions(source, '', undefined, 'gemini-cli')[0].label).toBe(FRIENDLY_MODEL_LABELS[modelId].label)
+  })
+
+  it('does not infer capacity for defaults, configured choices, retained selections or fallback names', () => {
+    const source = {
+      currentModelId: 'reported',
+      availableModels: [{ id: 'reported', name: 'Reported', description: '', contextWindowTokens: 1000000, maxOutputTokens: 64000 }],
+      configOptions: [{ id: 'model', category: 'model', name: 'Model', description: '', currentValue: 'configured-70b-200k', options: [{ value: 'configured-70b-200k', name: 'Configured 70B 200K', description: '' }] }],
+    }
+    const options = buildModelOptions(source, 'retained-128k', undefined, 'codex-cli', true)
+    expect(options.find(option => option.id === 'reported')?.contextWindowTokens).toBe(1000000)
+    for (const id of ['', 'configured-70b-200k', 'retained-128k']) {
+      const option = options.find(option => option.id === id)!
+      expect(option).toBeDefined()
+      expect(option.contextWindowTokens).toBeUndefined()
+      expect(option.maxOutputTokens).toBeUndefined()
+    }
+    for (const option of buildModelOptions(undefined, '', undefined, 'gemini-cli')) {
+      expect(option.contextWindowTokens).toBeUndefined()
+      expect(option.maxOutputTokens).toBeUndefined()
+    }
+  })
+})
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {

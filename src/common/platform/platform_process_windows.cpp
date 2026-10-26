@@ -1,3 +1,4 @@
+#include "common/platform/data_root_lock.h"
 #include "platform_services_windows_impl_internal.h"
 
 #include <atomic>
@@ -807,34 +808,7 @@ class WindowsProcessService final : public IPlatformProcessService
 
 	std::unique_ptr<uam::platform::DataRootLock> TryAcquireDataRootLock(const std::filesystem::path& data_root, std::string* error_out = nullptr) const override
 	{
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(data_root, &ec))
-		{
-			if (error_out != nullptr)
-			{
-				*error_out = "Failed to create data root lock directory: " + ec.message();
-			}
-			return nullptr;
-		}
-
-		const std::filesystem::path lock_path = data_root / ".uam-data-root.lock";
-		const HANDLE handle = CreateFileW(lock_path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-		if (handle == INVALID_HANDLE_VALUE)
-		{
-			if (error_out != nullptr)
-			{
-				const DWORD error = GetLastError();
-				*error_out = (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? "Another Universal Agent Manager instance is already using this data root." : "Failed to open data root lock file.";
-			}
-			return nullptr;
-		}
-
-		const std::string pid_text = std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) + "\n";
-		DWORD written = 0;
-		SetFilePointer(handle, 0, nullptr, FILE_BEGIN);
-		SetEndOfFile(handle);
-		WriteFile(handle, pid_text.data(), static_cast<DWORD>(pid_text.size()), &written, nullptr);
-		return std::make_unique<WindowsDataRootLock>(handle);
+		return uam::platform::AnchoredDataRootLock::TryAcquire(data_root, error_out);
 	}
 
 	uintmax_t NativeGeminiSessionMaxFileBytes() const override

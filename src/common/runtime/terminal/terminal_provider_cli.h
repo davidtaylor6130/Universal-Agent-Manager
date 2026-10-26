@@ -5,6 +5,7 @@
 
 #include <string>
 #include <string_view>
+#include <span>
 #include <vector>
 
 namespace uam
@@ -18,7 +19,10 @@ std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& 
 std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider);
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr);
 /// <summary>Snapshots recent saved conversation text and compaction summaries within a 32 KiB history budget; current prompts are separate.</summary>
-std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token stop_token = {});
+std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token stop_token = {}, std::string* error = nullptr);
+std::string BuildProviderHandoffContext(std::span<const Message> messages, std::stop_token stop_token = {}, std::string* error = nullptr, std::size_t budget = 32768);
+/// <summary>Holds saved context when quarantined history cannot prove its exact safe projection.</summary>
+bool ValidateProviderHandoffContext(const ChatSession& chat, std::size_t history_count, std::string* error = nullptr, std::stop_token stop_token = {});
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat);
 /// <summary>Stages prior conversation as provider-native context without synthetic user turns.</summary>
 bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,

@@ -172,7 +172,8 @@ jobs:
 
       - name: Validate release tag matches product version
         if: startsWith(github.ref, 'refs/tags/')
-        run: node -e "const version = require('./UI-V2/package.json').version; const tag = 'v' + version; if (process.env.GITHUB_REF_NAME !== tag) throw new Error('Tag ' + process.env.GITHUB_REF_NAME + ' does not match ' + tag + '.');"
+        # Helpers and bundles carry the numeric X.Y.Z; a tag may add a prerelease suffix such as -alpha.1.
+        run: node -e "const version = require('./UI-V2/package.json').version; const tag = process.env.GITHUB_REF_NAME; if (tag !== 'v' + version && !tag.startsWith('v' + version + '-')) throw new Error('Tag ' + tag + ' does not match v' + version + '.');"
 
       - name: Configure (macOS)
         if: runner.os == 'macOS'
@@ -185,8 +186,21 @@ jobs:
       - name: Build
         run: cmake --build Builds --config Release --parallel 4
 
+      - name: Exclude test files from Defender scanning (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+
       - name: Test native Release build
-        run: ctest --test-dir Builds -C Release --output-on-failure
+        run: ctest --test-dir Builds -C Release --output-on-failure -E "^uam_core_tests$"
+
+      # Same gate as CI: every case runs; only tests/ci_quarantine.txt entries may fail after one retry.
+      - name: Test native core cases
+        shell: bash
+        run: |
+          binary=Builds/uam_core_tests python=python3
+          if [ "$RUNNER_OS" = Windows ]; then binary=Builds/Release/uam_core_tests.exe python=python; fi
+          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
 
       # macOS output: Builds/universal_agent_manager.app (ad-hoc signed via
       # `codesign --sign -`, no certificate required). ditto preserves the bundle.
@@ -241,3 +255,5 @@ jobs:
             dist/*.cdx.json
           fail_on_unmatched_files: true
           generate_release_notes: true
+          # Prerelease tags (vX.Y.Z-suffix) must not replace the Latest release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
