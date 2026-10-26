@@ -42,7 +42,12 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 
 std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command)
 {
-	command.insert(command.begin(), {"/bin/sh", "-c", "f=$(mktemp) || exit 1; trap 'rm -f \"$f\"' EXIT; \"$@\" >\"$f\" || exit $?; cat \"$f\"", "uam-opencode-export"});
+	// The private file is unlinked once open, so no transcript survives a killed or timed-out export.
+	command.insert(command.begin(), {"/bin/sh", "-c",
+	    "command -v \"$1\" >/dev/null 2>&1 || { echo 'UAM OpenCode adapter: The OpenCode command was not found on this host.' >&2; exit 127; }; "
+	    "f=$(mktemp) || { echo 'UAM OpenCode adapter: A private export file could not be created.' >&2; exit 1; }; "
+	    "exec 3>\"$f\" 4<\"$f\"; rm -f \"$f\"; \"$@\" >&3 3>&- 4<&- || exit $?; exec 3>&-; cat <&4",
+	    "uam-opencode-export"});
 	return command;
 }
 

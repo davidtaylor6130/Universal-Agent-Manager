@@ -218,6 +218,7 @@ struct OpenCodeNativeCompanion::State
 	bool captured = false, ready = false, failed = false, in_flight = false, read_only = false, retry_recovered = false;
 	int failures = 0;
 	std::string error;
+	std::string failure_reason;
 	Clock::time_point next{};
 	std::map<std::string, Json> permissions;
 	std::set<std::string> published;
@@ -505,7 +506,7 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::BeforeDispatch(AppState& 
 		const ExecutionHost* current = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		if (!current || !execution_hosts::SameConnection(*state.query.host, *current))
 		{
-			state.failed = true;
+			state.failed = true; state.failure_reason = "host_changed";
 			state.error = "The native OpenCode execution host changed while its process was running.";
 		}
 	}
@@ -514,7 +515,7 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::BeforeDispatch(AppState& 
 	{
 		if (read_only && state.ready && (session.prompt_request_id != 0 || session.recovering_remote_turn))
 		{
-			state.failed = true;
+			state.failed = true; state.failure_reason = "policy_changed";
 			state.error = "The native OpenCode delegation policy changed during an active turn.";
 		}
 		state.read_only = read_only;
@@ -589,7 +590,11 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				// A missing snapshot is not evidence that the provider or a pending
 				// decision failed. Hold new prompts and retry the complete observation;
 				// queued decisions remain gated by fresh ownership proof before delivery.
-				if (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit) owner->failed = true;
+				if (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit)
+				{
+					owner->failed = true;
+					owner->failure_reason = result.authority_conflict ? "ownership_conflict" : "observation_failures";
+				}
 			}
 			else
 			{
@@ -675,7 +680,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			if (owner->failed && session.running)
 			{
 				// Without this entry a UAM-initiated stop leaves the child timeline ending at session/new.
-				acp_detail::AppendAcpDiagnostic(session, "native_companion", owner->failures >= kConsecutiveFailureLimit ? "observation_failures" : "ownership_conflict",
+				acp_detail::AppendAcpDiagnostic(session, "native_companion", owner->failure_reason,
 				    "", "", false, 0, gate_error, "failures=" + std::to_string(owner->failures));
 				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Interrupt, true);
 				acp_detail::FailAcpTurnOrSession(session, chat, gate_error + " UAM stopped sending approvals and requested the provider stop.");
@@ -901,7 +906,7 @@ void OpenCodeNativeActivityService::Stop()
 	if (!m_state || m_state->stopping) return;
 	m_state->stopping = true;
 	m_state->image_stop.request_stop();
-	for (auto& job : m_state->jobs) { job.stop.request_stop(); job.owner->in_flight = false; job.owner->failed = true; job.owner->error = "The native OpenCode companion is stopping."; }
+	for (auto& job : m_state->jobs) { job.stop.request_stop(); job.owner->in_flight = false; job.owner->failed = true; job.owner->failure_reason = "service_stopping"; job.owner->error = "The native OpenCode companion is stopping."; }
 	m_state->jobs.clear();
 	for (auto& job : m_state->image_jobs)
 	{

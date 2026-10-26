@@ -1,6 +1,7 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <functional>
 #include <deque>
 #include <cstdint>
@@ -41,7 +42,7 @@ inline std::string AdapterError(std::string_view diagnostic_tail)
 	const std::size_t start = diagnostic_tail.rfind(prefix);
 	if (start == std::string_view::npos) return {};
 	const std::string_view line = diagnostic_tail.substr(start + prefix.size());
-	return std::string(line.substr(0, line.find_first_of("\r\n")));
+	return std::string(line.substr(0, std::min<std::size_t>(line.find_first_of("\r\n"), 512)));
 }
 Json NormalizeExport(const Json& native);
 std::vector<std::string> ServeArgv(std::vector<std::string> command);

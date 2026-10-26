@@ -45,7 +45,7 @@ Configuration preserves captured instructions and actual MCP definitions; the sa
 
 ## History export
 
-OpenCode 1.19.4 can exit successfully before a piped standard output drains, cutting a large `export` at 128 or 192 KiB; this was reproduced on a Linux SSH host, while a Windows 1.19.4 host and local 2.1.4 returned complete output. On POSIX executing hosts, local and SSH V1 history export writes native output to a private temporary file and streams it after the native process exits, preserving the export's exit status. Discovery reports UAM's own adapter refusal, such as an unverified V2 version, instead of a generic list failure, and per-session failures name the provider, native session and SSH host. Windows V1 export and V2 export keep their direct routes. Import of the previously failing remote sessions on an installed build remains unverified.
+OpenCode 1.19.4 can exit successfully before a piped standard output drains, cutting a large `export` at 128 or 192 KiB; this was reproduced on a Linux SSH host, while a Windows 1.19.4 host and local 2.1.4 returned complete output. On POSIX executing hosts, local and SSH V1 history export writes native output to a private temporary file, unlinked as soon as it is open, and streams it after the native process exits, preserving the export's exit status and reporting a missing CLI explicitly. Discovery reports UAM's own adapter refusal, such as an unverified V2 version, instead of a generic list failure, and per-session failures name the provider, native session and SSH host. Windows hosts and local V2 export keep their direct routes. Import of the previously failing remote sessions on an installed build remains unverified.
 
 ## Progressive MCP discovery
 
