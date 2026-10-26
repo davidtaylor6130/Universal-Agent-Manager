@@ -51,6 +51,10 @@ This page records the isolated documentation trial and subsequent provider imple
 
 Do not reassign the owners of these existing V5 tasks or mark them fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
+## Stalled goal loop cap
+
+**Source-confirmed implementation gap; behavioral regression pending.** The [goal iteration cap](settings/goal-loops.md) must bound automatic UAM worker continuation. Review-driven continuation checks it before worker queueing, including after a transient blocker. The separate stalled-loop auto-resume route can still queue a worker for an active goal already at or above the cap, including after the cap is lowered. This existing route needs its own admission check and behavioral regression; it remains outside task-0970's review-ordering correction and does not weaken the agreed bound. Ownership and acceptance remain in V5 Incomplete Work as Stalled Goal Loop Cap.
+
 ## Documentation validation
 
 The local checker validates navigation, heading targets, reachability and one explicit row for each required capability in every provider checklist. The trial passes six negative scenarios: omitted capability, acceptance used as implementation status, duplicate capability, missing local target, missing heading and unreachable feature page. A manual reading check traced provider completeness, memory Off semantics, editor actions, waking chats and build exclusion to their owning agreements. This is documentation validation, not an independent user study or application acceptance.
@@ -126,6 +130,12 @@ Source review found a preexisting difference between direct native branching and
 ## Native history timestamp ordering
 
 Passive-child regression preparation exposed different timestamp representations: native Gemini history retains ISO strings while ordinary UAM metadata changes use the display timestamp format. The shared saved/native overlay compares timestamp strings directly; a genuine private untargeted Gemini import under known UTC instants now reproduces older native text replacing newer saved text while the newer-native control passes. A bounded comparator correction now passes the newer/older journal controls and five focused utility/overlay cases, and three integration cases now cover twelve Unknown publication-path arms with explicit source-matched retention of earlier passes; the subsequent full core run exposed two Unknown-path Codex receiver/status preservation regressions, and an independently reviewed operation-safe detail correction with guard cases is now applied; all four helpers were genuinely rebuilt and all26 focused cases now pass, and the current complete native and connected gates plus the signed R6 archive now pass; other recency consumers and live, platform and user acceptance remain pending. Claude R2/R3 follow-up attempts were rate limited without review. Its explicit current-controller-zone compatibility assumption does not reconstruct missing historical timezone provenance. The passive explicit-refresh correction uses actual scoped native conversation authority and does not normalize timestamps or establish correctness of other recency consumers. Preserve the existing ownership and authored-content rules while assessing this gap; historical fixture timestamps make the focused metadata-ordering prerequisite unambiguous without changing product comparisons.
+
+## Remote refresh entry point
+
+Should an explicit native-history refresh have a visible action in Chat, rather than relying on the existing Terminal-to-Chat view switch? Task-1055 distinguishes its failed-refresh notice and labels the saved-history recovery action “Reload history”; this action reads saved history and does not request native refresh or resend input. Preserve the existing entry point and native publication guards while David decides whether to add a visible refresh control. The [native refresh feedback agreement](chat/native-imports.md#remote-refresh-publication-feedback) retains separate clean-refusal and unconfirmed-save recovery instructions.
+
+Scoped GUI R2 recorded a nonblocking copy follow-up: older timeout, read-failure and ownership diagnostics still say “Retry to refresh it” or “Retry to refresh its history” when the failed-refresh notice offers “Reload history”. Keep that older diagnostic wording under this entry-point decision; the saved-history action remains read-only, and the scoped review does not approve a new refresh control or a rewrite of those existing failure routes.
 
 ## Native history query cancellation
 

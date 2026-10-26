@@ -9077,8 +9077,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState& app, const ChatSession& candidate,
 		    std::shared_ptr<const StoppedChatLaunchStorageReceipt> predecessor, std::function<bool()> still_owned,
-		    std::function<void(StoppedChatLaunchPublicationResult)> completion)
+		    std::function<void(StoppedChatLaunchPublicationResult)> completion,
+		    std::shared_ptr<const OwnedChatPublicationCancellation>* publication_cancellation)
 		{
+			if (publication_cancellation) publication_cancellation->reset();
 			ChatSession* live = ChatDomainService().FindChatById(app, candidate.id);
 			if (!predecessor || !completion || !still_owned || !predecessor->MatchesDataRoot(app.data_root) || !predecessor->Current() ||
 			    predecessor->Graph().id != candidate.id || !live || !candidate.messages_loaded || candidate.messages.empty() || candidate.imported_read_only ||
@@ -9097,6 +9099,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			own->still_owned = std::move(still_owned);
 			own->completion = std::move(completion);
 			own->ownership = std::make_shared<std::atomic<bool>>(true);
+			const auto cancellation = publication_cancellation
+			    ? std::shared_ptr<const OwnedChatPublicationCancellation>(new OwnedChatPublicationCancellation(own->ownership)) : nullptr;
 			std::vector<std::shared_ptr<const Message>> messages;
 			for (const Message& row : live->messages) messages.push_back(std::make_shared<const Message>(row));
 			auto root = app.data_root;
@@ -9108,6 +9112,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			task->publication_owned = own->ownership;
 			own->generation = task->schedule_generation;
 			task->owned_publication = std::move(own);
+			if (publication_cancellation) *publication_cancellation = cancellation;
 			return DurableAdmissionState::Pending;
 		}
 

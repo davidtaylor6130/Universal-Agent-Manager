@@ -1,5 +1,5 @@
 #include "common/utils/time_utils.h"
-#include "common/provider/claude/cli/claude_preinput_identity.h"
+#include "common/provider/claude_preinput_observation.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/provider/claude/cli/claude_tool_projection.h"
