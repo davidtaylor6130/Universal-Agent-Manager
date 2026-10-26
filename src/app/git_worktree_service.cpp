@@ -1228,7 +1228,7 @@ namespace uam
 			if (chat.svn_update_pending)
 			{ result.message = "SSH worktree creation supports existing Git repositories only; SVN preparation is unavailable."; return result; }
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+			    *host);
 			std::string requested, source, common, output;
 			bool git_metadata = false;
 			if (!InspectRemoteDirectory(client, chat.workspace_directory, requested, result.message, stop) ||
@@ -1330,7 +1330,7 @@ namespace uam
 			    metadata.workspace_branch_name.empty() && metadata.workspace_base_ref.empty() && !metadata.git_base_branch_override && !paths::PathExistsNoThrow(receipt))
 			{
 				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				    host);
 				std::string source;
 				bool git_metadata = false;
 				return InspectRemoteDirectory(client, metadata.workspace_directory, source, error, stop) &&
@@ -1358,7 +1358,7 @@ namespace uam
 			const ExecutionHost& inspection_host = state == "completed" ? host : captured;
 			if (inspection_host.runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(inspection_host)) return false;
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(inspection_host.ssh_alias, inspection_host.platform, inspection_host.runner_version, inspection_host.runner_directory, inspection_host.runner_protocol_version), inspection_host.runner_version, inspection_host.runner_protocol_version);
+			    inspection_host);
 			remote::ProcessPollResult process;
 			if (!client.Connect(&error, stop)) return false;
 			if (state == "pending")
@@ -1407,7 +1407,7 @@ namespace uam
 			if (!host || host->runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(*host))
 			{ status.error = "SSH Git worktrees require an available protocol-3 helper."; return status; }
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-			    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+			    *host);
 			const std::string requested = paths::HasGitWorktreeSource(chat) ? chat.workspace_source_directory : paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 			std::string source, output;
 			if (!InspectRemoteDirectory(client, requested, source, status.error, {}) ||

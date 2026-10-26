@@ -1,4 +1,6 @@
 #include "app/shell_action_service.h"
+#include "app/data_folder_transition.h"
+#include "common/platform/data_folder_writer_lease.h"
 
 #include "app/chat_domain_service.h"
 #include "app/chat_lifecycle_service.h"
@@ -773,6 +775,20 @@ bool ShellActionService::QueueLaunchRequest(const std::filesystem::path& data_ro
 	const auto flag = std::find(args.begin(), args.end(), kLaunchFlag);
 	if (flag == args.end()) return true;
 	if (recognized_out != nullptr) *recognized_out = true;
+	std::string ownership_error;
+	if (!uam::paths::CreateDirectoriesNoThrow(data_root))
+	{
+		if (error_out)
+			*error_out = "The application data folder is unavailable for shell actions.";
+		return false;
+	}
+	const auto writer = uam::platform::DataFolderWriterLease::TryAcquire(data_root, uam::platform::DataFolderWriterLease::Access::Shared, ownership_error);
+	if (!writer || !uam::DataFolderTransition::CheckExternalSourceFence(data_root, ownership_error, true))
+	{
+		if (error_out)
+			*error_out = ownership_error;
+		return false;
+	}
 	if (std::distance(flag, args.end()) < 3)
 	{
 		if (error_out != nullptr) *error_out = "Shell action invocation requires an action id and selected path.";
@@ -799,6 +815,13 @@ bool ShellActionService::QueueLaunchRequest(const std::filesystem::path& data_ro
 	if (!uam::io::WriteTextFile(RequestsPath(data_root) / (token + ".json"), request.dump() + "\n"))
 	{
 		if (error_out != nullptr) *error_out = "Failed to queue the shell action request.";
+		return false;
+	}
+	if (!uam::DataFolderTransition::CheckExternalSourceFence(data_root, ownership_error, true))
+	{
+		// Retain the uncertain request; never acknowledge it through a newly fenced source.
+		if (error_out)
+			*error_out = ownership_error;
 		return false;
 	}
 	return true;

@@ -1451,7 +1451,7 @@ namespace
 	    uam::AsyncMemoryExtractionState& extraction, std::stop_token stop_token)
 	{
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		uam::remote::RunnerClient client(service, host);
 		ProcessExecutionResult result;
 		const std::string id = service.GenerateUuid();
 		fs::path directory;

@@ -1,6 +1,7 @@
 #include "common/platform/app_crash_supervisor.h"
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <charconv>
 #include <cstdint>
@@ -20,6 +21,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 extern char** environ;
+#if defined(__APPLE__)
+#include <libproc.h>
+#endif
 #endif
 
 namespace uam::platform
@@ -28,6 +32,30 @@ namespace uam::platform
 	{
 		std::atomic_bool supervised_gui{false};
 		std::atomic_bool restart_requested{false};
+		std::atomic_bool data_folder_requested{false};
+		std::atomic_bool data_folder_shutdown_confirmed{false};
+		std::atomic_bool data_folder_restart_confirmed{false};
+
+		bool ParentRunsThisExecutable(std::uint32_t parent_pid)
+		{
+			std::error_code error;
+#if defined(_WIN32)
+			const HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, parent_pid);
+			if (!parent) return false;
+			std::array<wchar_t, 32768> source{}, own{};
+			DWORD source_size = static_cast<DWORD>(source.size());
+			const bool queried = QueryFullProcessImageNameW(parent, 0, source.data(), &source_size) && GetModuleFileNameW(nullptr, own.data(), static_cast<DWORD>(own.size()));
+			CloseHandle(parent);
+			return queried && std::filesystem::equivalent(source.data(), own.data(), error) && !error;
+#elif defined(__APPLE__)
+			std::array<char, PROC_PIDPATHINFO_MAXSIZE> source{}, own{};
+			return proc_pidpath(parent_pid, source.data(), static_cast<std::uint32_t>(source.size())) > 0 &&
+			    proc_pidpath(getpid(), own.data(), static_cast<std::uint32_t>(own.size())) > 0 &&
+			    std::filesystem::equivalent(source.data(), own.data(), error) && !error;
+#else
+			return std::filesystem::equivalent(std::filesystem::path("/proc") / std::to_string(parent_pid) / "exe", "/proc/self/exe", error) && !error;
+#endif
+		}
 
 		void LogRecovery(const int result, const int attempt, const bool exhausted)
 		{
@@ -63,6 +91,9 @@ namespace uam::platform
 				if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) std::_Exit(1);
 			}
 			if (parent_pid == 0 || parent_pid > static_cast<std::uint32_t>((std::numeric_limits<int>::max)())) std::_Exit(1);
+			const bool folder_handoff = std::find(arguments.begin(), arguments.end(), "--uam-data-folder-normal-exit") != arguments.end();
+			// A copied private flag and an arbitrary parent PID cannot vouch for a stopped profile.
+			if (folder_handoff && !ParentRunsThisExecutable(parent_pid)) std::_Exit(1);
 #if defined(_WIN32)
 			// The private marker alone must not enable restart in an unrelated process.
 			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -100,14 +131,34 @@ namespace uam::platform
 			}).detach();
 #endif
 			supervised_gui.store(true, std::memory_order_release);
+			data_folder_restart_confirmed.store(folder_handoff);
 		}
 	}
 
-	bool RequestApplicationRestart()
+	bool RequestApplicationRestart(bool data_folder_transition)
 	{
 		if (!supervised_gui.load(std::memory_order_acquire)) return false;
 		bool expected = false;
-		return restart_requested.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+		if (!restart_requested.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+			return false;
+		data_folder_requested.store(data_folder_transition);
+		return true;
+	}
+	bool DataFolderRestartRequested()
+	{
+		return data_folder_requested.load();
+	}
+	bool ConfirmedDataFolderRestart()
+	{
+		return data_folder_restart_confirmed.load();
+	}
+	void ConfirmDataFolderShutdown(bool confirmed)
+	{
+		data_folder_shutdown_confirmed.store(confirmed);
+	}
+	int RequestedRestartExitCode()
+	{
+		return !DataFolderRestartRequested() ? kApplicationRestartExitCode : data_folder_shutdown_confirmed.load() ? kDataFolderRestartExitCode : 1;
 	}
 
 	bool ApplicationRestartRequested()
@@ -128,6 +179,10 @@ namespace uam::platform
 			WatchSupervisor(arguments);
 			return std::nullopt;
 		}
+		// The stopped handoff marker is minted only after this supervisor observed full normal child exit.
+		if (std::find(arguments.begin(), arguments.end(), "--uam-data-folder-normal-exit") != arguments.end())
+			return 1;
+		bool stopped_handoff = false;
 		int restart_count = 0;
 		for (;;)
 		{
@@ -138,6 +193,8 @@ namespace uam::platform
 			// Preserve the original Unicode command line and Windows quoting verbatim.
 			std::wstring command_line = GetCommandLineW();
 			command_line += L" --uam-supervised-gui --uam-supervisor-pid=" + std::to_wstring(GetCurrentProcessId());
+			if (stopped_handoff)
+				command_line += L" --uam-data-folder-normal-exit";
 			STARTUPINFOW startup{};
 			startup.cb = sizeof(startup);
 			PROCESS_INFORMATION process{};
@@ -156,6 +213,8 @@ namespace uam::platform
 			std::vector<std::string> child_arguments = arguments;
 			child_arguments.emplace_back(child_argument);
 			child_arguments.push_back("--uam-supervisor-pid=" + std::to_string(getpid()));
+			if (stopped_handoff)
+				child_arguments.emplace_back("--uam-data-folder-normal-exit");
 			std::vector<char*> argv;
 			for (std::string& argument : child_arguments) argv.push_back(argument.data());
 			argv.push_back(nullptr);
@@ -176,7 +235,9 @@ namespace uam::platform
 #endif
 			// The wait above observes full process exit, including normal GUI teardown.
 			// Explicit requests neither consume nor reset the fatal-crash retry budget.
-			if (!crashed && result == kApplicationRestartExitCode) continue;
+			stopped_handoff = !crashed && result == kDataFolderRestartExitCode;
+			if (!crashed && (result == kApplicationRestartExitCode || result == kDataFolderRestartExitCode))
+				continue;
 			if (!crashed) return result;
 			if (std::chrono::steady_clock::now() - started >= std::chrono::minutes(1)) restart_count = 0;
 			if (++restart_count > 3)

@@ -180,8 +180,7 @@ namespace
 	{
 		ProcessExecutionResult result;
 		auto& process = PlatformServicesFactory::Instance().process_service;
-		uam::remote::RunnerClient client(process, uam::remote::SshBridgeArgv(host.ssh_alias, host.platform,
-		    host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		uam::remote::RunnerClient client(process, host);
 		if (!client.Connect(&result.error, stop)) return result;
 		const std::string uuid = process.GenerateUuid();
 		if (uuid.empty()) { result.error = "Could not allocate a model discovery process identity."; return result; }
