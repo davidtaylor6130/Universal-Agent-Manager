@@ -676,11 +676,15 @@ namespace uam
 		std::string chat_id;
 		std::string provider_id;
 		std::string process_execution_host_id;
+		/// Volatile shutdown projection fence captured at runtime creation, never native/input authority.
+		std::shared_ptr<const std::uint8_t> shutdown_chat_incarnation;
+		std::filesystem::path shutdown_data_root;
 		/// Catalog ownership captured when this provider process is launched; never persisted.
 		std::string model_catalog_scope_key;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
 		bool prompt_image_supported = false;
 		std::shared_ptr<OpenCodeNativeCompanion> opencode_native_companion;
+		bool opencode_v2_native = false; // owned local process only; never persisted
 		// Optional guard captured from the actual process adapter, never mutable chat/provider selection.
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
@@ -988,8 +992,18 @@ namespace uam
 		std::string wait_stale_reason;
 	};
 
+	/// Mutation fence for a captured stop result; never process ownership or replay permission.
+	struct AcpStopProjectionOwner
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> chat_incarnation;
+		std::shared_ptr<const char> runtime_incarnation;
+		const AcpSessionState* runtime = nullptr; // Comparison only, never dereferenced.
+	};
+
 	struct PendingAcpRemoteStop : public platform::StdioProcessPlatformFields
 	{
+		std::optional<AcpStopProjectionOwner> projection_owner;
 		std::string chat_id;
 		std::string stderr_tail;
 		double deadline_time_s = 0.0;
@@ -999,6 +1013,7 @@ namespace uam
 
 	struct AsyncAcpProcessStopTask
 	{
+		std::optional<AcpStopProjectionOwner> projection_owner;
 		// Initial-v2 completion must not fall back to a replacement chat ID/serial.
 		std::shared_ptr<ManagedInitialRuntimeOwner> managed_initial_owner;
 		std::string chat_id;

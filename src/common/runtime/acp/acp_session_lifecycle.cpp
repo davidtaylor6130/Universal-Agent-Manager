@@ -21,6 +21,7 @@
 #include "common/runtime/acp/acp_control_capability_retention.h"
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_process_handoff.h"
 
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
@@ -999,7 +1000,10 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	if (!preserve_native_recovery)
 		session.copilot_native_state = nlohmann::json::object();
 	if (!preserve_native_recovery)
+	{
 		session.opencode_native_companion.reset();
+		session.opencode_v2_native = false;
+	}
 	session.stderr_buffer.clear();
 	session.stdout_poll_pending = false;
 	session.stderr_poll_pending = false;
@@ -1032,7 +1036,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	ResetAcpPendingInteractionState(session);
 }
 
-bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string* error_out)
+bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string* error_out, bool process_exit_observed)
 {
 	const auto reject = [error_out](const char* message)
 	{
@@ -1051,7 +1055,7 @@ bool ValidateAcpRestartOwnership(const AppState& app, const AcpSessionState& ses
 	// Private discovery and goal contexts deliberately have their own native session identity.
 	if (!session.model_discovery_only && !session.goal_internal_session && !chat.native_session_id.empty() && session.session_id != chat.native_session_id)
 		return reject("The running provider belongs to a different native session.");
-	if (!session.last_process_id.empty() && session.last_process_id != AcpProcessHandleLabel(session))
+	if (!process_exit_observed && !session.last_process_id.empty() && session.last_process_id != AcpProcessHandleLabel(session))
 		return reject("The running provider process ownership changed before restart.");
 	// A matching saved host ID alone cannot grant control over a remote process.
 	if (remote && (!chat.remote_process_exists || chat.remote_process_control_token.empty() || session.remote_output_delivery_token != chat.remote_process_control_token || session.remote_runner_protocol_version <= 0 || (host->runner_protocol_version != 0 && host->runner_protocol_version != session.remote_runner_protocol_version)))
@@ -1103,11 +1107,11 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		    uam::remote::kRemoteStopControlLine.size(), &ignored_error);
 		auto pending = std::make_unique<PendingAcpRemoteStop>();
 		pending->chat_id = chat.id;
+		pending->projection_owner = CaptureAcpStopProjectionOwner(session, persisted ? persisted : &chat);
 		pending->deadline_time_s = GetAppTimeSeconds() + (stop_requested ? kRemoteStopConfirmationTimeoutSeconds : 0.0);
 		pending->recoverable_turn = AcpSessionHasActiveTurn(session);
 		pending->restart_after_stop = true;
-		TransferStdioProcessFields(session, *pending);
-		app.pending_acp_remote_stops.push_back(std::move(pending));
+		PublishStdioProcessTransfer(session, std::move(pending), app.pending_acp_remote_stops);
 		session.running = false;
 		session.remote_stop_pending = true;
 		session.transport_ownership_error.clear();
@@ -1208,6 +1212,8 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 
 	auto session = std::make_unique<AcpSessionState>();
 	session->chat_id = chat.id;
+	session->shutdown_chat_incarnation = chat.metadata_incarnation;
+	session->shutdown_data_root = app.data_root;
 	session->provider_id = provider.id;
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	session->managed_agent_run_id = chat.agent_run_id;
@@ -1542,6 +1548,17 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	// Reuse the existing asynchronous version worker and launch ownership packet; reconnect never reconfigures.
 	const std::string configuration_provider_id = provider_ids::CanonicalCliProviderLookupId(provider.id);
 	const bool needs_option_version = ProviderRuntimeRegistry::Resolve(provider).ModelOptionsRequireRestart() && !chat.reasoning_effort.empty() && (session.goal_turn_model_id.empty() || session.goal_turn_model_id == chat.model_id);
+	if (remote && execution_host->runner_protocol_version < 3 && ProviderRuntimeRegistry::Resolve(provider).RequiresStructuredCliVersion(provider) && !session.recovering_remote_turn && !session.recovering_remote_process)
+	{
+		const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider.id, execution_host->id));
+		if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked || !version->second.check_error.empty() || version->second.installed_version.empty() || !execution_hosts::SameConnection(version->second.execution_host, *execution_host))
+		{
+			session.last_error = "Update the SSH helper before a fresh OpenCode launch can verify its native protocol version.";
+			session.lifecycle_state = kAcpLifecycleError;
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+	}
 	if (remote && execution_host->runner_protocol_version < 3 && needs_option_version && !session.recovering_remote_turn && !session.recovering_remote_process)
 	{
 		session.last_error = "Update the SSH helper before launching Gemini with a named thinking level.";
@@ -1550,7 +1567,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			*error_out = session.last_error;
 		return false;
 	}
-	if ((!remote || execution_host->runner_protocol_version >= 3) && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process && ((remote && configuration_provider_id == provider_ids::kOpenCodeCli) || needs_option_version))
+	if ((!remote || execution_host->runner_protocol_version >= 3) && (!session.model_discovery_only || ProviderRuntimeRegistry::Resolve(provider).RequiresStructuredCliVersion(provider)) && !session.recovering_remote_turn && !session.recovering_remote_process && ((remote && configuration_provider_id == provider_ids::kOpenCodeCli) || ProviderRuntimeRegistry::Resolve(provider).RequiresStructuredCliVersion(provider) || needs_option_version))
 	{
 		ProviderCliCompatibilityService versions;
 		versions.Poll(app);
@@ -1569,6 +1586,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			return false;
 		};
 		if (checked && prepared && !version.check_error.empty()) return fail_version(version.check_error);
+		if (checked && version.check_error.empty() && version.installed_version.empty() && ProviderRuntimeRegistry::Resolve(provider).RequiresStructuredCliVersion(provider))
+			return fail_version("The CLI version check returned no usable protocol identity.");
 		if (checked && needs_option_version && version.check_error.empty() && !version.supported)
 			return fail_version("The installed CLI does not satisfy the native version manager's compatibility policy.");
 		if (checked && version.check_error.empty())
@@ -1619,10 +1638,17 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		const ChatBaselineReadiness baseline = PrepareChatRepositoryBaseline(app, chat, error_out);
 		if (baseline == ChatBaselineReadiness::Pending || baseline == ChatBaselineReadiness::Failed) return false;
 	}
-	if (!remote)
+	if (!remote) ProviderCliCompatibilityService().Poll(app);
 	{
-		ProviderCliCompatibilityService().Poll(app);
-		const std::string compatibility_error = ProviderRuntimeRegistry::Resolve(provider).LocalCliCompatibilityError(app);
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(provider);
+		std::string compatibility_error = remote ? std::string{} : runtime.LocalCliCompatibilityError(app);
+		// Reconnection adopts an existing remote process; only a new launch uses
+		// the checked installation's protocol policy. Never borrow another host's version.
+		const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider.id, execution_host->id));
+		if (compatibility_error.empty() && !session.recovering_remote_turn && !session.recovering_remote_process &&
+		    version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.check_error.empty() &&
+		    execution_hosts::SameConnection(version->second.execution_host, *execution_host))
+			compatibility_error = runtime.StructuredCliVersionError(provider, version->second.installed_version, remote, &chat);
 		if (!compatibility_error.empty())
 		{
 			session.provider_usage.context_usage = {};
@@ -1995,9 +2021,21 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return false;
 	}
 	if (!session.recovering_remote_turn && !session.recovering_remote_process) session.provider_configuration_directory = configuration_bundle.local_directory;
+	const auto structured_version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider.id, execution_host->id));
+	const std::string structured_provider_version = structured_version != app.runtime_cli_versions_by_provider_id.end() &&
+	    structured_version->second.checked && structured_version->second.check_error.empty() && execution_hosts::SameConnection(structured_version->second.execution_host, *execution_host)
+	    ? structured_version->second.installed_version : std::string{};
+	if (!session.recovering_remote_turn && !session.recovering_remote_process &&
+	    !ProviderRuntimeRegistry::Resolve(provider).PrepareStructuredLaunch(session, provider, structured_provider_version, remote, launch_argv, launch_environment, startup_error))
+	{
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out) *error_out = startup_error;
+		return false;
+	}
 	for (UamControlCapability& capability : app.uam_control_capabilities)
 		if (capability.id == session.uam_control_capability_id) capability.provider_configuration_directory = session.provider_configuration_directory;
-	if (session.protocol_kind == provider_profile_constants::kProtocolOpenCodeAcp && !session.model_discovery_only && session.active_uam_agent_execution_capability != "opencode-native-agent-config")
+	if (session.protocol_kind == provider_profile_constants::kProtocolOpenCodeAcp && !session.opencode_v2_native && !session.model_discovery_only && session.active_uam_agent_execution_capability != "opencode-native-agent-config")
 	{
 		const bool recovering = session.recovering_remote_turn || session.recovering_remote_process;
 		if (!recovering && !opencode_native::SupportsCompanionLaunch(launch_argv, execution_host->platform))
