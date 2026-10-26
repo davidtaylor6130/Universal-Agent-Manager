@@ -134,6 +134,9 @@ const UI_RUNTIME_BUILD_MARKER = (() => {
 
 export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) {
   const storedShellLayout = readStoredAppShellLayout()
+  let confirmedTheme = readDocumentTheme()
+  let themeRequestSerial = 0
+  let confirmedThemeSerial = 0
 
   return {
     theme: readDocumentTheme(),
@@ -162,15 +165,18 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     repositoryReviewBySessionId: {} as AppState['repositoryReviewBySessionId'],
 
     setTheme: (theme: StoredTheme) => {
-      const previousTheme = get().theme
+      const requestKey = 'setTheme'
+      // Roll back only to the newest theme native code accepted, never to an earlier pending or rejected one.
+      if (!pendingRequestIdsByKey.has(requestKey)) { confirmedTheme = get().theme; confirmedThemeSerial = themeRequestSerial }
       persistTheme(theme, get().customThemes)
       set({ theme })
       if (isCefContext() && !isCompanionContext()) {
-        const requestKey = 'setTheme'
+        const serial = ++themeRequestSerial
         const requestId = createRequestId('setTheme')
         rememberPendingRequest(requestKey, requestId)
         sendToCEF({ action: 'setTheme', payload: { theme }, requestId }).then((resp) => {
           if (resp.ok) {
+            if (serial > confirmedThemeSerial) { confirmedThemeSerial = serial; confirmedTheme = theme }
             clearPendingRequest(requestKey, resp.requestId)
             return
           }
@@ -179,8 +185,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
             return
           }
 
-          persistTheme(previousTheme, get().customThemes)
-          set({ theme: previousTheme })
+          persistTheme(confirmedTheme, get().customThemes)
+          set({ theme: confirmedTheme })
           pendingRequestIdsByKey.delete(requestKey)
         })
       }

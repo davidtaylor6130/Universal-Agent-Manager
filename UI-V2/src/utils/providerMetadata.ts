@@ -343,11 +343,6 @@ export function providerCapabilities(providerId: string, provider?: Provider): P
   } : metadata.capabilities
 }
 
-export function capabilitiesWithDefaults(providerId: string, provider?: Provider, overrides?: Partial<ProviderCapabilities>): ProviderCapabilities {
-  const caps = providerCapabilities(providerId, provider)
-  return overrides ? { ...caps, ...overrides } : caps
-}
-
 export function fallbackProviderForId(providerId: string): Provider {
   const metadata = providerMetadataForId(providerId)
   return {
