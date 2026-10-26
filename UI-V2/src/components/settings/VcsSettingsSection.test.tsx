@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, createRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -351,6 +353,20 @@ describe('local snapshot Git settings', () => {
       act(() => button(host, 'Discard').click())
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(true)
       expect(toggle(host, 'Enable local Git files').checked).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+  it('styles the base-branch input with theme tokens and a visible disabled state', () => {
+    useAppStore.setState({ gitEnabled: false })
+    const { host, root } = mount()
+    try {
+      const field = host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!
+      expect(field.classList.contains('uam-field')).toBe(true)
+      expect(field.disabled).toBe(true)
+      const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
+      const base = css.slice(css.indexOf('.uam-field {'), css.indexOf('}', css.indexOf('.uam-field {')))
+      expect(base).toContain('background: var(--bg)')
+      expect(base).toContain('color: var(--text)')
+      expect(css).toMatch(/\.uam-field:disabled \{[^}]*opacity: 0\.5;[^}]*cursor: not-allowed;/)
     } finally { act(() => root.unmount()) }
   })
 })

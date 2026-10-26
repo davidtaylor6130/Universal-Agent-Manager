@@ -1960,6 +1960,7 @@ button.uam-commit-check { cursor: pointer; }
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .uam-field::placeholder { color: var(--text-3); }
+.uam-field:disabled { opacity: 0.5; cursor: not-allowed; }
 .uam-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .uam-field[type="number"]::-webkit-inner-spin-button,
 .uam-field[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
