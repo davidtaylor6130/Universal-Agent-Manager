@@ -403,7 +403,6 @@ namespace
 		uam::AppState app;
 		std::unique_ptr<UamQueryHandler> handler;
 		uam::AcpSessionState* session = nullptr;
-		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
 		InputFixture()
 		{
 			app.data_root = temp.root / "data";
@@ -422,13 +421,8 @@ namespace
 			owned->session_id = "fixture-native-session";
 			owned->protocol_kind = "gemini-acp";
 			owned->current_mode_id = "default";
-#if defined(_WIN32)
-			const std::vector<std::string> sink{"cmd", "/C", "more > NUL"};
-#else
-			const std::vector<std::string> sink{"/bin/sh", "-c", "cat >/dev/null"};
-#endif
-			std::string error;
-			UAM_ASSERT(process.StartStdioProcess(*owned, temp.root, sink, &error));
+			// Inject busy runtime state: admission/queue tests need no provider process
+			// or input handles, and must never send bytes or start a real CLI.
 			owned->running = owned->session_ready = owned->processing = true;
 			owned->prompt_request_id = 71;
 			session = owned.get();
@@ -438,13 +432,11 @@ namespace
 		~InputFixture()
 		{
 			handler.reset();
-			process.StopStdioProcess(*session, true);
-			process.CloseStdioProcessHandles(*session);
 		}
-		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment)
+		CefRefPtr<MediaCallback> Send(const nlohmann::json& attachment, const std::string& text = "New authored request", bool steer = false)
 		{
 			CefRefPtr<MediaCallback> cb = new MediaCallback;
-			NativeMediaRefreshHandlerTestAccess::Send(*handler, {{"chatId", app.chats.front().id}, {"text", "New authored request"}, {"attachments", nlohmann::json::array({attachment})}}, cb);
+			NativeMediaRefreshHandlerTestAccess::Send(*handler, {{"chatId", app.chats.front().id}, {"text", text}, {"attachments", attachment.is_array() ? attachment : nlohmann::json::array({attachment})}, {"steerNow", steer}}, cb);
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 			while (cb->successes + cb->failures == 0 && std::chrono::steady_clock::now() < deadline)
 			{
@@ -488,12 +480,14 @@ UAM_TEST(NativeInputHandlerRejectsRecordedUnknownAndMixedMetadataWithoutQueueMut
 UAM_TEST(NativeInputHandlerRetainsCleanLegacyAttachmentInBusyQueue)
 {
 	for (const bool explicit_legacy : {false, true})
+	for (const std::string text : {"New authored request", ""})
+	for (const std::string kind : {"file", "directory"})
 	{
 		InputFixture fixture;
-		nlohmann::json attachment{{"id", "authored"}, {"name", "Notes"}, {"kind", "file"}, {"path", "notes.txt"}};
+		nlohmann::json attachment{{"id", "authored"}, {"name", "Notes"}, {"kind", kind}, {"path", "notes.txt"}};
 		if (explicit_legacy)
 			attachment["source"] = "legacy_path";
-		const auto cb = fixture.Send(attachment);
+		const auto cb = fixture.Send(attachment, text);
 		UAM_ASSERT_EQ(cb->successes, 1);
 		UAM_ASSERT_EQ(cb->failures, 0);
 		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
@@ -501,7 +495,53 @@ UAM_TEST(NativeInputHandlerRetainsCleanLegacyAttachmentInBusyQueue)
 		UAM_ASSERT_EQ(attachments.size(), std::size_t{1});
 		UAM_ASSERT_EQ(attachments.front().id, std::string("authored"));
 		UAM_ASSERT_EQ(attachments.front().path, std::string("notes.txt"));
+		UAM_ASSERT_EQ(attachments.front().kind, kind);
 		UAM_ASSERT_EQ(attachments.front().source, AttachmentSource::LegacyPath);
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, text);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
+		UAM_ASSERT(saved && saved->acp_queued_prompts.size() == 1);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments, attachments);
+	}
+}
+
+UAM_TEST(NativeInputHandlerRejectsPathlessLegacyBeforeTextAdmission)
+{
+	InputFixture fixture;
+	const auto primary = AppPaths::UamChatFilePath(fixture.app.data_root, fixture.app.chats.front().id);
+	const auto before = ReadFile(primary);
+	const auto messages = fixture.app.chats.front().messages;
+	const int next_request = fixture.session->next_request_id;
+	// Missing/null/non-string/blank paths must not decode into an empty selection.
+	const std::vector<nlohmann::json> variants = {
+	    nlohmann::json::object(), {{"path", nullptr}}, {{"path", 7}}, {{"path", ""}},
+	    {{"path", " \t\r\n "}}, {{"path", std::string("bad\0path", 8)}}};
+	for (const auto& fields : variants)
+	for (const bool explicit_legacy : {false, true})
+	for (const std::string text : {"New authored request", ""})
+	for (const bool steer : {false, true})
+	for (const bool mixed_selection : {false, true})
+	{
+		nlohmann::json attachment = fields;
+		attachment["id"] = "malformed-legacy";
+		attachment["name"] = "Unavailable file";
+		attachment["kind"] = "file";
+		// Passive preview metadata cannot supply the missing source path.
+		attachment["previewOriginPath"] = "notes.txt";
+		if (explicit_legacy) attachment["source"] = "legacy_path";
+		const nlohmann::json selection = mixed_selection
+		    ? nlohmann::json::array({{{"id", "valid"}, {"kind", "file"}, {"path", "notes.txt"}}, attachment}) : attachment;
+		const auto cb = fixture.Send(selection, text, steer);
+		UAM_ASSERT_EQ(cb->status, 400);
+		UAM_ASSERT_EQ(cb->failures, 1);
+		UAM_ASSERT_EQ(cb->successes, 0);
+		UAM_ASSERT(cb->failure.find("invalid path") != std::string::npos);
+		UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+		UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages, messages);
+		UAM_ASSERT_EQ(fixture.session->next_request_id, next_request);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 71);
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
 	}
 }
 #endif

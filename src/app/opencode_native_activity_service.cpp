@@ -86,7 +86,7 @@ namespace
 			return opencode_native::Query(PlatformServicesFactory::Instance().process_service, query.endpoint, query.workspace, query.operation, result, error, cancel);
 		const ExecutionHost& host = *query.host;
 		remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
-		    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+		    host);
 		client.SetProcessControlToken(query.process_id, query.control_token);
 		return client.QueryOpenCodeNative(query.process_id, query.operation, result, &error, cancel);
 	}
@@ -764,7 +764,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			{
 				const ExecutionHost& host = *base.host;
 				runner = std::make_unique<remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
-				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				    host);
 				runner->SetProcessControlToken(base.process_id, base.control_token);
 			}
 			const auto query = [&](const Json& operation, Json& result)

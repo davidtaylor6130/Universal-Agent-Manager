@@ -10,4 +10,6 @@ Copilot native plan decisions persist before delivery, retain the Plan ceiling a
 
 [Permission agreement](../providers/permissions/permissions.md) · [Notifications](../ui/notifications.md) · [Recorded decisions](decisions.md).
 
+Computer Use's saved global consent and transient native revocation ownership remain distinct authorities. Settings readbacks, full frontend state and incremental updates expose an aggregate cleanup-pending flag without transferring owned chat or target identities to the control. The settings row reuses native global enable/disable and retries, while OS permission actions remain local and separate; see [Computer Use settings](../settings/computer-use.md).
+
 [Engineering reference](../reference/architecture/permissions-notifications.md).

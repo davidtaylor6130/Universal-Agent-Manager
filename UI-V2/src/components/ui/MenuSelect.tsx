@@ -13,15 +13,19 @@ export interface MenuSelectOption {
 
 export function MenuSelect({
   id,
+  describedBy,
   label,
   value,
   options,
   onChange,
   disabled = false,
   placeholder,
+  matchTriggerWidth = false,
 }: {
   /** Applied to the trigger button so a `<label htmlFor>` can reference it. */
   id?: string
+  /** Id of text explaining the control, such as why it is disabled. */
+  describedBy?: string
   label: string
   value: string
   options: MenuSelectOption[]
@@ -29,6 +33,8 @@ export function MenuSelect({
   disabled?: boolean
   /** Trigger text when no option matches value (for action pickers). */
   placeholder?: string
+  /** Keep long labels wrapped within the trigger's width instead of widening the menu. */
+  matchTriggerWidth?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [focusIndex, setFocusIndex] = useState(0)
@@ -58,8 +64,14 @@ export function MenuSelect({
       setFocusIndex(options.findIndex((option) => !option.disabled))
       return
     }
-    if (options[focusIndex]) optionRefs.current[focusIndex]?.focus()
-    else triggerRef.current?.focus()
+    const focusOption = () => {
+      if (options[focusIndex]) optionRefs.current[focusIndex]?.focus()
+      else triggerRef.current?.focus()
+    }
+    focusOption()
+    // ViewportMenu is hidden until its first layout pass; browsers reject focus there.
+    const frame = requestAnimationFrame(focusOption)
+    return () => cancelAnimationFrame(frame)
   }, [focusIndex, open, options])
 
   const close = () => {
@@ -100,6 +112,7 @@ export function MenuSelect({
         role="combobox"
         title={label}
         aria-label={label}
+        aria-describedby={describedBy}
         aria-controls={listId}
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -128,7 +141,7 @@ export function MenuSelect({
           aria-label={label}
           onKeyDown={onListKeyDown}
           className="rounded-md p-1"
-          style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
+          style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, width: matchTriggerWidth ? triggerRef.current?.getBoundingClientRect().width : undefined, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
         >
           {options.map((option, index) => [
             option.group && option.group !== options[index - 1]?.group && <div key={`group:${option.group}`} role="presentation" className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>{option.group}</div>,
@@ -148,7 +161,7 @@ export function MenuSelect({
               className={`uam-menu-select__option flex w-full items-start gap-2 rounded px-2 py-2 text-left text-sm${option.value === value ? ' is-selected' : ''}`}
             >
               {option.icon && <span data-menu-select-icon aria-hidden className="mt-0.5 shrink-0">{option.icon}</span>}
-              <span className="min-w-0 flex-1">
+              <span className="min-w-0 flex-1" style={matchTriggerWidth ? { overflowWrap: 'anywhere' } : undefined}>
                 <span className="block">{option.label}</span>
                 {option.description && <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>{option.description}</span>}
               </span>

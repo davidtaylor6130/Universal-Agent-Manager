@@ -1924,6 +1924,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     favoriteUamAgentIds,
     uamAgentCycleShortcut,
     computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
+    computerUseRevocationPending: typeof value.computerUseRevocationPending === 'boolean' ? value.computerUseRevocationPending : undefined,
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
     branchSwitching: typeof value.branchSwitching === 'boolean' ? value.branchSwitching : undefined,
     hostScopedSettings: typeof value.hostScopedSettings === 'boolean' ? value.hostScopedSettings : undefined,

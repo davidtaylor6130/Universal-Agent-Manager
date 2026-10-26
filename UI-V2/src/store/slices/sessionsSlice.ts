@@ -861,6 +861,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'createSession',
           payload: {
             ...(hasBaseOverride ? { gitBaseBranch } : {}),
+            // A branch was discovered for this directory; native creation rejects a remapped folder.
+            ...(hasBaseOverride ? { workspaceDirectory: selectedFolder!.directory } : {}),
             ...(hasWorktreeContext ? { sourceChatId: options.sourceChatId, expectedWorkspaceDirectory: options.expectedWorkspaceDirectory, expectedExecutionHostId: options.expectedExecutionHostId } : {}),
             title: name,
             ...(routingMode === 'automatic' ? { routingMode } : {}),
