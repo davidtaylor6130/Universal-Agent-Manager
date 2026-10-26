@@ -271,15 +271,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
     set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId,
-      [chatId]: { requestId, birth: chatBirthAtRequestStart! } } }))
+      [chatId]: { requestId, birth: chatBirthAtRequestStart!, ...(refreshNative ? { refreshNative: true } : {}) } } }))
     let timedOut = false
     let deadline: ReturnType<typeof setTimeout>
+    // A native refresh always finishes and saves before it answers, so it keeps its pending status longer.
+    // ponytail: fixed bound; it only guards a lost bridge answer, native reads carry their own deadlines.
     const timeout = new Promise<CEFResponse<ChatMessagesResponse>>(resolve => {
       deadline = setTimeout(() => {
         timedOut = true
-        resolve({ ok: false, requestId,
-          error: 'Reading saved chat history timed out. Retry to refresh it; retained messages have not been resent.' })
-      }, 30_000)
+        resolve({ ok: false, requestId, error: refreshNative
+          ? 'History refresh did not finish within five minutes. Retry to refresh it; retained messages have not been resent.'
+          : 'Reading saved chat history timed out. Retry to refresh it; retained messages have not been resent.' })
+      }, refreshNative ? 300_000 : 30_000)
     })
     const requestedDigest = force || current.messages[chatId] === undefined ? '' : loadedMessagesDigestByChatId.get(chatId) ?? ''
     const read = sendToCEF<ChatMessagesResponse>({
@@ -484,7 +487,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     chatSearchNavigation: null as ChatSearchNavigation | null,
     chatHistoryErrorBySessionId: {} as Record<string, string>,
     chatHistoryErrorWasRefreshBySessionId: {} as Record<string, boolean>,
-    chatHistoryReadBySessionId: {} as Record<string, { requestId: string; birth: number }>,
+    chatHistoryReadBySessionId: {} as Record<string, { requestId: string; birth: number; refreshNative?: boolean }>,
     chatHistoryPageBySessionId: {} as Record<string, AcceptedHistoryPage>,
     providers: inCef ? [] : initialProviders,
     cliBindingBySessionId: {} as Record<string, CliBinding>,
