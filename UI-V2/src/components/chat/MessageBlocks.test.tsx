@@ -1271,6 +1271,7 @@ it('animates the running step side to side by transform only, with no idle, Moti
   expect(css.match(/animation: conversation-processing-sweep/g)).toHaveLength(1)
   expect(css).not.toMatch(/conversation-processing-sweep[^}]*background-position/)
   expect(css).toContain(`[data-motion="off"] ${sweep}`)
+  expect(css).toContain('[data-motion="off"] .conversation-work__live { animation: none; }')
   const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf(sweep)))
   expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(sweep)
 })

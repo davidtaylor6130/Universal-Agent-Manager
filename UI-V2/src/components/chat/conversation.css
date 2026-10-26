@@ -131,6 +131,8 @@
 @keyframes conversation-processing-sweep { 0%, 18% { transform: translateX(-100%); } 72%, 100% { transform: translateX(250%); } }
 [data-motion="off"] [data-processing-step="true"] .conversation-work__tool-title::after,
 [data-motion="off"] [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
+/* The Working dot rests at full colour with Motion Off; reduced motion already settles it via the global rule. */
+[data-motion="off"] .conversation-work__live { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   [data-processing-step="true"] .conversation-work__tool-title::after,
   [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
