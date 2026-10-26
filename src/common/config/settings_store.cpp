@@ -524,6 +524,27 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		return uam::provider_ids::NormalizeCliProviderAlias(value);
 	}
 
+	/// <summary>A single provider choice must name an included provider at runtime. A saved choice of an excluded provider
+	/// is remembered (see AppSettings::excluded_provider_selections) and the fallback is used instead.</summary>
+	std::string SelectIncludedProvider(AppSettings& settings, std::string_view key, std::string_view value, std::string_view fallback)
+	{
+		const std::string stored = NormalizeStoredProviderId(value);
+		if (uam::provider_ids::IsRetainedExcludedProviderId(stored))
+		{
+			settings.excluded_provider_selections[std::string(key)] = {stored, std::string(fallback)};
+			return std::string(fallback);
+		}
+		return uam::strings::NonEmptyOrFallback(NormalizeProviderId(value), fallback);
+	}
+
+	/// <summary>The value to save for a provider choice: the remembered excluded provider while its fallback is still selected.</summary>
+	// ponytail: re-selecting the fallback by hand also restores the excluded choice; track an explicit edit if that matters.
+	std::string SavedProviderSelection(const AppSettings& settings, std::string_view key, const std::string& value)
+	{
+		const auto found = settings.excluded_provider_selections.find(std::string(key));
+		return found != settings.excluded_provider_selections.end() && found->second.second == value ? found->second.first : value;
+	}
+
 	void EnsureMemoryWorkerBinding(AppSettings& settings, std::string_view provider_id)
 	{
 		const std::string provider_key(provider_id);
@@ -553,9 +574,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
 		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
 
-		settings.active_provider_id = uam::strings::NonEmptyOrFallback(NormalizeProviderId(settings.active_provider_id), provider_build_config::FirstEnabledProviderId());
-		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
-		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
+		settings.active_provider_id = SelectIncludedProvider(settings, kActiveProviderIdKey, settings.active_provider_id, provider_build_config::FirstEnabledProviderId());
+		settings.default_new_chat_provider_id = SelectIncludedProvider(settings, kDefaultNewChatProviderIdKey, settings.default_new_chat_provider_id, settings.active_provider_id);
 		uam::settings::ClampRuntimeTimeoutSettings(settings);
 		settings.git_default_base_branch = uam::strings::Trim(settings.git_default_base_branch);
 		if (settings.worktree_retention_days < 1 || settings.worktree_retention_days > 3650) settings.worktree_retention_days = 14;
@@ -588,7 +608,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.computer_use_allowed_applications = std::move(allowed);
 		uam::editor_file_associations::AppendMissingDefaultEditorGroups(settings);
 		NormalizeMemoryWorkerBindings(settings.memory_worker_bindings);
-		settings.permission_reviewer_provider_id = NormalizeProviderId(settings.permission_reviewer_provider_id);
+		settings.permission_reviewer_provider_id = SelectIncludedProvider(settings, kPermissionReviewerProviderIdKey, settings.permission_reviewer_provider_id, "");
 		settings.permission_reviewer_model_id = uam::strings::Trim(settings.permission_reviewer_model_id);
 		NormalizeProviderChatDefaultsByProvider(settings.provider_chat_defaults);
 
@@ -643,7 +663,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 
 		std::ostringstream lines;
 		WriteRawSetting(lines, kSettingsFormatVersionKey, "1");
-		WriteEncodedSetting(lines, kActiveProviderIdKey, normalized.active_provider_id);
+		WriteEncodedSetting(lines, kActiveProviderIdKey, SavedProviderSelection(normalized, kActiveProviderIdKey, normalized.active_provider_id));
 		WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
 		WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
 		WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
@@ -687,9 +707,9 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kUpdateLastCheckedAtKey, normalized.update_last_checked_at);
 		WriteEncodedSetting(lines, kDismissedUpdateVersionsKey, EncodeDismissedUpdateVersions(normalized.dismissed_update_versions));
 		WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
-		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id);
+		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, SavedProviderSelection(normalized, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id));
 		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
-		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
+		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, SavedProviderSelection(normalized, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id));
 		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 		nlohmann::json host_settings = nlohmann::json::object();
 		for (const std::pair<const std::string, HostScopedSettings>& entry : normalized.host_scoped_settings)
@@ -698,6 +718,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 			if (host == nullptr || host->transport != "ssh") continue;
 			nlohmann::json scoped = {{"defaults", EncodeProviderChatDefaults(entry.second.provider_chat_defaults)}};
 			if (entry.second.default_new_chat_provider_id) scoped["defaultProviderId"] = *entry.second.default_new_chat_provider_id;
+			else if (const std::string remembered = SavedProviderSelection(normalized, "host:" + entry.first, ""); !remembered.empty()) scoped["defaultProviderId"] = remembered;
 			if (entry.second.mcp_servers) scoped["servers"] = uam::mcp_server_config::Serialize(*entry.second.mcp_servers);
 			host_settings[entry.first] = std::move(scoped);
 		}
@@ -1126,7 +1147,13 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 					if (!entry.value().is_object()) continue;
 					HostScopedSettings next;
 					if (entry.value().contains("defaults") && entry.value()["defaults"].is_string()) DecodeProviderChatDefaults(entry.value()["defaults"].get<std::string>(), next.provider_chat_defaults);
-					if (entry.value().contains("defaultProviderId") && entry.value()["defaultProviderId"].is_string()) next.default_new_chat_provider_id = NormalizeProviderId(entry.value()["defaultProviderId"].get<std::string>());
+					if (entry.value().contains("defaultProviderId") && entry.value()["defaultProviderId"].is_string())
+					{
+						// A host default of an excluded provider is remembered and the host falls back to the global default.
+						const std::string saved = entry.value()["defaultProviderId"].get<std::string>();
+						if (uam::provider_ids::IsRetainedExcludedProviderId(NormalizeStoredProviderId(saved))) (void)SelectIncludedProvider(settings, "host:" + entry.key(), saved, "");
+						else next.default_new_chat_provider_id = NormalizeProviderId(saved);
+					}
 					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
 					{
 						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);

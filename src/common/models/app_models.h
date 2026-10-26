@@ -1063,6 +1063,9 @@ struct AppSettings
 	std::map<std::string, std::string> dismissed_update_versions;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 	std::string permission_reviewer_provider_id;
+	/// <summary>Settings key to {saved id of a provider this build excludes, included fallback used instead}. Saving writes the
+	/// saved id back while the fallback is still selected, so a build that includes the provider finds the choice again.</summary>
+	std::map<std::string, std::pair<std::string, std::string>> excluded_provider_selections;
 	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;

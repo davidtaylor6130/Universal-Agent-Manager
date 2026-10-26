@@ -9,6 +9,8 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 
@@ -70,6 +72,16 @@ int main()
 	full.provider_chat_defaults["codex-cli"].model_id = "gpt-saved";
 	full.memory_worker_bindings["codex-cli"] = {"codex-cli", "worker-saved"};
 	full.memory_worker_bindings["claude-cli"] = {"codex-cli", "claude-worker"};
+	full.active_provider_id = "codex-cli";
+	full.default_new_chat_provider_id = "codex-cli";
+	full.permission_reviewer_provider_id = "codex-cli";
+	ExecutionHost remote;
+	remote.id = "build-box";
+	remote.label = "Build box";
+	remote.transport = "ssh";
+	remote.ssh_alias = "build-box";
+	full.execution_hosts.push_back(remote);
+	full.host_scoped_settings["build-box"].default_new_chat_provider_id = "codex-cli";
 	Check(SettingsStore::Save(file, full), "settings with excluded providers save");
 	for (int pass = 0; pass < 2; ++pass)
 	{
@@ -81,7 +93,18 @@ int main()
 		Check(loaded.provider_chat_defaults.contains("codex-cli") && loaded.provider_chat_defaults["codex-cli"].model_id == "gpt-saved", "chat defaults keep the excluded provider's entry");
 		Check(loaded.memory_worker_bindings.contains("codex-cli") && loaded.memory_worker_bindings["codex-cli"].worker_model_id == "worker-saved", "worker bindings keep the excluded provider's entry");
 		Check(loaded.memory_worker_bindings["claude-cli"].worker_provider_id == "codex-cli", "an included provider's binding keeps its saved worker");
+		Check(loaded.active_provider_id == "claude-cli" && loaded.default_new_chat_provider_id == "claude-cli" && loaded.permission_reviewer_provider_id.empty(),
+		    "provider choices naming an excluded provider fall back to included ones at runtime");
+		Check(loaded.host_scoped_settings.contains("build-box") && !loaded.host_scoped_settings["build-box"].default_new_chat_provider_id, "a host default naming an excluded provider falls back");
 		Check(SettingsStore::Save(file, loaded), "the restricted build saves the loaded settings");
+		std::string text;
+		{
+			std::ifstream in(file);
+			text.assign(std::istreambuf_iterator<char>(in), {});
+		}
+		for (const char* key : {"active_provider_id=codex-cli", "default_new_chat_provider_id=codex-cli", "permission_reviewer_provider_id=codex-cli"})
+			Check(text.find(key) != std::string::npos, "a provider choice naming an excluded provider is saved unchanged");
+		Check(text.find("defaultProviderId") != std::string::npos, "a host default naming an excluded provider is saved unchanged");
 	}
 	std::error_code ignored;
 	std::filesystem::remove_all(root, ignored);
