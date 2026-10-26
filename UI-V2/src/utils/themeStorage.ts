@@ -87,12 +87,19 @@ export function contrastRatio(first: string, second: string): number {
   return (light + 0.05) / (dark + 0.05)
 }
 
-const mostContrasting = (accent: string, colors: string[]) => colors.reduce((best, color) => contrastRatio(accent, color) > contrastRatio(accent, best) ? color : best)
+// color-mix(in srgb, a share, b): per-channel interpolation of the gamma-encoded values.
+const mixHex = (a: string, b: string, share: number) => `#${[1, 3, 5].map((index) => Math.round(Number.parseInt(a.slice(index, index + 2), 16) * share + Number.parseInt(b.slice(index, index + 2), 16) * (1 - share)).toString(16).padStart(2, '0')).join('')}`
 
-/** The theme's own colour that reads best on the accent; black or white (one always reaches 4.5:1) when none of them does. */
-export function onAccentFor(accent: string, themeColors: string[] = []): string {
-  const own = themeColors.length ? mostContrasting(accent, themeColors) : ''
-  return own && contrastRatio(accent, own) >= 4.5 ? own : mostContrasting(accent, ['#000000', '#ffffff'])
+/**
+ * The theme's own colour that reads best on the accent and on the primary hover fill (accent mixed 88% with the
+ * theme text); black or white when none of them reaches 4.5:1 on both.
+ */
+export function onAccentFor(accent: string, themeColors: string[] = [], text?: string): string {
+  const fills = text ? [accent, mixHex(accent, text, 0.88)] : [accent]
+  const worst = (color: string) => Math.min(...fills.map((fill) => contrastRatio(fill, color)))
+  const best = (colors: string[]) => colors.reduce((winner, color) => worst(color) > worst(winner) ? color : winner)
+  const own = themeColors.length ? best(themeColors) : ''
+  return own && worst(own) >= 4.5 ? own : best(['#000000', '#ffffff'])
 }
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
@@ -181,7 +188,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-fg': text,
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
-        '--on-accent': onAccentFor(accent, [background, text]),
+        '--on-accent': onAccentFor(accent, [background, text], text),
       }
       Object.assign(desiredProperties, derived)
     }

@@ -54,6 +54,13 @@ describe('on-accent contrast', () => {
     }
     expect(onAccentFor('#00ffff', ['#101010', '#f0f0f0'])).toBe('#101010')
     expect(onAccentFor('#808080', ['#606060', '#a0a0a0'])).toBe('#000000')
+    // The text colour reads on the plain accent (4.63:1) but not on the hover fill mixed towards it (3.86:1).
+    expect(onAccentFor('#828282', ['#ffffff', '#141820'], '#141820')).toBe('#000000')
+    for (let value = 0; value < 0xffffff; value += 0x0f0f0f) {
+      const accent = `#${value.toString(16).padStart(6, '0')}`
+      const own = onAccentFor(accent, ['#202020', '#e0e0e0'], '#e0e0e0')
+      if (own === '#202020' || own === '#e0e0e0') expect(contrastRatio(mix(accent, '#e0e0e0', 0.88), own)).toBeGreaterThanOrEqual(AA)
+    }
     const colors = { background: '#101010', surface: '#141414', surfaceUp: '#1a1a1a', text: '#f0f0f0', textMuted: '#a0a0a0', accent: '#00ffff', sidebar: '#121212', userMessage: '#202020', assistantMessage: '#141414', success: '#00ff00', warning: '#ffff00', error: '#ff0000' }
     applyDocumentTheme('custom:cyan', [{ version: 1, id: 'custom:cyan', name: 'Cyan', base: 'dark', colors }])
     expect(document.documentElement.style.getPropertyValue('--on-accent')).toBe('#101010')
