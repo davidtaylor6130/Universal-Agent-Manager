@@ -127,7 +127,7 @@ namespace uam
 		const ExecutionHost* host = remote ? execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) : nullptr;
 		if (remote && host == nullptr) return {false, {}, "The selected remote execution host no longer exists."};
 		std::string error;
-		const ProviderWorkerInvocation invocation = BuildProviderWorkerInvocation(app, *worker.provider, app.settings, prompt, worker.model_id, ProviderWorkerPathMode::BasePath, &error, remote);
+		const ProviderWorkerInvocation invocation = BuildProviderWorkerInvocation(app, *worker.provider, app.settings, prompt, worker.model_id, ProviderWorkerPathMode::BasePath, &error, remote ? std::string_view(chat.execution_host_id) : std::string_view());
 		if (invocation.Empty()) return {false, {}, error.empty() ? "Title worker is unavailable." : error};
 		const ProcessExecutionResult result = ExecuteIsolatedProviderTextWorker(invocation, worker.provider->id, host, 60000, stop_token);
 		if (!result.ok || result.exit_code != 0 || result.output_truncated || result.timed_out || result.canceled) return {false, {}, "Title generation failed. Your current chat name was kept."};
