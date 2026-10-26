@@ -1226,7 +1226,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       isNearBottomRef.current = true
       showScrollToBottomRef.current = false
       setShowScrollToBottom(false)
-      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
+      // Smooth scrolling ignores CSS scroll-behavior, so Motion Off and OS reduced motion jump instead.
+      const reduced = document.documentElement.getAttribute('data-motion') === 'off' || Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: reduced ? 'auto' : 'smooth' })
     }
     if (searchNavigationRef.current) {
       void useAppStore.getState().clearChatSearchNavigation().then(() => {

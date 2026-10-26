@@ -55,22 +55,32 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
   const descriptionId = useId()
   const statusId = useId()
   const controlRef = useRef<HTMLDivElement>(null)
-  // Controls are arbitrary nodes, so the row links its description/status to each focusable control (or its group) after render.
+  const hasDescription = Boolean(description)
+  const hasStatus = Boolean(status)
+  const hasControl = Boolean(control)
+  // Controls are arbitrary nodes, so the row links its description/status to each focusable control (or its group).
+  // An observer re-links when a control re-renders or a tooltip rewrites its own aria-describedby.
   useLayoutEffect(() => {
-    const ids = [description ? descriptionId : '', status ? statusId : ''].filter(Boolean)
     const host = controlRef.current
     if (!host) return
-    for (const element of host.querySelectorAll<HTMLElement>(DESCRIBED_CONTROLS)) {
-      const group = element.parentElement?.closest(CONTROL_GROUPS)
-      if (group && host.contains(group)) continue
-      const current = element.getAttribute('aria-describedby')?.split(/\s+/).filter(Boolean) ?? []
-      // Keep the control's own ids; replace this row's ids so a removed status line is not left referenced.
-      const next = [...new Set([...current.filter((id) => id !== descriptionId && id !== statusId), ...ids])].join(' ')
-      if (next === current.join(' ')) continue
-      if (next) element.setAttribute('aria-describedby', next)
-      else element.removeAttribute('aria-describedby')
+    const ids = [hasDescription ? descriptionId : '', hasStatus ? statusId : ''].filter(Boolean)
+    const link = () => {
+      for (const element of host.querySelectorAll<HTMLElement>(DESCRIBED_CONTROLS)) {
+        const group = element.parentElement?.closest(CONTROL_GROUPS)
+        if (group && host.contains(group)) continue
+        const current = element.getAttribute('aria-describedby')?.split(/\s+/).filter(Boolean) ?? []
+        // Keep the control's own ids; replace this row's ids so a removed status line is not left referenced.
+        const next = [...new Set([...current.filter((id) => id !== descriptionId && id !== statusId), ...ids])].join(' ')
+        if (next === current.join(' ')) continue
+        if (next) element.setAttribute('aria-describedby', next)
+        else element.removeAttribute('aria-describedby')
+      }
     }
-  })
+    link()
+    const observer = new MutationObserver(link)
+    observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-describedby'] })
+    return () => observer.disconnect()
+  }, [hasDescription, hasStatus, descriptionId, statusId, hasControl])
   return (
     <div className="uam-set-row">
       <div className="uam-set-row__main">

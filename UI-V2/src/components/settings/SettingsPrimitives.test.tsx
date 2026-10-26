@@ -25,7 +25,19 @@ it('associates row descriptions and status with each control or control group', 
   expect(describedText(host.querySelector('input[aria-label="Base"]')!)).toBe('Own hint | Empty uses HEAD.')
 
   act(() => root.render(<SettingRow title="Git" description="Uses the local repository." control={<Switch hideLabel label="Enable Git" />} />))
-  expect(describedText(host.querySelector('[aria-label="Enable Git"]')!)).toBe('Uses the local repository.')
+  const git = host.querySelector('[aria-label="Enable Git"]')!
+  expect(describedText(git)).toBe('Uses the local repository.')
+})
+
+it('re-links the row description after a tooltip rewrites the control description', async () => {
+  act(() => root.render(<><span id="tip">Tooltip</span><SettingRow title="Agent" description="Built in · read only" control={<button aria-label="Edit agent" />} /></>))
+  const edit = host.querySelector('[aria-label="Edit agent"]')!
+  edit.setAttribute('aria-describedby', 'tip')
+  await act(async () => { await Promise.resolve() })
+  expect(describedText(edit)).toBe('Tooltip | Built in · read only')
+  edit.removeAttribute('aria-describedby')
+  await act(async () => { await Promise.resolve() })
+  expect(describedText(edit)).toBe('Built in · read only')
 })
 
 it('marks a pending save busy and announces it in a polite live region', () => {
