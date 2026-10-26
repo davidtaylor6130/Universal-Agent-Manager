@@ -195,6 +195,7 @@ namespace
 		usage.last.output_tokens = session.antigravity_output_tokens;
 		usage.last.total_tokens = session.antigravity_input_tokens + session.antigravity_output_tokens;
 		usage.last_available = true;
+		uam::acp_detail::RecordGoalReviewTurnUsage(session, usage.last.total_tokens);
 	}
 
 	Goal* BoundAntigravityGoal(uam::AppState& app, const uam::AcpSessionState& session, bool require_revision = true)

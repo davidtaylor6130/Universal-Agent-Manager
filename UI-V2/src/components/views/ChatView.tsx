@@ -47,6 +47,7 @@ import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, Compose
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
+import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
@@ -819,13 +820,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
   // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
-  const [composerVcsBranch, setComposerVcsBranch] = useState({ scope: '', branch: '' })
+  const [composerVcsBranch, setComposerVcsBranch] = useState<{
+    scope: string
+    status: Pick<VcsCommitStatus, 'available' | 'activeVcsType' | 'branchOrRevision'> | null
+  }>({ scope: '', status: null })
   const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
   // The composer's own read (refreshed after a branch switch) wins over the last completed-turn snapshot.
-  const composerBranch = (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
-    || (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
-    || session.workspaceBranchName
+  const composerRepository = composerVcsBranch.scope === composerBranchScope && composerVcsBranch.status
+    ? composerVcsBranch.status
+    : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
+  const composerBranch = composerRepository
+    ? composerRepository.available ? composerRepository.branchOrRevision : ''
+    : session.workspaceBranchName
+  const composerVcsType = composerRepository?.activeVcsType ?? 'git'
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
+  // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
+  const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
+    && !session.importedReadOnly && !session.temporaryParentChatId
+    && (composerVcsType === 'git' ? session.workspaceIsolationKind === 'gitWorktree' : !session.workspaceIsolationKind && !session.workspaceWorktreeDirectory)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const retryUnsentAcpPrompt = useAppStore((s) => s.retryUnsentAcpPrompt)
@@ -867,6 +879,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const remoteComputerUseDisabled = (session.executionHostId ?? 'local') !== 'local'
   const recoveryHost = useAppStore((s) => s.executionHosts.find((host) => host.id === session.executionHostId))
   const workspaceFolders = useAppStore((s) => s.folders)
+  const workspaceName = useMemo(() => composerWorkspaceName(session, workspaceFolders, workspaceDirectory), [session, workspaceFolders, workspaceDirectory])
   const remoteContextKey = JSON.stringify([session.id, session.createdAt.getTime(), session.executionHostId, workspaceDirectory, recoveryHost?.sshAlias, recoveryHost?.platform, recoveryHost?.runnerDirectory, recoveryHost?.runnerVersion, recoveryHost?.runnerProtocolVersion])
   useEffect(() => { setRemoteMoveFolderId(''); setRemoteBrowseKey('') }, [remoteContextKey])
   const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
@@ -1684,14 +1697,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // One light read per chat/workspace open (no polling): feeds the composer's repository branch.
     void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
       if (cancelled) return
-      setComposerVcsBranch({ scope: composerBranchScope, branch: status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision : '' })
+      setComposerVcsBranch({ scope: composerBranchScope, status })
     })
     return () => { cancelled = true }
   }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
-  const handleBranchSwitched = (branch: string) => {
-    setComposerVcsBranch({ scope: composerBranchScope, branch })
-    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
-      if (status?.available && status.activeVcsType !== 'svn') setComposerVcsBranch({ scope: composerBranchScope, branch: status.branchOrRevision })
+  const handleBranchSwitched = (branch: string, vcsType: 'git' | 'svn' = 'git') => {
+    setComposerVcsBranch({ scope: composerBranchScope, status: { available: true, activeVcsType: vcsType, branchOrRevision: branch } })
+    void getVcsCommitStatus(session.id, vcsType, { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (status?.available && status.activeVcsType === vcsType) setComposerVcsBranch({ scope: composerBranchScope, status })
     })
   }
   const sideBusyRef = useRef(false)
@@ -3644,10 +3657,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   )}
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
-                  <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {composerBranch && (branchSwitching
-                    ? <ChatBranchPicker chatId={session.id} branch={composerBranch} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>)}
+                  <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
+                  {composerBranch && (canSwitchComposerBranch
+                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                      </span>
+                    </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>
