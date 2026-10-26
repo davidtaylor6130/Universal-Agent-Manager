@@ -477,6 +477,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const searchNavigationRef = useRef(searchNavigation)
   searchNavigationRef.current = searchNavigation
   const storedHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const historyRefreshFailed = useAppStore((s) => s.chatHistoryErrorWasRefreshBySessionId?.[session.id] === true) && Boolean(storedHistoryError)
   const historyPageMissing = useAppStore((s) => s.messages[session.id] === undefined)
   const historyRead = useAppStore((s) => s.chatHistoryReadBySessionId?.[session.id])
   const historyReadPending = Boolean(historyRead && historyRead.birth === session.createdAt.getTime())
@@ -2968,13 +2969,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
                 <Notice
-                  key={`chat-history:${session.id}:${chatHistoryError}`}
+                  key={`chat-history:${session.id}:${historyRefreshFailed ? 'refresh' : 'load'}:${chatHistoryError}`}
                   tone="error"
-                  title="Chat history unavailable"
+                  title={historyRefreshFailed ? 'History refresh failed' : 'Chat history unavailable'}
                   dismissLabel="Dismiss chat history error"
                   actions={(
                     <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
-                      Retry
+                      {historyRefreshFailed ? 'Reload history' : 'Retry'}
                     </Button>
                   )}
                 >
@@ -3117,6 +3118,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
                     {turnStart && <TurnStartTime
                       timestamp={turnStart.createdAt.getTime()}
+                      timezoneOffset={turnStart.createdAt.getTimezoneOffset()}
                       identity={turnIdentity}
                       showIdentity={showTurnIdentity}
                     />}

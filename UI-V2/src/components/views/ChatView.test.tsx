@@ -69,6 +69,41 @@ function enableSupportedManualCompactionFixture() {
 }
 
 describe('ChatView', () => {
+  it.each([
+    { name: 'clean remote refusal', refresh: true, guidance: 'The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.' },
+    { name: 'unconfirmed remote save', refresh: true, guidance: 'UAM could not confirm that the refreshed history was saved. Reopen the chat before retrying.' },
+    { name: 'ordinary saved read with identical text', refresh: false, guidance: 'The chat or its saved history changed, so this refresh was not saved. Current history was kept. Try refreshing again.' },
+  ])('labels the saved-history recovery action from request context: $name', async ({ refresh, guidance }) => {
+    const previousLoad = useAppStore.getState().loadSessionMessages
+    const loadSessionMessages = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({
+      messages: { 'chat-1': [{ id: 'retained', role: 'user', content: 'Retained authored history', createdAt: new Date() }] },
+      chatHistoryErrorBySessionId: { 'chat-1': guidance },
+      chatHistoryErrorWasRefreshBySessionId: { 'chat-1': refresh },
+      statusLine: 'Earlier retained warning',
+      loadSessionMessages,
+    })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const notice = host.querySelector<HTMLElement>('.uam-notice')!
+      expect(notice.getAttribute('role')).toBe('alert')
+      expect(notice.textContent).toContain(refresh ? 'History refresh failed' : 'Chat history unavailable')
+      expect(notice.textContent).toContain(guidance)
+      const actionLabel = refresh ? 'Reload history' : 'Retry'
+      const action = Array.from(notice.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
+      expect(action).toBeTruthy()
+      expect(host.textContent).toContain('Retained authored history')
+      await act(async () => action.click())
+      expect(loadSessionMessages).toHaveBeenCalledExactlyOnceWith('chat-1', true)
+      expect(useAppStore.getState().statusLine).toBe('Earlier retained warning')
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {}, chatHistoryErrorWasRefreshBySessionId: {} })
+    }
+  })
+
   it('shows loading for missing history, preserves the draft and distinguishes empty history from failure', async () => {
     const previousLoad = useAppStore.getState().loadSessionMessages
     const loadSessionMessages = vi.fn().mockResolvedValue(false)
@@ -527,6 +562,7 @@ describe('ChatView', () => {
         ],
       },
       chatHistoryErrorBySessionId: {},
+      chatHistoryErrorWasRefreshBySessionId: {},
       providers: [
         { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' },
         { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#22c55e', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'codex-app-server' },

@@ -54,6 +54,15 @@ int main(int argc, char** argv)
 		int count = 0;
 		{ std::ifstream input(count_file); input >> count; }
 		{ std::ofstream output(count_file); output << count + 1; }
+		if (uam::platform::ConfirmedDataFolderRestart() != (mode == "folder_restart" && count == 1))
+			return 3;
+		if ((mode == "folder_restart" || mode == "folder_unconfirmed") && count == 0)
+		{
+			if (!uam::platform::RequestApplicationRestart(true) || !uam::platform::DataFolderRestartRequested())
+				return 3;
+			uam::platform::ConfirmDataFolderShutdown(mode == "folder_restart");
+			return uam::platform::RequestedRestartExitCode();
+		}
 		if (mode == "hold")
 		{
 #if defined(_WIN32)
@@ -105,11 +114,11 @@ int main(int argc, char** argv)
 	const std::filesystem::path actual_count_path = count_path;
 	int count = 0;
 	{ std::ifstream input(actual_count_path); input >> count; }
-	const int expected_count = (mode == "once" || mode == "restart") ? 2 : mode == "restart_many" ? 6 : mode == "loop" ? 4 : 1;
+	const int expected_count = (mode == "once" || mode == "restart" || mode == "folder_restart") ? 2 : mode == "restart_many" ? 6 : mode == "loop" ? 4 : 1;
 #if defined(_WIN32)
-	const int expected_exit = mode == "loop" ? static_cast<int>(EXCEPTION_ACCESS_VIOLATION) : mode == "term" ? static_cast<int>(0xC000013AUL) : mode == "nonzero" ? 7 : 0;
+	const int expected_exit = mode == "loop" ? static_cast<int>(EXCEPTION_ACCESS_VIOLATION) : mode == "term" ? static_cast<int>(0xC000013AUL) : mode == "nonzero" ? 7 : mode == "folder_unconfirmed" ? 1 : 0;
 #else
-	const int expected_exit = mode == "loop" ? 128 + SIGABRT : mode == "term" ? 128 + SIGTERM : mode == "nonzero" ? 7 : 0;
+	const int expected_exit = mode == "loop" ? 128 + SIGABRT : mode == "term" ? 128 + SIGTERM : mode == "nonzero" ? 7 : mode == "folder_unconfirmed" ? 1 : 0;
 #endif
 	std::filesystem::remove_all(directory);
 	if (!result.has_value() || *result != expected_exit || count != expected_count)

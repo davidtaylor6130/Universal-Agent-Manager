@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Check, RefreshCw, Search, Star } from 'lucide-react'
-import { Button } from '../ui'
+import { Button, Tooltip } from '../ui'
 import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
+import { readAppearance } from '../../utils/appearancePreferences'
 import { useModelPickerStore } from '../../store/modelPickerStore'
 import { COPILOT_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -13,6 +14,15 @@ import { buildModelOptions, searchModelOptions, type ModelOption } from './model
 const ROW_HEIGHT = 52
 const LIST_HEIGHT = 360
 type PickerModel = ModelOption & { providerId: string }
+
+const compactTokens = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
+const exactTokens = new Intl.NumberFormat('en')
+
+/** Only reported limits are shown; unknown values render nothing. */
+function tokenCapacity(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return null
+  return { compact: compactTokens.format(value), exact: `${exactTokens.format(value)} tokens` }
+}
 
 /** Keep catalogue lookups and automatic requests on the same provider, host and workspace identity. */
 function modelCatalogKey(providerId: string, hostId: string, workspace: string, platform = ''): string {
@@ -55,6 +65,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const favorites = useModelPickerStore((state) => state.favorites)
   const toggleFavorite = useModelPickerStore((state) => state.toggleFavorite)
   const [selectedProvider, setSelectedProvider] = useState(providerId)
+  const [showCapacity] = useState(() => readAppearance().modelTokenLimits)
   const [query, setQuery] = useState('')
   const [highlight, setHighlight] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
@@ -81,7 +92,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       : buildModelOptions(catalog, '', provider, provider.id, true, defaults[provider.id])
     return [provider.id, options.map((option) => ({ ...option, providerId: provider.id }))]
   })), [providers, catalogs, executionHostId, workspaceDirectory, providerId, activeOptions, defaults, hostPlatform])
-  const models = useMemo(() => {
+  const models = useMemo<PickerModel[]>(() => {
     const candidates = selectedProvider === 'favorites'
       ? favorites.flatMap((favorite) => {
           if (!optionsByProvider.has(favorite.providerId)) return []
@@ -264,19 +275,37 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
           const favorite = favorites.some((entry) => entry.providerId === option.providerId && entry.modelId === option.id)
           const sectionStart = grouped && (index === 0 || models[index - 1].providerId !== option.providerId)
           const highlighted = index === highlight
+          const optionDisabled = disabled(option)
+          const context = showCapacity ? tokenCapacity(option.contextWindowTokens) : null
+          const output = showCapacity ? tokenCapacity(option.maxOutputTokens) : null
+          const capacityDescription = [context && `Context window: ${context.exact}.`, output && `Maximum output: ${output.exact}.`].filter(Boolean).join(' ')
+          const fullDescription = `${option.label}${option.id && option.id !== option.label ? ` (${option.id})` : ''}. ${option.detail}.${capacityDescription ? ` ${capacityDescription}` : ''}`
           return <Fragment key={JSON.stringify([option.providerId, option.id])}>
             {sectionStart && <div className="uam-np-group" role="presentation">{providerLabel(option.providerId)}</div>}
             <div className="uam-np-model" data-selected={selected} data-highlight={highlighted} style={{ height: ROW_HEIGHT }}>
+              <Tooltip label={optionDisabled ? undefined : <><span className="block">{option.label}{option.id && option.id !== option.label ? ` (${option.id})` : ''}</span><span className="block">{option.detail}</span>{capacityDescription && <span className="block" aria-hidden="true">{capacityDescription}</span>}</>}>
               <button ref={(element) => { if (element) rowRefs.current.set(index, element); else rowRefs.current.delete(index) }} type="button" role="menuitemradio" aria-checked={selected}
-                disabled={disabled(option)} tabIndex={highlighted ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
-                className="uam-np-model__button" style={{ opacity: disabled(option) ? 0.5 : 1 }}>
+                disabled={optionDisabled} tabIndex={highlighted ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
+                aria-label={optionDisabled ? fullDescription : undefined} title={optionDisabled ? fullDescription : undefined}
+                className="uam-np-model__button" style={{ opacity: optionDisabled ? 0.5 : 1 }}>
                 <span className="uam-np-model__name">
                   <span>{option.label}</span>
                   {option.id && option.id !== option.label && <code className="uam-np-model__id">{option.id}</code>}
                   {selected && <Check size={14} aria-hidden className="uam-np-model__check" />}
                 </span>
-                {!(option.providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()) && <span className="uam-np-model__detail">{option.detail}</span>}
+                <span className="uam-np-model__summary">
+                  {!(option.providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()) && <span className="uam-np-model__detail">{option.detail}</span>}
+                  {capacityDescription && <>
+                    <span className="uam-np-model__capacities" aria-hidden="true">
+                      {context && <span className="uam-np-model__capacity"><span className="uam-np-model__capacity-full">Context</span><span className="uam-np-model__capacity-short">Ctx</span> <span className="uam-np-model__capacity-value">{context.compact}</span></span>}
+                      {output && <span className="uam-np-model__capacity"><span className="uam-np-model__capacity-full">Output</span><span className="uam-np-model__capacity-short">Out</span> <span className="uam-np-model__capacity-value">{output.compact}</span></span>}
+                      <span className="uam-np-model__capacity-unit"><span className="uam-np-model__capacity-full">tokens</span><span className="uam-np-model__capacity-short">tok</span></span>
+                    </span>
+                    <span className="sr-only">{capacityDescription}</span>
+                  </>}
+                </span>
               </button>
+              </Tooltip>
               <button type="button" aria-label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} aria-pressed={favorite} title={favorite ? 'Remove favorite' : 'Add favorite'}
                 onClick={() => toggleFavorite(option.providerId, option.id)} className="uam-np-model__fav">
                 <Star size={14} fill={favorite ? 'currentColor' : 'none'} aria-hidden />
