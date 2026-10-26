@@ -78,17 +78,17 @@ namespace uam::usage
 			return service;
 		}
 
-		MacAccountCredentialResult ReadKeychainCredentials(const std::string& configured_directory, std::stop_token stop)
+		MacAccountCredentialResult ReadKeychainCredentials(const std::string& configured_directory, std::stop_token stop, bool allow_prompt)
 		{
 			const std::string service = KeychainService(configured_directory); if (service.empty()) return {};
 			std::string account = Environment("USER");
 			if (account.empty()) { const passwd* user = getpwuid(getuid()); if (user && user->pw_name) account = user->pw_name; }
 			if (account.empty()) return {};
-			return ReadMacAccountCredential(service, account, stop);
+			return ReadMacAccountCredential(service, account, allow_prompt, stop);
 		}
 #endif
 
-		std::string ReadAccessToken(std::stop_token stop, std::string& error, bool& account_unavailable)
+		std::string ReadAccessToken(std::stop_token stop, bool allow_prompt, std::string& error, bool& account_unavailable)
 		{
 			std::string token = Environment("CLAUDE_CODE_OAUTH_TOKEN"); if (!token.empty()) return token;
 			const std::string configured_directory = Environment("CLAUDE_CONFIG_DIR");
@@ -96,7 +96,9 @@ namespace uam::usage
 			std::string encoded;
 			MacAccountCredentialResult keychain; keychain.account_unavailable = true;
 #if defined(__APPLE__)
-			keychain = ReadKeychainCredentials(configured_directory, stop); encoded = std::move(keychain.credential);
+			keychain = ReadKeychainCredentials(configured_directory, stop, allow_prompt); encoded = std::move(keychain.credential);
+#else
+			(void)allow_prompt;
 #endif
 			if (stop.stop_requested()) { error = "Claude Code account allowance refresh was canceled."; return {}; }
 			const bool existing_keychain_value = !encoded.empty();
@@ -142,12 +144,12 @@ namespace uam::usage
 		result.primary_label = "5-hour allowance"; result.secondary_label = "Weekly allowance"; return result;
 	}
 
-	AccountAllowanceFetchResult FetchClaudeAccountAllowance(const std::filesystem::path& working_directory, std::stop_token stop)
+	AccountAllowanceFetchResult FetchClaudeAccountAllowance(const std::filesystem::path& working_directory, std::stop_token stop, bool allow_prompt)
 	{
 		if (stop.stop_requested()) return Failure("Claude Code account allowance refresh was canceled.");
 		if (!Environment("CLAUDE_CODE_CUSTOM_OAUTH_URL").empty()) return Failure("Claude Code uses a custom OAuth service; its account allowances are unavailable here.", true);
 		bool account_unavailable = false;
-		std::string error, token = ReadAccessToken(stop, error, account_unavailable);
+		std::string error, token = ReadAccessToken(stop, allow_prompt, error, account_unavailable);
 		if (token.empty()) return Failure(error.empty() ? "No existing Claude Code subscription login is available." : std::move(error), account_unavailable);
 		return FetchClaudeAccountAllowanceWithProcessService(PlatformServicesFactory::Instance().process_service, working_directory, std::move(token), stop);
 	}

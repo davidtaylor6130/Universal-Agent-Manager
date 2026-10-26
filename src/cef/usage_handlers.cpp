@@ -50,7 +50,7 @@ void UamQueryHandler::RefreshAllowanceTargets()
 			providers.push_back({id, uam::command_line::SplitWords(profile->interactive_command)});
 	if (m_providerAllowances) { m_providerAllowances->SetProviders(std::move(providers)); return; }
 	m_providerAllowances = std::make_shared<uam::usage::AccountAllowanceService>(m_app.data_root, std::move(providers),
-	    [](const uam::usage::AccountAllowanceProviderConfig& config, const std::filesystem::path& root, std::stop_token stop)
+	    [](const uam::usage::AccountAllowanceProviderConfig& config, const std::filesystem::path& root, std::stop_token stop, bool manual)
 	    {
 		    const auto validated = uam::usage::ValidateAccountAllowanceCommand(config.provider_id, config.command);
 		    if (!validated.error.empty())
@@ -60,13 +60,13 @@ void UamQueryHandler::RefreshAllowanceTargets()
 			    return result;
 		    }
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
-		    if (config.provider_id == uam::provider_ids::kClaudeCli) return uam::usage::FetchClaudeAccountAllowance(root, stop);
+		    if (config.provider_id == uam::provider_ids::kClaudeCli) return uam::usage::FetchClaudeAccountAllowance(root, stop, manual);
 #endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 		    if (config.provider_id == uam::provider_ids::kGeminiCli) return uam::usage::FetchGeminiAccountAllowance(root, stop);
 #endif
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-		    if (config.provider_id == uam::provider_ids::kAntigravityCli) return uam::usage::FetchAntigravityAccountAllowance(root, stop);
+		    if (config.provider_id == uam::provider_ids::kAntigravityCli) return uam::usage::FetchAntigravityAccountAllowance(root, stop, manual);
 #endif
 		    return uam::usage::FetchCliAccountAllowance(config.provider_id, validated.command, root, stop);
 	    });

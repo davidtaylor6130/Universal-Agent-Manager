@@ -15,7 +15,8 @@ namespace uam::usage
 		std::vector<std::string> command;
 		bool operator==(const AccountAllowanceProviderConfig&) const = default;
 	};
-	using AccountAllowanceFetcher = std::function<AccountAllowanceFetchResult(const AccountAllowanceProviderConfig&, const std::filesystem::path&, std::stop_token)>;
+	/// The final flag is true only for an explicit user refresh, which may show operating-system permission prompts.
+	using AccountAllowanceFetcher = std::function<AccountAllowanceFetchResult(const AccountAllowanceProviderConfig&, const std::filesystem::path&, std::stop_token, bool)>;
 	using AccountAllowanceClock = std::function<std::chrono::steady_clock::time_point()>;
 
 	/// Independent read-only account snapshots; queries never start a chat or wait for provider I/O.
