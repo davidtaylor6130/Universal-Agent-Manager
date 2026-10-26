@@ -1,10 +1,10 @@
 .uam-sidebar-glide [data-session-id][aria-current='page'],
 .uam-sidebar-glide [data-session-id][data-selected='true'] {
-  animation: uam-sidebar-glide-select 200ms ease-out backwards;
+  animation: uam-sidebar-glide-select var(--dur-base) var(--ease-out-soft) backwards;
 }
 
 .uam-sidebar-glide .uam-folder-expand-glide {
-  animation: uam-sidebar-glide-in 200ms ease-out backwards;
+  animation: uam-sidebar-glide-in var(--dur-base) var(--ease-out-soft) backwards;
 }
 
 @keyframes uam-sidebar-glide-in {

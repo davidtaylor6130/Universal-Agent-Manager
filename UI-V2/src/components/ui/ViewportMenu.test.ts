@@ -122,3 +122,62 @@ describe('placeViewportMenu', () => {
     host.remove()
   })
 })
+
+describe('ViewportMenu exit motion', () => {
+  const stubReducedMotion = (reduce: boolean) => vi.stubGlobal('matchMedia', (query: string) => ({ matches: reduce && query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {} }))
+  const openThenClose = () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(createElement(ViewportMenu, { point: { x: 10, y: 10 }, role: 'menu', 'aria-label': 'Row actions' })))
+    act(() => root.unmount())
+    host.remove()
+    return document.querySelector<HTMLElement>('[data-viewport-menu][data-state="closed"]')
+  }
+
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-motion')
+    document.querySelectorAll('[data-viewport-menu]').forEach((node) => node.remove())
+  })
+
+  it('leaves an inert copy that is removed once its exit animation finishes', async () => {
+    stubReducedMotion(false)
+    let finish = () => {}
+    const finished = new Promise<void>((resolve) => { finish = resolve })
+    const getAnimations = vi.fn(() => [{ finished }] as unknown as Animation[])
+    Object.defineProperty(HTMLElement.prototype, 'getAnimations', { configurable: true, value: getAnimations })
+    try {
+      const ghost = openThenClose()
+      expect(ghost).toBeTruthy()
+      expect(ghost?.getAttribute('aria-hidden')).toBe('true')
+      expect(ghost?.inert).toBe(true)
+      expect(ghost?.getAttribute('aria-label')).toBe('Row actions')
+      finish()
+      await act(async () => { await finished; await Promise.resolve() })
+      expect(ghost?.isConnected).toBe(false)
+    } finally {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
+    }
+  })
+
+  it('closes immediately under reduced motion', () => {
+    stubReducedMotion(true)
+    Object.defineProperty(HTMLElement.prototype, 'getAnimations', { configurable: true, value: () => [{ finished: new Promise(() => {}) }] })
+    try {
+      expect(openThenClose()).toBeNull()
+    } finally {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
+    }
+  })
+
+  it('closes immediately when Appearance motion is Off', () => {
+    stubReducedMotion(false)
+    document.documentElement.setAttribute('data-motion', 'off')
+    Object.defineProperty(HTMLElement.prototype, 'getAnimations', { configurable: true, value: () => [{ finished: new Promise(() => {}) }] })
+    try {
+      expect(openThenClose()).toBeNull()
+    } finally {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).getAnimations
+    }
+  })
+})

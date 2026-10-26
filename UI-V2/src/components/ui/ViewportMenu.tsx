@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, HTMLAttributes, RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { motionAllowed } from './Overlay'
 
 const VIEWPORT_GAP = 8
 export const VIEWPORT_MENU_Z_INDEX = 1100
@@ -53,6 +54,24 @@ export function placeViewportMenu(
   return { left, top }
 }
 
+/**
+ * Callers unmount menus on close, so the exit plays on an inert copy left at the same place.
+ * Skipped under reduced motion and Motion Off, and when the caller already ran its own exit (`data-state` other than open).
+ */
+export function leaveMenuGhost(menu: HTMLElement | null) {
+  if (!menu?.isConnected || (menu.dataset.state && menu.dataset.state !== 'open') || !motionAllowed() || document.documentElement.getAttribute('data-motion') === 'off') return
+  const ghost = menu.cloneNode(true) as HTMLElement
+  ghost.dataset.state = 'closed'
+  ghost.removeAttribute('id')
+  ghost.setAttribute('aria-hidden', 'true')
+  ghost.inert = true
+  document.body.appendChild(ghost)
+  ghost.scrollTop = menu.scrollTop
+  const animations = typeof ghost.getAnimations === 'function' ? ghost.getAnimations() : []
+  if (animations.length === 0) { ghost.remove(); return }
+  void Promise.allSettled(animations.map((animation) => animation.finished)).then(() => ghost.remove())
+}
+
 export interface ViewportMenuProps extends HTMLAttributes<HTMLDivElement> {
   anchorRef?: RefObject<HTMLElement>
   point?: { x: number; y: number }
@@ -79,6 +98,11 @@ export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(functi
   onRequestCloseRef.current = onRequestClose
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   useImperativeHandle(forwardedRef, () => menuRef.current as HTMLDivElement)
+  // Runs before React detaches the portal, while the menu is still on screen.
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    return () => leaveMenuGhost(menu)
+  }, [])
 
   useLayoutEffect(() => {
     const update = () => {

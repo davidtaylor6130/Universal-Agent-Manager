@@ -1,15 +1,25 @@
-/* Settings shell: one sliding straight accent line and a calm page header. */
+/* Settings shell: the active item's tint and its straight accent line glide together between items. */
 .uam-settings-nav { position: relative; }
 .uam-settings-nav__indicator {
   position: absolute;
-  left: 3px;
+  left: 0;
+  right: 0;
   top: 0;
-  width: 3px;
-  z-index: 2; /* above the items' tinted background, so the line stays visible on the active item */
-  /* Straight vertical line at the left edge of the active item, gliding between items. The tint stays on the item itself. */
-  background: var(--accent);
+  border-radius: var(--r-md);
+  background: var(--accent-dim);
   pointer-events: none;
-  transition: transform var(--dur-base) var(--ease-out-soft), height var(--dur-base) var(--ease-out-soft);
+  /* Transform only: the height is set once per item size and never animates. */
+  transition: transform var(--dur-enter) var(--ease-out-soft);
+}
+/* Straight 3px line inset 8px from the item's top and bottom, so it sits inside the rounded edges. */
+.uam-settings-nav__indicator::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  background: var(--accent);
 }
 .uam-settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .uam-settings-page-header__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
