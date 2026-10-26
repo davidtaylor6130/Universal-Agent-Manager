@@ -9,7 +9,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `structured-chat` | Both | Partial | Native stream JSON launches, normalises text/tools and retains conversation identity; live platform acceptance remains separate. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native agy CLI has a launch path; interactive approvals stay with the provider. |
 | `terminal-sync` | Both | Partial | Saved IDs support native resume, but provider-native history import for terminal-to-Chat refresh is unavailable. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
-| `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
+| `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching is in scope; exact context replay and empty-chat behaviour retain the shared implementation gaps. |
 | `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |

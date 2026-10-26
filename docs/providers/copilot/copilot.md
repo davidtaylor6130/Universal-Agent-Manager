@@ -15,7 +15,7 @@ Native enforcement remains an unresolved assumption: the compatible CLI must enf
 | `structured-chat` | Both | Partial | Native SDK protocol handles streamed text, tools, questions and permissions; protocol 3 is required. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
 | `terminal-sync` | Both | Partial | Exact local and SSH parent journal refresh retains native text, tools, reasoning and compaction; live continuation acceptance remains pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
-| `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
+| `chat-lifecycle` | UAM | Implemented | Shared [new-chat setup](../../chat/new-chat.md), select/rename/delete and catalogue services; starting-branch UI and cleanup acceptance remain pending. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Implemented | Guarded chosen-prefix branches preserve source history, compacted context and branch-owned originals; supported local regeneration exists, while native/model/SSH continuation and acceptance retain their explicit limits. |
 | `editing-messages` | UAM | Implemented | Definitely-unsent edits save locally; delivered edits branch with independently selected files and captured skills; unsupported recorded-source delivery refuses explicitly and visual/platform/user acceptance remains pending. |
