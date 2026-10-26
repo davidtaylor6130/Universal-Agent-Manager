@@ -5,7 +5,6 @@ import { Check, Circle, CircleCheck, CircleX, Clock3, Copy, LoaderCircle } from 
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
-import type { AcpContextUsage } from '../../store/cpp/types'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Tooltip } from '../ui'
 
@@ -13,16 +12,6 @@ import { Tooltip } from '../ui'
 export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
   return <span className="conversation-meter" data-level={level} aria-hidden>
     <span style={{ transform: `scaleX(${Math.min(1, Math.max(0, ratio))})` }} />
-  </span>
-}
-
-/** Context window use: warning above 80 percent, error above 95 percent. */
-export function ContextUsageStatus({ usage }: { usage: AcpContextUsage }) {
-  const ratio = usage.windowTokens > 0 ? usage.usedTokens / usage.windowTokens : 0
-  const level = ratio > 0.95 ? 'error' : ratio > 0.8 ? 'warning' : 'ok'
-  return <span className="conversation-status__usage">
-    <ContextMeter ratio={ratio} level={level} />
-    <span>{usage.usedTokens.toLocaleString()} of {usage.windowTokens.toLocaleString()} tokens</span>
   </span>
 }
 
@@ -260,70 +249,5 @@ export function CopyTextButton({
         <span className="sr-only">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}</span>
       </button>
     </Tooltip>
-  )
-}
-
-export function AcpErrorDetails({ acp, title }: { acp: AcpBinding; title: string }) {
-  const diagnostics = acp.diagnostics.slice(-12)
-  const diagnosticsText = diagnostics.map(formatDiagnosticLine).join('\n\n')
-  const hasDetails =
-    diagnostics.length > 0 ||
-    acp.recentStderr.trim().length > 0 ||
-    acp.lastExitCode !== null
-
-  if (!hasDetails) return null
-
-  return (
-    <details className="mt-2">
-      <summary className="cursor-pointer select-none" style={{ color: 'var(--text-2)' }}>
-        Diagnostics
-      </summary>
-      <div className="mt-2 grid gap-2">
-        <div className="flex justify-end">
-          <CopyTextButton text={buildAcpErrorCopyText(acp, title)} label="Copy diagnostics" title="Copy diagnostics" />
-        </div>
-        {acp.lastExitCode !== null && (
-          <div style={{ color: 'var(--text-2)' }}>Exit code: {acp.lastExitCode}</div>
-        )}
-        {diagnostics.length > 0 && (
-          <pre
-            className="text-[11px]"
-            style={{
-              margin: 0,
-              maxHeight: 180,
-              overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: 8,
-              background: 'var(--bg)',
-              color: 'var(--text-2)',
-            }}
-          >
-            {diagnosticsText}
-          </pre>
-        )}
-        {acp.recentStderr.trim().length > 0 && (
-          <pre
-            className="text-[11px]"
-            style={{
-              margin: 0,
-              maxHeight: 180,
-              overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: 8,
-              background: 'var(--bg)',
-              color: 'var(--text-2)',
-            }}
-          >
-            {diagnosticTail(acp.recentStderr)}
-          </pre>
-        )}
-      </div>
-    </details>
   )
 }

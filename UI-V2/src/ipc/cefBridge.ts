@@ -80,12 +80,12 @@ export async function sendToCEF<T = unknown>(
         redirect: 'error',
         cache: 'no-store',
       })
-      let data = await response.json()
       if (!response.ok) {
-        const error = data.error ?? `Request failed (${response.status}).`
+        const error = (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }
+      let data = await response.json()
       if (data?.uamTransfer) {
         const { id, totalBytes, chunkBytes } = data.uamTransfer
         if (typeof id !== 'string' || !Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
@@ -109,11 +109,11 @@ export async function sendToCEF<T = unknown>(
             redirect: 'error',
             cache: 'no-store',
           })
-          const chunk = await chunkResponse.json()
           if (!chunkResponse.ok) {
-            transferFailure = chunk.error || 'Could not load the rest of this response.'
+            transferFailure = (await chunkResponse.json().catch(() => null))?.error || 'Could not load the rest of this response.'
             throw new Error(transferFailure)
           }
+          const chunk = await chunkResponse.json()
           if (typeof chunk.base64 !== 'string') throw new Error('Invalid response chunk.')
           const decoded = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0))
           const expectedLength = Math.min(transferChunkBytes, totalBytes - offset)
