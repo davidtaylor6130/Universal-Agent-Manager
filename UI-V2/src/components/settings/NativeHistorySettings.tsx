@@ -6,6 +6,7 @@ import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type S
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
 import { Button, Notice } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 
 type IssueGroup = { provider: string; reason: string; items: string[] }
@@ -125,8 +126,8 @@ export function NativeHistorySettings() {
           <li>Nothing is imported until you select chats and confirm.</li>
           <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
           <li>Existing chats and deleted or ignored sessions are excluded. SSH hosts are outside this scan.</li>
-          {providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
-          {providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads settled CLI SQLite and supported legacy histories. Changing, nested or unrecognised native records remain unimported and report a retryable issue.</li>}
+          {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
+          {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads settled CLI SQLite and supported legacy histories. Changing, nested or unrecognised native records remain unimported and report a retryable issue.</li>}
         </ul>
       </details>
     </SettingRow>
