@@ -18394,8 +18394,7 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	                               "--available-tools=__uam_text_only_worker_no_tools_7f4938d1__",
 	                               "--disable-builtin-mcps",
 	                               "--no-custom-instructions",
-	                               "--no-remote",
-	                               "--no-remote-export",
+	                               "--sync-session=off",
 	                               "--disallow-temp-dir",
 	                               "--silent",
 	                           }));
@@ -18411,6 +18410,30 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "COPILOT_HOME="));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--agent"));
 	UAM_ASSERT(!uam::strings::Contains(worker_command, "--plugin-dir"));
+
+	// Copilot 1.0.103 removed --no-remote and renamed --no-remote-export; older CLIs reject --sync-session.
+	const auto worker_flags = [&](std::string_view host_id)
+	{
+		return uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, "review this change", "gpt-5.1", uam::ProviderWorkerPathMode::BasePath, nullptr, host_id).argv;
+	};
+	const auto uses_legacy_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--no-remote")) && uam::ranges::Contains(argv, std::string("--no-remote-export")) &&
+		       !uam::ranges::Contains(argv, std::string("--sync-session=off"));
+	};
+	const auto uses_current_flags = [](const std::vector<std::string>& argv)
+	{
+		return uam::ranges::Contains(argv, std::string("--sync-session=off")) && !uam::ranges::Contains(argv, std::string("--no-remote")) &&
+		       !uam::ranges::Contains(argv, std::string("--no-remote-export"));
+	};
+	UAM_ASSERT(uses_current_flags(worker_invocation.argv));
+	worker_version.installed_version = "1.0.102";
+	UAM_ASSERT(uses_legacy_flags(worker_flags({})));
+	worker_version.installed_version = "1.0.103-0";
+	UAM_ASSERT(uses_current_flags(worker_flags({})));
+	worker_app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(uam::provider_ids::kCopilotCli, "ssh-old")].installed_version = "1.0.98";
+	UAM_ASSERT(uses_legacy_flags(worker_flags("ssh-old")));
+	UAM_ASSERT(uses_current_flags(worker_flags("ssh-unchecked")));
 
 	const std::string long_prompt(12000, 'x');
 	const uam::ProviderWorkerInvocation long_worker = uam::BuildProviderWorkerInvocation(worker_app, profile, worker_settings, long_prompt, "gpt-5.1", uam::ProviderWorkerPathMode::BasePath);
