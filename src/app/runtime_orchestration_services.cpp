@@ -3552,13 +3552,30 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	if (!open_code_only && (provider_filter.empty() || provider_filter == uam::provider_ids::kGeminiCli))
 	{
 	const ProviderProfile gemini_profile = ProviderProfileStore::DefaultGeminiProfile();
+	// Arm producer cleanup before parsing. Batch leases begin too late, and
+	// startup selection may copy payload handles out of this discovery result.
+	// Payload aliases carry this independent bounded owner through those copies.
+	const auto context = std::make_shared<GeminiHistoryParseContext>();
+	ProviderRuntimeHistoryLoadOptions options;
+	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
+	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
 	ProviderDiscoveryResult gemini_sources;
 	gemini_sources.sources = DiscoverGeminiTmpChatSources(&gemini_sources.error, stop_token);
 	if (!gemini_sources.error.empty()) discovery.result.Fail(gemini_sources.error);
 	for (const auto& source : gemini_sources.sources)
 	{
 		if (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(source.folder_directory), uam::paths::PathFromUtf8(folder.directory))) continue;
-		for (ChatSession& chat : LoadNativeSessionChats(source.chats_dir, gemini_profile, stop_token))
+		if (stop_token.stop_requested()) break;
+		if (!context->payload_retirement)
+		{
+			context->payload_retirement = uam::native_history::TryCreateWorkerOwnedNativeRefresh<GeminiHistoryParseContext::RetainedPayloads, uam::native_history::NativeRefreshWorkerPool::DiscoveryParser>();
+			if (!context->payload_retirement)
+			{
+				discovery.result.Fail("Gemini history discovery is busy; retry after the pending media scan is released.");
+				break;
+			}
+		}
+		for (ChatSession& chat : ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(source.chats_dir, gemini_profile, options, stop_token, context)))
 		{
 			if (!NativeChatShouldBeImported(source.chats_dir, chat, "", false)) continue;
 			if (uam::strings::IsBlank(chat.workspace_directory))
@@ -3570,6 +3587,12 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			}
 			chat.folder_id = folder.id;
 			discovery.chats.push_back(std::move(chat));
+		}
+		const auto admission_error = context->RetirementError();
+		if (!admission_error.empty())
+		{
+			discovery.result.Fail(admission_error);
+			break;
 		}
 	}
 	}
