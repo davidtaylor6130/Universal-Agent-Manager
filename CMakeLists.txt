@@ -1790,7 +1790,7 @@ endif()
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
   endif()
-  # Actual goal bridge timing fixtures keep their three-case inventory separate.
+  # Actual goal bridge timing fixtures keep their selectable inventory separate.
   add_executable(uam_goal_handler_timing_tests EXCLUDE_FROM_ALL
     tests/goal_handler_timing_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
   set_target_properties(uam_goal_handler_timing_tests PROPERTIES
