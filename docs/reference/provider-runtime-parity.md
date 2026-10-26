@@ -223,6 +223,10 @@ interface, and `uam_provider_terminal_boundary` rejects implementation-header im
 terminal consumers and tests. App/config/CEF-chat/ACP consumers still contain provider details;
 this scoped guard does not establish complete repository-wide isolation.
 
+## OpenCode runtime diagnostics
+
+Managed ACP child timelines record each acknowledged `session/set_mode`, `session/set_model` and `session/set_config_option` write by method and request ID, without its result payload. Before UAM stops an OpenCode child because its authenticated native companion failed, the timeline records a `native_companion` entry with `observation_failures` or `ownership_conflict`, the failure count and UAM's stop message. The three historical managed SSH children whose timelines ended after `session/new` were stopped this way by UAM, not by an OpenCode exit; their recorded triggers, the generic decoder rejecting `opencode.native` results and Windows separator mismatch, were fixed earlier. A fresh managed SSH child run remains unverified.
+
 ## Release checks
 
 Run the following before declaring parity complete:

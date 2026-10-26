@@ -674,6 +674,9 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		{
 			if (owner->failed && session.running)
 			{
+				// Without this entry a UAM-initiated stop leaves the child timeline ending at session/new.
+				acp_detail::AppendAcpDiagnostic(session, "native_companion", owner->failures >= kConsecutiveFailureLimit ? "observation_failures" : "ownership_conflict",
+				    "", "", false, 0, gate_error, "failures=" + std::to_string(owner->failures));
 				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Interrupt, true);
 				acp_detail::FailAcpTurnOrSession(session, chat, gate_error + " UAM stopped sending approvals and requested the provider stop.");
 				acp_detail::SaveChatQuietly(app, *chat);
