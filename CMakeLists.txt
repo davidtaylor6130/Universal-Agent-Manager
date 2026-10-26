@@ -1266,6 +1266,19 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_opencode_progressive_mcp_checks
+    tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
+  target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_opencode_progressive_mcp_checks PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_opencode_progressive_mcp_checks PRIVATE ${UAM_FEATURE_DEFINITIONS} NOMINMAX
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+    UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>)
+  set_target_properties(uam_opencode_progressive_mcp_checks PROPERTIES FOLDER "Tests")
+  add_test(NAME uam_opencode_progressive_mcp_safe COMMAND uam_opencode_progressive_mcp_checks)
   add_executable(uam_companion_protocol_tests
     tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
   target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")

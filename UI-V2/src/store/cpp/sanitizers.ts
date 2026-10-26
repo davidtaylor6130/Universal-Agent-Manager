@@ -1654,7 +1654,7 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
     defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
     defaultSkills: Array.isArray(value.defaultSkills) ? value.defaultSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
     defaultAgents: Array.isArray(value.defaultAgents) ? value.defaultAgents.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
-    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled }] : []).slice(0, 4096) : [],
+    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' && (entry.kind === undefined || entry.kind === 'preference') ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled, ...(entry.kind === 'preference' ? { kind: 'preference' as const } : {}) }] : []).slice(0, 4096) : [],
   }
 }
 

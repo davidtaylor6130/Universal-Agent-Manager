@@ -6420,7 +6420,11 @@ describe('useAppStore Gemini CLI slice', () => {
       enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],
       skillDirectories: ['/skills'], defaultAgentId: 'plan', uamControlEnabled: true,
       defaultSkills: ['review'], defaultAgents: ['build'],
-      mcpOverrides: [{ providerId: 'codex-cli', executionHostId: 'local', serverId: 'uam-mcp', enabled: false }],
+      mcpOverrides: [
+        { providerId: 'codex-cli', executionHostId: 'local', serverId: 'uam-mcp', enabled: false },
+        { providerId: 'opencode-cli', executionHostId: 'local', serverId: 'opencode-progressive-mcp', enabled: false },
+        { providerId: 'opencode-cli', executionHostId: 'local', serverId: 'opencode-progressive-mcp', enabled: true, kind: 'preference' as const },
+      ],
     }
     const state = makeCppState(1)
     state.settings.centralProviderConfiguration = configuration
