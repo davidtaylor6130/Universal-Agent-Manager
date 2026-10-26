@@ -1277,6 +1277,19 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_opencode_progressive_mcp_checks
+    tests/opencode_progressive_mcp/safe_tests.cpp src/common/config/settings_store.cpp)
+  target_include_directories(uam_opencode_progressive_mcp_checks PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_opencode_progressive_mcp_checks PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_opencode_progressive_mcp_checks PRIVATE ${UAM_FEATURE_DEFINITIONS} NOMINMAX
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+    UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>)
+  set_target_properties(uam_opencode_progressive_mcp_checks PROPERTIES FOLDER "Tests")
+  add_test(NAME uam_opencode_progressive_mcp_safe COMMAND uam_opencode_progressive_mcp_checks)
   add_executable(uam_companion_protocol_tests
     tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
   target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -1800,6 +1813,31 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/chrome_elf.dll")
   endif()
   # Keep this opt-in executable outside the standard CTest inventory until built.
+
+  # Safe data/injected remote-publication controls: no CEF browser startup,
+  # provider launch, SSH transport, helper build or desktop packaging dependency.
+  add_executable(uam_remote_refresh_feedback_tests EXCLUDE_FROM_ALL
+    tests/remote_refresh_feedback_test_main.cpp tests/remote_refresh_feedback_tests.cpp
+    tests/native_media_chat_save_tests.cpp tests/chat_publication_tests.cpp tests/native_refresh_lifetime_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_remote_refresh_feedback_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_FEEDBACK_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_FEEDBACK_TEST_VALUE universal_agent_manager ${UAM_FEEDBACK_TEST_PROPERTY})
+    if(NOT UAM_FEEDBACK_TEST_VALUE STREQUAL "UAM_FEEDBACK_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_remote_refresh_feedback_tests PROPERTY ${UAM_FEEDBACK_TEST_PROPERTY} "${UAM_FEEDBACK_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_remote_refresh_feedback_tests PRIVATE tests)
+  if(APPLE)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_remote_refresh_feedback_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_remote_refresh_feedback_tests>/chrome_elf.dll")
+  endif()
 
   add_executable(uam_managed_subagent_handler_tests EXCLUDE_FROM_ALL
     tests/managed_subagent_handler_tests.cpp tests/native_media_refresh_handler_tests.cpp tests/native_model_options_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})

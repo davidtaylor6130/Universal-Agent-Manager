@@ -7,6 +7,127 @@
 #include "common/chat/chat_repository.h"
 #include "cef/cef_push.h"
 
+namespace
+{
+	nlohmann::json InspectCurrentGoal(uam::AppState& app)
+	{
+		UAM_ASSERT(uam::UamControlService::Initialize(app));
+		struct Shutdown
+		{
+			uam::AppState& app;
+			~Shutdown() { uam::UamControlService::Shutdown(app); }
+		} shutdown{app};
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = app.chats.front().id;
+		session->provider_id = app.chats.front().provider_id;
+		session->running = true; // In-memory capability liveness only; no provider process.
+		app.acp_sessions.push_back(std::move(session));
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *app.acp_sessions.back(), app.chats.front(), "session/new", setup));
+		const auto response = uam::UamControlService::HandleRequestForTests(app, app.acp_sessions.back()->uam_control_capability_id,
+		    {{"requestId", "inspect-goal"}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}, uam::time::SystemEpochMillisecondsNow());
+		UAM_ASSERT(response.value("ok", false));
+		return response.at("result");
+	}
+}
+
+UAM_TEST(UamControlGoalInspectionPreservesSavedExecutionOwnership)
+{
+	for (const std::string owner : {"provider", "uam"})
+	{
+		for (const GoalStatus status : {GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Complete})
+		{
+			uam_test::TempDir temp("control-goal-inspection-owner");
+			uam::AppState app;
+			app.data_root = temp.root;
+			app.settings.goal_max_loop_iterations = 9;
+			ChatSession chat;
+			chat.id = "inspection-chat";
+			chat.provider_id = "codex-cli";
+			chat.uam_control_enabled = true;
+			app.chats.push_back(chat);
+			std::string goal_id;
+			UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Keep saved goal ownership", 1234, &goal_id,
+			    owner, "/goal", "model", "claude-cli", "saved-agent", "saved-run", "saved-request-hash"));
+			app.chats.front().goals.front().status = status;
+			app.chats.front().goals.front().tokens_used = 77;
+			app.chats.front().goals.front().loop_count = 3;
+			if (status == GoalStatus::Active) app.chats.front().active_goal_id = goal_id;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved && saved->goals.size() == std::size_t{1});
+			app.chats.front() = *saved;
+			const auto path = app.data_root / "chats" / (chat.id + ".json");
+			const auto before_goals = nlohmann::json::parse(uam::io::ReadTextFile(path)).at("goals");
+
+			const auto result = InspectCurrentGoal(app);
+			const auto& inspected = result.at("goal");
+			UAM_ASSERT_EQ(inspected.at("id"), nlohmann::json(goal_id));
+			UAM_ASSERT_EQ(inspected.at("status"), nlohmann::json(status == GoalStatus::Active ? "active" : status == GoalStatus::Blocked ? "blocked" : "complete"));
+			UAM_ASSERT_EQ(inspected.at("executionOwner"), nlohmann::json(owner));
+			UAM_ASSERT_EQ(inspected.at("tokenBudget"), nlohmann::json(1234));
+			UAM_ASSERT_EQ(inspected.at("tokensUsed"), nlohmann::json(77));
+			UAM_ASSERT_EQ(inspected.at("maxLoopIterations"), nlohmann::json(9));
+			UAM_ASSERT_EQ(inspected.at("creator"), nlohmann::json("model"));
+			UAM_ASSERT_EQ(inspected.at("creatorProviderId"), nlohmann::json("claude-cli"));
+			UAM_ASSERT_EQ(inspected.at("creatorAgentId"), nlohmann::json("saved-agent"));
+			UAM_ASSERT_EQ(inspected.at("creatorRunId"), nlohmann::json("saved-run"));
+			UAM_ASSERT_EQ(result.at("lifecycleOwner"), nlohmann::json("uam"));
+			UAM_ASSERT_EQ(app.settings.goal_max_loop_iterations, 9);
+			// Inspection records its existing audit entry without changing goal data or native intent.
+			UAM_ASSERT_EQ(nlohmann::json::parse(uam::io::ReadTextFile(path)).at("goals"), before_goals);
+			const auto after = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(after && after->goals.size() == std::size_t{1});
+			UAM_ASSERT_EQ(after->goals.front().execution_owner, owner);
+			UAM_ASSERT_EQ(after->goals.front().provider_command, std::string(owner == "provider" ? "/goal" : ""));
+		}
+	}
+}
+
+UAM_TEST(UamControlGoalInspectionKeepsLegacyDefaultsAndEmptyState)
+{
+	for (const std::string owner : {"missing", "unknown", "empty-chat"})
+	{
+		uam_test::TempDir temp("control-goal-inspection-legacy");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "legacy-inspection-chat";
+		chat.provider_id = "codex-cli";
+		chat.uam_control_enabled = true;
+		if (owner != "empty-chat")
+		{
+			Goal goal;
+			goal.id = "legacy-goal";
+			goal.objective = "Keep the legacy default";
+			chat.goals.push_back(goal);
+			chat.active_goal_id = goal.id;
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto path = app.data_root / "chats" / (chat.id + ".json");
+		auto document = nlohmann::json::parse(uam::io::ReadTextFile(path));
+		if (owner != "empty-chat")
+		{
+			document["goals"][0].erase("executionOwner");
+			if (owner == "unknown") document["goals"][0]["executionOwner"] = "future-owner";
+			document["goals"][0]["providerCommand"] = "/stale-command";
+			UAM_ASSERT(uam::io::WriteTextFile(path, document.dump()));
+		}
+		const auto loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		app.chats.push_back(*loaded);
+		const auto result = InspectCurrentGoal(app);
+		if (owner == "empty-chat")
+		{
+			UAM_ASSERT(result.at("goal").is_null());
+			continue;
+		}
+		UAM_ASSERT_EQ(result.at("goal").at("executionOwner"), nlohmann::json("uam"));
+		UAM_ASSERT_EQ(result.at("goal").at("creator"), nlohmann::json("user"));
+		UAM_ASSERT(app.chats.front().goals.front().provider_command.empty());
+	}
+}
+
 UAM_TEST(UamControlProviderOverrideAuthorizesLaunchWithoutChangingChatPermissions)
 {
 	uam_test::TempDir temp("control-provider-override");

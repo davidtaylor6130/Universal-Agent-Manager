@@ -377,7 +377,7 @@ type ToolCallModalProps = {
 }
 
 export function ToolCallModal(props: ToolCallModalProps) {
-  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}`} {...props} />
+  return <ToolCallDetails key={`${props.chatId ?? ''}:${props.messageIndex ?? 'live'}:${props.tool.id}:${props.tool.historyDigest ?? ''}`} {...props} />
 }
 
 function ToolCallDetails({
@@ -464,7 +464,8 @@ function ToolCallDetails({
     setContentError('')
     const response = await sendToCEF<ToolContentPage>({
       action: 'getToolCallContent',
-      payload: { chatId, toolCallId: tool.id, offset, ...(messageIndex === undefined ? {} : { messageIndex }) },
+      payload: { chatId, toolCallId: tool.id, offset, ...(messageIndex === undefined ? {} : { messageIndex }),
+        ...(tool.historyDigest ? { historyDigest: tool.historyDigest } : {}) },
     }).catch(() => ({ ok: false, error: 'Failed to load tool output.', data: undefined }))
     if (requestSerial !== contentRequestSerial.current) return
     setContentLoading(false)
@@ -479,7 +480,7 @@ function ToolCallDetails({
 	  pages.push(response.data!)
 	  return pages
 	})
-  }, [chatId, messageIndex, shouldLoadContent, tool.id])
+  }, [chatId, messageIndex, shouldLoadContent, tool.id, tool.historyDigest])
 
   useEffect(() => {
     ++contentRequestSerial.current

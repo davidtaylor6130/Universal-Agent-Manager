@@ -356,7 +356,11 @@ bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat
     std::string* error_out = nullptr);
 bool SavedImageRetrySourceMatches(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const SavedImageRetryPermission& permission);
 void RevokeSavedImageRetry(AcpSessionState& session);
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr);
+/// No production Retry caller: explicit invocation plus an own launch publication are prerequisites, never permission minted from metadata.
+std::shared_ptr<ColdRetryBinding> PrepareColdRetryLaunchBinding(AppState&, AcpSessionState&, const ChatSession&,
+    std::shared_ptr<const SavedImageRetryPermission>, std::shared_ptr<const StoppedChatLaunchStorageReceipt>);
+void RevokeColdRetryBinding(AcpSessionState&);
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr, std::shared_ptr<ColdRetryBinding> cold_binding = {});
 /// <summary>Apply the same captured instructions and current MCP authority to initial and replacement setup.</summary>
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
     const std::string& cwd, nlohmann::json& request);
@@ -374,13 +378,36 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
-bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat, std::optional<int> cold_request_id = std::nullopt);
+/// Historical exact sink DATA only; holding or copying this handle never authorizes input/replay.
+class ColdRetryFinalWriteWitness final
+{
+  public:
+	ColdRetryFinalWriteWitness(const ColdRetryFinalWriteWitness&) = delete;
+	ColdRetryFinalWriteWitness& operator=(const ColdRetryFinalWriteWitness&) = delete;
+	std::string_view Wire() const { return m_wire; }
+	platform::AsyncByteWriter::WriteCompletion Completion() const { return m_receipt->Completion(); }
+	bool OriginalWriterCurrent(const AcpSessionState&) const;
+  private:
+	friend bool WriteCommittedRemotePrompt(AppState&, AcpSessionState&, const ChatSession&, std::optional<int>);
+	ColdRetryFinalWriteWitness(const AcpSessionState& session, std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> receipt,
+	    std::string wire, std::string process)
+	    : m_writer(session.stdin_writer), m_epoch(session.permission_review_incarnation), m_receipt(std::move(receipt)),
+	      m_wire(std::move(wire)), m_process(std::move(process)), m_owner(&session) {}
+	const std::weak_ptr<platform::AsyncByteWriter> m_writer;
+	const std::weak_ptr<const void> m_epoch;
+	const std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> m_receipt;
+	const std::string m_wire, m_process;
+	const AcpSessionState* const m_owner;
+	mutable bool m_original_refused = false;
+};
+std::shared_ptr<const ColdRetryFinalWriteWitness> ObserveColdRetryFinalWrite(const AcpSessionState&);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Blocks local prompt transport until the full native-binding receipt commits.</summary>
 bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat);
 std::string LocalSessionReceiptOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// Pure selected execution context; active-turn form binds actual admitted policy.
-std::string SavedImageRetryExecutionOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, bool active_turn = false);
+std::string SavedImageRetryExecutionOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, bool active_turn = false, bool include_runtime = true);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
 /// <summary>Internal Stop preservation must not settle the queue it explicitly retains.</summary>
 enum class AcpChatSavePurpose
@@ -410,13 +437,31 @@ struct DurableBindingAdmissionReceipt
 DurableAdmissionState BeginDurableBindingAdmission(AppState& app, const ChatSession& chat,
     const SavedChatPrimaryWitness& expected, std::function<bool()> owned,
     std::function<void(DurableBindingAdmissionReceipt)> completion);
+/// Cancellation only, tied to one actual publication worker; it cannot revive ownership or cancel a successor.
+class OwnedChatPublicationCancellation final
+{
+  public:
+	void Cancel() const
+	{
+		m_owned->store(false, std::memory_order_release);
+	}
+  private:
+	friend DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState&, const ChatSession&,
+	    std::shared_ptr<const StoppedChatLaunchStorageReceipt>, std::function<bool()>,
+	    std::function<void(StoppedChatLaunchPublicationResult)>, std::shared_ptr<const OwnedChatPublicationCancellation>*);
+	explicit OwnedChatPublicationCancellation(std::shared_ptr<std::atomic<bool>> owned) : m_owned(std::move(owned))
+	{
+	}
+	const std::shared_ptr<std::atomic<bool>> m_owned;
+};
 /// Exclusive full publication derived only from an actual repository-owned predecessor.
 /// A committed result may lack a receipt after owner loss; publication facts are never relabelled.
 /// The caller supplies a pure owner-thread predicate and must invalidate before changing its owner.
 /// Storage receipt DATA alone never authorizes native launch or input.
 DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState& app, const ChatSession& candidate,
     std::shared_ptr<const StoppedChatLaunchStorageReceipt> predecessor, std::function<bool()> still_owned,
-    std::function<void(StoppedChatLaunchPublicationResult)> completion);
+    std::function<void(StoppedChatLaunchPublicationResult)> completion,
+    std::shared_ptr<const OwnedChatPublicationCancellation>* publication_cancellation = nullptr);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
