@@ -582,7 +582,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		{
 			if (lifetime.expired())
 				return false;
-			nlohmann::json receipt{{"inputRecorded", result.input_recorded}, {"delegationState", result.delegation_state == uam::ManagedInitialDelegationState::Committed ? "committed" : result.delegation_state == uam::ManagedInitialDelegationState::Uncertain ? "uncertain" : "rejected"}, {"parentMessage", nullptr}, {"parentMessageIndex", nullptr}, {"error", result.error.substr(0, 4096)}};
+			nlohmann::json receipt{{"inputRecorded", result.input_recorded}, {"delegationState", result.delegation_state == uam::ManagedInitialDelegationState::Committed ? "committed" : result.delegation_state == uam::ManagedInitialDelegationState::Uncertain ? "uncertain" : "rejected"}, {"parentMessage", nullptr}, {"parentMessageIndex", nullptr}, {"error", std::string(uam::strings::Utf8Prefix(result.error, 4096))}};
 			if (result.input_recorded && result.parent_message)
 			{
 				ChatMessagePage page;

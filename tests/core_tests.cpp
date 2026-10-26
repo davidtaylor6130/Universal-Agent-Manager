@@ -5821,6 +5821,17 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 4), std::string_view("ab"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 4), std::string_view("cd"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 5), std::string_view("€cd"));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xxxx€€", 8), std::string("xxxx..."));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xx€", 3), std::string("xx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab", 0), std::string_view());
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a😀", 4), std::string_view("a"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("😀b", 4), std::string_view("b"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a\x80\x80\x80\x80\x80", 5).size(), std::size_t{2}); // Non-UTF-8 input never collapses to empty.
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));

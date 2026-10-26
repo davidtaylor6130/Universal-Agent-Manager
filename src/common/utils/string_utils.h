@@ -116,6 +116,23 @@ namespace uam::strings
 		return value.substr(start, end - start);
 	}
 
+	// Byte-bounded cuts that never split a UTF-8 sequence, so clipped text stays valid JSON.
+	inline std::string_view Utf8Prefix(std::string_view value, std::size_t max_bytes)
+	{
+		if (value.size() <= max_bytes) return value;
+		// A UTF-8 sequence has at most three continuation bytes; stop there on non-UTF-8 input.
+		for (int step = 0; step < 3 && max_bytes > 0 && (static_cast<unsigned char>(value[max_bytes]) & 0xc0U) == 0x80U; ++step) --max_bytes;
+		return value.substr(0, max_bytes);
+	}
+
+	inline std::string_view Utf8Suffix(std::string_view value, std::size_t max_bytes)
+	{
+		if (value.size() <= max_bytes) return value;
+		std::size_t start = value.size() - max_bytes;
+		for (int step = 0; step < 3 && start < value.size() && (static_cast<unsigned char>(value[start]) & 0xc0U) == 0x80U; ++step) ++start;
+		return value.substr(start);
+	}
+
 	inline std::string Trim(std::string_view value)
 	{
 		return std::string(TrimAsciiView(value));
@@ -141,12 +158,12 @@ namespace uam::strings
 		}
 		if (max_chars <= 3)
 		{
-			return std::string(trimmed.substr(0, max_chars));
+			return std::string(Utf8Prefix(trimmed, max_chars));
 		}
 
 		std::string out;
 		out.reserve(max_chars);
-		out.append(trimmed.substr(0, max_chars - 3));
+		out.append(Utf8Prefix(trimmed, max_chars - 3));
 		out.append("...");
 		return out;
 	}
@@ -253,14 +270,7 @@ namespace uam::strings
 		{
 			std::ranges::replace(safe_value, '\n', ' ');
 		}
-		if (safe_value.size() > max_chars)
-		{
-			while (max_chars > 0 && (static_cast<unsigned char>(safe_value[max_chars]) & 0xc0U) == 0x80U)
-			{
-				--max_chars;
-			}
-			safe_value.resize(max_chars);
-		}
+		safe_value.resize(Utf8Prefix(safe_value, max_chars).size());
 		return safe_value;
 	}
 

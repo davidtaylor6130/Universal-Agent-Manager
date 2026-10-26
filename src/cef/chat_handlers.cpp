@@ -20,6 +20,7 @@
 #include "common/chat/native_media_chat_save.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include <type_traits>
+#include <utility>
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
@@ -29,6 +30,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/state/app_state.h"
@@ -199,7 +201,19 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
-	cb->Success(state.dump());
+	std::string body;
+	try
+	{
+		body = state.dump();
+	}
+	catch (const nlohmann::json::type_error&)
+	{
+		// Clipped native text must not stop the UI or phone companion loading. Log once per run: companion reloads repeat it.
+		static bool logged = false;
+		if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
+		body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+	cb->Success(body);
 }
 
 // Elapsed time stays outside state fingerprints so a phone timer does not
