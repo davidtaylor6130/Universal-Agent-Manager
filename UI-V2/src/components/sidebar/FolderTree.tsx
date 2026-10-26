@@ -1977,7 +1977,7 @@ const FolderRow = memo(function FolderRow({
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
-        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-[-1px]"
         style={{
           background: selected ? 'var(--accent-dim)' : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
@@ -2040,7 +2040,7 @@ const FolderRow = memo(function FolderRow({
               aria-label="Folder actions"
               aria-haspopup="menu"
               aria-expanded={Boolean(menuPos)}
-              className="flex items-center justify-center rounded"
+              className="flex items-center justify-center rounded focus-visible:outline-offset-[-2px]"
               style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
               onClick={(e) => {
                 e.stopPropagation()
