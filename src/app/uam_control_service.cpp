@@ -456,7 +456,7 @@ namespace uam
 			    {"lastVerification", goal->last_verification}, {"currentStep", goal->current_step},
 			    {"completedItems", goal->completed_items}, {"remainingItems", goal->remaining_items},
 			    {"maxLoopIterations", bounded_settings.goal_max_loop_iterations},
-			    {"executionOwner", "uam"}, {"creator", goal->creator},
+			    {"executionOwner", goal->execution_owner == "provider" ? "provider" : "uam"}, {"creator", goal->creator},
 			    {"creatorProviderId", goal->creator_provider_id}, {"creatorAgentId", goal->creator_agent_id},
 			    {"creatorRunId", goal->creator_run_id},
 			};

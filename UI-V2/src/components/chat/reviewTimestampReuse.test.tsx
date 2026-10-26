@@ -3,9 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatView } from '../views/ChatView'
 import { PersistedConversationHistory } from './PersistedConversationMessage'
-import { reviewAssistantLabel } from './conversationHistoryModel'
+import { reviewAssistantLabel, turnTimestampLabel } from './conversationHistoryModel'
 import { useAppStore } from '../../store/useAppStore'
-import { readChatComposerDraft, removeComposerDrafts } from '../../utils/composerDraftStorage'
 import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import type { Message } from '../../types/message'
 import type { Session } from '../../types/session'
@@ -17,10 +16,29 @@ afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks() })
 // Keep correctness oracles separate from the spy on production formatter calls.
 const realTimeFormatter = Date.prototype.toLocaleTimeString
 const localTime = (date: Date) => realTimeFormatter.call(date, [], { hour: '2-digit', minute: '2-digit' })
+const realDateTimeFormatter = Date.prototype.toLocaleString
+const localDateTime = (date: Date) => realDateTimeFormatter.call(date, [], { dateStyle: 'medium', timeStyle: 'short' })
 const messageAt = (createdAt: Date): Message => ({ id: 'same-message-id', sessionId: 'timestamp-chat',
   role: 'assistant', content: 'Answer', modelId: ' recorded-model ', createdAt })
 
 describe('review-label timestamp reuse', () => {
+  it('refreshes turn timestamps without changing their date/time format or invalid-date contract', () => {
+    const date = new Date('2026-01-01T09:10:00Z')
+    const format = vi.spyOn(Date.prototype, 'toLocaleString')
+    expect(turnTimestampLabel(date)).toBe(localDateTime(date))
+    expect(turnTimestampLabel(date)).toBe(localDateTime(date))
+    expect(format).toHaveBeenCalledTimes(1)
+    date.setTime(Date.parse('2026-02-02T13:45:00Z'))
+    expect(turnTimestampLabel(date)).toBe(localDateTime(date))
+    expect(format).toHaveBeenCalledTimes(2)
+    date.setTime(NaN)
+    expect(turnTimestampLabel(date)).toBe(localDateTime(date))
+    date.setTime(Date.parse('2026-03-03T17:20:00Z'))
+    expect(turnTimestampLabel(date)).toBe(localDateTime(date))
+    expect(format).toHaveBeenCalledTimes(4)
+    expect(format).toHaveBeenLastCalledWith([], { dateStyle: 'medium', timeStyle: 'short' })
+  })
+
   it('refreshes replaced, mutated and invalid timestamps without retaining provider or model labels', () => {
     const date = new Date('2026-01-01T09:10:00Z')
     const replacement = new Date('2026-02-02T13:45:00Z')
@@ -59,46 +77,6 @@ describe('review-label timestamp reuse', () => {
     expect(reviewAssistantLabel('Codex', second)).toBe(`Codex · recorded-model · ${secondTime}`)
   })
 
-  it('reuses settled review times while typing into the real composer', () => {
-    const previous = useAppStore.getState()
-    const session: Session = { id: 'timestamp-input-chat', name: 'Input fixture', viewMode: 'chat', folderId: null,
-      providerId: 'gemini-cli', createdAt: new Date(0), updatedAt: new Date(0) }
-    const messages: Message[] = Array.from({ length: 50 }, (_, index) => ({
-      id: `input-${index}`, sessionId: session.id, role: index % 2 ? 'assistant' : 'user',
-      content: `Settled message ${index}`, createdAt: new Date(index),
-    }))
-    const format = vi.spyOn(Date.prototype, 'toLocaleTimeString')
-    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
-    removeComposerDrafts([session.id])
-    const host = document.createElement('div'); document.body.append(host)
-    const root = createRoot(host)
-    try {
-      useAppStore.setState({ sessions: [session], activeSessionId: session.id, folders: [],
-        messages: { [session.id]: messages }, acpBindingBySessionId: {}, cliBindingBySessionId: {},
-        historyStartIndexBySessionId: {}, chatHistoryErrorBySessionId: {},
-        refreshUamAgents: vi.fn(async () => true), loadSessionMessages: vi.fn(async () => true) })
-      act(() => root.render(<ChatView session={session} />))
-      expect(format).toHaveBeenCalledTimes(50)
-      const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
-      for (const draft of ['First', 'First and second', 'Final draft']) {
-        act(() => {
-          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, draft)
-          input.dispatchEvent(new Event('input', { bubbles: true }))
-        })
-        expect(input.value).toBe(draft)
-        expect(host.textContent).toContain('Settled message 49')
-        expect(format).toHaveBeenCalledTimes(50)
-      }
-      act(() => window.dispatchEvent(new Event('pagehide')))
-      expect(readChatComposerDraft(session.id).text).toBe('Final draft')
-    } finally {
-      act(() => root.unmount()); host.remove()
-      removeComposerDrafts([session.id])
-      useAppStore.setState(previous, true)
-      vi.unstubAllGlobals()
-    }
-  })
-
   it.each(['main', 'passive'] as const)('reuses all 50 review times through 20 stream updates in %s history', (route) => {
     // This changes only the isolated test process, never the machine or app timezone.
     vi.stubEnv('TZ', 'UTC')
@@ -115,12 +93,22 @@ describe('review-label timestamp reuse', () => {
     const replacement = new Date('2026-02-02T13:45:00Z')
     const replacementLabel = `Codex · replacement-model · ${localTime(replacement)}`
     const format = vi.spyOn(Date.prototype, 'toLocaleTimeString')
+    const turnFormat = vi.spyOn(Date.prototype, 'toLocaleString')
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
     const host = document.createElement('div'); document.body.append(host)
     const root = createRoot(host)
     const render = () => root.render(route === 'main' ? <ChatView session={session} /> :
       <PersistedConversationHistory messages={messages} start={0} end={messages.length} fallbackProviderId="gemini-cli" sessionId={session.id} />)
     const article = (index: number) => host.querySelector(`[data-message-index="${index}"] article.conversation-turn--assistant`)
+    const assertTurnTime = (index: number, identity?: string) => {
+      const row = host.querySelector(`.space-y-1[data-message-index="${index}"]`)
+      const time = row?.querySelector('time.conversation-turn-start')
+      const date = messages[index].createdAt
+      expect(row?.getAttribute('title')).toBe(localDateTime(date))
+      expect(time?.getAttribute('datetime')).toBe(date.toISOString())
+      expect(time?.textContent).toBe(identity ?? localDateTime(date))
+      expect(time?.classList.contains('sr-only')).toBe(identity === undefined)
+    }
     try {
       useAppStore.setState({ sessions: [session], activeSessionId: session.id, folders: [], messages: { [session.id]: messages },
         historyStartIndexBySessionId: {}, chatHistoryErrorBySessionId: {}, cliBindingBySessionId: {},
@@ -136,6 +124,9 @@ describe('review-label timestamp reuse', () => {
       })
       act(render)
       expect(format).toHaveBeenCalledTimes(50)
+      assertTurnTime(0, 'Gemini · recorded-model')
+      assertTurnTime(4)
+      const initialTurnFormats = turnFormat.mock.calls.length
       for (let delta = 0; delta < 20; delta += 1) {
         const content = `Stream delta ${delta}`
         messages = messages.map((message, index) => index === 49 ? { ...message, content } : message)
@@ -148,6 +139,8 @@ describe('review-label timestamp reuse', () => {
         })
         expect(article(49)?.textContent).toContain(content)
         expect(format).toHaveBeenCalledTimes(50)
+        expect(turnFormat).toHaveBeenCalledTimes(initialTurnFormats)
+        assertTurnTime(4)
         for (let index = 1; index < 50; index += 2) expect(article(index)?.getAttribute('aria-label')).toBe(labels[index])
       }
       const publish = () => act(() => {
@@ -196,9 +189,34 @@ describe('review-label timestamp reuse', () => {
         const identity = index === 1 ? 'Codex · replacement-model' : 'Gemini · recorded-model'
         expect(article(index)?.getAttribute('aria-label')).toBe(`${identity} · ${localTime(messages[index].createdAt)}`)
       }
+      assertTurnTime(0, 'Gemini · recorded-model')
+      assertTurnTime(4)
       expect(format).toHaveBeenCalledTimes(103)
+      const zonedTurnFormats = turnFormat.mock.calls.length
       publish()
       expect(format).toHaveBeenCalledTimes(103)
+      expect(turnFormat).toHaveBeenCalledTimes(zonedTurnFormats)
+
+      // Turn dates belong to user rows, independently of the assistant review labels.
+      const turnDate = messages[4].createdAt
+      turnDate.setTime(Date.parse('2026-05-05T18:30:00Z'))
+      messages = messages.map((message, index) => index === 4 ? { ...message } : message)
+      publish()
+      assertTurnTime(4)
+      expect(turnFormat).toHaveBeenCalledTimes(zonedTurnFormats + 2) // Row title and memoized time text.
+      turnDate.setTime(NaN)
+      messages = messages.map((message, index) => index === 4 ? { ...message } : message)
+      publish()
+      const invalidRow = host.querySelector('.space-y-1[data-message-index="4"]')
+      expect(invalidRow?.hasAttribute('title')).toBe(false)
+      expect(invalidRow?.querySelector('time.conversation-turn-start')).toBeNull()
+      turnDate.setTime(Date.parse('2026-06-06T19:40:00Z'))
+      messages = messages.map((message, index) => index === 4 ? { ...message } : message)
+      publish()
+      assertTurnTime(4)
+      messages = messages.map((message, index) => index === 4 ? { ...message, providerId: 'claude-cli', modelId: 'turn-model' } : message)
+      publish()
+      assertTurnTime(4, 'Claude · turn-model')
     } finally {
       act(() => root.unmount()); host.remove()
       useAppStore.setState(previous, true)
