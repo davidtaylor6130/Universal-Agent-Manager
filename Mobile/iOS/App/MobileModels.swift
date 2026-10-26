@@ -77,7 +77,24 @@ struct MobileChat: Identifiable
     var providerID: String { raw.text("providerId") }
     var hostID: String { raw.text("executionHostId", "local") }
     var modelID: String { raw.text("modelId") }
+    var modelSettingsContext: [String]
+    { [id, raw.text("createdAt"), hostID, raw.text("workspaceDirectory"), folderID] }
     var runtime: WireObject { raw.object("acpSession") }
+    var nativeAutoRouting: CopilotAutoRoutingOption?
+    {
+        guard let raw = runtime.object("nativeModelOptions")["autoRouting"],
+              let data = try? JSONSerialization.data(withJSONObject: raw),
+              let json = try? CompanionProtocol.decode(data),
+              let option = try? CopilotAutoRoutingOption(json: json),
+              option.matches(chatID: id, providerID: providerID, runtimeProviderID: runtime.text("providerId"),
+                             protocolKind: runtime.text("protocolKind"), nativeSessionID: runtime.text("sessionId"),
+                             executionHostID: hostID, readOnly: readOnly) else { return nil }
+        return option
+    }
+    var canChangeNativeModelOptions: Bool
+    {
+        !readOnly && !processing && runtime.flag("running") && runtime.text("lifecycleState") == "ready" && !runtime.flag("compacting")
+    }
     var parentID: String { raw.text("parentChatId") }
     var familyID: String
     {

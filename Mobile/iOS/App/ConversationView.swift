@@ -1,4 +1,5 @@
 import SwiftUI
+import UAMKit
 
 struct ConversationView: View
 {
@@ -10,6 +11,7 @@ struct ConversationView: View
     @State private var atBottom = true
     @State private var firstScroll = true
     @State private var terminalOpen = false
+    @State private var managedChildrenOpen = false
     @State private var queueSelection: QueueSelection?
     @State private var actionOrigin: QueueSelection?
     @State private var branchFocus: (chatID: String, index: Int)?
@@ -103,6 +105,8 @@ struct ConversationView: View
         .onDisappear { cancelBranchOpening() }
         .sheet(isPresented: $settingsOpen) { ChatSettingsView() }
         .sheet(isPresented: $terminalOpen) { TerminalView() }
+        .sheet(isPresented: $managedChildrenOpen)
+        { if let chat = model.chat { ManagedChildrenView(chatID: chat.id, contextID: model.draftContextID, parentName: chat.title) } }
         .sheet(item: $queueSelection) { selection in QueuedMessagesView(chatID: selection.chatID, contextID: selection.contextID) }
         .alert("Rename chat", isPresented: $renameOpen)
         {
@@ -130,7 +134,7 @@ struct ConversationView: View
         .onChange(of: model.draftContextID)
         {
             renameOpen = false; deleteOpen = false; actionOrigin = nil
-            settingsOpen = false; terminalOpen = false; queueSelection = nil
+            settingsOpen = false; terminalOpen = false; managedChildrenOpen = false; queueSelection = nil
             if branchFocus?.chatID != model.activeChatID { cancelBranchOpening() }
             firstScroll = branchFocus == nil
         }
@@ -153,6 +157,8 @@ struct ConversationView: View
                 Menu
                 {
                     Button("Chat settings", systemImage: "slider.horizontal.3") { settingsOpen = true }
+                    if model.supports("listManagedSubagents")
+                    { Button("Subagents", systemImage: "person.2") { managedChildrenOpen = true }.accessibilityIdentifier("managedSubagents") }
                     if let parent = agentParent
                     {
                         let context = model.draftContextID
@@ -286,7 +292,7 @@ struct ConversationView: View
 
 }
 
-private struct MessageContent: View
+struct MessageContent: View
 {
     @Environment(MobileAppModel.self) private var model
     let message: MobileMessage
@@ -294,6 +300,7 @@ private struct MessageContent: View
     let contextID: String
     let branchesBusy: Bool
     let onSelectBranch: (MobileChat) -> Void
+    var storedChild = false
     @State private var openingSubagentID: String?
     @State private var subagentErrorID = ""
     @State private var subagentError = ""
@@ -317,7 +324,13 @@ private struct MessageContent: View
             {
                 ForEach(TranscriptSegments.build(message)) { segment in timelineSegment(segment) }
             }
-            if !message.attachments.isEmpty
+            if storedChild
+            {
+                ForEach(message.attachments, id: \.selfID) { attachment in
+                    Label(attachment.text("name", "Stored attachment"), systemImage: "paperclip").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            else if !message.attachments.isEmpty
             {
                 ForEach(message.attachments, id: \.selfID) { attachment in
                     MessageAttachmentView(attachment: attachment, messageIndex: message.index, chatID: chatID, contextID: contextID)
@@ -331,7 +344,7 @@ private struct MessageContent: View
                 }
                 else { ForEach(message.tools, id: \.selfID) { tool in toolRow(tool) } }
             }
-            if message.role == "user", let chat = model.chat,
+            if !storedChild, message.role == "user", let chat = model.chat,
                let branches = MessageBranchGroup.build(chat: chat, messageIndex: message.index, chats: model.chats)
             {
                 HStack(spacing: 3)
@@ -375,7 +388,7 @@ private struct MessageContent: View
         .contextMenu
         {
             Button("Copy message", systemImage: "document.on.document") { UIPasteboard.general.string = message.content }
-            if message.role == "user", model.supports("branchFromMessage"), model.chat?.readOnly == false
+            if !storedChild, message.role == "user", model.supports("branchFromMessage"), model.chat?.readOnly == false
             {
                 Button("Branch from here", systemImage: "arrow.triangle.branch") { Task { await branch() } }
             }
@@ -497,6 +510,16 @@ private struct MessageContent: View
     {
         VStack(alignment: .leading, spacing: 8)
         {
+            if storedChild
+            {
+                DisclosureGroup(ToolSummary(tool).displayTitle)
+                {
+                    Text(tool.text("content").isEmpty ? "Full details are unavailable in this stored conversation." : tool.text("content"))
+                        .font(.footnote).textSelection(.enabled)
+                }.font(.footnote).foregroundStyle(.secondary).frame(minHeight: 44)
+            }
+            else
+            {
             Button
             {
                 if tool.flag("isSubAgent") { Task { await openSubagent(tool) } }
@@ -522,6 +545,7 @@ private struct MessageContent: View
                 .accessibilityLabel(tool.flag("isSubAgent") ? "Open subagent: \(ToolSummary(tool).displayTitle)" : "Open tool: \(ToolSummary(tool).displayTitle)")
                 .accessibilityIdentifier((tool.flag("isSubAgent") ? "openSubagent-" : "openTool-") + tool.text("id"))
                 .contextMenu { Button("View tool details", systemImage: "terminal") { openTool(tool) } }
+            }
             if subagentErrorID == tool.text("id"), !subagentError.isEmpty
             {
                 Text(subagentError).font(.caption).foregroundStyle(.orange).accessibilityIdentifier("subagentError-" + tool.text("id"))
