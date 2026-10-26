@@ -755,6 +755,8 @@ struct ChatSession
 	/// <summary>Absent inherits Settings; empty explicitly starts at HEAD without switching source.</summary>
 	std::optional<std::string> git_base_branch_override;
 	std::string workspace_branch_name;
+	/// <summary>Branch chosen before the first message; created in the worktree when that message is sent.</summary>
+	std::string pending_git_branch_name;
 	std::string workspace_worktree_directory;
 	bool svn_update_pending = false;
 	bool imported_read_only = false;

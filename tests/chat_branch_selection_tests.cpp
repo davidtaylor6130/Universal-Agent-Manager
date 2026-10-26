@@ -241,3 +241,35 @@ UAM_TEST(ChatBranchSelectionRefusesUnconfirmedOwnedStop)
 	UAM_ASSERT(!uam::GitWorktreeService().SwitchChatBranch(fixture.app, chat, "existing", false, error));
 	UAM_ASSERT_EQ(fixture.Git(chat.workspace_worktree_directory, "symbolic-ref --short HEAD"), original);
 }
+
+UAM_TEST(ChatBranchSelectionKeepsFirstMessageBranchPendingUntilApplied)
+{
+	if (!GitAvailableForTests()) return;
+	ChatBranchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(!uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(chat));
+	chat.messages.clear();
+	UAM_ASSERT(uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(chat));
+	chat.messages_loaded = false;
+	chat.persisted_message_count = 1;
+	UAM_ASSERT(!uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(chat));
+	chat.persisted_message_count = 0;
+	UAM_ASSERT(uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(chat));
+	chat.messages_loaded = true;
+	const std::string cwd = chat.workspace_worktree_directory;
+	const std::string original = chat.workspace_branch_name;
+	// The picker's choice is only saved metadata until the first send.
+	chat.pending_git_branch_name = "empty/new";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id, true);
+	UAM_ASSERT(saved && saved->pending_git_branch_name == "empty/new" && saved->workspace_branch_name == original);
+	UAM_ASSERT(fixture.Git(fixture.repository, "branch --list empty/new").empty());
+	// The first send creates it even when attachments or edits made the worktree dirty; files stay put.
+	UAM_ASSERT(uam::io::WriteTextFile(fs::path(cwd) / "attachment.txt", "staged\n"));
+	std::string error;
+	UAM_ASSERT(uam::GitWorktreeService().SwitchChatBranch(fixture.app, chat, "empty/new", true, error));
+	UAM_ASSERT(fs::exists(fs::path(cwd) / "attachment.txt"));
+	UAM_ASSERT_EQ(fixture.Git(cwd, "symbolic-ref --short HEAD"), "empty/new");
+	saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id, true);
+	UAM_ASSERT(saved && saved->workspace_branch_name == "empty/new" && saved->pending_git_branch_name.empty() && saved->messages.empty());
+}

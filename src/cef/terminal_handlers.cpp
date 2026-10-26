@@ -177,6 +177,8 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		cb->Success(BuildCliBindingResponse(terminal).dump());
 		return;
 	}
+	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleStartCli(browser, payload, cb); }))
+		return;
 	const uam::WorktreeLaunchPreparationResult workspace = uam::PrepareWorktreeForLaunch(m_app, *chat);
 	if (workspace.state == uam::WorktreeLaunchPreparationState::Failed)
 	{

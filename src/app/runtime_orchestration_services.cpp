@@ -1943,6 +1943,7 @@ namespace
 		native.workspace_source_directory = local.workspace_source_directory;
 		native.workspace_base_ref = local.workspace_base_ref;
 		native.workspace_branch_name = local.workspace_branch_name;
+		native.pending_git_branch_name = local.pending_git_branch_name;
 		native.workspace_worktree_directory = local.workspace_worktree_directory;
 		native.svn_update_pending = local.svn_update_pending;
 		native.imported_read_only = local.imported_read_only;

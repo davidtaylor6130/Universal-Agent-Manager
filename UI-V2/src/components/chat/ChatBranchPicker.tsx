@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { AlertTriangle, Check, GitBranch, LoaderCircle, Plus, Search } from 'lucide-react'
+import { AlertTriangle, Check, GitBranch, GitBranchPlus, LoaderCircle, Plus, Search } from 'lucide-react'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import { Button, Tooltip, ViewportMenu } from '../ui'
 
@@ -32,9 +32,11 @@ interface ListChatBranchesResponse {
 }
 
 /** Composer branch tab that opens a branch picker. Only rendered when the backend advertises branchSwitching. */
-export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onSwitched, vcsType: initialVcsType = 'git' }: {
+export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disabledReason, onSwitched, vcsType: initialVcsType = 'git' }: {
   chatId: string
   branch: string
+  /** New branch chosen before the first message; native creates it when that message is sent. */
+  pendingBranch?: string
   disabled: boolean
   disabledReason: string
   onSwitched: (branch: string, vcsType?: 'git' | 'svn') => void
@@ -165,7 +167,8 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
 
   const switchTo = async (name: string, create = false) => {
     if (busyRef.current || disabled || (vcsType === 'svn' && (!svnContext || !svnContext.parent))) return
-    if (!create && branches.find((item) => (item.path || item.name) === name)?.current) {
+    // Reselecting the checked-out branch withdraws a pending one, so only skip native when nothing is pending.
+    if (!create && !pendingBranch && branches.find((item) => (item.path || item.name) === name)?.current) {
       closeToTrigger()
       return
     }
@@ -173,7 +176,7 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
     busyRef.current = true
     setBusy(true)
     setSwitchError('')
-    const response = await sendToCEF<{ branch: string; vcsType?: 'git' | 'svn'; svnContext?: SvnBranchContext }>({
+    const response = await sendToCEF<{ branch: string; pending?: boolean; vcsType?: 'git' | 'svn'; svnContext?: SvnBranchContext }>({
       action: 'switchChatBranch',
       payload: vcsType === 'svn' ? { chatId, vcsType: 'svn', branch: name, svnContext } : create ? { chatId, branch: name, create: true } : { chatId, branch: name },
       requestId: createRequestId('switch-branch'),
@@ -191,6 +194,7 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
     // focus deliberately moved elsewhere during the asynchronous switch.
     restoreFocusRef.current = hadDialogFocus && focusStillInPicker
     setOpen(false)
+    if (response.data?.pending) return
     if (vcsType === 'svn') {
       setSvnPath(svnDisplayPath(response.data?.svnContext) || name)
       setSvnRevision(response.data?.branch || '')
@@ -225,14 +229,15 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
   const canCreate = vcsType === 'git' && !loading && !loadError
 
   const displayedRevision = svnRevision || branch
+  const pendingHint = pendingBranch ? `${pendingBranch} will be created from ${branch} when you send your first message.` : ''
 
   const trigger = (
     <button
       ref={triggerRef}
       type="button"
       disabled={disabled || busy}
-      title={vcsType === 'svn' ? [`${svnPath || 'SVN'} r${displayedRevision}`, svnContextError].filter(Boolean).join(' · ') : branch}
-      aria-label={vcsType === 'svn' ? `Switch SVN folder, current ${svnPath ? `${svnPath} ` : ''}revision ${displayedRevision}${svnContextError ? `. ${svnContextError}` : ''}` : `Switch branch, current ${branch}`}
+      title={vcsType === 'svn' ? [`${svnPath || 'SVN'} r${displayedRevision}`, svnContextError].filter(Boolean).join(' · ') : pendingBranch ? `${pendingBranch}, created on first send (from ${branch})` : branch}
+      aria-label={vcsType === 'svn' ? `Switch SVN folder, current ${svnPath ? `${svnPath} ` : ''}revision ${displayedRevision}${svnContextError ? `. ${svnContextError}` : ''}` : pendingBranch ? `Switch branch, ${pendingBranch} pending, created from ${branch} on first message` : `Switch branch, current ${branch}`}
       aria-haspopup="dialog"
       aria-expanded={open}
       aria-controls={open ? dialogId : undefined}
@@ -244,8 +249,8 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
       className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm px-1 text-xs hover:bg-[var(--surface-up)] focus-visible:ring-1 focus-visible:ring-[var(--accent)] disabled:opacity-50"
       style={{ color: 'inherit', cursor: disabled ? 'default' : 'pointer' }}
     >
-      <GitBranch size={12} aria-hidden />
-      <span className="truncate font-mono">{vcsType === 'svn' ? `${svnPath || 'SVN'} r${displayedRevision}` : branch}</span>
+      {pendingBranch && vcsType !== 'svn' ? <GitBranchPlus size={12} aria-hidden /> : <GitBranch size={12} aria-hidden />}
+      <span className="truncate font-mono">{vcsType === 'svn' ? `${svnPath || 'SVN'} r${displayedRevision}` : pendingBranch || branch}</span>
     </button>
   )
 
@@ -268,6 +273,7 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
           side="top"
           role="dialog"
           aria-label={vcsType === 'svn' ? 'Switch SVN folder' : 'Switch branch'}
+          aria-describedby={pendingBranch ? `${dialogId}-pending-hint` : undefined}
           onKeyDown={(event) => {
             if (event.key !== 'Escape') return
             if (svnSelection && !busy) { event.stopPropagation(); setSvnSelection(null); searchRef.current?.focus(); return }
@@ -380,10 +386,13 @@ export function ChatBranchPicker({ chatId, branch, disabled, disabledReason, onS
                       <Button size="sm" variant="secondary" disabled={!newName.trim() || busy} loading={busy} onClick={() => void switchTo(newName.trim(), true)}>Create</Button>
                     </div>
                   ) : (
-                    <button type="button" disabled={busy} onClick={() => setCreating(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]" style={{ color: 'var(--text-2)' }}>
-                      <Plus size={14} aria-hidden />
-                      Create branch from current…
-                    </button>
+                    <>
+                      <button type="button" disabled={busy} onClick={() => setCreating(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50" style={{ color: 'var(--text-2)' }}>
+                        <Plus size={14} aria-hidden />
+                        Create branch from current…
+                      </button>
+                      {pendingBranch && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint} Select {branch} above to cancel.</div>}
+                    </>
                   )}
                 </div>
               )}

@@ -9075,6 +9075,23 @@ UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
 	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.size(), static_cast<std::size_t>(2));
 }
 
+UAM_TEST(ChatDomainServiceRefusesMessageBranchBeforeFirstUserMessage)
+{
+	TempDir temp("uam-message-branch-empty");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "codex-cli");
+	source.id = "chat-empty-source";
+	app.chats.push_back(source);
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0));
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, -1));
+	app.chats.front().messages.push_back(Message{MessageRole::Assistant, "Greeting before any user input"});
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited")));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(ChatRepository::LoadLocalChats(temp.root).empty());
+}
+
 UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
 {
 	TempDir temp("uam-message-branch-operation-id");

@@ -127,6 +127,8 @@ namespace uam
 		bool ListChatBranches(const AppState& app, const ChatSession& chat, std::vector<GitChatBranch>& branches, bool& svn, std::string& error) const;
 		bool ValidateChatBranchSelection(const AppState& app, const ChatSession& chat, const std::string& branch, bool create, std::string& error) const;
 		bool SwitchChatBranch(AppState& app, ChatSession& chat, const std::string& branch, bool create, std::string& error) const;
+		/// <summary>True until the chat has a user message; a new branch chosen now is saved as pending and created on first send.</summary>
+		static bool BranchCreationWaitsForFirstMessage(const ChatSession& chat);
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
 		/// Creates the saved default worktree before a new local chat launches a provider.
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;

@@ -452,3 +452,39 @@ it('restores the trigger after an escaped pending refusal when focus was not mov
     expect(onSwitched).not.toHaveBeenCalled()
   } finally { cleanup() }
 })
+
+it('accepts a pending first-message branch without reporting a switch', async () => {
+  send.mockImplementation(async (request) => request.action === 'listChatBranches'
+    ? { ok: true, data: { vcsType: 'git', branches: [{ name: 'main', current: true }] } }
+    : { ok: true, data: { branch: 'empty/new', pending: true } })
+  const { host, onSwitched, cleanup } = render()
+  await open(host)
+  await act(async () => {
+    Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Create branch from current'))!.click()
+  })
+  const input = document.body.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'empty/new')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+  await flush()
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: { chatId: 'chat-1', branch: 'empty/new', create: true } }))
+  expect(onSwitched).not.toHaveBeenCalled()
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  cleanup()
+})
+
+it('shows a pending branch and withdraws it when the checked-out branch is chosen', async () => {
+  const { host, onSwitched, cleanup } = render({ pendingBranch: 'empty/new' })
+  expect(trigger(host).textContent).toBe('empty/new')
+  expect(trigger(host).getAttribute('aria-label')).toBe('Switch branch, empty/new pending, created from main on first message')
+  await open(host)
+  const dialog = document.body.querySelector('[role="dialog"]')!
+  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('empty/new will be created from main when you send your first message. Select main above to cancel.')
+  await act(async () => { options()[0].click() })
+  await flush()
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: { chatId: 'chat-1', branch: 'main' } }))
+  expect(onSwitched).toHaveBeenCalledWith('main')
+  cleanup()
+})

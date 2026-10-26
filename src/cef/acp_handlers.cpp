@@ -568,6 +568,9 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		cb->Failure(400, error);
 		return;
 	}
+	// After the cheap refusals, so a send that cannot start leaves no branch behind.
+	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleSendAcpPrompt(browser, payload, cb); }))
+		return;
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = payload.value("computerUseMode", false);

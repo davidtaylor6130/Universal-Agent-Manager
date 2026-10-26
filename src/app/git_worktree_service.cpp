@@ -1531,8 +1531,9 @@ namespace uam
 		std::string checked;
 		if (!GitOutput(worktree, "check-ref-format --branch " + shell::EscapeArg(branch), &checked, &error) || checked != branch)
 		{ error = "Choose a literal local Git branch name."; return false; }
+		// `switch -c` keeps the files as they are, so only switching to an existing branch needs a clean worktree.
 		bool dirty = false;
-		if (!IsDirty(worktree, &dirty, &error)) return false;
+		if (!create && !IsDirty(worktree, &dirty, &error)) return false;
 		if (dirty) { error = "Commit or discard worktree changes before switching branches."; return false; }
 
 			const ProcessExecutionResult ref = RunCommand(BuildGitCommandInDirectory(worktree,
@@ -1548,6 +1549,13 @@ namespace uam
 			{ error = "The selected branch is already checked out in another worktree."; return false; }
 			return true;
 		}
+
+	bool GitWorktreeService::BranchCreationWaitsForFirstMessage(const ChatSession& chat)
+	{
+		return chat.messages_loaded
+		    ? std::ranges::none_of(chat.messages, [](const Message& message) { return message.role == MessageRole::User; })
+		    : chat.persisted_message_count == 0;
+	}
 
 	bool GitWorktreeService::SwitchChatBranch(AppState& app, ChatSession& chat, const std::string& branch, bool create, std::string& error) const
 	{
@@ -1577,6 +1585,7 @@ namespace uam
 		if (!GitCommand(worktree, std::string("switch --no-guess --no-overwrite-ignore ") + (create ? "-c " : "") + shell::EscapeArg(branch), &error)) return false;
 		ChatSession switched = *persisted;
 		switched.workspace_branch_name = branch;
+		switched.pending_git_branch_name.clear();
 		switched.updated_at = time::TimestampNow();
 		// Preserve the original integration base and history; checkout only changes the active branch.
 		const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, switched, *revision);
@@ -1591,6 +1600,7 @@ namespace uam
 			return false;
 		}
 		chat.workspace_branch_name = switched.workspace_branch_name;
+		chat.pending_git_branch_name.clear();
 		chat.updated_at = switched.updated_at;
 		return true;
 	}
