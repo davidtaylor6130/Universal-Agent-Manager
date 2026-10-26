@@ -5,7 +5,7 @@ import type { FileReference } from '../../utils/fileReferences'
 import { IconButton, Tooltip, cx } from '../ui'
 import './ContextChip.css'
 
-export type ContextChipKind = 'file' | 'directory' | 'image' | 'skill' | 'branch'
+export type ContextChipKind = 'file' | 'directory' | 'image' | 'skill' | 'branch' | 'worktree'
 
 const KINDS: Record<ContextChipKind, { label: string; icon: ReactNode }> = {
   file: { label: 'file', icon: <FileText size={13} aria-hidden /> },
@@ -13,10 +13,11 @@ const KINDS: Record<ContextChipKind, { label: string; icon: ReactNode }> = {
   image: { label: 'image', icon: <ImageIcon size={13} aria-hidden /> },
   skill: { label: 'skill', icon: <BookOpen size={13} aria-hidden /> },
   branch: { label: 'branch', icon: <GitBranch size={13} aria-hidden /> },
+  worktree: { label: 'worktree', icon: <Folder size={13} aria-hidden /> },
 }
 
 /** Shared pill for referenced context (attachments, skills) in the composer and sent messages. */
-export function ContextChip({ kind, name, detail, path, reference, meta, error, onRemove, removeLabel }: {
+export function ContextChip({ kind, name, detail, path, reference, meta, error, partial, onInspect, onRemove, removeLabel }: {
   kind: ContextChipKind
   name: string
   /** Full path or detail, shown mono in the tooltip. */
@@ -28,11 +29,14 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
   /** Overrides the default kind label (e.g. "copying"). */
   meta?: string
   error?: boolean
+  partial?: boolean
+  /** Inspect captured context without treating its display path as read authority. */
+  onInspect?: () => void
   onRemove?: () => void
   removeLabel?: string
 }) {
   const inspect = useContext(FileInspectionContext)
-  const openable = Boolean(inspect && path && kind !== 'directory')
+  const openable = Boolean(onInspect || (inspect && path && kind !== 'directory' && kind !== 'branch' && kind !== 'worktree'))
   const body = (
     <>
       <span className="uam-context-chip__icon">{KINDS[kind].icon}</span>
@@ -41,10 +45,10 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
     </>
   )
   return (
-    <span className={cx('uam-context-chip', error && 'is-error')} data-detail={detail}>
-      <Tooltip label={detail && <span style={{ fontFamily: 'var(--font-mono)' }}>{detail}</span>}>
+    <span className={cx('uam-context-chip', error && 'is-error', partial && 'is-partial')} data-detail={detail}>
+      <Tooltip label={detail && <span style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-line' }}>{detail}</span>}>
         {openable ? (
-          <button type="button" className="uam-context-chip__body" onClick={() => inspect?.(reference ?? { path: path as string })}>{body}</button>
+          <button type="button" className="uam-context-chip__body" onClick={() => onInspect ? onInspect() : inspect?.(reference ?? { path: path as string })}>{body}</button>
         ) : (
           <span className="uam-context-chip__body" tabIndex={0}>{body}</span>
         )}

@@ -41,6 +41,20 @@ Task-1230’s initial read-only revision patch left this requirement open. David
 
 **Partial implementation; artifact verification needed.** Provider, phone, SSH and computer-use flags exist, but the stricter requirement is zero mention of excluded capabilities in the resulting application and shipped content. Source gating and hidden controls do not prove that. The provider-parity follow-up adds Antigravity to the browser and backend configurator lists and verifies explicit ON/OFF flags for all six providers; review and live browser acceptance remain pending in Configurator Provider Exclusion. Compatibility strings, generated resources and packaged artifacts require a restricted-build audit before making a compliance claim. [Build flags](build-flags.md) owns the agreement; future implementation must retain existing user data compatibility without resurfacing the excluded capability.
 
+## Referenced context action sends
+
+**Contract resolved by David in task-1217, 2026-10-23.** After the contradiction was explained, David answered “Yes — include the selected chips” to including references frozen when the first goal message or Claude Plan prompt was originally submitted. This approves that product rule, not the implementation, testing, Claude review or completion of the task. The [composer context agreement](chat/composer/attachments.md) remains authoritative: selected context follows the authored message; later selections belong to later input.
+
+The prior [ChatView](../UI-V2/src/components/views/ChatView.tsx) implementation sent goal and Claude Plan prompt text/attachments through `sendSubmittedPrompt` while leaving composer references unsent. The prior exact-input regression `sends exact direct %s input and attachments without borrowing composer quoted references` expressly asserted that exclusion, although these two routes originate from authored composer input. Generated plan actions had a different reason to exclude context: their fixed action text must remain independent of an unfinished composer draft. The former behavior contradicted the attachment agreement's selected-context rule; documenting its notice did not approve an exception.
+
+| Route | Approved source contract |
+|---|---|
+| `/goal`, native goal command and goal-armed first message | Freeze the selected reference snapshots with the original submission before awaiting goal creation, and include them with the first prompt. Goal continuations never borrow later composer selections. |
+| Claude Plan: Accept edits and proceed, Review each edit, Keep planning | Keep the original authored prompt, selected attachments and reference snapshots through mode/permission waits; new selections belong to the next message. |
+| Generated Codex plan Approve/Deny | Send the fixed application action without borrowing or clearing the independent composer draft or its references. |
+
+The source patch uses a shared captured submission, refuses a changed target chat/birth/provider/host/workspace before delayed dispatch, and clears only unchanged submitted references for the same chat birth after admission. The [regressions](../UI-V2/src/components/views/ChatView.test.tsx) now assert the authorized initial-send rule across goal and all three Claude choices, including references added during goal/mode waits; the generated-action exclusion tests remain. Frontend regressions and the synthetic component fixture have been exercised; linked native CEF integration, real runtime/provider verification, scoped Claude review and David's implementation acceptance remain pending in the [V5 log](<../V5 Improvement Change log.md>).
+
 ## Known gaps retained
 
 | Area | Current limit | Record to consult |

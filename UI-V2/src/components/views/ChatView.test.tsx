@@ -1,6 +1,6 @@
 import { clearSubagentView, subagentRouteFor } from '../../utils/subagentNavigation'
 import { defaultChatGridLayout, readChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
-import { captureContextReference } from '../../utils/contextReferences'
+import { captureContextReference, formatContextReferences } from '../../utils/contextReferences'
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -9675,40 +9675,75 @@ describe('ChatView', () => {
       const occurrences = () => (host.querySelector('.uam-message-list')?.textContent?.split(outgoing.content).length ?? 1) - 1
       const cleanup = () => { act(() => root.unmount()); host.remove(); delete window.cefQuery; useAppStore.setState({ sendAcpPrompt: previousSend }) }
       return { host, pending, sends, inputIdentity, sideEffects, occurrences, cleanup, remount,
+        renderCurrentSession: () => act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)),
         send: () => act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click()) }
     }
 
-    it.each(['goal', 'claude-plan'] as const)('sends exact direct %s input and attachments without borrowing composer quoted references', async route => {
+    // David's 2026-10-23 task-1217 decision supersedes the prior goal/Claude exclusion assertion.
+    // Generated plan action exclusion remains covered separately below.
+    // Contract: docs/documentation-review.md#referenced-context-action-sends.
+    it.each(['goal', 'claude-plan', 'claude-proceed', 'claude-review'] as const)('sends the frozen composer references with user-authored %s input and preserves later selections', async route => {
       const previous = useAppStore.getState()
       const exactPrompt = 'Exact direct request, including  internal spacing.'
       const attachment = { id: 'direct-file', name: 'direct.txt', type: 'file', size: 4, path: '/private-fixture/direct.txt' }
-      const reference = captureContextReference({ id: 'unrelated-composer-reference', kind: 'message', sourceChatId: 'unrelated-chat', sourceMessageIndex: 7,
-        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Unrelated composer quote', text: 'THIS COMPOSER QUOTE MUST NOT ENTER A DIRECT INPUT' })!
-      const createGoal = vi.fn(async () => ({ ok: true, goalId: 'direct-goal-fixture' }))
+      const reference = captureContextReference({ id: 'selected-composer-reference', kind: 'message', sourceChatId: 'source-chat', sourceMessageIndex: 7,
+        executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Selected composer quote', text: 'Selected context for the original authored request' })!
+      const later = { ...reference, id: 'later-composer-reference', text: 'NEWER CONTEXT MUST WAIT FOR THE NEXT MESSAGE' }
+      let finishGoal!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finishGoal = () => resolve({ ok: true, goalId: 'direct-goal-fixture' }) }))
+      let finishMode!: () => void
+      const changeMode = vi.fn(() => new Promise<boolean>((resolve) => { finishMode = () => resolve(true) }))
+      const changeSafety = vi.fn(async () => true)
+      const duringMode = { ...reference, id: 'mode-wait-reference', text: 'ADDED DURING THE MODE WAIT' }
+      let remaining = [later]
       const draftText = route === 'goal' ? `/goal ${exactPrompt}` : exactPrompt
       const f = mount({ text: draftText, attachments: [attachment], references: [reference] }, () => {
         useAppStore.setState({ setGoal: createGoal })
-        if (route === 'claude-plan') useAppStore.setState(state => ({
+        if (route !== 'goal') useAppStore.setState(state => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
           sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
           acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
             acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
         }))
       })
       try {
-        if (route === 'claude-plan') expect(useAppStore.getState().providers.find(provider => provider.id === 'claude-cli')).toMatchObject({
+        if (route !== 'goal') expect(useAppStore.getState().providers.find(provider => provider.id === 'claude-cli')).toMatchObject({
           supportsStructured: true, structuredProtocol: 'claude-code-stream-json',
         })
         await f.send()
-        if (route === 'claude-plan') {
+        expect(f.sends()).toHaveLength(0)
+        const newerDraft = 'A different request for the next message'
+        act(() => {
+          const textarea = f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, newerDraft)
+          textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), text: newerDraft, references: [reference, later] }))
+        // R1 P2-1: a branch/base label refresh must not discard this already frozen authored input.
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, workspaceBranchName: 'refreshed-label', workspaceBaseRef: 'refreshed-base' } : session) })))
+        if (route !== 'goal') {
           expect(f.sends()).toHaveLength(0)
-          const keepPlanning = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Keep planning')
-          expect(keepPlanning).toBeTruthy()
-          await act(async () => keepPlanning!.click())
-        } else expect(createGoal).toHaveBeenCalledWith('chat-1', exactPrompt, expect.any(Number), 'uam')
+          const label = route === 'claude-plan' ? 'Keep planning' : route === 'claude-proceed' ? 'Accept edits and proceed' : 'Review each edit'
+          const choice = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
+          expect(choice).toBeTruthy()
+          await act(async () => choice!.click())
+          if (route !== 'claude-plan') {
+            expect(f.sends()).toHaveLength(0)
+            act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), references: [reference, later, duringMode] }))
+            remaining = [later, duringMode]
+            await act(async () => finishMode())
+            expect(changeMode).toHaveBeenCalledWith('chat-1', 'default')
+          }
+          expect(changeSafety).toHaveBeenCalledTimes(route === 'claude-proceed' ? 1 : 0)
+        } else {
+          expect(createGoal).toHaveBeenCalledWith('chat-1', exactPrompt, expect.any(Number), 'uam')
+          await act(async () => finishGoal())
+        }
         expect(f.sends()).toHaveLength(1)
-        expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [attachment], steerNow: false })
-        expect(f.sends()[0].payload.text).not.toContain('Referenced context')
-        expect(f.sends()[0].payload.text).not.toContain(reference.text)
+        expect(f.sends()[0].payload).toMatchObject({ text: `${exactPrompt}\n\n${formatContextReferences([reference])}`, attachments: [attachment], steerNow: false })
+        expect(f.sends()[0].payload.text).not.toContain(later.text)
+        expect(f.sends()[0].payload.text).not.toContain(duringMode.text)
         const row = f.host.querySelector('[data-outgoing-message]')!
         const article = row.querySelector('article')!
         expect(row.textContent).toContain(exactPrompt)
@@ -9718,18 +9753,278 @@ describe('ChatView', () => {
         expect(row.querySelector('article')).toBe(article)
         expect(article.getAttribute('data-delivery')).toBe('sending')
         expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
-        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
-        expect(readChatComposerDraft('chat-1').references).toEqual([reference])
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(newerDraft)
+        expect(readChatComposerDraft('chat-1').text).toBe(newerDraft)
+        expect(readChatComposerDraft('chat-1').references).toEqual(remaining)
         expect(f.sends()).toHaveLength(1)
         expect(f.sideEffects()).toEqual([])
       } finally {
         await act(async () => f.pending[0]?.ack())
         f.cleanup()
-        useAppStore.setState({ setGoal: previous.setGoal })
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
       }
     })
 
-    it('sends the exact Codex Deny plan action without borrowing or consuming the independent composer draft', async () => {
+    it.each((['goal', 'claude-proceed', 'claude-permission'] as const).flatMap((route) => (['birth', 'host', 'workspace', 'provider', 'fallback-workspace'] as const).map((change) => ({ route, change }))))('refuses $route first-send after target $change changes without consuming its draft or snapshots', async ({ route, change }) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'stale-target-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Selected source context' })!
+      const prompt = route === 'goal' ? '/goal Preserve this original input' : 'Preserve this original input'
+      let finish!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finish = () => resolve({ ok: true, goalId: 'stale-target-goal' }) }))
+      const changeMode = vi.fn(() => route === 'claude-permission' ? Promise.resolve(true)
+        : new Promise<boolean>((resolve) => { finish = () => resolve(true) }))
+      const changeSafety = vi.fn(() => route === 'claude-permission'
+        ? new Promise<boolean>((resolve) => { finish = () => resolve(true) }) : Promise.resolve(true))
+      const f = mount({ text: prompt, attachments: [], references: [reference] }, () => {
+        useAppStore.setState({ setGoal: createGoal })
+        if (change === 'fallback-workspace') useAppStore.setState((state) => ({
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, executionHostId: 'local', folderId: 'fallback-folder', workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '', workspaceDirectory: '/workspace' } : session),
+          folders: [{ id: 'fallback-folder', name: 'Fallback', parentId: null, directory: '/unused-folder', executionHostId: 'local', isExpanded: true, createdAt: new Date() }],
+        }))
+        if (route !== 'goal') useAppStore.setState((state) => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+            acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+        }))
+      })
+      try {
+        await f.send()
+        if (route !== 'goal') await act(async () => Array.from(f.host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        expect(finish).toBeTypeOf('function')
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id !== 'chat-1' ? session : { ...session,
+          ...(change === 'birth' ? { createdAt: new Date(session.createdAt.getTime() + 1000) } : {}),
+          ...(change === 'host' ? { executionHostId: 'different-host' } : {}),
+          ...(change === 'provider' ? { providerId: 'opencode-cli' } : {}),
+          ...(change === 'workspace' || change === 'fallback-workspace' ? { workspaceDirectory: '/different-workspace' } : {}),
+        }) })))
+        await act(async () => finish())
+        expect(f.sends()).toHaveLength(0)
+        expect(changeSafety).toHaveBeenCalledTimes(route === 'claude-permission' ? 1 : 0)
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: prompt, attachments: [], references: [reference] })
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(prompt)
+        if (route !== 'goal') {
+          expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
+          if (change !== 'birth') {
+            const refusal = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
+              notice.textContent?.includes("so this prompt wasn't sent. Review the selected references, then send again."))
+            expect(refusal).toBeTruthy()
+            expect(refusal!.textContent).toContain('Message not sent')
+            // A prevented send asks for recovery; it must not use the green completion treatment.
+            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+          }
+        }
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it('keeps the replacement warning when the abandoned send is accepted late', async () => {
+      const reference = captureContextReference({ id: 'late-accept-reference', kind: 'branch', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T12:00:00Z', executionHostId: 'local', workspaceDirectory: '/workspace',
+        branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured branch', text: 'Original ordinary context' })!
+      const f = mount({ text: 'Late accepted draft', attachments: [], references: [reference] })
+      try {
+        await f.send()
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        f.renderCurrentSession()
+        await act(async () => f.pending[0].ack())
+        const notice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((item) => item.textContent?.includes('Check the earlier input before sending again.'))
+        expect(notice).toBeTruthy()
+        expect(notice!.textContent).toContain('Check earlier message')
+        expect(notice!.textContent).not.toContain('Message not sent')
+      } finally {
+        await act(async () => { for (const request of f.pending) request.ack() })
+        f.cleanup()
+      }
+    })
+
+    it.each([true, false])('keeps the replacement draft and newer ordinary send busy after an abandoned bridge send settles (accepted=%s)', async (accepted) => {
+      const attachment = { id: 'matching-recreated-attachment', name: 'retained.txt', type: 'file' as const, size: 4, path: '/fixture/retained.txt' }
+      const reference = captureContextReference({ id: 'original-ordinary-reference', kind: 'branch', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T12:00:00Z', executionHostId: 'local', workspaceDirectory: '/workspace',
+        branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured branch', text: 'Original ordinary context' })!
+      const text = 'Identical draft after recreation'
+      const f = mount({ text, attachments: [attachment], references: [reference] })
+      try {
+        await f.send()
+        expect(f.sends()).toHaveLength(1)
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        f.renderCurrentSession()
+        const replacementNotice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) => notice.textContent?.includes('Check the earlier input before sending again.'))
+        expect(replacementNotice).toBeTruthy()
+        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
+        act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
+        await f.send()
+        expect(f.sends()).toHaveLength(2)
+        expect(f.sends()[1].payload).toMatchObject({ text: text + '\n\n' + formatContextReferences([fresh]), attachments: [attachment] })
+        await act(async () => accepted ? f.pending[0].ack() : f.pending[0].reject('Abandoned synthetic send refused'))
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(text)
+        expect(f.host.querySelector('[aria-label="Remove retained.txt attachment"]')).toBeTruthy()
+        expect(readChatComposerDraft('chat-1')).toEqual({ text, attachments: [attachment], references: [fresh] })
+        expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.disabled).toBe(true)
+        act(() => f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+        expect(f.sends()).toHaveLength(2)
+        await act(async () => f.pending[1].ack())
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        await act(async () => { for (const request of f.pending) request.ack() })
+        f.cleanup()
+      }
+    })
+
+    it.each(['goal', 'claude-proceed', 'claude-permission'] as const)('recovers the composer after a same-id birth change during %s without releasing a newer send', async (route) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'recreated-chat-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'Saved before recreation', text: 'Original captured context' })!
+      const original = { text: route === 'goal' ? '/goal Original held input' : 'Original held input', attachments: [], references: [reference] }
+      let finish!: () => void
+      const createGoal = vi.fn(() => new Promise<{ ok: true; goalId: string }>((resolve) => { finish = () => resolve({ ok: true, goalId: 'held-goal' }) }))
+      const changeMode = vi.fn(() => route === 'claude-permission' ? Promise.resolve(true)
+        : new Promise<boolean>((resolve) => { finish = () => resolve(true) }))
+      const changeSafety = vi.fn(() => route === 'claude-permission'
+        ? new Promise<boolean>((resolve) => { finish = () => resolve(true) }) : Promise.resolve(true))
+      const f = mount(original, () => {
+        useAppStore.setState({ setGoal: createGoal })
+        if (route !== 'goal') useAppStore.setState((state) => ({
+          setSessionApprovalMode: changeMode, setSessionCommandSafetyTier: changeSafety,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+            acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+        }))
+      })
+      try {
+        await f.send()
+        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        const finishOriginal = finish
+        expect(finishOriginal).toBeTypeOf('function')
+        act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
+          ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
+        // MainPanel updates this prop without remounting when only the birth changes.
+        f.renderCurrentSession()
+        expect(f.sends()).toHaveLength(0)
+        expect(readChatComposerDraft('chat-1')).toEqual(original)
+        expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
+        const send = () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!
+        expect(send().disabled).toBe(false)
+
+        const freshPrompt = 'Fresh input after recreation'
+        const fresh = { ...reference, id: 'new-birth-reference', sourceChatCreatedAt: useAppStore.getState().sessions[0].createdAt.toISOString(), text: 'New birth context' }
+        const freshDraft = route === 'goal' ? `/goal ${freshPrompt}` : freshPrompt
+        act(() => {
+          const textarea = f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, freshDraft)
+          textarea.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        act(() => writeChatComposerDraft('chat-1', { text: freshDraft, attachments: [], references: [fresh] }))
+        createGoal.mockResolvedValueOnce({ ok: true, goalId: 'new-birth-goal' })
+        await f.send()
+        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload.text).toBe(freshPrompt + '\n\n' + formatContextReferences([fresh]))
+        expect(send().disabled).toBe(true)
+        // The abandoned request may settle after a new send has acquired the busy state.
+        await act(async () => finishOriginal())
+        expect(f.sends()).toHaveLength(1)
+        expect(send().disabled).toBe(true)
+        expect(f.host.textContent).not.toContain('Goal was created, but the first prompt failed to send.')
+        await act(async () => f.pending[0].ack())
+        expect(readChatComposerDraft('chat-1')).toEqual({ text: '', attachments: [] })
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setGoal: previous.setGoal, setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it.each(['Keep planning', 'Review each edit', 'Accept edits and proceed'] as const)('warns after unconfirmed Claude Plan %s delivery without consuming its draft or snapshots', async (choice) => {
+      const previous = useAppStore.getState()
+      const reference = captureContextReference({ kind: 'branch', id: 'unconfirmed-plan-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Original selected source context' })!
+      const draft = { text: 'Send this selected context', attachments: [], references: [reference] }
+      const f = mount(draft, () => useAppStore.setState((state) => ({
+        setSessionApprovalMode: vi.fn(async () => true), setSessionCommandSafetyTier: vi.fn(async () => true),
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat(), providerId: 'claude-cli',
+          acpSession: sanitizeCppAcpSession({ ...chat().acpSession, providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', currentModeId: 'plan' }) }, undefined) },
+      })))
+      try {
+        await f.send()
+        await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
+        await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
+        const recovery = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
+          notice.textContent?.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        expect(recovery).toBeTruthy()
+        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(readChatComposerDraft('chat-1')).toEqual(draft)
+        expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        f.cleanup()
+        useAppStore.setState({ setSessionApprovalMode: previous.setSessionApprovalMode, setSessionCommandSafetyTier: previous.setSessionCommandSafetyTier })
+      }
+    })
+
+    it.each((['file', 'branch', 'worktree'] as const).flatMap((kind) => [true, false].map((accepted) => ({ kind, accepted }))))('sends captured $kind context and clears only its acknowledged snapshot (accepted=$accepted)', async ({ kind, accepted }) => {
+      const snapshot = captureContextReference({ kind, id: 'source-send-snapshot', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z', sourcePath: '/workspace/src/main.ts',
+        branchName: 'feature/context', worktreeDirectory: '/workspace', executionHostId: 'local', workspaceDirectory: '/workspace', capturedAt: '2026-10-23T12:00:00Z', label: 'Captured source', text: 'The captured source text.' })!
+      const newer = { ...snapshot, id: 'newer-file-snapshot', text: 'A later snapshot for the next message.' }
+      const f = mount({ text: 'Read @src/main.ts', attachments: [], references: [snapshot] })
+      let settled = false
+      try {
+        expect(f.host.querySelector('.uam-context-chip')?.textContent).toContain('Captured source')
+        await f.send()
+        const submitted = String(f.sends()[0].payload.text)
+        expect(submitted.startsWith('Read @src/main.ts\n\nReferenced context (quoted snapshot):\n')).toBe(true)
+        const delivered = JSON.parse(submitted.split('Referenced context (quoted snapshot):\n')[1])
+        expect(delivered).toEqual(snapshot)
+        expect(delivered).not.toHaveProperty('inputWriteCompleted')
+        act(() => writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), references: [snapshot, newer] }))
+        await act(async () => accepted ? f.pending[0].ack() : f.pending[0].reject('Fixture refusal'))
+        settled = true
+        expect(readChatComposerDraft('chat-1').references).toEqual(accepted ? [newer] : [snapshot, newer])
+        expect(f.sends()).toHaveLength(1)
+        expect(f.sideEffects()).toEqual([])
+      } finally {
+        if (!settled) await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+      }
+    })
+
+    it.each(['changed-snapshot', 'recreated-chat'] as const)('does not clear a newer reference after ordinary Send acknowledgement: %s', async (change) => {
+      const snapshot = captureContextReference({ kind: 'branch', id: 'ack-owned-reference', sourceChatId: 'chat-1', sourceChatCreatedAt: '2026-10-23T11:00:00Z',
+        executionHostId: 'local', workspaceDirectory: '/workspace', branchName: 'feature/context', capturedAt: '2026-10-23T12:00:00Z', label: 'feature/context', text: 'Captured context' })!
+      const newer = change === 'changed-snapshot' ? { ...snapshot, text: 'Newer context using the same saved ID' } : snapshot
+      const f = mount({ text: 'Read captured context', attachments: [], references: [snapshot] })
+      let settled = false
+      try {
+        await f.send()
+        act(() => {
+          if (change === 'recreated-chat') useAppStore.setState((state) => ({ sessions: state.sessions.map((chat) => chat.id === 'chat-1' ? { ...chat, createdAt: new Date(chat.createdAt.getTime() + 1000) } : chat) }))
+          writeChatComposerDraft('chat-1', { text: 'New draft', attachments: [], references: [newer] })
+        })
+        await act(async () => f.pending[0].ack())
+        settled = true
+        expect(readChatComposerDraft('chat-1').references).toEqual([newer])
+        expect(f.sends()).toHaveLength(1)
+      } finally {
+        if (!settled) await act(async () => f.pending[0]?.ack())
+        f.cleanup()
+      }
+    })
+
+    it.each([
+      { action: 'Approve', mode: 'default', exactPrompt: 'Proceed with the plan.' },
+      { action: 'Deny', mode: 'plan', exactPrompt: 'Do not proceed with this plan. Please revise it before making changes.' },
+    ])('sends the exact Codex $action plan action without borrowing or consuming the independent composer draft', async ({ action, mode, exactPrompt }) => {
       const previous = useAppStore.getState()
       const draftText = 'Independent composer request stays here'
       const attachment = { id: 'independent-plan-file', name: 'independent.txt', type: 'file', size: 4, path: '/private-fixture/independent.txt' }
@@ -9737,7 +10032,6 @@ describe('ChatView', () => {
         executionHostId: 'local', workspaceDirectory: '/private-fixture', capturedAt: '2026-01-01T00:00:00.000Z', label: 'Independent plan quote', text: 'THIS QUOTE IS NOT PART OF THE CODEX DENY ACTION' })!
       const independentDraft = { text: draftText, attachments: [attachment], references: [reference] }
       const setMode = vi.fn(async () => true)
-      const exactPrompt = 'Do not proceed with this plan. Please revise it before making changes.'
       const f = mount(independentDraft, () => useAppStore.setState(state => ({
         setSessionApprovalMode: setMode, markdownStoreAttachedBySessionId: { 'chat-1': [] },
         sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli', approvalMode: 'plan' } : session),
@@ -9747,12 +10041,12 @@ describe('ChatView', () => {
       })))
       try {
         expect(useAppStore.getState().providers.find(provider => provider.id === 'codex-cli')).toMatchObject({ supportsStructured: true, structuredProtocol: 'codex-app-server' })
-        const deny = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Deny')
-        expect(deny).toBeTruthy()
+        const actionButton = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === action)
+        expect(actionButton).toBeTruthy()
         expect(f.sends()).toHaveLength(0)
-        await act(async () => deny!.click())
+        await act(async () => actionButton!.click())
         expect(setMode).toHaveBeenCalledTimes(1)
-        expect(setMode).toHaveBeenCalledWith('chat-1', 'plan')
+        expect(setMode).toHaveBeenCalledWith('chat-1', mode)
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload).toMatchObject({ text: exactPrompt, attachments: [], markdownStoreFiles: [], steerNow: false })
         expect(f.sends()[0].payload.text).not.toContain(draftText)

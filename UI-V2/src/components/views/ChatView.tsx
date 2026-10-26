@@ -6,7 +6,8 @@ import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevis
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
-import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
+import { formatContextReferences } from '../../utils/contextReferences'
+import { acknowledgeComposerReferences, captureComposerReferenceSubmission, composerReferenceSubmissionIsCurrent, type ComposerReferenceSubmission } from '../../utils/composerReferenceSubmission'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
@@ -54,9 +55,14 @@ import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
+import { ComposerContextReferences } from '../chat/ComposerContextReferences'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { getTopmostModal } from '../../utils/modalFocus'
+
+// Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
+const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
+const UNSENT_PROMPT_MESSAGE = "The chat's workspace or provider changed, so this prompt wasn't sent. Review the selected references, then send again."
 
 interface ChatViewProps {
   session: Session
@@ -133,6 +139,13 @@ export function matchesUamAgentCycleShortcut(
 interface SelectedToolCallRef {
   id: string
   messageId?: string
+}
+
+interface PendingClaudePlanPrompt {
+  prompt: string
+  draft: string
+  attachments: Attachment[]
+  context: ComposerReferenceSubmission
 }
 
 const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
@@ -361,6 +374,7 @@ const parentViewportVisits = new Map<string, ParentViewportDetails & { top: numb
 const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
 
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
+  const sessionBirth = session.createdAt.getTime()
   const showComposerRef = useRef(showComposer)
   showComposerRef.current = showComposer
   const viewportKey = JSON.stringify([session.id, session.createdAt.getTime(), session.providerId, session.executionHostId, navigationKey, isCompanionContext() ? 'companion' : 'desktop'])
@@ -379,6 +393,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
+  const [referenceCaptureLoading, setReferenceCaptureLoading] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [chatHistoryRetryingIds, setChatHistoryRetryingIds] = useState<Set<string>>(() => new Set())
   const [steering, setSteering] = useState(false)
@@ -390,7 +405,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [remoteMoveFolderId, setRemoteMoveFolderId] = useState('')
   const [remoteBrowseKey, setRemoteBrowseKey] = useState('')
-  const [claudePlanPrompt, setClaudePlanPrompt] = useState<string | null>(null)
+  const [claudePlanPrompt, setClaudePlanPrompt] = useState<PendingClaudePlanPrompt | null>(null)
+  const claudePlanResolvingRef = useRef<PendingClaudePlanPrompt | null>(null)
   const [workspaceFeedback, setWorkspaceFeedback] = useState<WorkspaceFeedback | null>(null)
   const [workspaceActionBusy, setWorkspaceActionBusy] = useState(false)
   const [goalError, setGoalError] = useState('')
@@ -752,7 +768,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
-  // Takes already-formed input: goal, plan and Claude plan actions must not inherit composer references.
+  // Generated actions take already-formed input; user-authored sends explicitly supply their frozen references.
   const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean) => {
     // Display only: an idle direct send occupies its transcript slot before ACK and keeps it after settling. It never enters
     // messages[] or ACP state; ACK records admission only, and a failed request stays visible as unconfirmed.
@@ -804,18 +820,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendAcpPrompt])
-  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
-    const references = sanitizeContextReferences(readChatComposerDraft(chatId).references)
-    const context = formatContextReferences(references)
+  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    if (!composerReferenceSubmissionIsCurrent(submission)) return false
+    const context = formatContextReferences(submission.references)
     const submittedText = context ? `${text}\n\n${context}` : text
-    const accepted = await sendSubmittedPrompt(chatId, submittedText, attachments, steerNow)
-    if (accepted && references.length > 0 && useAppStore.getState().sessions.some((candidate) => candidate.id === chatId)) {
-      const sentIds = new Set(references.map((reference) => reference.id))
-      const current = readChatComposerDraft(chatId)
-      writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => !sentIds.has(reference.id)) })
+    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow)
+    if (accepted) {
+      acknowledgeComposerReferences(submission)
+      // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
+      if (mountedRef.current && currentSessionIdRef.current === submission.chatId && composerReferenceSubmissionIsCurrent(submission)) {
+        setSlashMessage((message) => UNSENT_PROMPT_NOTICE.test(message) ? '' : message)
+      }
     }
     return accepted
   }, [sendSubmittedPrompt])
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    const submission = captureComposerReferenceSubmission(chatId)
+    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow) : false
+  }, [sendCapturedComposerPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
@@ -945,6 +967,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationSubmitAfterStopRef = useRef(false)
   const submitDictatedPromptRef = useRef<(prompt: string) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
+  const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
+    previousComposerIdentityRef.current.birth !== sessionBirth && submitInFlightRef.current
   const compactRequestIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef(session.id)
   const mountedRef = useRef(true)
@@ -982,6 +1007,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [])
 
   useEffect(() => {
+    previousComposerIdentityRef.current = { id: session.id, birth: sessionBirth }
     currentSessionIdRef.current = session.id
     isNearBottomRef.current = restoredViewport?.nearBottom ?? true
     showScrollToBottomRef.current = false
@@ -994,7 +1020,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setProviderHandoffTargetId('')
     setConfirmYolo(false)
     setRollbackConfirmation(null)
-  }, [session.id])
+  }, [session.id, sessionBirth])
 
   const renderedCountRef = useRef(renderedMessageCount)
   renderedCountRef.current = renderedMessageCount
@@ -1233,7 +1259,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
-    setSlashMessage('')
+    setSlashMessage(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '')
     setPermissionMenuOpen(false)
     messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
@@ -1248,7 +1274,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setOlderHistoryLoading(false)
     setDictationState('idle')
     setDictationError('')
-  }, [session.id])
+  }, [session.id, sessionBirth])
 
   useEffect(() => {
     if (!acp?.lastError && !acp?.promptActionError) setDismissedAcpErrorKey('')
@@ -1466,18 +1492,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }) => {
     const submittedSessionId = session.id
     const submittedDraft = draft
+    const submittedContext = captureComposerReferenceSubmission(submittedSessionId)
+    if (!submittedContext) { setGoalError("The chat's workspace or provider changed, so this goal wasn't sent. Review the selected references, then send again."); return }
     const generation = ++goalMutationGenerationRef.current
-    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedContext.birth
     submitInFlightRef.current = true
     goalMutationInFlightRef.current = true
     setSubmitting(true)
     setGoalSubmitting(true)
     try {
       const result = await setGoalStore(submittedSessionId, request.objective, request.tokenBudget, request.executionOwner)
-      // Creation already admitted this prompt; changing panes must not cancel its native operation.
-      const sent = result.ok ? await (request.steerNow
-        ? sendSubmittedPrompt(submittedSessionId, request.prompt, request.attachments, true)
-        : sendSubmittedPrompt(submittedSessionId, request.prompt, request.attachments)) : false
+      // A pane switch alone does not cancel the first prompt; its original target/context must still match.
+      const sent = result.ok ? await sendCapturedComposerPrompt(submittedContext, request.prompt, request.attachments, request.steerNow) : false
       const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
       if (sent && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
         acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: submittedDraft, attachments: request.attachments })
@@ -1600,7 +1627,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!showComposerRef.current) return
     const prompt = (promptOverride ?? draft).trim()
     if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
-    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
+    if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || referenceCaptureLoading ||
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
+      composerAttachments.some((attachment) => attachment.status !== 'ready')) return
 	if (dictationActiveRef.current && promptOverride === undefined) {
 	  await stopDictation(true)
 	  return
@@ -1625,15 +1654,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
       await createGoalAndSend({ objective: prompt, tokenBudget: defaultGoalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
         prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
-        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow, disarm: true })
+        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined, disarm: true })
       return
     }
 
     if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
-      setClaudePlanPrompt(prompt)
+      const context = captureComposerReferenceSubmission(session.id)
+      if (!context) { setSlashMessage(UNSENT_PROMPT_MESSAGE); return }
+      setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
       return
     }
     const submittedSessionId = session.id
+    const submittedBirth = sessionBirth
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submittedBirth
     submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) setSteering(true)
@@ -1646,15 +1680,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       ok = false
     }
     const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
-    if (ok && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
-      acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: draft, attachments: readyAttachments })
+    if (ok && acknowledgedSession?.createdAt.getTime() === submittedBirth) {
+      acknowledgeChatComposerDraft(submittedSessionId, submittedBirth, { text: draft, attachments: readyAttachments })
     }
-    if (currentSessionIdRef.current === submittedSessionId) {
+    if (ownsFeedback()) {
       submitInFlightRef.current = false
       setSubmitting(false)
       if (steerNow) setSteering(false)
     }
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
+    if (ok && ownsFeedback()) {
       setDraft((current) => current === draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) =>
         attachmentsEquivalent([attachment], [sentAttachment]))))
@@ -1897,9 +1931,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
-    : /working|unavailable|provider-managed/i.test(slashMessage)
+    : /working|unavailable|provider-managed|send the prompt again|send again|wasn't sent|could not confirm the prompt|chat was replaced/i.test(slashMessage)
       ? 'warning'
       : 'success'
+  const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
@@ -2079,8 +2114,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
+    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !referenceCaptureLoading && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, referenceCaptureLoading, composerAttachments]
   )
   const dictationAvailable = isCompanionContext() ? browserDictationAvailable() : isCefContext()
   const selectedChatId = useAppStore(s => s.activeSessionId)
@@ -2408,13 +2443,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : 'Plan action is unavailable.'
   const sendPlanAction = useCallback(async (prompt: string, nextModeId: 'default' | 'plan') => {
     if (planActionsDisabled) return
+    const submittedBirth = sessionBirth
     setSubmitting(true)
     const modeOk = await setSessionApprovalMode(session.id, nextModeId)
     if (modeOk) {
       await sendSubmittedPrompt(session.id, prompt)
     }
-    setSubmitting(false)
-  }, [planActionsDisabled, sendSubmittedPrompt, session.id, setSessionApprovalMode])
+    if (mountedRef.current && currentSessionIdRef.current === session.id &&
+      useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() === submittedBirth) setSubmitting(false)
+  }, [planActionsDisabled, sendSubmittedPrompt, session.id, sessionBirth, setSessionApprovalMode])
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
   const goalOwner = displayedGoal ? `${session.id}:${displayedGoal.id}` : ''
@@ -2829,46 +2866,60 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       }
     : undefined, [canShowPlanActions, planActionsDisabled, planActionsDisabledTitle, providerSupported, sendPlanAction])
   const resolveClaudePlanPrompt = async (nextModeId: 'acceptEdits' | 'default' | 'plan') => {
-    const prompt = claudePlanPrompt?.trim()
-    if (!prompt) {
-      setClaudePlanPrompt(null)
+    const submission = claudePlanPrompt
+    if (!submission || claudePlanResolvingRef.current === submission) return
+    const submittedSessionId = submission.context.chatId
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId &&
+      useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submission.context.birth
+    const refuseStaleSubmission = () => {
+      if (mountedRef.current) setClaudePlanPrompt((current) => current === submission ? null : current)
+      if (ownsFeedback()) setSlashMessage(UNSENT_PROMPT_MESSAGE)
+    }
+    if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+      refuseStaleSubmission()
       return
     }
-
-    const submittedSessionId = session.id
-    const submittedDraft = draft
+    claudePlanResolvingRef.current = submission
+    submitInFlightRef.current = true
     setSubmitting(true)
-    const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
-    if (!modeOk) {
-      setSlashMessage('Failed to change provider mode.')
-      setSubmitting(false)
-      return
-    }
-    const permissionResult = nextModeId === 'acceptEdits'
-      ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(session.id, 'acceptEdits'))
-      : { ok: true }
-    if (!permissionResult.ok) {
-      if (!permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
-      setSubmitting(false)
-      return
-    }
-    const readyAttachments = composerAttachments
-      .filter((attachment) => attachment.status === 'ready')
-      .map(({ status, error, ...attachment }) => attachment)
-    const ok = readyAttachments.length > 0
-      ? await sendSubmittedPrompt(session.id, prompt, readyAttachments)
-      : await sendSubmittedPrompt(session.id, prompt)
-    const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
-    if (ok && acknowledgedSession?.createdAt.getTime() === session.createdAt.getTime()) {
-      acknowledgeChatComposerDraft(submittedSessionId, session.createdAt.getTime(), { text: submittedDraft, attachments: readyAttachments })
-    }
-    if (ok && currentSessionIdRef.current === submittedSessionId) {
-      setDraft((current) => current === submittedDraft ? '' : current)
+    try {
+      const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
+      if (!modeOk) { if (ownsFeedback()) setSlashMessage('Failed to change provider mode.'); return }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const permissionResult = nextModeId === 'acceptEdits'
+        ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
+        : { ok: true }
+      if (!permissionResult.ok) {
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
+        return
+      }
+      if (!composerReferenceSubmissionIsCurrent(submission.context)) {
+        refuseStaleSubmission()
+        return
+      }
+      const readyAttachments = submission.attachments
+      const ok = await sendCapturedComposerPrompt(submission.context, submission.prompt, readyAttachments.length ? readyAttachments : undefined)
+      const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
+      if (ok && acknowledgedSession?.createdAt.getTime() === submission.context.birth) {
+        acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
+      }
+      if (!ownsFeedback()) return
+      if (!ok) { setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.'); return }
+      setDraft((current) => current === submission.draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
       setClaudePlanPrompt(null)
+    } catch {
+      if (ownsFeedback()) setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.')
+    } finally {
+      if (claudePlanResolvingRef.current === submission) {
+        if (ownsFeedback()) { submitInFlightRef.current = false; setSubmitting(false) }
+        claudePlanResolvingRef.current = null
+      }
     }
-    setSubmitting(false)
   }
 
   // Draft keystrokes re-render ChatView; the transcript only depends on conversation state, so keep its rows.
@@ -3541,10 +3592,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 )}
               >
                 Claude Plan mode is read-only. Choose how to proceed with this prompt.
+                {claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
               </Notice>
             )}
             {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title="Command" dismissLabel="Dismiss command feedback" onDismiss={() => setSlashMessage('')}>
+              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashMessage('')}>
                 {slashMessage}
               </Notice>
             )}
@@ -3719,6 +3771,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
             >
+            {editingMessageIndex === null && <ComposerContextReferences key={`${session.id}:${session.createdAt.getTime()}`} chatId={session.id} draft={draft}
+              disabled={submitting || goalSubmitting || session.importedReadOnly === true} onBusyChange={setReferenceCaptureLoading} />}
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (

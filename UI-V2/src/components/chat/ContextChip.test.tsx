@@ -57,3 +57,27 @@ it('shows the kind and name, opens a preview only when a path and inspector exis
     host.remove()
   }
 })
+
+it.each(['file', 'branch', 'worktree'] as const)('inspects a captured %s through its snapshot callback without reading the displayed path', (kind) => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const inspectFile = vi.fn()
+  const inspectSnapshot = vi.fn()
+  try {
+    act(() => root.render(
+      <FileInspectionContext.Provider value={inspectFile}>
+        <ContextChip kind={kind} name="Captured context" path="/display/only" onInspect={inspectSnapshot} />
+        {kind !== 'file' && <ContextChip kind={kind} name="Display only" path="/display/only" />}
+      </FileInspectionContext.Provider>
+    ))
+    const chips = host.querySelectorAll('.uam-context-chip')
+    act(() => chips[0].querySelector<HTMLButtonElement>('.uam-context-chip__body')!.click())
+    expect(inspectSnapshot).toHaveBeenCalledTimes(1)
+    expect(inspectFile).not.toHaveBeenCalled()
+    if (kind !== 'file') expect(chips[1].querySelector('button')).toBeNull()
+  } finally {
+    act(() => root.unmount())
+    host.remove()
+  }
+})

@@ -2666,6 +2666,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     stageChatContextReference: (sessionId: string, reference: ContextReference): boolean => {
       if (!get().sessions.some((session) => session.id === sessionId)) return false
       const validated = sanitizeContextReferences([reference])[0]
+      // File/repository snapshots must come from their asynchronous native readers, not caller-supplied text.
+      if (validated && validated.kind !== 'message' && validated.kind !== 'terminal') return false
       const source = get().sessions.find((session) => session.id === reference.sourceChatId)
       if (!validated || !source || (source.executionHostId || 'local') !== validated.executionHostId ||
         (source.workspaceWorktreeDirectory || source.workspaceDirectory || '') !== validated.workspaceDirectory) return false
