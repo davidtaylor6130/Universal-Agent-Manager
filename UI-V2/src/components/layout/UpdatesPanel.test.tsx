@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import { UpdatesPanel } from './UpdatesPanel'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
+import { availableUpdates } from '../../services/updateCatalog'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -45,6 +46,86 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
 }
 
 describe('UpdatesPanel', () => {
+  it('renders version-matched UAM, npm and Homebrew excerpts from the update projection', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const installed = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    const updates = availableUpdates({
+      checkedAt: '2026-10-23T00:00:00Z',
+      uam: { version: '5.0.0', url: 'https://example.test/uam', releaseNotesExcerpt: 'Application fixes.' },
+      providers: { 'codex-cli': {
+        version: '2.0.0', url: 'https://example.test/npm', releaseNotesExcerpt: 'npm release fixes.',
+        homebrew: { version: '1.9.0', url: 'https://example.test/homebrew', releaseNotesExcerpt: 'Homebrew release fixes.' },
+      } },
+    }, '4.9.0', {
+      providers: [{ ...installed, installMethod: 'npm' }],
+      remoteProviders: [{ ...installed, installMethod: 'homebrew-cask', executionHostId: 'lab', executionHostName: 'Lab' }],
+    }, [], {})
+    const state = monitor({ updates })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+
+    const rows = [...host.querySelectorAll('article[data-update-available]')]
+    expect(rows).toHaveLength(3)
+    for (const [index, excerpt] of ['Application fixes.', 'npm release fixes.', 'Homebrew release fixes.'].entries()) {
+      const disclosure = rows[index].querySelector('details')!
+      expect(disclosure.open).toBe(false)
+      expect(disclosure.querySelector('p')?.textContent).toBe(excerpt)
+      expect(disclosure.querySelector('summary')?.getAttribute('aria-label')).toBe(`Release notes excerpt for ${updates[index].name} ${updates[index].latestVersion}`)
+      await act(async () => disclosure.querySelector('summary')!.click())
+      expect(disclosure.open).toBe(true)
+      await act(async () => disclosure.querySelector('summary')!.click())
+      expect(disclosure.open).toBe(false)
+    }
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    try {
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="View Universal Agent Manager 5.0.0 release"]')!.click())
+      expect(open).toHaveBeenLastCalledWith('https://example.test/uam', '_blank', 'noopener')
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Open codex-cli · Lab update instructions"]')!.click())
+      expect(open).toHaveBeenLastCalledWith('https://example.test/homebrew', '_blank', 'noopener')
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Update codex-cli · Lab to 1.9.0"]')!.click())
+      expect(state.requestCliProviderUpdate).toHaveBeenCalledExactlyOnceWith('codex-cli', '1.9.0', 'lab')
+    } finally {
+      open.mockRestore()
+      act(() => root.unmount())
+    }
+  })
+
+  it('renders excerpts as literal text without HTML or Markdown execution', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const excerpt = '<script>unsafe()</script><img src=x onerror=unsafe()> [link](javascript:unsafe())'
+    const base = monitor().updates[0]
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [{ ...base, releaseNotesExcerpt: excerpt }] })} onClose={vi.fn()} />))
+    const disclosure = host.querySelector('details')!
+    await act(async () => disclosure.querySelector('summary')!.click())
+    expect(disclosure.querySelector('p')?.textContent).toBe(excerpt)
+    expect(disclosure.querySelector('script, img, a')).toBeNull()
+    act(() => root.unmount())
+  })
+
+  it('omits unavailable excerpts and resets disclosure when the available release changes', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const base = monitor().updates[0]
+    const render = (releaseNotesExcerpt?: string, latestVersion = base.latestVersion) => act(async () => root.render(
+      <UpdatesPanel monitor={monitor({ updates: [{ ...base, latestVersion, releaseNotesExcerpt }] })} onClose={vi.fn()} />,
+    ))
+    await render('Older fixes.')
+    await act(async () => host.querySelector('summary')!.click())
+    expect(host.querySelector('details')?.open).toBe(true)
+    await render('Newer fixes.', '0.131.0')
+    expect(host.querySelector('details')?.open).toBe(false)
+    expect(host.querySelector('details p')?.textContent).toBe('Newer fixes.')
+    expect(host.textContent).not.toContain('Older fixes.')
+    for (const excerpt of [undefined, '', '   ']) {
+      await render(excerpt)
+      expect(host.querySelector('details')).toBeNull()
+      expect(host.querySelector('[aria-label="Open Codex CLI update instructions"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Update Codex CLI to 0.130.0"]')).not.toBeNull()
+    }
+    act(() => root.unmount())
+  })
+
   it('routes same-provider remote items and update-all to their own hosts', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
