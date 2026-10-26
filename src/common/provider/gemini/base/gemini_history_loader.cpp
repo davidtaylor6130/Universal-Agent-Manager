@@ -325,6 +325,21 @@ namespace
 		}
 	};
 
+	// Gemini CLI getInitialChatHistory() records its generated environment preamble as the
+	// first user row, using the fixed id deriveStableId(["environment-context"]). That row is
+	// model context, not a user turn; every marker is required so typed text stays visible.
+	bool IsSessionContextRow(const JsonValue& row, std::size_t ordinal)
+	{
+		if (ordinal != 0 || JsonStringOrEmpty(row.Find("id")) != "d04923d38bb0f6017037e74183378ef4" || JsonStringOrEmpty(row.Find("type")) != "user") return false;
+		const JsonValue* content = row.Find("content");
+		if (!content || content->type != JsonValue::Type::Array || content->array_value.size() != 1) return false;
+		const JsonValue& part = content->array_value.front();
+		const JsonValue* text = part.Find("text");
+		if (part.object_value.size() != 1 || !text || text->type != JsonValue::Type::String) return false;
+		const std::string_view value = text->string_value;
+		return value.starts_with("<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n") && value.ends_with("\n</session_context>");
+	}
+
 	std::optional<ChatSession> MapGeminiDocument(JsonValue& root, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options, MappingState& state)
 	{
 		const std::string session_id = uam::strings::Trim(JsonStringOrEmpty(root.Find("sessionId")));
@@ -392,6 +407,7 @@ namespace
 				if (!state.Check()) return std::nullopt;
 				const auto ordinal = row_index++;
 				if (raw_message.type != JsonValue::Type::Object) { state.Fail("Gemini native history contains a malformed current message."); return std::nullopt; }
+				if (IsSessionContextRow(raw_message, ordinal)) continue;
 				const auto native_id = JsonStringOrEmpty(raw_message.Find("id"));
 				if (!BoundedIdentity(native_id)) { state.Fail("Gemini native message identity exceeds its bound."); return std::nullopt; }
 				const auto row_identity = !native_id.empty() && message_ids[native_id] == 1 ? "id:" + IdentityComponent(native_id) : "snapshot:" + attempt + ":" + std::to_string(ordinal);

@@ -14,7 +14,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching is in scope; exact context replay and empty-chat behaviour retain the shared implementation gaps. |
 | `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |
-| `mcp-connections` | Both | Partial | Private additional-directory setup exists; discovery does not establish permission to invoke tools. |
+| `mcp-connections` | Both | Partial | Private additional-directory setup exists; discovery does not establish permission to invoke tools. Native Plan mode ignores UAM’s [read-only tool hint](../uam-tools.md), so Plan children cannot call UAM read tools. |
 | `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
 | `attachments` | Both | Partial | Ordinary files remain provider-host references; structured native image input is explicitly unavailable rather than silently discarded. Shared input validation follows the [admission agreement](../attachments.md#input-admission), including native admission. UAM also supplies [quoted context snapshots](../attachments.md) with authored messages. |
 | `compaction` | Both | Partial | Recent native TUI versions expose compact while structured stream input has no safe manual compaction control or implemented UAM equivalent. |
