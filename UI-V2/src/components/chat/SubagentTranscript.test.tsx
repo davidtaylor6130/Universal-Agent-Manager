@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { SubagentHeader, SubagentTranscript, transcriptWindowStart, TRANSCRIPT_BATCH, MAX_JUMP_PAGES, type OlderHistoryOutcome } from './SubagentTranscript'
 import type { Message } from '../../types/message'
 import { readFileSync } from 'node:fs'
@@ -65,6 +65,30 @@ describe('subagent transcript window', () => {
     for (let i = 0; i < 4; i++) { region().scrollTop = 0; await scroll() }
     expect(host.querySelectorAll('[data-message-index]').length).toBe(45)
     expect(host.querySelector('[data-message-index="0"]')).not.toBeNull()
+  })
+
+  it('smooth-scrolls a rail jump and holds reveal-older until the scroll ends, or jumps instantly with Motion Off', async () => {
+    geometry()
+    const scrollIntoView = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    act(() => root.render(transcript({ messages: rows(45), label: 'Stored conversation messages' })))
+    const jump = () => act(() => { host.querySelector('[role="slider"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })) })
+    jump()
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' })
+    region().scrollTop = 0; await scroll()
+    expect(host.querySelectorAll('[data-message-index]').length).toBe(TRANSCRIPT_BATCH)
+    await act(async () => { region().dispatchEvent(new Event('scrollend')) })
+    expect(host.querySelectorAll('[data-message-index]').length).toBeGreaterThan(TRANSCRIPT_BATCH)
+
+    document.documentElement.setAttribute('data-motion', 'off')
+    try {
+      jump()
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'auto' })
+    } finally {
+      document.documentElement.removeAttribute('data-motion')
+    }
   })
 
   it('keeps one older read in flight, reports failure with Retry, and retries only on explicit intent', async () => {

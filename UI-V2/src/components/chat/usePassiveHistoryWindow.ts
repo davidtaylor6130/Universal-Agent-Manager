@@ -6,6 +6,7 @@ import { buildMessageFromCpp } from '../../store/cpp/reconcile'
 import type { ChatMessagesResponse } from '../../store/cpp/types'
 import type { AcceptedHistoryPage } from '../../store/storeTypes'
 import type { Message } from '../../types/message'
+import { alignRowStart } from '../../utils/motionStorage'
 
 const WINDOW_ROWS = 300
 type Visit = { pin: Alignment; prefix: number }
@@ -49,6 +50,8 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
   const following = useRef(true)
   const attestedTotal = useRef(config.total)
   const scrollRevision = useRef(0)
+  // A smooth rail jump owns the scroll until it settles; window reads and alignment wait so they cannot cancel it.
+  const jumping = useRef(false)
   const initialFill = useRef(false)
   const alignment = useRef<Alignment | null>(null)
   const retry = useRef<{ direction: Direction; index?: number; visit?: Visit } | null>(null)
@@ -257,7 +260,7 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
       const row = region.querySelector<HTMLElement>(`[data-message-index="${pin.index}"]`)
       if (row) {
         if (pin.end) region.scrollTop = region.scrollHeight
-        else if (pin.start) row.scrollIntoView?.({ block: 'start' })
+        else if (pin.start) { if (alignRowStart(region, row, () => { jumping.current = false; onScroll() })) jumping.current = true }
         else region.scrollTop += row.getBoundingClientRect().top - region.getBoundingClientRect().top - pin.offset
         alignment.current = null
       }
@@ -289,6 +292,7 @@ export function usePassiveHistoryWindow(config: PassiveHistoryConfig) {
     const region = scrollRef.current
     if (!region) return
     ++scrollRevision.current
+    if (jumping.current) return
     const wasFollowing = following.current
     following.current = live.current.segment.first + live.current.segment.rows.length === attestedTotal.current && region.scrollHeight - region.scrollTop - region.clientHeight < 48
     if (following.current !== wasFollowing) setState(value => ({ ...value }))
