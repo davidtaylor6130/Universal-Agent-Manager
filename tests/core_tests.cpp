@@ -8904,6 +8904,42 @@ UAM_TEST(ChatRepositoryDeletesStorageFilesWithSafeIdsOnly)
 	UAM_ASSERT(fs::exists(escaped_file));
 }
 
+UAM_TEST(ChatRepositoryLogsAttributablePrimaryDeletion)
+{
+	TempDir temp("uam-chat-delete-attribution");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+
+	ChatSession chat;
+	chat.id = "chat-delete-attribution";
+	chat.provider_id = "codex-cli";
+	chat.title = "Private title";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-01 00:00:01";
+	ChatDomainService().AddMessage(chat, MessageRole::User, "private prompt body");
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(fs::exists(uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, chat.id))));
+
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "user_deletion").Failed());
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "create_rollback").Failed());
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, "../escaped-attribution", "user_deletion").unsafe_chat_id);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("Chat storage delete: reason=user_deletion, chat_id=chat-delete-attribution, primary=removed, backup=removed, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete: reason=create_rollback, chat_id=chat-delete-attribution, primary=absent, backup=absent, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete refused: reason=user_deletion, unsafe chat id") != std::string::npos);
+	UAM_ASSERT(text.find("escaped-attribution") == std::string::npos);
+	UAM_ASSERT(text.find("private prompt body") == std::string::npos);
+	UAM_ASSERT(text.find("Private title") == std::string::npos);
+	UAM_ASSERT(text.find(temp.root.string()) == std::string::npos);
+}
+
 UAM_TEST(ChatRepositoryReportsSummaryDeleteFailures)
 {
 	TempDir temp("uam-chat-summary-delete-failure");

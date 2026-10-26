@@ -5201,32 +5201,44 @@ bool ChatRepository::MatchesTemporaryChatSaveReceipt(const fs::path& data_root, 
 
 namespace
 {
-	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id)
+	const char* RemovalOutcome(bool removed, const std::error_code& error)
+	{
+		return error ? "error" : (removed ? "removed" : "absent");
+	}
+
+	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 	{
 		ChatStorageDeleteResult result;
 		if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
 		{
 			result.unsafe_chat_id = true;
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", unsafe chat id");
 			return result;
 		}
 
 		if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
 		{
 			result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
+			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) + ", queue directory is a link");
 			return result;
 		}
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
 		uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
 		const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
-		uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+		const bool primary_removed = uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
 		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
-		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
+		const bool backup_removed = uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
 		const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 		uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
 		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
 		    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
+		// Ids and outcomes only: the sole UAM path that removes a chat primary must leave an attributable record.
+		uam::diagnostics::Write("Chat storage delete: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) +
+		    ", primary=" + RemovalOutcome(primary_removed, result.metadata_file_error) +
+		    ", backup=" + RemovalOutcome(backup_removed, result.metadata_backup_file_error) +
+		    ", result=" + (result.Failed() ? "failed" : "ok"));
 		return result;
 	}
 
@@ -5239,13 +5251,13 @@ bool ChatRepository::DeleteTemporaryChatIfRevision(const fs::path& data_root, st
 		!MatchesTemporaryChatSaveReceipt(data_root, chat_id, expected_revision)) return false;
 	const std::optional<ChatSession> child = LoadLocalChat(data_root, std::string(chat_id), false);
 	if (!child || child->temporary_parent_chat_id != parent_id) return false;
-	return !DeleteChatStorageFilesLocked(data_root, chat_id).Failed();
+	return !DeleteChatStorageFilesLocked(data_root, chat_id, "temporary_side_chat").Failed();
 }
 
-ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id)
+ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id, std::string_view reason)
 {
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
-	return DeleteChatStorageFilesLocked(data_root, chat_id);
+	return DeleteChatStorageFilesLocked(data_root, chat_id, reason);
 }
 
 ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
