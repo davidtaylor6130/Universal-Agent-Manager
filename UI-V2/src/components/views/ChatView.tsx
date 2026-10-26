@@ -1221,9 +1221,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
-    // Message-rail jumps glide to their target (subject to Motion); search results stay an immediate jump.
+    // Message-rail jumps glide to the top (the rail selects the first visible message, subject to Motion); search results centre immediately.
     target.scrollIntoView?.(searchNavigation.queryRequestId.startsWith('message-rail:')
-      ? { block: 'center', behavior: motionScrollBehavior() } : { block: 'center' })
+      ? { block: 'start', behavior: motionScrollBehavior() } : { block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
   }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 

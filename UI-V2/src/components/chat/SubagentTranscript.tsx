@@ -4,7 +4,6 @@ import { Button, IconButton } from '../ui'
 import { FileInspectionContext } from '../shared/fileInspectionContext'
 import type { Message } from '../../types/message'
 import { MessageNavigationRail } from './MessageNavigationRail'
-import { motionScrollBehavior } from '../../utils/motionStorage'
 import { PersistedConversationHistory } from './PersistedConversationMessage'
 import type { PassiveHistoryView } from './usePassiveHistoryWindow'
 import { readSubagentViewportVisit, rememberSubagentViewportVisit } from '../../utils/subagentViewportVisits'
@@ -175,7 +174,7 @@ export function useSubagentTranscriptWindow({ viewportKey, count, nativeStartInd
     jumpPages.current = 0
     const loaded = index >= live.current.nativeStartIndex
     if (loaded && index >= live.current.absoluteStart) {
-      scrollRef.current?.querySelector<HTMLElement>(`[data-message-index="${index}"]`)?.scrollIntoView?.({ block: 'start', behavior: motionScrollBehavior() })
+      scrollRef.current?.querySelector<HTMLElement>(`[data-message-index="${index}"]`)?.scrollIntoView?.({ block: 'start' })
       return
     }
     target.current = index

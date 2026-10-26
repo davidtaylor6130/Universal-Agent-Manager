@@ -36,6 +36,8 @@ type RailView = { visible: number[]; lastRendered: number }
 /** The rail ends this far above the floating composer (matches its `bottom` style below). */
 const RAIL_COMPOSER_GAP = 16
 const ROW = '[data-message-index]'
+// ponytail: fixed grace for a jump's row to appear once loading ends; long enough for a smooth scroll.
+const PIN_SETTLE_MS = 2000
 const RELEASE_EVENTS = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
 
 export function MessageNavigationRail({ userMessageIndices, startIndex, messages, currentIndex, viewportRef, busy, onNavigate }: {
@@ -57,6 +59,12 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   const [pin, setPin] = useState<{ index: number; seen: boolean } | null>(null)
   const railRef = useRef<HTMLDivElement>(null)
   const hasMarks = count > 0
+  // A jump whose row never shows (refused read, page budget spent) stops holding the selection.
+  useEffect(() => {
+    if (!pin || pin.seen || busy) return
+    const timer = window.setTimeout(() => setPin((prior) => prior && !prior.seen ? null : prior), PIN_SETTLE_MS)
+    return () => window.clearTimeout(timer)
+  }, [pin, busy])
   // Visibility comes from IntersectionObserver, so scrolling never reads layout; only this rail re-renders.
   useEffect(() => {
     const viewport = viewportRef.current

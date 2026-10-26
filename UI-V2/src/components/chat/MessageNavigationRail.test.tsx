@@ -212,6 +212,33 @@ describe('Message navigation rail', () => {
     } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
   })
 
+  it('lets go of a jump whose row never appears once loading has settled', () => {
+    vi.useFakeTimers()
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    const render = (busy: boolean) => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={5}
+      viewportRef={viewportRef} busy={busy} onNavigate={vi.fn()} />)
+    try {
+      act(() => render(false))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => show([rows[3], rows[4], rows[5]]))
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Previous user message"]')!.click())
+      act(() => render(true))
+      act(() => { vi.advanceTimersByTime(5000) })
+      // Still loading: the target keeps the selection.
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      // The read was refused and the row never showed; the selection returns to what is on screen.
+      act(() => render(false))
+      act(() => { vi.advanceTimersByTime(1999) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('2')
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(slider.getAttribute('aria-valuenow')).toBe('3')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals(); vi.useRealTimers() }
+  })
+
   it('releases a seen jump target once it leaves the screen', () => {
     const { show } = stubIntersectionObserver()
     const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
