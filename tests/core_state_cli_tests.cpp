@@ -1621,7 +1621,8 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	UAM_ASSERT(uam::base64::Decode(copilot_probe.substr(copilot_probe.find("-EncodedCommand ") + 16), encoded_script));
 	script.clear();
 	for (std::size_t index = 0; index < encoded_script.size(); index += 2) script.push_back(encoded_script[index]);
-	UAM_ASSERT(script.find("if(-not $p)") < script.find("Get-Command 'pwsh'"));
+	UAM_ASSERT(script.find("if(-not $p)") != std::string::npos);
+	UAM_ASSERT(script.find("pwsh") == std::string::npos);
 	UAM_ASSERT(script.find("Write-Output '[UAM CLI PATH] |'") != std::string::npos);
 
 	for (const bool missing : {false, true})
@@ -1907,24 +1908,7 @@ UAM_TEST(CliProviderVersionProbeRejectsSemverFromFailedCommand)
 	UAM_ASSERT(state.message.find("Could not check") != std::string::npos);
 }
 
-UAM_TEST(CopilotVersionProbeReportsMissingWindowsPowerShellPrerequisite)
-{
-	uam::AppState app;
-	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	app.runtime_cli_version_provider_id = uam::provider_ids::kCopilotCli;
-	app.runtime_cli_version_check_task.running = true;
-	app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
-	app.runtime_cli_version_check_task.state->result.output = "GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found.\n\n"
-	                                                          "[Provider CLI exited with code 1]";
-	app.runtime_cli_version_check_task.state->completed.store(true);
-
-	ProviderCliCompatibilityService().Poll(app);
-
-	const uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id.at(uam::provider_ids::kCopilotCli);
-	UAM_ASSERT_EQ(state.message, std::string("GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows."));
-}
-
-UAM_TEST(CopilotVersionProbeReportsMissingCliBeforePowerShellPrerequisite)
+UAM_TEST(CopilotVersionProbeReportsMissingCli)
 {
 	uam::AppState app;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
