@@ -8,7 +8,7 @@ Change review lets users inspect the current workspace or recorded chat edits be
 - [File inspection](../files/inspection.md)
 - [Version Control settings](../settings/version-control/version-control.md)
 
-**Scope discrepancy:** this branch exposes an existing Git/SVN commit panel although release guidance excludes dedicated VCS panels. Document the existing surface and preserve it while that scope is unresolved; this documentation does not authorize removal or new panel expansion. See [recorded scope](../architecture/decisions.md#existing-vcs-panel).
+**Scope:** David keeps the existing Git/SVN commit panel in V5 (2026-10-25). This keeps the current surface and does not approve new panel features. See [recorded scope](../architecture/decisions.md#existing-vcs-panel).
 
 [Checkpoints and rollback](../workspaces/checkpoints.md).
 

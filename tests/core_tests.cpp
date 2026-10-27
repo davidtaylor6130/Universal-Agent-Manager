@@ -12062,6 +12062,7 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 
 UAM_TEST(GitWorktreeServiceIsolatesSvnAndPlainFoldersWithManagedLocalGit)
 {
+	const ScopedCleanSvnStatus clean_svn;
 	if (!GitAvailableForTests())
 	{
 		return;
