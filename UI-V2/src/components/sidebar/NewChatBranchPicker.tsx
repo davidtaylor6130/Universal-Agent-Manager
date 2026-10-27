@@ -1,7 +1,9 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
+import { useAppStore } from '../../store/useAppStore'
+import { chatWorktreeBranches, preferredStartingBranch, rankBranches } from '../../utils/branchRecency'
 import { Button, MenuSelect } from '../ui'
 
 interface BranchContext {
@@ -9,6 +11,7 @@ interface BranchContext {
   currentBranch: string
   detached: boolean
   localBranches: Array<{ name: string; commit: string }>
+  preferred?: string
 }
 
 function branchContext(value: unknown): BranchContext | undefined {
@@ -45,6 +48,8 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
+  // The branch this dialog preselected; the reason shows only while that automatic choice stands.
+  const [autoPicked, setAutoPicked] = useState<string>()
   const id = useId()
 
   useEffect(() => {
@@ -55,6 +60,12 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
     void sendToCEF({ action: 'getWorkspaceVcsContext', payload: { folderId } }).then((response) => {
       if (cancelled) return
       const next = response.ok ? branchContext(response.data) : undefined
+      if (next?.vcs === 'git' && !next.detached) {
+        // Native lists newest commit first; other chats' worktree branches trail and are never preferred.
+        const worktrees = chatWorktreeBranches(useAppStore.getState().sessions, folderId)
+        next.localBranches = rankBranches(next.localBranches, worktrees)
+        next.preferred = preferredStartingBranch(next.localBranches, worktrees, defaultBranch, next.currentBranch)
+      }
       setContext(next)
       setError(next ? '' : response.error || 'The workspace branch list could not be read. Try again.')
       setLoading(false)
@@ -64,23 +75,40 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [folderId, unavailableReason, attempt])
+  }, [folderId, unavailableReason, attempt, defaultBranch])
 
   const ready = !unavailableReason && !loading && !error && context?.vcs === 'git' && !context.detached
   const attachedContext = context?.vcs === 'git' && !context.detached ? context : undefined
   const selectedValue = value === undefined ? 'default' : value === '' ? 'head' : `branch:${value}`
   // Keep the chosen policy visible while a read is pending, including the render
-  // before a completed invalid result clears the parent's override.
+  // before a completed invalid result clears the parent's override. Entries that repeat
+  // the default (HEAD with no configured default, or the default branch itself) are omitted.
   const options = [
     { value: 'default', label: `Use default (${defaultBranch || 'HEAD'})` },
     ...(attachedContext ? [
-      { value: 'head', label: `Current branch (${attachedContext.currentBranch})`, description: 'Use HEAD instead of the default base branch.' },
-      ...attachedContext.localBranches.map((branch) => ({ value: `branch:${branch.name}`, label: branch.name })),
+      ...(defaultBranch && attachedContext.currentBranch !== defaultBranch
+        ? [{ value: 'head', label: `Current branch (${attachedContext.currentBranch})`, description: 'Use HEAD instead of the default base branch.' }]
+        : []),
+      ...attachedContext.localBranches.filter((branch) => branch.name !== defaultBranch).map((branch) => ({ value: `branch:${branch.name}`, label: branch.name })),
     ] : []),
   ]
   if (value !== undefined && !options.some((option) => option.value === selectedValue)) {
     options.push({ value: selectedValue, label: value === '' ? 'Current branch (HEAD)' : value })
   }
+  // Preselect the preferred branch once, on the first completed read; refreshes keep the user's choice.
+  const preselected = useRef(false)
+  useEffect(() => {
+    if (preselected.current) return
+    // Once creation has started, a later read must not change the choice or clear a creation error.
+    if (disabled) { preselected.current = true; return }
+    if (!ready || !attachedContext) return
+    preselected.current = true
+    const preferred = attachedContext.preferred
+    if (value === undefined && preferred && preferred !== (defaultBranch || attachedContext.currentBranch)) {
+      setAutoPicked(preferred)
+      onChange(preferred)
+    }
+  }, [disabled, ready, attachedContext, value, defaultBranch, onChange])
   useEffect(() => {
     if (loading || unavailableReason || value === undefined || (!context && !error)) return
     if (!ready || (value !== '' && !attachedContext?.localBranches.some((branch) => branch.name === value))) onChange(undefined)
@@ -102,13 +130,19 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
         disabled={disabled || !ready}
         value={selectedValue}
         options={options}
-        onChange={(next) => onChange(next === 'default' ? undefined : next === 'head' ? '' : next.slice('branch:'.length))}
+        onChange={(next) => {
+          setAutoPicked(undefined)
+          onChange(next === 'default' ? undefined : next === 'head' ? '' : next.slice('branch:'.length))
+        }}
       />
       <div id={`${id}-message`} className="text-xs">
         <p role="status" className="flex items-center gap-1.5" style={{ color: 'var(--text-3)' }}>
           {loading && <LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />}
           {message}
         </p>
+        {!loading && ready && value !== undefined && value === autoPicked && (
+          <p style={{ color: 'var(--text-3)' }}>Preselected: furthest ahead (newest commit).</p>
+        )}
         {error && !loading && <p role="alert" style={{ color: 'var(--error)' }}>{error}</p>}
       </div>
       {!unavailableReason && (

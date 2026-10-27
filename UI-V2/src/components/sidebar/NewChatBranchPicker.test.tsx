@@ -2,9 +2,11 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sendToCEF } from '../../ipc/cefBridge'
+import { useAppStore } from '../../store/useAppStore'
+import type { Session } from '../../types/session'
 import { NewChatBranchPicker } from './NewChatBranchPicker'
 
-vi.mock('../../ipc/cefBridge', () => ({ sendToCEF: vi.fn() }))
+vi.mock('../../ipc/cefBridge', async (importOriginal) => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }))
 
 const send = vi.mocked(sendToCEF)
 const context = {
@@ -32,6 +34,7 @@ describe('NewChatBranchPicker', () => {
   beforeEach(() => {
     send.mockReset().mockResolvedValue({ ok: true, data: context })
     onChange.mockReset()
+    useAppStore.setState({ sessions: [] })
     host = document.createElement('div')
     document.body.appendChild(host)
     root = createRoot(host)
@@ -39,17 +42,72 @@ describe('NewChatBranchPicker', () => {
   afterEach(() => { act(() => root.unmount()); host.remove() })
 
   it('reads local refs only and distinguishes inherited, HEAD and named bases without changing a branch', async () => {
+    send.mockResolvedValue({ ok: true, data: { ...context, currentBranch: 'feature/base', currentCommit: 'b'.repeat(40) } })
     await act(async () => render())
     expect(send).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith({ action: 'getWorkspaceVcsContext', payload: { folderId: 'project' } })
     expect(onChange).not.toHaveBeenCalled()
     choose('feature/base')
     expect(onChange).toHaveBeenLastCalledWith('feature/base')
-    choose('Current branch (main)')
+    choose('Current branch (feature/base)')
     expect(onChange).toHaveBeenLastCalledWith('')
     choose('Use default (main)')
     expect(onChange).toHaveBeenLastCalledWith(undefined)
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('preselects the furthest-ahead branch once, never another chat\'s worktree, keeping the default on an exact tie', async () => {
+    const options = () => { act(() => trigger().click()); const labels = Array.from(document.body.querySelectorAll('[role="option"]')).map((entry) => entry.textContent); act(() => trigger().click()); return labels }
+    const reason = 'Preselected: furthest ahead (newest commit).'
+    const ahead = [{ name: 'agents/live', commit: 'd'.repeat(40) }, { name: 'feature/ahead', commit: 'c'.repeat(40) }, { name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }]
+    useAppStore.setState({ sessions: [{ id: 'chat', folderId: 'project', workspaceBranchName: 'agents/live', createdAt: new Date(0), updatedAt: new Date(0) } as Session] })
+    send.mockResolvedValue({ ok: true, data: { ...context, localBranches: ahead } })
+    await act(async () => render())
+    expect(onChange.mock.calls).toEqual([['feature/ahead']])
+    await act(async () => render({ value: 'feature/ahead' }))
+    expect(host.textContent).toContain(reason)
+    // The default stands for HEAD and the default branch, so neither repeats in the list.
+    expect(options()).toEqual(['Use default (main)', 'feature/ahead', 'feature/base', 'agents/live'])
+    // Choosing the same branch again is the user's choice, not a preselection.
+    choose('feature/ahead')
+    await act(async () => render({ value: 'feature/ahead' }))
+    expect(host.textContent).not.toContain(reason)
+    // After the user returns to the default, a refresh does not preselect again.
+    choose('Use default (main)')
+    await act(async () => render())
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh branches')!.click())
+    expect(onChange.mock.calls).toEqual([['feature/ahead'], ['feature/ahead'], [undefined]])
+    act(() => root.unmount())
+
+    useAppStore.setState({ sessions: [] })
+    // A creation attempt before the first read completes blocks a later preselection that would clear its error.
+    root = createRoot(host)
+    useAppStore.setState({ sessions: [] })
+    let finish!: (response: Awaited<ReturnType<typeof send>>) => void
+    send.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    onChange.mockReset()
+    await act(async () => render({ disabled: true }))
+    await act(async () => render())
+    await act(async () => finish({ ok: true, data: { ...context, localBranches: [{ name: 'feature/base', commit: 'b'.repeat(40) }, ...context.localBranches.slice(0, 1)] } }))
+    expect(onChange).not.toHaveBeenCalled()
+    act(() => root.unmount())
+    for (const [localBranches, props, expected] of [
+      [[{ name: 'feature/base', commit: 'b'.repeat(40) }, ...context.localBranches.slice(0, 1)], {}, [['feature/base']]],
+      [[{ name: 'feature/base', commit: 'a'.repeat(40) }, ...context.localBranches.slice(0, 1)], {}, []],
+      [[{ name: 'feature/base', commit: 'b'.repeat(40) }, ...context.localBranches.slice(0, 1)], { disabled: true }, []],
+    ] as const) {
+      onChange.mockReset()
+      root = createRoot(host)
+      send.mockResolvedValue({ ok: true, data: { ...context, localBranches } })
+      await act(async () => render(props))
+      // Creation finishing later must not apply a preselection that was skipped while disabled.
+      await act(async () => render())
+      expect(onChange.mock.calls).toEqual(expected)
+      act(() => root.unmount())
+    }
+    root = createRoot(host)
+    await act(async () => render({ defaultBranch: '' }))
+    expect(options()).toEqual(['Use default (HEAD)', 'feature/base', 'main'])
   })
 
   it('labels the selector with its explanation and offers Refresh after a successful read', async () => {
