@@ -1070,6 +1070,30 @@ UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 #endif
 }
 
+UAM_TEST(StdioProcessWithInputAcceptsAnEmptyWorkingDirectory)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	// The runner's native OpenCode curl probe passes no working directory; Linux rejected it.
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcessWithInput(process, {}, {"/bin/sh", "-c", "cat"}, "empty-cwd-ok", &error));
+	std::string output;
+	std::array<char, 64> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const std::ptrdiff_t read = service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+		if (read > 0) { output.append(buffer.data(), static_cast<std::size_t>(read)); continue; }
+		if (service.PollStdioProcessExited(process, &exit_code) && read == 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("empty-cwd-ok"));
+#endif
+}
+
 UAM_TEST(RemoteRunnerKeepsTheSpoolLimitForUnreadDisconnectedOutput)
 {
 #if defined(__APPLE__) || defined(__linux__)
