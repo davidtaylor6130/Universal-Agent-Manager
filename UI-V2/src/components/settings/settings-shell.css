@@ -100,6 +100,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-settings-progress::after { animation: none; width: 100%; opacity: 0.5; }
 }
+:root[data-motion="off"] .uam-settings-progress::after { width: 100%; opacity: 0.5; }
 
 /* Menu triggers in memory worker rows and similar pickers. */
 .uam-settings-trigger {
@@ -189,6 +190,7 @@
 .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave 120ms var(--ease) forwards; }
 @keyframes uam-settings-leave { to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
+:root[data-motion="off"] .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; }
 
 /* Appearance: theme swatch grid. Tiles preview each theme's background, surface, text and accent. */
 .uam-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--sp-2); width: 100%; padding-block: var(--sp-1); }
@@ -203,3 +205,25 @@
 .uam-theme-tile__dot { display: block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .uam-theme-tile__label { overflow: hidden; font-size: var(--fs-xs); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .uam-theme-tile { transition: none; } }
+.uam-native-scope { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.uam-native-scope__chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-native-scope__chip[data-issues] { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.uam-native-scope__count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); font-size: var(--fs-xs); font-weight: var(--fw-medium); text-align: center; line-height: 16px; }
+.uam-native-disclosure { margin-top: var(--sp-3); border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.uam-native-disclosure > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-native-disclosure > summary::-webkit-details-marker { display: none; }
+.uam-native-disclosure--warning > summary { color: var(--warning); }
+.uam-native-disclosure__chevron { margin-left: auto; transition: transform var(--dur-fast, 120ms) ease; }
+.uam-native-disclosure[open] > summary .uam-native-disclosure__chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .uam-native-disclosure__chevron { transition: none; } }
+.uam-native-notes { margin: var(--sp-2) 0 0; padding-left: 18px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.6; }
+.uam-native-issues { display: grid; gap: var(--sp-2); margin: var(--sp-2) 0 0; padding: 0; list-style: none; font-size: var(--fs-xs); }
+.uam-native-issues > li { display: grid; grid-template-columns: 120px 1fr; column-gap: var(--sp-3); align-items: baseline; }
+.uam-native-issues__provider { display: inline-flex; align-items: center; gap: 6px; color: var(--text-1); font-weight: var(--fw-medium); }
+.uam-native-issues__reason { color: var(--text-2); }
+.uam-native-issues__ids { grid-column: 2; margin-top: 2px; }
+.uam-native-issues__ids > summary { cursor: pointer; color: var(--text-3); }
+.uam-native-issues__ids ul { margin: 4px 0 0; padding: 0; list-style: none; max-height: 160px; overflow: auto; }
+.uam-native-issues__ids code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
+.uam-native-issues__ids > summary::-webkit-details-marker { display: none; }
+.uam-native-issues__ids > summary { list-style: none; text-decoration: underline; text-underline-offset: 2px; }

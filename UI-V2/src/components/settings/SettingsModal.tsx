@@ -1,10 +1,11 @@
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
+import { NativeHistorySettings } from './NativeHistorySettings'
 import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './DataFolderSettingsSection'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -180,7 +181,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
       {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save voice settings'}</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
       </div>
     </SettingsSection>
     {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
@@ -228,7 +229,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
       {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
-        <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider settings'}</Button></div>
+        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
     {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
   </>
 })
@@ -500,7 +501,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(COMPUTER_USE_ENABLED ? { 'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos' } : {}),
   editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
-  'chat-data': 'chat data history storage import export backup',
+  'chat-data': 'chat data native provider history discovery storage import export backup',
   about: 'version build release updates app information',
 }
 
@@ -702,6 +703,7 @@ interface PhoneAccessStatus {
   localAddresses?: string[]
   proxyRunning?: boolean
   loopbackRunning?: boolean
+  allowKeychainPrompts?: boolean
 }
 
 export interface SettingsHandle {
@@ -1556,7 +1558,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
@@ -1622,7 +1624,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (manual) { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
     }
   }
-  const changeCompanion = async (action: 'setCompanionEnabled' | 'restartCompanion' | 'repairCompanionLanAddress', payload: Record<string, unknown> = {}) => {
+  const changeCompanion = async (action: 'setCompanionEnabled' | 'setCompanionKeychainPrompts' | 'restartCompanion' | 'repairCompanionLanAddress', payload: Record<string, unknown> = {}) => {
     if (companionInFlight.current) return
     companionInFlight.current = true
     setCompanionBusy(true)
@@ -1753,6 +1755,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
           <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
         </SettingRow>}
+        {typeof companionSettings?.allowKeychainPrompts === 'boolean' && <SettingRow
+          title="Allow Keychain prompts from phone"
+          description="When on, refreshing allowances from your phone can show the macOS Keychain dialog on this computer. When off, phone refreshes never show it."
+          status={companionBusyAction === 'setCompanionKeychainPrompts' ? <span role="status" aria-live="polite" style={{ color: 'var(--text-2)' }}>Saving…</span> : undefined}
+          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings.allowKeychainPrompts}
+            disabled={!companionSettings.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
+        />}
         <SettingRow title="Access token" description="For manual entry in the iPhone app. Pairing by QR code also configures secure certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
         {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}
@@ -3206,6 +3215,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'chat-data') {
       return (
         <div className="grid gap-0">
+          <NativeHistorySettings />
           <SettingsSection title="Chat bundle">
             <SettingRow
               title="Export all chats"

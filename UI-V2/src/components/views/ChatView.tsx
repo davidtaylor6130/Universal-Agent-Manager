@@ -9,6 +9,7 @@ import { acknowledgeComposerReferences, captureComposerReferenceSubmission, comp
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { motionScrollBehavior } from '../../utils/motionStorage'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
 import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
@@ -36,7 +37,7 @@ import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
-import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
+import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -501,6 +502,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const historyLoading = historyReadPending && messages.length === 0 && !chatHistoryError &&
     (session.messageCount ?? 0) > 0 && !hasRetainedInput
   const historyIncomplete = historyLoading || (historyPageMissing && (session.messageCount ?? 0) > 0)
+  // A native refresh finishes its read before answering; show it over loaded messages once it is not instant.
+  const historyRefreshing = historyReadPending && Boolean(historyRead?.refreshNative) && !historyLoading &&
+    messages.length > 0 && !chatHistoryError
+  const [historyRefreshShown, setHistoryRefreshShown] = useState(false)
+  useEffect(() => {
+    setHistoryRefreshShown(false)
+    if (!historyRefreshing) return
+    const timer = window.setTimeout(() => setHistoryRefreshShown(true), 400)
+    return () => window.clearTimeout(timer)
+  }, [historyRefreshing])
   const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queuedPrompts ?? [], acp?.pendingDirectPrompts ?? []),
     [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queuedPrompts, acp?.pendingDirectPrompts])
   const unsentByLoadedIndex = useMemo(() => new Map(unsentProjection.prompts.map((prompt) => [prompt.messageIndex - historyStartIndex, prompt])),
@@ -1220,7 +1231,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
-    target.scrollIntoView?.({ block: 'center' })
+    // Message-rail jumps glide to the top (the rail selects the first visible message, subject to Motion); search results centre immediately.
+    target.scrollIntoView?.(searchNavigation.queryRequestId.startsWith('message-rail:')
+      ? { block: 'start', behavior: motionScrollBehavior() } : { block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
   }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 
@@ -1230,7 +1243,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       isNearBottomRef.current = true
       showScrollToBottomRef.current = false
       setShowScrollToBottom(false)
-      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: 'smooth' })
+      bottomRef.current?.scrollIntoView?.({ block: 'end', behavior: motionScrollBehavior() })
     }
     if (searchNavigationRef.current) {
       void useAppStore.getState().clearChatSearchNavigation().then(() => {
@@ -3435,6 +3448,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   )}
                 </section>
               )}
+              <ChatStatusStrip open={historyRefreshShown && historyRefreshing} tone="info" scene={<RefreshingScene />} title="Refreshing history" />
               <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
               <SubagentWaitStatus binding={acp} />
               <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
@@ -3691,7 +3705,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           <button type="button" role="menuitem" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} className="uam-menu-select__option flex w-full items-center gap-2 px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }}><ComposerIcon name="folder" size={14} /><span>Attach remote directory</span></button>
                           <label className="mt-2 grid gap-1">
                             Move this chat to
-                            <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: '#000', color: '#fff', border: '1px solid var(--border)' }}>
+                            <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
                               <option value="">Select workspace on {recoveryHost?.label || 'this host'}</option>
                               {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                             </select>

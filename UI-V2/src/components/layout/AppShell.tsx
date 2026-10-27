@@ -643,7 +643,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
           onClick={onToggleUpdates}
         />
         {runtimeUpdateCount > 0 && (
-          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--bg)' }} aria-hidden>
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} aria-hidden>
             {runtimeUpdateCount}
           </span>
         )}

@@ -180,7 +180,7 @@ function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { ob
         {error && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</div>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" disabled={saving} onClick={onClose} className="rounded-md px-3 py-1.5 text-sm" style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)' }}>Cancel</button>
-          <button type="submit" disabled={saving} className="rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: 'var(--accent)', border: 0, color: 'var(--bg)' }}>{saving ? 'Saving…' : 'Save'}</button>
+          <button type="submit" disabled={saving} className="rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: 'var(--accent)', border: 0, color: 'var(--on-accent)' }}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </form>
     </div>,

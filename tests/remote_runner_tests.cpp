@@ -3,6 +3,7 @@
 #include "remote/runner_startup.h"
 #include "test_harness.h"
 #include "bootstrap_metadata/windows_command_assertions.h"
+#include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"
@@ -12,8 +13,14 @@
 #include "common/provider/provider_setup.h"
 #include "common/provider/provider_native_context.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/claude_quota_continuation.h"
+#include "common/runtime/acp/acp_control_capability_retention.h"
+#include "common/utils/time_utils.h"
 #include "common/runtime/acp/acp_model_json.h"
+#include "common/runtime/structured_framing.h"
+#include "common/chat/acp_prompt_recovery.h"
 #include "remote/runner_service_posix.h"
+#include "injected_acp_input.h"
 
 #include <set>
 
@@ -5490,6 +5497,1441 @@ namespace
 			UAM_ASSERT(fs::exists(input_log) && !ReadFile(input_log).empty());
 		}
 	};
+}
+
+namespace
+{
+	struct InjectedRemoteAdmissionFixture
+	{
+		TempDir temp{"uam-injected-remote-admission"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		InjectedAcpInput input;
+		const std::string token = "private-injected-authority";
+		InjectedRemoteAdmissionFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+			ChatSession chat;
+			chat.id = "injected-remote-admission";
+			chat.provider_id = "gemini-cli";
+			chat.execution_host_id = "injected-host";
+			chat.workspace_directory = temp.root.string();
+			chat.native_session_id = "private-native-session";
+			chat.remote_process_exists = true;
+			chat.remote_process_control_token = token;
+			chat.memory_enabled = false;
+			chat.messages.push_back({.role = MessageRole::User, .content = "Previously saved remote history"});
+			ExecutionHost host;
+			host.id = chat.execution_host_id;
+			host.transport = "ssh";
+			host.ssh_alias = "never-connected.invalid";
+			host.platform = "linux";
+			host.runner_status = "ready";
+			host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+			host.runner_protocol_version = 3;
+			app.settings.execution_hosts.push_back(host);
+			app.chats.push_back(std::move(chat));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = app.chats.front().id;
+			owned->provider_id = app.chats.front().provider_id;
+			owned->session_id = app.chats.front().native_session_id;
+			owned->process_execution_host_id = host.id;
+			owned->current_mode_id = "default";
+			// This represents an owned launch with known Default options, not an unknown reattachment.
+			owned->launch_model_options_captured = true;
+			owned->remote_runner_protocol_version = 3;
+			owned->remote_output_delivery_token = token;
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+			input.Attach(*session);
+		}
+		~InjectedRemoteAdmissionFixture()
+		{
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+		}
+		void AwaitSave()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		}
+		void AwaitInput()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (input.Bytes().empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(app, *session, app.chats.front());
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(!input.Bytes().empty());
+		}
+		std::string InputPayload()
+		{
+			UAM_ASSERT(input.writer->Flush(std::chrono::seconds(5)));
+			const auto wire = input.Bytes();
+			UAM_ASSERT(wire.starts_with(uam::remote::kRemoteInputDeliveryPrefix));
+			UAM_ASSERT_EQ(std::count(wire.begin(), wire.end(), '\n'), 1);
+			std::string decoded;
+			UAM_ASSERT(uam::base64::Decode(wire.substr(wire.rfind(' ') + 1), decoded));
+			return decoded; // Inspection of attempted bytes only; no runner ACK is synthesized.
+		}
+		void AssertInputRemainsUnconfirmed()
+		{
+			const auto& chat = app.chats.front();
+			const int row = static_cast<int>(chat.messages.size()) - 1;
+			UAM_ASSERT(chat.messages.back().role == MessageRole::User);
+			UAM_ASSERT(!chat.messages.back().input_write_completed);
+			const auto known = uam::KnownUnsentAcpMessageIndices(app, chat);
+			const auto recoverable = uam::RecoverableUnsentAcpMessageIndices(app, chat);
+			UAM_ASSERT(std::ranges::find(known, row) == known.end());
+			UAM_ASSERT(std::ranges::find(recoverable, row) == recoverable.end());
+		}
+	};
+
+	void PrepareRemoteQuotaManual(InjectedRemoteAdmissionFixture& fixture, bool small_model = false)
+	{
+		auto& chat = fixture.app.chats.front();
+		fixture.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		if (small_model)
+		{
+			chat.small_model_mode = true;
+			Goal goal;
+			goal.id = chat.active_goal_id = "manual-quota-goal";
+			goal.objective = "Manual input replaces the waiting quota attempt";
+			chat.goals.push_back(goal);
+		}
+		chat.provider_id = fixture.session->provider_id = "claude-cli";
+		chat.native_session_id = fixture.session->session_id = "55555555-5555-4555-8555-555555555555";
+		fixture.session->protocol_kind = "claude-code-stream-json";
+		chat.claude_quota_continuation.id = "remote-manual-quota-owner";
+		chat.claude_quota_continuation.state = "waiting";
+		auto& quota = chat.claude_quota_continuation;
+		quota.chat_id = chat.id;
+		quota.native_session_id = chat.native_session_id;
+		quota.context = uam::acp_detail::ClaudeQuotaContext(fixture.app, chat);
+		quota.observed_at_epoch_s = uam::time::TimestampNowSec();
+		quota.resets_at_epoch_s = quota.observed_at_epoch_s + 60;
+		quota.user_message_index = 0;
+		quota.message_count = chat.messages.size();
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().content);
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().created_at);
+		quota.accepted_message_digest = uam::hashing::Hex64Padded(digest);
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.remote_structured_protocol = fixture.session->protocol_kind;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	}
+
+	void PrepareRemoteDirectSteer(InjectedRemoteAdmissionFixture& fixture, bool copilot = false)
+	{
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		fixture.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = copilot ? "copilot-cli" : "codex-cli";
+		chat.native_session_id = session.session_id = "66666666-6666-4666-8666-666666666666";
+		session.protocol_kind = copilot ? "copilot-sdk" : "codex-app-server";
+		session.codex_thread_id = session.session_id;
+		session.codex_turn_id = "remote-parent-turn";
+		session.processing = true;
+		session.prompt_request_id = 17;
+		session.turn_serial = 7;
+		session.turn_first_user_message_index = session.turn_user_message_index = 0;
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		chat.remote_structured_protocol = session.protocol_kind;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	}
+}
+
+UAM_TEST(AcpRemoteManualQuotaCancellationWaitsForFullAdmissionBeforeMarker)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SendAcpPrompt(app, chat.id, "Manual SSH input replaces quota wait", &error);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->claude_quota_continuation.state == "cancelled");
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Manual SSH input replaces quota wait"));
+		UAM_ASSERT(saved->messages.back().acp_prompt_not_sent && saved->remote_prompt_delivery_id.empty());
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		fixture.AwaitInput();
+		const auto input = fixture.InputPayload();
+		UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+		UAM_ASSERT(input.find("Manual SSH input replaces quota wait") != std::string::npos);
+		UAM_ASSERT(input.find("Previously saved remote history") == std::string::npos);
+		fixture.AssertInputRemainsUnconfirmed();
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaFailureRetainsWaitingPrimaryAndUnsentInput)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		app.data_root = fixture.temp.root / "blocked-remote-manual-quota";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain failed remote manual input", &error));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		UAM_ASSERT(!results->front());
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaMarkerRejectsChangedSavedProcessAuthority)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"token", "exists", "writer", "transport", "shutdown", "cleanup"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain manual quota input under changed saved authority", &error));
+		fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "exists") chat.remote_process_exists = false;
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "writer") fixture.session->stdin_writer.reset();
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained native refusal";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteManualQuotaClosedOrRejectedTransportRetainsImmediateRefusal)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool small_model : {false, true})
+	for (bool closed : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteQuotaManual(fixture, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto messages = chat.messages;
+		if (closed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(*fixture.session);
+		else fixture.session->transport_ownership_error = "Retained native refusal";
+		app.data_root = fixture.temp.root / "blocked-refused-quota-input";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "not a directory"));
+		std::string error;
+		UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Refused remote manual input", &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(chat.messages, messages);
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty() && fixture.session->queued_user_prompts.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerPublishesExactEnvelopeBeforeOneControl)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRemoteDirectSteer(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const auto started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SteerAcpPrompt(app, chat.id, "One owned remote steer", {}, {}, false, &error);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+	const auto envelope = chat.remote_pending_requests.front();
+	UAM_ASSERT(!envelope.delivery_id.empty() && !envelope.payload.empty());
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1);
+	UAM_ASSERT(saved->remote_pending_requests.front() == envelope);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	fixture.AwaitInput();
+	const auto input = fixture.InputPayload();
+	UAM_ASSERT(input.find("One owned remote steer") != std::string::npos);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	fixture.AssertInputRemainsUnconfirmed();
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerStaleOrFailedReceiptPreservesParentAndUnsentIntent)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string mutation : {"storage", "token", "authority-token", "authority-exists", "turn", "cancel", "host", "root", "transport", "shutdown", "cleanup", "question", "compaction", "hold"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Retain revoked remote steer", {}, {}, false, &error));
+		const auto request = chat.remote_pending_requests.front();
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 99;
+		unrelated.method = "unrelated/request";
+		unrelated.delivery_id = "unrelated-delivery-id";
+		unrelated.payload = "unrelated captured envelope";
+		chat.remote_pending_requests.push_back(unrelated);
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "saved-before-remote-steer");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+		}
+		if (mutation == "root") app.data_root = fixture.temp.root / "new-steer-root";
+		if (mutation == "token") fixture.session->remote_output_delivery_token = "replacement-proxy-token";
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "question") fixture.session->waiting_for_user_input = true;
+		if (mutation == "compaction") fixture.session->manual_compaction_pending = true;
+		if (mutation == "hold") fixture.session->queue_held = true;
+		if (mutation == "authority-token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "authority-exists") chat.remote_process_exists = false;
+		if (mutation == "turn") fixture.session->codex_turn_id = "replacement-parent-turn";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement-host";
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained rejected transport";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1}); // Generic storage ACK does not authorize this control.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(std::ranges::none_of(chat.remote_pending_requests, [&request](const auto& item) { return item == request; }));
+		UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, unrelated) != chat.remote_pending_requests.end());
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->processing);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteDirectSteerUncertainWriteKeepsCommittedEnvelopeWithoutKnownUnsent)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRemoteDirectSteer(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(fixture.session->stdin_writer == fixture.input.writer);
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Remote write outcome remains unknown", {}, {}, false, &error));
+	const auto envelope = chat.remote_pending_requests.front();
+	fixture.input.writer->Stop(); // Same captured writer now refuses enqueue; no process or reconnect is launched.
+	const auto results = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (results->empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	UAM_ASSERT(results->front());
+	UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT(fixture.input.Bytes().empty());
+#endif
+}
+
+namespace
+{
+	void PrepareColdAuthority(InjectedRemoteAdmissionFixture& fixture)
+	{
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		session.running = session.initialized = session.session_ready = false;
+		session.processing = false;
+		session.lifecycle_state = "starting";
+		chat.remote_uam_control_channel_id = "private-staged-channel";
+		chat.remote_structured_protocol = session.protocol_kind;
+	}
+
+	void BindColdInput(InjectedRemoteAdmissionFixture& fixture, bool include_parent_output = false)
+	{
+		auto& session = *fixture.session;
+		auto& chat = fixture.app.chats.front();
+		session.processing = true;
+		++session.turn_serial;
+		session.queued_prompt = "Retained cold launch input";
+		chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt});
+		chat.messages.back().acp_prompt_not_sent = true;
+		session.turn_first_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+		if (include_parent_output)
+		{
+			chat.messages.push_back({.role = MessageRole::Assistant, .content = "Preserve parent output inside the captured span"});
+			chat.messages.push_back({.role = MessageRole::User, .content = session.queued_prompt});
+		}
+		session.turn_user_message_index = static_cast<int>(chat.messages.size()) - 1;
+		uam::acp_detail::BindPendingAcpColdLaunch(fixture.app, session, chat);
+	}
+}
+
+UAM_TEST(AcpColdLaunchPublishesFullAuthorityAndBoundInputBeforeOneAttempt)
+{
+	for (bool failed_start : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		int attempts = 0;
+		const auto started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts, failed_start](uam::AppState& owner, uam::AcpSessionState& native, ChatSession& stored)
+		{
+			++attempts;
+			const auto saved = ChatRepository::LoadLocalChat(owner.data_root, stored.id);
+			UAM_ASSERT(saved && saved->remote_process_exists);
+			UAM_ASSERT_EQ(saved->remote_process_control_token, stored.remote_process_control_token);
+			UAM_ASSERT_EQ(saved->remote_uam_control_channel_id, stored.remote_uam_control_channel_id);
+			UAM_ASSERT(saved->messages == stored.messages);
+			// Inject only process creation, never initialize/readiness/native input acknowledgement.
+			native.running = !failed_start;
+			return !failed_start;
+		}));
+		BindColdInput(fixture);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		publication.join();
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(attempts, 0); // Storage completion itself never starts a transport.
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat) == !failed_start);
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(!uam::acp_detail::HasPendingAcpColdLaunch(*fixture.session));
+		uam::acp_detail::BindPendingAcpColdLaunch(app, *fixture.session, chat);
+		uam::FlushPendingChatSaves(app);
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(!fixture.session->initialized && !fixture.session->session_ready);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().input_write_completed);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+UAM_TEST(AcpColdLaunchRevokesChangedAuthorityBeforeAndAfterFullReceipt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"native", "agent", "host", "token", "channel", "cancel", "stop", "row", "queue", "root"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "native") chat.native_session_id = "replacement-native";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement.invalid";
+		if (mutation == "token") chat.remote_process_control_token = "replacement-token";
+		if (mutation == "channel") chat.remote_uam_control_channel_id = "replacement-channel";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "stop") fixture.session->remote_stop_pending = true;
+		if (mutation == "row") chat.messages.back().content = "replacement input";
+		if (mutation == "queue") fixture.session->queued_user_prompts.push_back({.text = "Later input", .id = "replacement-raw"});
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-root";
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(!uam::acp_detail::HasPendingAcpColdLaunch(*fixture.session));
+		UAM_ASSERT(fixture.session->queue_held && fixture.input.Bytes().empty());
+		UAM_ASSERT(!chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(attempts, 0);
+		if (mutation == "root") UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+	}
+}
+
+namespace
+{
+	void PrepareColdReattachment(InjectedRemoteAdmissionFixture& fixture)
+	{
+		PrepareColdAuthority(fixture);
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		session.protocol_kind = chat.remote_structured_protocol = "acp";
+		session.recovering_remote_turn = session.processing = true;
+		session.turn_serial = chat.remote_turn_serial = 9;
+		session.turn_first_user_message_index = session.turn_user_message_index = chat.remote_turn_user_message_index = 0;
+		session.prompt_request_id = 17;
+		session.pending_request_methods[17] = "session/prompt";
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_active_turn_id = "existing-native-turn";
+		chat.remote_prompt_delivery_session_id = "acp-" + chat.id;
+		chat.remote_prompt_delivery_id = "existing-delivery";
+		chat.remote_prompt_delivery_payload = uam::acp_detail::BuildPromptRequest(17, chat.native_session_id,
+		    "Previously attempted input remains unknown").dump() + "\n";
+		uam::AcpRemotePendingRequestState request;
+		request.request_id = 17;
+		request.method = "session/prompt";
+		request.delivery_id = chat.remote_prompt_delivery_id;
+		request.payload = chat.remote_prompt_delivery_payload;
+		request.user_message_index = 0;
+		request.turn_serial = 9;
+		request.provider_turn_id = chat.remote_active_turn_id;
+		chat.remote_pending_requests.push_back(request);
+	}
+}
+
+UAM_TEST(AcpColdReattachmentOwnsSavedEnvelopesWithoutReclassifyingUnknownInput)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"none", "request", "cursor", "response", "token", "cancel"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdReattachment(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto input = chat.messages.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState& owner, uam::AcpSessionState&, ChatSession& stored)
+		{
+			++attempts;
+			const auto saved = ChatRepository::LoadLocalChat(owner.data_root, stored.id);
+			UAM_ASSERT(saved && saved->remote_pending_requests == stored.remote_pending_requests);
+			UAM_ASSERT_EQ(saved->remote_prompt_delivery_id, stored.remote_prompt_delivery_id);
+			return true; // Inject attachment only; no provider readiness or delivery is fabricated.
+		}));
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "request") chat.remote_pending_requests.front().payload += "replacement";
+		if (mutation == "cursor") ++chat.remote_delivered_stdout_cursor;
+		if (mutation == "response") chat.remote_interaction_responses.push_back({"18", "{\"result\":true}"});
+		if (mutation == "token") chat.remote_process_control_token = "replacement-token";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation != "none")
+		{
+			UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, 0);
+			UAM_ASSERT(chat.remote_process_exists && chat.remote_turn_reconnect_pending);
+			UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+			UAM_ASSERT(chat.messages.front() == input); // An unattempted attachment says nothing about prior input delivery.
+		}
+		else
+		{
+			UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, after_receipt ? 1 : 0);
+		}
+		fixture.AwaitSave();
+		if (mutation == "none" && !after_receipt)
+			UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, mutation == "none" ? 1 : 0);
+		UAM_ASSERT(chat.messages.front() == input && fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->initialized && !fixture.session->session_ready);
+	}
+}
+
+UAM_TEST(AcpColdReattachmentFailedSavePreservesProcessAuthorityAndUnknownDelivery)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareColdReattachment(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto input = chat.messages.front();
+	const auto requests = chat.remote_pending_requests;
+	int attempts = 0;
+	UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+	    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+	fs::rename(app.data_root, fixture.temp.root / "retained-attachment-primary");
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked attachment publication"));
+	const auto results = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (results->empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	UAM_ASSERT(!results->front());
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+	UAM_ASSERT_EQ(attempts, 0);
+	UAM_ASSERT(chat.remote_process_exists && chat.remote_turn_reconnect_pending);
+	UAM_ASSERT(chat.remote_pending_requests == requests && chat.messages.front() == input);
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.temp.root / "retained-attachment-primary", chat.id)), before);
+	UAM_ASSERT(fixture.input.Bytes().empty());
+}
+
+UAM_TEST(AcpColdControlReservationStaysNonCallableThroughReceiptAndExpiresOwned)
+{
+	for (const std::string mutation : {"cancel", "host", "native", "expiry", "directory"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.uam_control_enabled = true;
+		app.settings.acp_setup_inactivity_timeout_seconds = 60;
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		nlohmann::json request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *fixture.session, chat, "session/new", request, &error));
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		const auto capability = app.uam_control_capabilities.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		const auto now_ms = uam::time::SystemEpochMillisecondsNow();
+		const auto now_s = uam::GetAppTimeSeconds();
+		UAM_ASSERT(uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, now_s));
+		UAM_ASSERT(!uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, -1.0));
+		UAM_ASSERT(!uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(app, capability, now_ms, now_s + 60.0));
+		const auto probe = capability.directory / "requests" / "cold-reservation-probe.json";
+		const auto response = capability.directory / "responses" / "cold-reservation-probe.json";
+		UAM_ASSERT(uam::io::WriteTextFile(probe, nlohmann::json({{"requestId", "cold-reservation-probe"},
+		    {"method", "_mcp_connected"}, {"arguments", {{"connectionId", "private-injected-control"}}}}).dump()));
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(fs::exists(probe) && !fs::exists(response));
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		fixture.AwaitSave();
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(fs::exists(probe) && !fs::exists(response)); // A save ACK still grants no callable authority.
+		UAM_ASSERT_EQ(attempts, 0);
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "host") app.settings.execution_hosts.back().ssh_alias = "replacement.invalid";
+		if (mutation == "native") chat.native_session_id = "replacement-native";
+		if (mutation == "expiry") app.uam_control_capabilities.front().expires_at_epoch_ms = 0;
+		if (mutation == "directory") fs::remove_all(capability.directory);
+		// Runtime polling precedes control-request polling; final launch must revoke stale authority itself.
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(app.uam_control_capabilities.empty() && fixture.session->uam_control_capability_id.empty());
+		UAM_ASSERT(!fs::exists(response) && fixture.input.Bytes().empty());
+		UAM_ASSERT_EQ(attempts, 0);
+	}
+}
+
+UAM_TEST(AcpColdLaunchSmallModelScopeRechecksExactGoalBeforeAttempt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"objective", "budget", "incarnation"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		Goal goal;
+		goal.id = chat.active_goal_id = "cold-owned-goal";
+		goal.objective = "Retain the exact cold launch goal";
+		chat.goals.push_back(goal);
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "objective") chat.goals.front().objective = "Replacement objective without a revision bump";
+		if (mutation == "budget") ++chat.goals.front().token_budget;
+		if (mutation == "incarnation") chat.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(fixture.session->queue_held && !fixture.session->running && fixture.input.Bytes().empty());
+		fixture.AwaitSave();
+	}
+}
+
+UAM_TEST(AcpColdLaunchStorageFailureRetainsInputAndNeverCreatesTransport)
+{
+	for (bool include_parent_output : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		BindColdInput(fixture, include_parent_output);
+		const std::optional<Message> parent_output = include_parent_output
+		    ? std::optional<Message>(chat.messages[chat.messages.size() - 2]) : std::nullopt;
+		fs::rename(app.data_root, fixture.temp.root / "retained-cold-primary");
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked cold publication"));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		UAM_ASSERT(!results->front());
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(!chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+		if (parent_output)
+		{
+			UAM_ASSERT(chat.messages[chat.messages.size() - 2] == *parent_output);
+			UAM_ASSERT(chat.messages[chat.messages.size() - 3].acp_prompt_not_sent &&
+			    chat.messages[chat.messages.size() - 3].interrupted);
+		}
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Retained cold launch input"));
+		UAM_ASSERT(chat.acp_queue_held && fixture.input.Bytes().empty());
+		const auto saved = ChatRepository::LoadLocalChat(fixture.temp.root / "retained-cold-primary", chat.id);
+		UAM_ASSERT(saved && saved->messages.size() == 1);
+	}
+}
+
+UAM_TEST(AcpColdQuotaSettlementBindsClaimedInputBeforeLaunchAuthority)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"none", "memory", "quota"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareColdAuthority(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		app.provider_profiles = {ProviderProfileStore::DefaultClaudeProfile()};
+		chat.provider_id = fixture.session->provider_id = "claude-cli";
+		chat.native_session_id = fixture.session->session_id = "77777777-7777-4777-8777-777777777777";
+		fixture.session->protocol_kind = "claude-code-stream-json";
+		chat.remote_structured_protocol = fixture.session->protocol_kind;
+		chat.claude_quota_continuation.chat_id = chat.id;
+		chat.claude_quota_continuation.native_session_id = chat.native_session_id;
+		chat.claude_quota_continuation.observed_at_epoch_s = uam::time::TimestampNowSec();
+		chat.claude_quota_continuation.resets_at_epoch_s = chat.claude_quota_continuation.observed_at_epoch_s + 60;
+		chat.claude_quota_continuation.user_message_index = 0;
+		chat.claude_quota_continuation.message_count = chat.messages.size();
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().content);
+		uam::hashing::UpdateFnv1a64WithSeparator(digest, chat.messages.front().created_at);
+		chat.claude_quota_continuation.accepted_message_digest = uam::hashing::Hex64Padded(digest);
+		chat.claude_quota_continuation.context = uam::acp_detail::ClaudeQuotaContext(app, chat);
+		chat.claude_quota_continuation.id = app.claude_quota_dispatch_id = "private-cold-quota-claim";
+		chat.claude_quota_continuation.state = "claimed";
+		int attempts = 0;
+		UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, *fixture.session, chat,
+		    [&attempts](uam::AppState&, uam::AcpSessionState&, ChatSession&) { ++attempts; return true; }));
+		fixture.session->claude_quota_delivery_id = app.claude_quota_dispatch_id;
+		BindColdInput(fixture);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 0);
+		chat.claude_quota_continuation.state = "continued";
+		chat.claude_quota_continuation.context = uam::acp_detail::ClaudeQuotaContext(app, chat);
+		uam::acp_detail::BindPendingAcpColdLaunch(app, *fixture.session, chat, true);
+		app.claude_quota_dispatch_id.clear();
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "memory") chat.memory_level = "normal";
+		if (mutation == "quota") chat.claude_quota_continuation.accepted_message_digest += "-replacement";
+		if (mutation != "none")
+		{
+			UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+			UAM_ASSERT_EQ(attempts, 0);
+			UAM_ASSERT(fixture.session->queue_held && !fixture.session->running && fixture.input.Bytes().empty());
+			fixture.AwaitSave();
+			continue;
+		}
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)))["claude_quota_continuation"]["state"].get<std::string>(), std::string("continued"));
+		UAM_ASSERT(saved && saved->claude_quota_continuation.state == "held"); // Restart never auto-replays claimed/continued input.
+		UAM_ASSERT(saved->messages == chat.messages);
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT_EQ(attempts, 1);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+namespace
+{
+	void PrepareRawRemoteSteerQueue(InjectedRemoteAdmissionFixture& fixture, bool copilot = false, bool small_model = false)
+	{
+		PrepareRemoteDirectSteer(fixture, copilot);
+		auto& chat = fixture.app.chats.front();
+		chat.small_model_mode = small_model;
+		if (small_model)
+		{
+			Goal goal;
+			goal.id = chat.active_goal_id = "raw-promotion-goal";
+			goal.objective = "Promote only the selected raw input";
+			chat.goals.push_back(goal);
+		}
+		std::string error;
+		for (const std::string text : {"Raw FIFO A", "Raw FIFO B", "Raw FIFO C"})
+			UAM_ASSERT(uam::SendAcpPrompt(fixture.app, chat.id, text, &error));
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{3});
+		UAM_ASSERT(fixture.input.Bytes().empty());
+	}
+}
+
+UAM_TEST(AcpRemoteQueuedSteerPublishesOwnedPromotionBeforeOneControl)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool copilot : {false, true})
+	for (bool small_model : {false, true})
+	for (bool failed_write : {false, true})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRawRemoteSteerQueue(fixture, copilot, small_model);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto original = fixture.session->queued_user_prompts;
+		const auto selected = original[1];
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(selected.id, selected.revision));
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		if (failed_write) fixture.input.writer->Stop(); // Stop while publication still holds the repository mutex.
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		const auto envelope = chat.remote_pending_requests.back();
+		const auto row = envelope.user_message_index;
+		UAM_ASSERT_EQ(chat.messages[row].content, selected.text);
+		UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries.size(), std::size_t{1});
+		UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+		// Append remains FIFO-safe; raw edits/removal/reorder and another steer wait for this receipt.
+		const auto pending_queue = fixture.session->queued_user_prompts;
+		UAM_ASSERT(!uam::EditQueuedAcpPrompt(app, chat.id, original.front().id, original.front().revision, "Changed raw A", &error));
+		UAM_ASSERT(!uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(original.front().id, original.front().revision)));
+		UAM_ASSERT(!uam::ReorderQueuedAcpPrompts(app, chat.id,
+		    {{original[0].id, original[0].revision}, {original[2].id, original[2].revision}}, {original[2].id, original[0].id}, &error));
+		UAM_ASSERT(!uam::SteerQueuedAcpPrompt(app, chat.id, 0, &error, std::make_pair(original.front().id, original.front().revision)));
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts, pending_queue);
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Raw FIFO D", &error));
+		chat.messages.push_back(Message{.role = MessageRole::Assistant, .content = "Parent output while promotion saves"});
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		fixture.AwaitSave();
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1 && saved->remote_pending_requests.front() == envelope);
+		UAM_ASSERT_EQ(saved->messages[row].content, selected.text);
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Parent output while promotion saves"));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{3});
+		UAM_ASSERT(saved->acp_queued_prompts[0] == original[0] && saved->acp_queued_prompts[1] == original[2]);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts[2].text, std::string("Raw FIFO D"));
+		if (!failed_write)
+		{
+			fixture.AwaitInput();
+			UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+		}
+		else UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!chat.messages[row].acp_prompt_not_sent && !chat.messages[row].input_write_completed);
+		const auto known = uam::KnownUnsentAcpMessageIndices(app, chat);
+		UAM_ASSERT(std::ranges::find(known, row) == known.end());
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteQueuedSteerFailedOrStaleSaveRestoresRawFifoWithoutTruncatingOutput)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool copilot : {false, true})
+	for (const std::string mutation : {"storage", "native", "cancel", "stop", "root", "agent"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRawRemoteSteerQueue(fixture, copilot);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto original = fixture.session->queued_user_prompts;
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(original[1].id, original[1].revision)));
+		const auto envelope = chat.remote_pending_requests.back();
+		const auto row = envelope.user_message_index;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Raw FIFO D", &error));
+		chat.messages.push_back(Message{.role = MessageRole::Assistant, .content = "Later parent output must survive refusal"});
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "retained-raw-queue-primary");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked raw promotion"));
+		}
+		if (mutation == "native") fixture.session->session_id = "replacement-native-session";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error, true, true));
+		if (mutation == "stop") fixture.session->remote_stop_pending = true; // Existing injected Stop state; no remote stop worker or SSH.
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-root";
+		publication.join();
+		const auto results = std::make_shared<std::vector<bool>>();
+		if (uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }))
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (results->empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT_EQ(results->size(), std::size_t{1});
+		}
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Later parent output must survive refusal"));
+		UAM_ASSERT(chat.messages[row].acp_prompt_not_sent && chat.messages[row].interrupted);
+		UAM_ASSERT(chat.remote_pending_requests.empty());
+		UAM_ASSERT(chat.acp_queue_held && fixture.session->queue_held);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{4});
+		UAM_ASSERT(chat.acp_queued_prompts[0] == original[0] && chat.acp_queued_prompts[2] == original[2]);
+		auto restored = chat.acp_queued_prompts[1];
+		UAM_ASSERT(!restored.append_user_message && restored.existing_user_message_index == row);
+		UAM_ASSERT_EQ(restored.existing_user_message_created_at, chat.messages[row].created_at);
+		restored.append_user_message = original[1].append_user_message;
+		restored.existing_user_message_index = original[1].existing_user_message_index;
+		restored.existing_user_message_created_at = original[1].existing_user_message_created_at;
+		UAM_ASSERT(restored == original[1]); // Complete raw identity/policy survives; only its row linkage changes.
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.back().text, std::string("Raw FIFO D"));
+		UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+		UAM_ASSERT_EQ(std::ranges::count_if(chat.messages, [](const auto& message) { return message.role == MessageRole::User && message.content == "Raw FIFO B"; }), 1);
+		UAM_ASSERT(fixture.input.Bytes().find(envelope.delivery_id) == std::string::npos);
+		if (mutation == "storage")
+			UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.temp.root / "retained-raw-queue-primary", chat.id)), before);
+		if (mutation == "root")
+		{
+			UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+			UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+			uam::acp_detail::ScheduleChatSave(app, chat, 0.0); // Explicit new-root owner after the old receipt is retired.
+			fixture.AwaitSave();
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved && saved->acp_queue_held && saved->remote_pending_requests.empty());
+			UAM_ASSERT_EQ(saved->acp_queued_prompts, chat.acp_queued_prompts);
+			UAM_ASSERT(saved->messages[row].acp_prompt_not_sent);
+		}
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteQueuedSteerFullRecoveryCarrierPreservesOriginalQueue)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareRawRemoteSteerQueue(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	for (std::size_t i = 0; i < uam::prompt_recovery::kMaxRecords; ++i)
+	{
+		Message row;
+		row.role = MessageRole::User;
+		row.content = "Retained prior policy " + std::to_string(i);
+		row.created_at = "2026-10-23T00:00:00Z";
+		row.provider = chat.provider_id;
+		row.acp_prompt_not_sent = true;
+		chat.messages.push_back(std::move(row));
+		auto prompt = fixture.session->queued_user_prompts.front();
+		prompt.id = "prior-policy-" + std::to_string(i);
+		chat.acp_unsent_prompt_recoveries.push_back(uam::prompt_recovery::Capture(chat, static_cast<int>(chat.messages.size()) - 1, prompt));
+	}
+	UAM_ASSERT(uam::prompt_recovery::BindingsMatch(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto messages = chat.messages;
+	const auto queue = fixture.session->queued_user_prompts;
+	const auto policies = chat.acp_unsent_prompt_recoveries;
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	std::string error;
+	UAM_ASSERT(!uam::SteerQueuedAcpPrompt(app, chat.id, 1, &error, std::make_pair(queue[1].id, queue[1].revision)));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts, queue);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts, std::vector<uam::AcpQueuedUserPromptState>(queue.begin(), queue.end()));
+	UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries, policies);
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.input.Bytes().empty() && chat.remote_pending_requests.empty() && fixture.session->pending_local_steer_abandon.empty());
+#endif
+}
+
+UAM_TEST(AcpRemoteCopilotSteerRetainsNativeCorrelationThroughOwnedSaveAndRefusal)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (bool small_model : {false, true})
+	for (const std::string mutation : {"none", "native", "writer", "goal"})
+	{
+		if (!small_model && mutation == "goal") continue;
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture, true);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = small_model;
+		if (small_model)
+		{
+			Goal goal;
+			goal.id = chat.active_goal_id = "copilot-steer-goal";
+			goal.objective = "Keep the exact goal-owned Copilot steer";
+			chat.goals.push_back(goal);
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SteerAcpPrompt(app, chat.id, "One correlated Copilot steer", {}, {}, false, &error);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted && elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		const auto envelope = chat.remote_pending_requests.front();
+		UAM_ASSERT_EQ(envelope.method, std::string("copilot/steer"));
+		const auto frame = uam::structured_framing::Read(envelope.payload);
+		UAM_ASSERT(frame.status == uam::structured_framing::Status::Complete && frame.consumed_bytes == envelope.payload.size());
+		const auto request = nlohmann::json::parse(std::string_view(envelope.payload).substr(frame.body_offset, frame.body_bytes));
+		UAM_ASSERT_EQ(request["method"], nlohmann::json("session.send"));
+		UAM_ASSERT_EQ(request["params"]["mode"], nlohmann::json("immediate"));
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "native") fixture.session->session_id = "replacement-native-session";
+		if (mutation == "writer") fixture.input.writer->Stop();
+		if (mutation == "goal") chat.goals.front().objective = "Replacement goal";
+		fixture.AwaitSave();
+		if (mutation == "native" || mutation == "goal")
+		{
+			UAM_ASSERT(fixture.input.Bytes().empty());
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+			UAM_ASSERT(chat.remote_pending_requests.empty());
+		}
+		else
+		{
+			UAM_ASSERT(std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+			if (mutation == "none")
+			{
+				fixture.AwaitInput();
+				UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+				UAM_ASSERT_EQ(fixture.session->pending_request_methods.at(envelope.request_id), std::string("copilot/steer"));
+			}
+			else UAM_ASSERT(fixture.input.Bytes().empty());
+			fixture.AssertInputRemainsUnconfirmed();
+		}
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+		UAM_ASSERT(fixture.session->pending_local_steer_abandon.empty());
+	}
+#endif
+}
+
+UAM_TEST(AcpRemoteSmallModelGoalSharesTheInitialFullInputReceipt)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	chat.small_model_mode = true;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto before = ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Remote small-model retained objective", &error));
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)), before);
+	UAM_ASSERT(!chat.active_goal_id.empty());
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->active_goal_id == chat.active_goal_id);
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Remote small-model retained objective"));
+	UAM_ASSERT(saved->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	// The later small-model remote marker retains its existing barrier; this receipt grants no transport authority.
+}
+
+namespace
+{
+	void PrepareInjectedSmallModelPrompt(InjectedRemoteAdmissionFixture& fixture)
+	{
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Goal-owned remote input", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(!chat.active_goal_id.empty() && chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, *fixture.session, chat));
+		UAM_ASSERT(uam::acp_detail::CanStageRemoteGoalPromptAdmission(app, *fixture.session, chat));
+	}
+}
+
+UAM_TEST(AcpLocalSmallModelDeliveryKeepsItsExistingOwnedMarkerRoute)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	chat.execution_host_id = fixture.session->process_execution_host_id = "local";
+	app.settings.execution_hosts.push_back(uam::execution_hosts::LocalHost());
+	chat.small_model_mode = true;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Existing local small-model input", &error));
+	fixture.AwaitSave();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	fixture.AwaitSave();
+	fixture.AwaitInput();
+	UAM_ASSERT(fixture.input.writer->Flush(std::chrono::seconds(5)));
+	const auto wire = fixture.input.Bytes();
+	UAM_ASSERT(wire.find("Existing local small-model input") != std::string::npos);
+	UAM_ASSERT(!wire.starts_with(uam::remote::kRemoteInputDeliveryPrefix));
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerWaitsForOwnedFullReceiptBeforeOneAttempt)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareInjectedSmallModelPrompt(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const auto started = std::chrono::steady_clock::now();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	const auto delivery = chat.remote_prompt_delivery_id;
+	const auto payload = chat.remote_prompt_delivery_payload;
+	UAM_ASSERT(!delivery.empty() && !payload.empty());
+	fixture.AwaitSave();
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->remote_prompt_delivery_id == delivery && saved->remote_prompt_delivery_payload == payload);
+	UAM_ASSERT(!saved->messages.back().acp_prompt_not_sent && fixture.input.Bytes().empty());
+	fixture.AwaitInput();
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	for (int poll = 0; poll < 5; ++poll) (void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT_EQ(chat.remote_prompt_delivery_id, delivery); // Attempted bytes are not a native delivery ACK.
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerUsesAuthoritativeGoalMetadataWithoutHydratingOwnerHistory)
+{
+	InjectedRemoteAdmissionFixture fixture;
+	PrepareInjectedSmallModelPrompt(fixture);
+	auto& app = fixture.app;
+	ChatSession owner = app.chats.front();
+	owner.id = "metadata-only-goal-owner";
+	owner.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	owner.goal_command_revision = "metadata-owner-command";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+	const auto metadata = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, owner.id);
+	UAM_ASSERT(metadata && !metadata->messages_loaded && metadata->messages.empty());
+	UAM_ASSERT_EQ(metadata->active_goal_id, owner.active_goal_id);
+	UAM_ASSERT_EQ(metadata->goals.size(), owner.goals.size());
+	UAM_ASSERT_EQ(metadata->goals.front().objective, owner.goals.front().objective);
+	app.chats.push_back(*metadata);
+	auto& chat = app.chats.front();
+	chat.goal_owner_chat_id = owner.id;
+	chat.goal_iteration_goal_id = metadata->active_goal_id;
+	chat.goal_iteration_turn_kind = fixture.session->goal_turn_kind = "worker_continuation";
+	fixture.session->goal_command_revision = metadata->goal_command_revision;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const auto started = std::chrono::steady_clock::now();
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.session->pending_prompt_delivery && fixture.input.Bytes().empty());
+	const auto payload = chat.remote_prompt_delivery_payload;
+	fixture.AwaitSave();
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	fixture.AwaitInput();
+	UAM_ASSERT_EQ(fixture.InputPayload(), payload);
+	fixture.AssertInputRemainsUnconfirmed();
+	UAM_ASSERT(!app.chats.back().messages_loaded && app.chats.back().messages.empty());
+	const auto persisted_owner = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+	UAM_ASSERT(persisted_owner && persisted_owner->messages == owner.messages);
+}
+
+UAM_TEST(AcpRemoteSmallModelMarkerRejectsChangedExternalGoalBeforeOrAfterReceipt)
+{
+	for (bool after_receipt : {false, true})
+	for (const std::string mutation : {"revision", "incarnation", "iteration", "paused", "objective", "cancel", "stop", "token", "authority-token", "authority-exists", "row", "chat-incarnation", "writer", "storage", "native-goal", "budget", "model", "transport", "shutdown", "owner-model", "owner-mode", "owner-agent", "owner-approval", "owner-safety", "owner-reasoning", "owner-tier"})
+	{
+		if (after_receipt && mutation == "storage") continue; // A committed receipt is not revoked by later unrelated I/O failure.
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareInjectedSmallModelPrompt(fixture);
+		auto& app = fixture.app;
+		ChatSession owner = app.chats.front();
+		owner.id = "external-goal-owner";
+		owner.goal_command_revision = "external-command";
+		app.chats.push_back(std::move(owner));
+		auto& chat = app.chats.front();
+		auto& external = app.chats.back();
+		chat.goal_owner_chat_id = external.id;
+		chat.goal_iteration_goal_id = external.active_goal_id;
+		chat.goal_iteration_turn_kind = fixture.session->goal_turn_kind = "worker_continuation";
+		fixture.session->goal_command_revision = external.goal_command_revision;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.session->pending_prompt_delivery);
+		if (after_receipt) fixture.AwaitSave();
+		if (mutation == "revision") external.goal_command_revision = "replacement-command";
+		if (mutation == "incarnation") external.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		if (mutation == "iteration") chat.goal_iteration_goal_id = "replacement-iteration";
+		if (mutation == "paused") external.goals.front().status = GoalStatus::Paused;
+		if (mutation == "objective") external.goals.front().objective = "Replacement objective";
+		if (mutation == "native-goal") external.goals.front().native_binding = NativeGoalBinding{.provider_id = "codex-cli", .thread_id = "replacement-native-goal"};
+		if (mutation == "budget") external.goals.front().token_budget = 12345;
+		if (mutation == "model") external.goals.front().worker_model_id = "replacement-model";
+		if (mutation == "owner-model") external.model_id = "replacement-owner-default";
+		if (mutation == "owner-mode") external.small_model_mode = !external.small_model_mode;
+		if (mutation == "owner-agent") external.uam_agent_id = "plan";
+		if (mutation == "owner-approval") external.approval_mode = "plan";
+		if (mutation == "owner-safety") external.command_safety_tier = "strict";
+		if (mutation == "owner-reasoning") external.reasoning_effort = "high";
+		if (mutation == "owner-tier") external.service_tier = "priority";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "stop") fixture.session->remote_stop_pending = true;
+		if (mutation == "token") fixture.session->remote_output_delivery_token = "replacement-token";
+		if (mutation == "authority-token") chat.remote_process_control_token = "replacement-saved-token";
+		if (mutation == "authority-exists") chat.remote_process_exists = false;
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained rejected goal transport";
+		if (mutation == "shutdown") (void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		if (mutation == "row") chat.messages.back().attachments.push_back(MessageAttachment{.kind = "file", .path = "replacement-attachment"});
+		if (mutation == "chat-incarnation") chat.metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		if (mutation == "writer") fixture.session->stdin_writer.reset();
+		if (mutation == "storage")
+		{
+			fs::rename(app.data_root, fixture.temp.root / "retained-small-model-primary");
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked marker publication"));
+		}
+		if (mutation == "storage")
+		{
+			const auto results = std::make_shared<std::vector<bool>>();
+			UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (results->empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT_EQ(results->size(), std::size_t{1});
+			UAM_ASSERT(!results->front()); // Failed full receipt; recovery may retain pending save work.
+		}
+		else fixture.AwaitSave();
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(AcpRemoteSmallModelDirectSteerOwnsGoalAndRetainsUncertainEnvelope)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string mutation : {"none", "goal", "writer"})
+	{
+		InjectedRemoteAdmissionFixture fixture;
+		PrepareRemoteDirectSteer(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		Goal goal;
+		goal.id = chat.active_goal_id = "steer-goal";
+		goal.objective = "Goal-owned steering";
+		chat.goals.push_back(goal);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Goal-owned remote steer", {}, {}, false, &error));
+		const auto envelope = chat.remote_pending_requests.front();
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "goal") chat.goals.front().objective = "Changed goal";
+		if (mutation == "writer") fixture.input.writer->Stop();
+		fixture.AwaitSave();
+		if (mutation == "none")
+		{
+			fixture.AwaitInput();
+			UAM_ASSERT_EQ(fixture.InputPayload(), envelope.payload);
+		}
+		else UAM_ASSERT(fixture.input.Bytes().empty());
+		if (mutation == "goal") UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.remote_pending_requests.empty());
+		else UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent && std::ranges::find(chat.remote_pending_requests, envelope) != chat.remote_pending_requests.end());
+		if (mutation != "goal") fixture.AssertInputRemainsUnconfirmed();
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 17);
+	}
+#endif
 }
 
 UAM_TEST(AcpRemoteDeliveryMarkerReturnsWithinInputBudgetBeforeRunnerInput)

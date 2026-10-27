@@ -1,9 +1,11 @@
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "test_harness.h"
+#include "app/goal_service.h"
 #include "common/provider/native_agent_history.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_polling.h"
+#include "injected_acp_input.h"
 
 #include <tuple>
 #include <limits>
@@ -466,6 +468,25 @@ UAM_TEST(ClaudeParentEnvelopeReplayDoesNotDuplicateNarration)
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answerParent answerParent answerParent answer"));
 #endif
+}
+
+UAM_TEST(ClaudeSeenEnvelopeIdentitiesStayBoundedAndStillDropRecentRepeats)
+{
+	uam::AcpSessionState session;
+	uam::RecentIdentitySet& seen = session.claude_seen_parent_messages;
+	const std::size_t total = uam::RecentIdentitySet::kCapacity * 3;
+	for (std::size_t index = 0; index < total; ++index)
+	{
+		UAM_ASSERT(seen.Insert("frame-" + std::to_string(index)));
+		UAM_ASSERT(!seen.Insert("frame-" + std::to_string(index)));
+	}
+	UAM_ASSERT_EQ(seen.ids.size(), uam::RecentIdentitySet::kCapacity);
+	UAM_ASSERT_EQ(seen.order.size(), uam::RecentIdentitySet::kCapacity);
+	// Every identity inside the window is still a repeat; only the oldest beyond it is forgotten.
+	UAM_ASSERT(!seen.Insert("frame-" + std::to_string(total - uam::RecentIdentitySet::kCapacity)));
+	UAM_ASSERT(!seen.Insert("frame-" + std::to_string(total - 1)));
+	UAM_ASSERT(seen.Insert("frame-0"));
+	UAM_ASSERT_EQ(seen.ids.size(), uam::RecentIdentitySet::kCapacity);
 }
 
 UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
@@ -1284,6 +1305,7 @@ namespace
 		uam::AcpSessionState* session = nullptr;
 		int64_t now = uam::time::TimestampNowSec();
 		std::unique_ptr<ScopedEnvVar> fixture_path;
+		InjectedAcpInput injected_input;
 		ClaudeQuotaFixture()
 		{
 #if !defined(_WIN32)
@@ -1612,6 +1634,20 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 #endif
 }
 
+namespace
+{
+	// A staged automatic claim dispatches only after its full-save receipt.
+	void AwaitQuotaClaimSettled(uam::AppState& app)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (app.chats.front().claude_quota_continuation.state == "claimed" && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+	}
+}
+
 UAM_TEST(ClaudeQuotaLegacyBuiltinVersionRemainsHeldWithoutNativeLaunch)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI && !defined(_WIN32)
@@ -1637,6 +1673,7 @@ UAM_TEST(ClaudeQuotaLegacyBuiltinVersionRemainsHeldWithoutNativeLaunch)
 	UAM_ASSERT(saved && saved->claude_quota_continuation == accepted);
 	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 59));
 	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	AwaitQuotaClaimSettled(fixture.app);
 	ClaudeQuotaContinuation held = accepted;
 	held.state = "held";
 	UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation == held);
@@ -1664,8 +1701,19 @@ UAM_TEST(ClaudeQuotaPersistenceFailureNeverDispatchesOrDropsCancellation)
 	const fs::path blocker = fixture.temp.root / "not-a-directory";
 	UAM_ASSERT(uam::io::WriteTextFile(blocker, "block"));
 	fixture.app.data_root = blocker;
-	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
-	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("waiting"));
+	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("claimed"));
+	const auto results = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(fixture.app, fixture.app.chats.front().id, [results](bool saved) { results->push_back(saved); }));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (results->empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	UAM_ASSERT(!results->front());
+	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("held"));
 	UAM_ASSERT(!uam::CancelAcpTurn(fixture.app, "quota-boundary"));
 	UAM_ASSERT(!uam::CancelAcpTurn(fixture.app, "quota-boundary"));
 	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("cancelled"));
@@ -1814,6 +1862,7 @@ UAM_TEST(ClaudeQuotaHoldsSameIdAgentDefinitionChangesBeforeNativeStartup)
 		UAM_ASSERT(changed != catalog.definitions.end());
 		UAM_ASSERT(changed->definition_hash != accepted->definition_hash);
 		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+		AwaitQuotaClaimSettled(fixture.app);
 		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("held"));
 		UAM_ASSERT(!fixture.session->running);
 		UAM_ASSERT(fixture.session->queued_prompt.empty());
@@ -2015,10 +2064,16 @@ UAM_TEST(ClaudeQuotaManualSendCancellationReturnsWithinInputBudget)
 
 namespace
 {
-	void StartManualQuotaSink(ClaudeQuotaFixture& fixture)
+	void StartManualQuotaSink(ClaudeQuotaFixture& fixture, bool injected = false)
 	{
 		fixture.app.chats.front().memory_enabled = false;
 		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+		if (injected)
+		{
+			fixture.injected_input.Attach(*fixture.session);
+			fixture.session->current_mode_id = "default";
+			return;
+		}
 		const std::vector<std::string> sink = uam_test::StdioCatArgv();
 		std::string error;
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*fixture.session, fixture.temp.root, sink, &error));
@@ -2049,11 +2104,801 @@ namespace
 			(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, fixture.app.chats.front());
 			const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, buffer.data(), buffer.size(), &error);
 			if (count > 0) input.append(buffer.data(), static_cast<std::size_t>(count));
+			if (fixture.injected_input.writer) input = fixture.injected_input.Bytes();
 			std::this_thread::yield();
 		}
 		UAM_ASSERT(input.find(expected) != std::string::npos);
 		return input;
 	}
+}
+
+namespace
+{
+	void PrepareAutomaticQuotaSink(ClaudeQuotaFixture& fixture, bool remote_small_model = false)
+	{
+		fixture.app.data_root = fixture.temp.root / "automatic-data";
+		if (remote_small_model)
+		{
+			auto& chat = fixture.app.chats.front();
+			chat.execution_host_id = fixture.session->process_execution_host_id = "injected-quota-host";
+			chat.small_model_mode = true;
+			Goal goal;
+			goal.id = chat.active_goal_id = "injected-quota-goal";
+			goal.objective = "Retain the native quota continuation goal";
+			chat.goals.push_back(goal);
+			ExecutionHost host;
+			host.id = chat.execution_host_id;
+			host.transport = "ssh";
+			host.ssh_alias = "never-connected.invalid";
+			host.platform = "linux";
+			host.runner_status = "ready";
+			host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+			host.runner_protocol_version = fixture.session->remote_runner_protocol_version = 3;
+			fixture.app.settings.execution_hosts.push_back(host);
+			chat.remote_process_control_token = fixture.session->remote_output_delivery_token = "injected-quota-token";
+			chat.remote_process_exists = true;
+			chat.remote_structured_protocol = fixture.session->protocol_kind;
+		}
+		uam::SelectedPrimaryAgentSnapshot selected;
+		std::string error;
+		UAM_ASSERT(uam::AgentDefinitionService::CaptureSelectedPrimary(fixture.app.data_root,
+		    uam::paths::ResolveControllerWorkspaceRootPath(fixture.app, fixture.app.chats.front()),
+		    fixture.app.chats.front().uam_agent_id, selected, error));
+		fixture.session->active_uam_agent_id = selected.definition.id;
+		fixture.session->active_uam_agent_definition_hash = selected.definition.definition_hash;
+		fixture.session->active_uam_agent_definition_snapshot = selected.definition.markdown_snapshot;
+		fixture.session->active_uam_agent_instructions = selected.definition.instructions;
+		fixture.session->active_uam_agent_skills = selected.definition.skills;
+		fixture.session->active_uam_agent_delegates = selected.definition.delegates;
+		fixture.session->active_uam_agent_workspace_access = selected.definition.workspace_access;
+		fixture.session->active_uam_agent_execution_capability = remote_small_model ? "uam-prompt-injected" : uam::AgentDefinitionService::ExecutionCapabilityForProvider("claude-cli");
+		fixture.Wait();
+		fixture.app.chats.front().memory_enabled = false;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+		fixture.injected_input.Attach(*fixture.session);
+		fixture.session->current_mode_id = "default";
+	}
+
+	void AwaitQuotaObserver(uam::AppState& app, const std::shared_ptr<std::vector<bool>>& results)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (results->empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(results->size(), std::size_t{1});
+	}
+}
+
+UAM_TEST(ClaudeQuotaColdClaimRemainsAsyncAndRechecksAuthorityBeforeDispatch)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string mutation : {"native", "agent", "cancel", "root"})
+	{
+		ClaudeQuotaFixture fixture;
+		PrepareAutomaticQuotaSink(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		fixture.session->running = fixture.session->initialized = fixture.session->session_ready = false;
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto before = ReadFile(primary);
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		std::promise<void> entered;
+		auto locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		const auto started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		UAM_ASSERT(std::chrono::steady_clock::now() - started <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("claimed"));
+		if (mutation == "native") chat.native_session_id = "replacement-native";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "cancel") fixture.session->cancel_requested = true;
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-cold-quota-root";
+		publication.join();
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		AwaitQuotaObserver(app, results);
+		// An ordinary held-state successor may save successfully; that is not the revoked claim's dispatch authority.
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string(mutation == "root" ? "claimed" : "held"));
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT(fixture.injected_input.Bytes().empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaColdWorkspaceRefusalNeverPromotesContinuationIntoRawQueue)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	PrepareAutomaticQuotaSink(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	fixture.session->running = fixture.session->initialized = fixture.session->session_ready = false;
+	chat.svn_update_pending = true;
+	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+	const auto claim = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [claim](bool saved) { claim->push_back(saved); }));
+	AwaitQuotaObserver(app, claim);
+	UAM_ASSERT(claim->front());
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("held"));
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT(chat.acp_queued_prompts.empty() && fixture.session->queued_user_prompts.empty());
+	UAM_ASSERT(fixture.session->queued_prompt.empty() && fixture.injected_input.Bytes().empty());
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+#endif
+}
+
+UAM_TEST(ClaudeQuotaColdSettlementRetainsPreparedInputWithoutNativeReplay)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool cancel_settlement : {false, true})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.app.settings.central_provider_configuration.enabled = true;
+		PrepareAutomaticQuotaSink(fixture);
+		fixture.session->active_uam_agent_execution_capability = "uam-central-native-setup";
+		fixture.session->processing = true;
+		fixture.Wait();
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		fixture.session->running = fixture.session->initialized = fixture.session->session_ready = false;
+
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		const auto claim = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [claim](bool saved) { claim->push_back(saved); }));
+		AwaitQuotaObserver(app, claim);
+		UAM_ASSERT(claim->front());
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("continued"));
+		UAM_ASSERT(fixture.session->pending_local_launch && !fixture.session->running);
+		const auto configuration = fixture.session->pending_local_launch;
+		const auto preparation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!uam::acp_detail::AcpLaunchConfigurationFinished(*fixture.session) && std::chrono::steady_clock::now() < preparation_deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(uam::acp_detail::AcpLaunchConfigurationFinished(*fixture.session));
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, *fixture.session, chat));
+		UAM_ASSERT(fixture.session->pending_local_launch == configuration); // Finished config still waits for settlement.
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string(uam::acp_detail::kClaudeQuotaContinuationPrompt));
+		UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)))["claude_quota_continuation"]["state"].get<std::string>(), std::string("claimed"));
+		const auto settlement = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [settlement](bool saved) { settlement->push_back(saved); }));
+		if (cancel_settlement) fixture.session->cancel_requested = true;
+		AwaitQuotaObserver(app, settlement);
+		if (!cancel_settlement) UAM_ASSERT(settlement->front());
+		// A canceled settlement may publish its held successor; generic saved=true never permits launch.
+		if (cancel_settlement) UAM_ASSERT(!fixture.session->pending_local_launch && !fixture.session->processing);
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string(cancel_settlement ? "held" : "continued"));
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().input_write_completed);
+		UAM_ASSERT(fixture.injected_input.Bytes().empty());
+		const auto loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded && loaded->claude_quota_continuation.state == "held");
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAutomaticClaimAndSettlementRequireSeparateOwnedFullReceipts)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	PrepareAutomaticQuotaSink(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	uam::AcpQueuedUserPromptState future;
+	future.id = "quota-followup";
+	future.text = "Raw FIFO after native continuation";
+	fixture.session->queued_user_prompts.push_back(future);
+	chat.acp_queued_prompts.push_back(future);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto messages = chat.messages;
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	auto locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const auto started = std::chrono::steady_clock::now();
+	const bool staged = uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(staged && elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("claimed"));
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id)); // Claim, whose callback stages settlement.
+	UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(primary))["claude_quota_continuation"]["state"], nlohmann::json("claimed"));
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("continued"));
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	std::array<char, 4096> bytes{};
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, bytes.data(), bytes.size(), &error) <= 0);
+	const auto crash_claim = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(crash_claim && crash_claim->claude_quota_continuation.state == "held");
+	UAM_ASSERT_EQ(crash_claim->messages, messages);
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id)); // Settlement, still before provider input.
+	const auto settled = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(settled && settled->claude_quota_continuation.state == "held"); // Restart normalization, never replay.
+	UAM_ASSERT_EQ(settled->messages.size(), messages.size() + 1);
+	UAM_ASSERT_EQ(settled->messages.back().content, std::string(uam::acp_detail::kClaudeQuotaContinuationPrompt));
+	UAM_ASSERT(settled->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT_EQ(settled->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT(settled->acp_queued_prompts.front() == future);
+	const auto input = DeliverManualQuotaInput(fixture, uam::acp_detail::kClaudeQuotaContinuationPrompt);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT(input.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
+	UAM_ASSERT(input.find(future.text) == std::string::npos);
+	for (int attempt = 0; attempt < 5; ++attempt)
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAutomaticClaimSaveFailureHoldsWithoutNativeAttempt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	PrepareAutomaticQuotaSink(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const auto before = ReadFile(primary);
+	const auto messages = chat.messages;
+	app.data_root = fixture.temp.root / "blocked-automatic-claim";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+	UAM_ASSERT(!AwaitManualQuotaReceipt(app, chat.id));
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("held"));
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(ReadFile(primary), before);
+	UAM_ASSERT(fixture.session->queued_prompt.empty() && fixture.session->prompt_request_id == 0);
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAutomaticClaimRejectsChangedCancelStopNativeAgentAndFifo)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string mutation : {"cancel", "stop", "native", "agent", "fifo", "runtime-fifo", "turn", "owner", "question", "runtime-native", "runtime-provider", "process-host", "transport", "cleanup"})
+	{
+		ClaudeQuotaFixture fixture;
+		PrepareAutomaticQuotaSink(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto count = chat.messages.size();
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		if (mutation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, chat.id));
+		if (mutation == "stop") UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+		if (mutation == "native") chat.native_session_id = "44444444-4444-4444-8444-444444444444";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "changed-agent";
+		if (mutation == "question") fixture.session->waiting_for_user_input = true;
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "runtime-native") fixture.session->session_id = "88888888-8888-4888-8888-888888888888";
+		if (mutation == "runtime-provider") fixture.session->provider_id = "codex-cli";
+		if (mutation == "process-host") fixture.session->process_execution_host_id = "replacement-process-host";
+		if (mutation == "transport") fixture.session->transport_ownership_error = "Retained rejected transport";
+		if (mutation == "turn") ++fixture.session->turn_serial;
+		if (mutation == "owner") chat.claude_quota_continuation.id = "replacement-quota-owner";
+		if (mutation == "fifo" || mutation == "runtime-fifo")
+		{
+			uam::AcpQueuedUserPromptState next;
+			next.id = "new-fifo-intent";
+			next.text = "New input invalidates the old claim";
+			fixture.session->queued_user_prompts.push_back(next);
+			if (mutation == "fifo") chat.acp_queued_prompts.push_back(next);
+			uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		}
+		AwaitQuotaObserver(app, results); // Storage may commit current state; it is not permission to dispatch.
+		UAM_ASSERT_EQ(chat.messages.size(), count);
+		UAM_ASSERT(fixture.session->queued_prompt.empty() && fixture.session->prompt_request_id == 0);
+		if (mutation == "owner") UAM_ASSERT_EQ(chat.claude_quota_continuation.id, std::string("replacement-quota-owner"));
+		if (mutation == "fifo") UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().id, std::string("new-fifo-intent"));
+		std::array<char, 4096> bytes{};
+		std::string error;
+		if (fixture.session->running)
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, bytes.data(), bytes.size(), &error) <= 0);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAutomaticSettlementFailureRetainsUnsentContinuationAndClaimPrimary)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	PrepareAutomaticQuotaSink(fixture);
+	auto& app = fixture.app;
+	auto& chat = app.chats.front();
+	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("continued"));
+	const auto retained = fixture.temp.root / "retained-claim-primary";
+	fs::rename(app.data_root, retained);
+	const auto claimed_bytes = ReadFile(AppPaths::UamChatFilePath(retained, chat.id));
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked settlement"));
+	UAM_ASSERT(!AwaitManualQuotaReceipt(app, chat.id));
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("held"));
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(!fixture.session->processing && fixture.session->prompt_request_id == 0);
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(retained, chat.id)), claimed_bytes);
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	std::array<char, 4096> bytes{};
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, bytes.data(), bytes.size(), &error) <= 0);
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAutomaticSettlementCancellationCannotReleaseOrReplayInput)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string mutation : {"cancel", "root", "agent", "native", "owner", "cleanup"})
+	{
+		ClaudeQuotaFixture fixture;
+		PrepareAutomaticQuotaSink(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		if (mutation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, chat.id));
+		if (mutation == "root") app.data_root = fixture.temp.root / "replacement-root";
+		if (mutation == "agent") fixture.session->active_uam_agent_definition_hash = "replacement-agent";
+		if (mutation == "native") chat.native_session_id = "77777777-7777-4777-8777-777777777777";
+		if (mutation == "cleanup") chat.side_cleanup_requested = true;
+		if (mutation == "owner") chat.claude_quota_continuation.id = "replacement-settlement-owner";
+		AwaitQuotaObserver(app, results);
+		if (mutation == "cancel") UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		if (mutation == "owner") UAM_ASSERT_EQ(chat.claude_quota_continuation.id, std::string("replacement-settlement-owner"));
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+		std::array<char, 4096> bytes{};
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, bytes.data(), bytes.size(), &error) <= 0);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaRemoteSmallModelClaimAndSettlementRetainExactGoalScope)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string mutation : {"none", "claim-goal", "settlement-goal", "claim-authority", "settlement-authority"})
+	{
+		ClaudeQuotaFixture fixture;
+		PrepareAutomaticQuotaSink(fixture, true);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto original_count = chat.messages.size();
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, *fixture.session, chat));
+		UAM_ASSERT(uam::acp_detail::CanStageRemoteGoalPromptAdmission(app, *fixture.session, chat));
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		UAM_ASSERT(fixture.injected_input.Bytes().empty());
+		if (mutation == "claim-goal") chat.goals.front().objective = "Changed before claim receipt";
+		if (mutation == "claim-authority") chat.remote_process_control_token = "replacement-saved-token";
+		const auto results = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [results](bool saved) { results->push_back(saved); }));
+		AwaitQuotaObserver(app, results);
+		if (mutation == "claim-goal" || mutation == "claim-authority")
+		{
+			UAM_ASSERT(chat.claude_quota_continuation.state == "held" && chat.messages.size() == original_count);
+			UAM_ASSERT(fixture.injected_input.Bytes().empty());
+			continue;
+		}
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("continued"));
+		if (mutation == "settlement-goal") chat.goals.front().objective = "Changed before settlement receipt";
+		if (mutation == "settlement-authority") chat.remote_process_exists = false;
+		const auto settled = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [settled](bool saved) { settled->push_back(saved); }));
+		AwaitQuotaObserver(app, settled);
+		if (mutation == "settlement-goal" || mutation == "settlement-authority")
+		{
+			UAM_ASSERT(chat.claude_quota_continuation.state == "held" && chat.messages.back().acp_prompt_not_sent);
+			UAM_ASSERT(!fixture.session->processing && fixture.injected_input.Bytes().empty());
+			continue;
+		}
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (fixture.injected_input.Bytes().empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(fixture.injected_input.writer->Flush(std::chrono::seconds(5)));
+		const auto wire = fixture.injected_input.Bytes();
+		UAM_ASSERT(wire.starts_with(uam::remote::kRemoteInputDeliveryPrefix));
+		UAM_ASSERT_EQ(std::count(wire.begin(), wire.end(), '\n'), 1);
+		std::string payload;
+		UAM_ASSERT(uam::base64::Decode(wire.substr(wire.rfind(' ') + 1), payload));
+		UAM_ASSERT(payload.find(uam::acp_detail::kClaudeQuotaContinuationPrompt) != std::string::npos);
+		UAM_ASSERT(payload.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
+		UAM_ASSERT(!chat.remote_prompt_delivery_id.empty()); // No native ACK is supplied by the injected sink.
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaForceFlushAfterQuiescenceCannotReleaseClaimOrSettlement)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (bool settlement : {false, true})
+	{
+		ClaudeQuotaFixture fixture;
+		PrepareAutomaticQuotaSink(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		const auto accepted = chat.messages;
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		if (settlement) UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+		(void)uam::AgentRunScheduler::QuiesceInitialForShutdown(app);
+		UAM_ASSERT(app.managed_initial_shutdown);
+		(void)uam::FlushPendingChatSaves(app, true);
+		(void)uam::FlushPendingChatSaves(app, true); // The application's two shutdown publication barriers.
+		UAM_ASSERT(fixture.injected_input.Bytes().empty());
+		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("held"));
+		const auto recovered = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(recovered && recovered->claude_quota_continuation.state == "held");
+		if (settlement)
+		{
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && fixture.session->queued_prompt.empty());
+			UAM_ASSERT_EQ(recovered->messages.size(), accepted.size() + 1);
+			UAM_ASSERT(recovered->messages.back().acp_prompt_not_sent);
+		}
+		else UAM_ASSERT_EQ(recovered->messages, accepted);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaStartingManualCancellationWaitsForExactFullReceipt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	StartManualQuotaSink(fixture, true);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	session.session_ready = false;
+	const std::size_t original_count = chat.messages.size();
+	const ClaudeQuotaContinuation cancelled_owner = chat.claude_quota_continuation;
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string waiting_bytes = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	chat.messages.push_back(Message{MessageRole::Assistant, "Unsaved history before manual quota input"});
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const auto started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, chat.id, "Manual input while Claude starts", &error);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(ReadFile(primary), waiting_bytes);
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	const auto receipts = std::make_shared<std::vector<bool>>();
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [receipts](bool saved) { receipts->push_back(saved); }));
+	UAM_ASSERT(receipts->empty());
+	// Readiness does not release input while the full admission receipt is outstanding.
+	session.session_ready = true;
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	std::array<char, 4096> bytes{};
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, bytes.data(), bytes.size(), &error) <= 0);
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+	UAM_ASSERT_EQ(receipts->size(), std::size_t{1});
+	UAM_ASSERT(receipts->front());
+	const auto durable = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(durable);
+	ClaudeQuotaContinuation expected_owner = cancelled_owner;
+	expected_owner.state = "cancelled";
+	UAM_ASSERT(durable->claude_quota_continuation == expected_owner);
+	UAM_ASSERT_EQ(durable->messages.size(), original_count + 2);
+	UAM_ASSERT_EQ(durable->messages[original_count].content, std::string("Unsaved history before manual quota input"));
+	UAM_ASSERT_EQ(durable->messages.back().content, std::string("Manual input while Claude starts"));
+	UAM_ASSERT(durable->messages.back().acp_prompt_not_sent);
+	uam::AppState restarted;
+	restarted.data_root = app.data_root;
+	restarted.settings = app.settings;
+	restarted.provider_profiles = app.provider_profiles;
+	restarted.chats.push_back(*durable);
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(restarted, fixture.now + 120));
+	UAM_ASSERT(restarted.acp_sessions.empty());
+	const std::string input = DeliverManualQuotaInput(fixture, "Manual input while Claude starts");
+	UAM_ASSERT(input.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	UAM_ASSERT_EQ(receipts->size(), std::size_t{1});
+#endif
+}
+
+UAM_TEST(ClaudeQuotaStoppedManualCancellationPreservesFullFifoReceipt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	chat.memory_enabled = false;
+	chat.svn_update_pending = true; // Existing preparation gate retains raw input; no VCS/provider worker is polled.
+	UAM_ASSERT(!session.running && !session.processing);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string waiting_bytes = ReadFile(primary);
+	const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	chat.messages.push_back(Message{MessageRole::Assistant, "Unsaved stopped-session history"});
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const auto started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, chat.id, "First stopped-session manual input", &error);
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Second stopped-session manual input", &error));
+	UAM_ASSERT_EQ(ReadFile(primary), waiting_bytes);
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+	const auto durable = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(durable && durable->claude_quota_continuation.state == "cancelled");
+	UAM_ASSERT_EQ(durable->messages, chat.messages);
+	UAM_ASSERT_EQ(durable->messages.back().content, std::string("Unsaved stopped-session history"));
+	UAM_ASSERT_EQ(durable->acp_queued_prompts, chat.acp_queued_prompts);
+	UAM_ASSERT_EQ(durable->acp_queued_prompts.size(), std::size_t{2});
+	UAM_ASSERT_EQ(durable->acp_queued_prompts[0].text, std::string("First stopped-session manual input"));
+	UAM_ASSERT_EQ(durable->acp_queued_prompts[1].text, std::string("Second stopped-session manual input"));
+	UAM_ASSERT_EQ(durable->acp_dispatched_queued_prompt_count, std::size_t{0});
+	UAM_ASSERT(!session.running && !session.processing && session.prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(ClaudeQuotaPendingTransportSaveFailureRetainsWaitingPrimary)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool starting : {false, true})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		if (starting) StartManualQuotaSink(fixture, true);
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		session.session_ready = false;
+		chat.memory_enabled = false;
+		if (!starting) chat.svn_update_pending = true; // Existing preparation gate retains raw input; no VCS/provider worker is polled.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const std::string waiting_bytes = ReadFile(primary);
+		const std::size_t original_count = chat.messages.size();
+		app.data_root = fixture.temp.root / "blocked-pending-transport";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Not a directory"));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain pending-transport manual input", &error));
+		UAM_ASSERT(!AwaitManualQuotaReceipt(app, chat.id));
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+		UAM_ASSERT_EQ(ReadFile(primary), waiting_bytes);
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+		UAM_ASSERT(!session.processing);
+		if (starting)
+		{
+			UAM_ASSERT_EQ(chat.messages.size(), original_count + 1);
+			UAM_ASSERT_EQ(chat.messages.back().content, std::string("Retain pending-transport manual input"));
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+			std::array<char, 4096> bytes{};
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(session, bytes.data(), bytes.size(), &error) <= 0);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(chat.messages.size(), original_count);
+			UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Retain pending-transport manual input"));
+			UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+		}
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaNoSessionManualAdmissionRetainsFullFifoBeforeReceipt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool already_cancelled : {false, true})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		uam::AppState& app = fixture.app;
+		ChatSession& chat = app.chats.front();
+		app.acp_sessions.clear();
+		fixture.session = nullptr;
+		chat.memory_enabled = false;
+		if (already_cancelled) chat.claude_quota_continuation.state = "cancelled";
+		chat.svn_update_pending = true; // Existing preparation gate retains raw input; no VCS/provider worker is polled.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const std::string before = ReadFile(primary);
+		ClaudeQuotaContinuation expected_owner = chat.claude_quota_continuation;
+		expected_owner.state = "cancelled";
+		const auto prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared);
+		chat.messages.push_back(Message{MessageRole::Assistant, "Unsaved reopened history"});
+		const auto messages = chat.messages;
+		std::promise<void> entered;
+		std::future<void> locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const auto started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SendAcpPrompt(app, chat.id, "First reopened manual input", &error);
+		const auto elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted);
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+		fixture.session = uam::FindAcpSessionForChat(app, chat.id);
+		UAM_ASSERT(fixture.session != nullptr);
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+		const auto first = fixture.session->queued_user_prompts.front();
+		UAM_ASSERT(first.direct_admission && !first.prepared_for_delivery);
+		const auto receipts = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [receipts](bool saved) { receipts->push_back(saved); }));
+		UAM_ASSERT(receipts->empty());
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Second reopened manual input", &error));
+		UAM_ASSERT(fixture.session->queued_user_prompts.front() == first);
+		UAM_ASSERT_EQ(ReadFile(primary), before);
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, *fixture.session, chat));
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+		UAM_ASSERT(AwaitManualQuotaReceipt(app, chat.id));
+		UAM_ASSERT_EQ(receipts->size(), std::size_t{1});
+		UAM_ASSERT(receipts->front());
+		const auto durable = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(durable && durable->claude_quota_continuation == expected_owner);
+		UAM_ASSERT_EQ(durable->messages, messages);
+		UAM_ASSERT_EQ(durable->acp_queued_prompts, chat.acp_queued_prompts);
+		UAM_ASSERT_EQ(durable->acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT(durable->acp_queued_prompts.front() == first);
+		UAM_ASSERT_EQ(durable->acp_queued_prompts[1].text, std::string("Second reopened manual input"));
+		UAM_ASSERT_EQ(durable->acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT(!fixture.session->running && !fixture.session->processing && fixture.session->prompt_request_id == 0);
+		uam::AppState restarted;
+		restarted.data_root = app.data_root;
+		restarted.settings = app.settings;
+		restarted.provider_profiles = app.provider_profiles;
+		restarted.chats.push_back(*durable);
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(restarted, fixture.now + 120));
+		UAM_ASSERT(restarted.acp_sessions.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaNoSessionFailedAdmissionRetainsRawInputAndPreviousPrimary)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	uam::AppState& app = fixture.app;
+	ChatSession& chat = app.chats.front();
+	app.acp_sessions.clear();
+	fixture.session = nullptr;
+	chat.memory_enabled = false;
+	chat.svn_update_pending = true; // Existing preparation gate retains raw input; no VCS/provider worker is polled.
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string waiting_bytes = ReadFile(primary);
+	const auto messages = chat.messages;
+	app.data_root = fixture.temp.root / "blocked-no-session-manual-admission";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Not a directory"));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retain reopened manual input", &error));
+	fixture.session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(fixture.session != nullptr);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+	const auto retained = fixture.session->queued_user_prompts.front();
+	UAM_ASSERT(!AwaitManualQuotaReceipt(app, chat.id));
+	UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+	UAM_ASSERT_EQ(ReadFile(primary), waiting_bytes);
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(fixture.session->queued_user_prompts.front() == retained);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT(chat.acp_queued_prompts.front() == retained);
+	UAM_ASSERT_EQ(retained.text, std::string("Retain reopened manual input"));
+	UAM_ASSERT(retained.direct_admission && !retained.prepared_for_delivery);
+	UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{0});
+	UAM_ASSERT(fixture.session->queue_held && chat.acp_queue_held);
+	UAM_ASSERT(!fixture.session->running && !fixture.session->processing && fixture.session->prompt_request_id == 0);
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, *fixture.session, chat));
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+#endif
+}
+
+UAM_TEST(ClaudeQuotaReadyClosedInputPreservesSynchronousCancellationRefusal)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	uam::AppState& app = fixture.app;
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string waiting_bytes = ReadFile(primary);
+	const auto messages = chat.messages;
+	// The fixture has no open input handle, even though native readiness is recorded.
+	fixture.session->running = fixture.session->session_ready = true;
+	app.data_root = fixture.temp.root / "blocked-ready-closed-input";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Not a directory"));
+	std::string error;
+	const bool accepted = uam::SendAcpPrompt(app, chat.id, "Refused closed-input manual request", &error);
+	fixture.session->running = false;
+	UAM_ASSERT(!accepted);
+	UAM_ASSERT(error.find("quota continuation cancellation") != std::string::npos);
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(ReadFile(primary), waiting_bytes);
+	// Only cancellation storage is retried; the refused manual input was never admitted.
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+#endif
 }
 
 UAM_TEST(ClaudeQuotaFailedManualCancellationRetainsWaitingDiskUntilRetry)
@@ -2515,5 +3360,60 @@ UAM_TEST(ClaudeQuotaRevokedPreparationFailureCannotRejectLaterManualSend)
 	UAM_ASSERT(input.find(first_prompt) == std::string::npos);
 	UAM_ASSERT(input.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
 	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+#endif
+}
+
+UAM_TEST(ClaudeQuotaAbsentRuntimeClaimRetainsExactSmallModelGoal)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string mutation : {"none", "objective", "missing"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.app.settings.central_provider_configuration.enabled = true;
+		PrepareAutomaticQuotaSink(fixture);
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		chat.small_model_mode = true;
+		Goal goal;
+		goal.id = chat.active_goal_id = "absent-quota-goal-owner";
+		goal.objective = "Original exact quota goal";
+		chat.goals.push_back(goal);
+		fixture.session->active_uam_agent_execution_capability = "uam-central-native-setup";
+		fixture.session->processing = true;
+		fixture.Wait();
+		fixture.session->running = fixture.session->initialized = fixture.session->session_ready = false;
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*fixture.session);
+		app.acp_sessions.clear();
+		fixture.session = nullptr;
+		if (mutation == "missing") chat.goals.clear();
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto messages = chat.messages;
+		const auto revision = chat.goal_command_revision;
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 60));
+		if (mutation == "objective")
+		{
+			std::string error;
+			UAM_ASSERT(uam::GoalService::UpdateGoalObjective(app, chat.id, goal.id,
+			    "Changed objective while quota claim is pending", &error));
+			UAM_ASSERT_EQ(chat.goal_command_revision, revision); // Real service contract, not a forged revision.
+		}
+		const auto claim = std::make_shared<std::vector<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [claim](bool saved) { claim->push_back(saved); }));
+		AwaitQuotaObserver(app, claim);
+		if (mutation == "none")
+		{
+			UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("continued"));
+			UAM_ASSERT_EQ(chat.messages.size(), messages.size() + 1);
+			const auto* native = uam::FindAcpSessionForChat(app, chat.id);
+			UAM_ASSERT(native && native->pending_local_launch && !native->running);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("held"));
+			UAM_ASSERT_EQ(chat.messages, messages);
+			UAM_ASSERT(app.acp_sessions.empty());
+		}
+		UAM_ASSERT(fixture.injected_input.Bytes().empty());
+	}
 #endif
 }

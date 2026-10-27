@@ -3,7 +3,7 @@ import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence } from '../ui'
-import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 
@@ -62,6 +62,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [agentErrors, setAgentErrors] = useState<string[]>([])
   const [editing, setEditing] = useState<{ draft: Agent; isNew: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [saving, setSaving] = useState<'defaults' | 'agent' | null>(null)
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
@@ -97,11 +98,11 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     return () => window.clearTimeout(timer)
   }, [message])
 
-  const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string) => {
-    setBusy(true); setMessage(null)
+  const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
+    setBusy(true); setSaving(save); setMessage(null)
     try { const result = await action(); setMessage(result.ok ? { tone: 'ok', text: success } : { tone: 'error', text: result.error || 'Could not save.' }); return result.ok }
     catch { setMessage({ tone: 'error', text: 'Could not save. Try again.' }); return false }
-    finally { setBusy(false) }
+    finally { setBusy(false); setSaving(null) }
   }
   const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setEditing(next); setMessage(null) }
   const draftId = editing ? editing.draft.id.trim().toLowerCase() : ''
@@ -110,7 +111,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const saveAgent = async () => {
     if (!editing || nameError) return false
     const draft = { ...editing.draft, id: draftId, description: editing.draft.description.trim() }
-    if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`)) return false
+    if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`, 'agent')) return false
     startEditing(null); setMessage({ tone: 'ok', text: `Agent ${draft.id} saved.` }); await loadAgents()
     return true
   }
@@ -125,7 +126,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const saveDefaults = () => run(() => {
     const store = useAppStore.getState()
     return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, enabled: true, instructionFiles, defaultSkills, defaultAgents, defaultAgentId })
-  }, 'Saved. New and restarted chats get this setup.')
+  }, 'Saved. New and restarted chats get this setup.', 'defaults')
   const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId); setMessage(null) }
   const dirty = defaultsDirty || agentDirty || instructionDirty
   useImperativeHandle(ref, () => ({ requestLeave(next) {
@@ -258,7 +259,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
     <div className="flex items-center justify-end gap-3">
       {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
-      <Button size="sm" variant="primary" loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</Button>
+      <SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>
     </div>
 
     <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
@@ -324,7 +325,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
                 ? <Button size="sm" onClick={closeEditor}>Close</Button>
                 : <>
                   <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
-                  <Button size="sm" variant="primary" loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</Button>
+                  <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
                 </>}
             </footer>
           </div>

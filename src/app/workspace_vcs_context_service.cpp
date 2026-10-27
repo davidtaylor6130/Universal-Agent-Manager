@@ -1,4 +1,5 @@
 #include "app/workspace_vcs_context_service.h"
+#include "app/vcs_commit_service.h"
 #include "common/platform/platform_services.h"
 #include "common/paths/path_utils.h"
 #include "common/utils/shell_escape.h"
@@ -35,16 +36,20 @@ namespace uam
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 		const std::string path = uam::shell::EscapeArg(uam::paths::Utf8PathString(directory));
 		const std::string git = "git --no-optional-locks -C " + path + " ";
-		const std::string svn = "svn info --non-interactive --show-item ";
-		const std::function<bool(const std::string&, std::string&)> read = [&](const std::string& command, std::string& output)
+		const std::function<bool(const std::string&, std::string&, const char*)> run = [&](const std::string& command, std::string& output, const char* svn_item)
 		{
 			const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
 			if (remaining <= 0 || stop.stop_requested()) return false;
-			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, static_cast<int>(std::min(remaining, 2000LL)), stop);
+			const int timeout = static_cast<int>(std::min(remaining, 2000LL));
+			const ProcessExecutionResult result = svn_item != nullptr
+			    ? RunSvn(directory, {"info", "--non-interactive", "--show-item", svn_item, "--", "."}, timeout, stop)
+			    : PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout, stop);
 			if (!result.ok || result.exit_code != 0 || result.output_truncated || result.canceled || result.timed_out) return false;
 			output = uam::strings::Trim(result.output);
 			return true;
 		};
+		const auto read = [&](const std::string& command, std::string& output) { return run(command, output, nullptr); };
+		const auto svn = [&](const char* item, std::string& output) { return run({}, output, item); };
 		const std::function<bool(const std::string&)> valid_commit = [](const std::string& commit)
 		{
 			return (commit.size() == 40 || commit.size() == 64) && std::all_of(commit.begin(), commit.end(), [](char value)
@@ -82,16 +87,16 @@ namespace uam
 			return context;
 		}
 		std::string url;
-		if (svn_enabled && read(svn + "url -- " + path, url))
+		if (svn_enabled && svn("url", url))
 		{
 			context.vcs = "svn";
 			context.checkout_url = url;
 			std::string revision;
 			std::string checked_url;
 			std::string checked_revision;
-			if (!read(svn + "revision -- " + path, revision) || revision.empty() ||
+			if (!svn("revision", revision) || revision.empty() ||
 			    !std::all_of(revision.begin(), revision.end(), [](char value) { return value >= '0' && value <= '9'; }) ||
-			    !read(svn + "url -- " + path, checked_url) || !read(svn + "revision -- " + path, checked_revision) ||
+			    !svn("url", checked_url) || !svn("revision", checked_revision) ||
 			    checked_url != url || checked_revision != revision)
 				context.error = "The SVN checkout changed while its context was loading.";
 			else context.revision = revision;

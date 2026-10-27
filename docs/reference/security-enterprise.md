@@ -33,6 +33,7 @@ This document captures the current security posture for Universal Agent Managerâ
 - Local chat writes use temporary files and backups for crash-tolerant persistence.
 - Native Gemini history reads cap parsed session file size and message count through platform limits.
 - Memory extraction rejects supported entries that appear to contain obvious secrets before writing `.md` memory files.
+- Each UAM control capability rejects a reused request ID among its 256 most recently seen IDs; when the window is full, only the oldest ID is evicted.
 
 ## Enterprise Risks and Operating Assumptions
 

@@ -335,7 +335,14 @@ if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
   list(APPEND UAM_PROVIDER_APP_SOURCES src/app/copilot_agent_history_service.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
-  list(APPEND UAM_PROVIDER_SOURCES src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp)
+  if(NOT UAM_RUNNER_ONLY)
+    include("${CMAKE_SOURCE_DIR}/cmake/antigravity_history_crypto.cmake")
+  endif()
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp
+    src/common/provider/antigravity/cli/antigravity_native_history.cpp
+    src/common/platform/private_temp_directory.cpp
+  )
   list(APPEND UAM_RUNNER_PROVIDER_SOURCES
     src/common/usage/antigravity_accounting.cpp
     src/common/usage/antigravity_history_scan.cpp
@@ -747,6 +754,20 @@ endif()
 target_link_libraries(universal_agent_manager PRIVATE ZLIB::ZLIB)
 
 target_link_libraries(universal_agent_manager PRIVATE uam_sqlite)
+if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
+  target_link_libraries(universal_agent_manager PRIVATE uam_antigravity_history_crypto)
+  if(APPLE AND UAM_MACOS_BUNDLE)
+    set(UAM_HISTORY_LICENSE_DIR "$<TARGET_BUNDLE_CONTENT_DIR:universal_agent_manager>/Resources/third-party")
+  else()
+    set(UAM_HISTORY_LICENSE_DIR "$<TARGET_FILE_DIR:universal_agent_manager>/third-party")
+  endif()
+  # Copy before the later signing commands. Excluded-provider builds neither
+  # link this decoder nor ship its capability-specific dependency notice.
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${UAM_HISTORY_LICENSE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${uam_antigravity_mbedtls_SOURCE_DIR}/LICENSE" "${UAM_HISTORY_LICENSE_DIR}/LICENSE-MbedTLS"
+    VERBATIM)
+endif()
 
 # CEF link targets depend on platform.
 # The CEF distribution's own CMakeLists.txt exposes 'libcef_dll_wrapper'.
@@ -1568,6 +1589,7 @@ if(UAM_BUILD_TESTS)
     tests/transcript_usage_tests.cpp
     tests/antigravity_accounting_tests.cpp
     tests/antigravity_history_scan_tests.cpp
+    tests/antigravity_native_import_tests.cpp
     tests/transcript_scan_tests.cpp
     tests/usage_history_service_tests.cpp
     tests/usage_history_transport_tests.cpp
@@ -1666,6 +1688,9 @@ if(UAM_BUILD_TESTS)
   )
 
   target_link_libraries(uam_core_tests PRIVATE uam_core_objects uam_sqlite)
+  if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
+    target_link_libraries(uam_core_tests PRIVATE uam_antigravity_history_crypto)
+  endif()
   target_include_directories(uam_core_tests
     PRIVATE
       src
@@ -1755,6 +1780,40 @@ if(UAM_BUILD_TESTS)
     DEPENDS uam_core_tests
     USES_TERMINAL
     COMMENT "Running the complete native inventory in two isolated processes")
+
+  option(UAM_BUILD_NATIVE_IMPORT_FIXTURES "Enable the synthetic native import application fixtures." OFF)
+  if(UAM_BUILD_NATIVE_IMPORT_FIXTURES)
+    if(NOT (UAM_ENABLE_RUNTIME_GEMINI_CLI AND UAM_ENABLE_RUNTIME_CODEX_CLI AND UAM_ENABLE_RUNTIME_CLAUDE_CLI AND UAM_ENABLE_RUNTIME_OPENCODE_CLI AND UAM_ENABLE_RUNTIME_COPILOT_CLI AND UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI))
+      message(FATAL_ERROR "Native import application fixtures require all six release providers; leave UAM_BUILD_NATIVE_IMPORT_FIXTURES OFF for restricted builds.")
+    endif()
+    # Reuse production backend/provider sources and their normal link settings,
+    # but compile no other test inventory and depend on no runner/app packaging.
+    # The fixture replaces platform services, so it compiles the shared core objects itself.
+    get_target_property(UAM_NATIVE_IMPORT_BACKEND uam_core_tests SOURCES)
+    get_target_property(UAM_NATIVE_IMPORT_SHARED uam_core_objects SOURCES)
+    list(APPEND UAM_NATIVE_IMPORT_BACKEND ${UAM_NATIVE_IMPORT_SHARED})
+    list(FILTER UAM_NATIVE_IMPORT_BACKEND EXCLUDE REGEX "^tests/")
+    list(REMOVE_ITEM UAM_NATIVE_IMPORT_BACKEND src/common/platform/platform_services.cpp)
+    add_executable(uam_native_import_application_tests EXCLUDE_FROM_ALL
+      tests/antigravity_history/application_main.cpp
+      tests/antigravity_history/application_platform.cpp
+      tests/startup_native_import_tests.cpp tests/antigravity_native_import_tests.cpp
+      tests/native_media_chat_save_tests.cpp tests/native_attachment_assets_tests.cpp
+      ${UAM_NATIVE_IMPORT_BACKEND})
+    set_target_properties(uam_native_import_application_tests PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+    foreach(UAM_NATIVE_IMPORT_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+      get_target_property(UAM_NATIVE_IMPORT_VALUE uam_core_tests ${UAM_NATIVE_IMPORT_PROPERTY})
+      list(REMOVE_ITEM UAM_NATIVE_IMPORT_VALUE uam_core_objects)
+      if(NOT UAM_NATIVE_IMPORT_VALUE STREQUAL "UAM_NATIVE_IMPORT_VALUE-NOTFOUND")
+        set_property(TARGET uam_native_import_application_tests PROPERTY ${UAM_NATIVE_IMPORT_PROPERTY} "${UAM_NATIVE_IMPORT_VALUE}")
+      endif()
+    endforeach()
+    target_compile_definitions(uam_native_import_application_tests PRIVATE UAM_NATIVE_IMPORT_APPLICATION_FOCUSED=1)
+    target_include_directories(uam_native_import_application_tests PRIVATE tests)
+    add_test(NAME uam_native_import_application COMMAND uam_native_import_application_tests)
+    set_tests_properties(uam_native_import_application PROPERTIES TIMEOUT 120)
+  endif()
 
   # Explicitly built connected bridge fixtures use the real handler/router sources.
   # This target inherits compile/link settings only, never app packaging or startup.
