@@ -643,27 +643,38 @@ UAM_TEST(RemoteRefreshFeedbackLegacySavedLineagePublishesNormalizedLineage)
 
 UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
 {
+	using uam::native_history::NativeRefreshWorkerPool;
+	using uam::native_history::TryCreateWorkerOwnedNativeRefresh;
+	namespace owners = uam::native_history::detail;
 	FeedbackFixture fixture;
-	const unsigned shared = uam::native_history::detail::refresh_owners.load();
-	UAM_ASSERT_EQ(shared, 0u);
-	// Two explicit refreshes held at their remote read fill only the remote budget.
-	const auto superseded = fixture.Start(); const auto cb = fixture.Start();
-	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
-	UAM_ASSERT_EQ(uam::native_history::detail::remote_refresh_owners.load(), 2u);
-	UAM_ASSERT_EQ(uam::native_history::detail::refresh_owners.load(), shared);
-	const auto busy = fixture.Start();
-	UAM_ASSERT_EQ(busy->status, 503); UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
+	UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
+	{
+		// Other chats' held remote reads fill the global remote budget: this chat's
+		// refresh is refused and shared capacity stays untouched. (A repeat refresh
+		// of one chat waits on its existing read and reserves nothing.)
+		auto other = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
+		auto another = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
+		UAM_ASSERT(other && another);
+		const auto busy = fixture.Start();
+		UAM_ASSERT_EQ(busy->status, 503); UAM_ASSERT(fixture.pending.empty());
+		UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
+	}
+	fixture.AwaitRetirement();
+	// A held remote read reserves only the remote budget.
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(owners::remote_refresh_owners.load(), 1u);
+	UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
 	// Branch, managed-run and metadata preparation reserve shared capacity through this gate.
-	auto first = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
-	auto second = uam::native_history::TryCreateWorkerOwnedNativeRefresh<int>();
+	auto first = TryCreateWorkerOwnedNativeRefresh<int>();
+	auto second = TryCreateWorkerOwnedNativeRefresh<int>();
 	UAM_ASSERT(first && second);
 	first.reset(); second.reset();
-	fixture.Complete(0); UAM_ASSERT_EQ(superseded->status, 409);
-	fixture.Complete(1); fixture.Complete(2); fixture.Complete(3);
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
 	fixture.AssertPublished(cb);
 	// Read, preparation and acknowledgement all ran. Moved-from queued tasks can keep
 	// small-buffer copies of their captures, so drop them before counting owners.
-	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{4});
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
 	fixture.pending.clear();
 	fixture.AwaitRetirement();
 }
