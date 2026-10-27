@@ -138,7 +138,7 @@ namespace
 			sqlite3_bind_int(raw, 2, index);
 			UAM_ASSERT_EQ(sqlite3_step(raw), SQLITE_DONE);
 		}
-		void Summary(int steps, const std::string& uri)
+		void Summary(int steps, const std::string& uri, const std::string& source = "antigravity-cli")
 		{
 			sqlite3* raw = nullptr;
 			const auto path = temp.root / "conversation_summaries.db";
@@ -146,12 +146,13 @@ namespace
 			const std::unique_ptr<sqlite3, decltype(&sqlite3_close_v2)> index(raw, sqlite3_close_v2);
 			UAM_ASSERT_EQ(sqlite3_exec(raw, "CREATE TABLE IF NOT EXISTS conversation_summaries(conversation_id TEXT,workspace_uris TEXT,step_count INTEGER,source TEXT,parent_conversation_id TEXT,nesting_depth INTEGER,not_fully_idle INTEGER,battle_id TEXT); DELETE FROM conversation_summaries", nullptr, nullptr, nullptr), SQLITE_OK);
 			sqlite3_stmt* statement = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO conversation_summaries VALUES(?1,?2,?3,'antigravity-cli','',0,0,'')", -1, &statement, nullptr), SQLITE_OK);
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO conversation_summaries VALUES(?1,?2,?3,?4,'',0,0,'')", -1, &statement, nullptr), SQLITE_OK);
 			const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> insert(statement, sqlite3_finalize);
 			const auto uris = "[\"" + uri + "\"]";
 			sqlite3_bind_text(statement, 1, session.c_str(), -1, SQLITE_TRANSIENT);
 			sqlite3_bind_text(statement, 2, uris.c_str(), -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(statement, 3, steps);
+			sqlite3_bind_text(statement, 4, source.c_str(), -1, SQLITE_TRANSIENT);
 			UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE);
 		}
 		uam::antigravity::history::Discovery Read()
@@ -721,6 +722,25 @@ UAM_TEST(AntigravityNativeHistoryUsesExactSummaryWorkspaceAndCompleteStepCountWi
 	UAM_ASSERT(fixture.Read().chats.empty());
 }
 
+UAM_TEST(AntigravityNativeHistoryAcceptsEmptySourceAndStillRefusesForeignSource)
+{
+	// Real Antigravity CLI stores leave `source` empty; the reader must accept that.
+	AgFixture fixture;
+	fixture.Metadata("");
+	fixture.Summary(2, fixture.workspace, "");
+	fixture.Step(0, 14, 19, AgBytes(2, "Native empty-source input"), 0, {}, 3, false);
+	fixture.Step(1, 15, 20, AgBytes(1, "Native empty-source response"), 0, {}, 3, false);
+	const auto result = fixture.Read();
+	UAM_ASSERT(result.errors.empty());
+	UAM_ASSERT_EQ(result.chats.size(), std::size_t(1));
+	UAM_ASSERT_EQ(result.chats[0].messages.size(), std::size_t(2));
+	// A non-empty source that is not ours is still foreign and must be refused.
+	fixture.Summary(2, fixture.workspace, "some-other-tool");
+	const auto foreign = fixture.Read();
+	UAM_ASSERT(foreign.chats.empty());
+	UAM_ASSERT(!foreign.errors.empty());
+}
+
 UAM_TEST(AntigravityNativeHistoryRefusesWideOrCoercedSQLiteIdentityAndStepIntegers)
 {
 	for (const char* mutation : {"UPDATE trajectory_meta SET trajectory_type=4294967300", "UPDATE trajectory_meta SET source=4294967313", "UPDATE trajectory_meta SET source='17invalid'", "UPDATE steps SET step_type=4294967310", "UPDATE steps SET status=4294967299", "UPDATE steps SET has_subtrajectory=4294967296", "UPDATE steps SET step_format=4294967296"})
@@ -911,6 +931,27 @@ UAM_TEST(SettingsAntigravityNativeManyRefusalsRetainOmissionCountAcrossStaging)
 	UAM_ASSERT(service.DiscoverLocalHistory(app));
 	AgWait(service, app);
 	UAM_ASSERT(service.Snapshot().errors.empty());
+}
+
+UAM_TEST(SettingsAntigravityNativeSingleOmissionUsesSingularWording)
+{
+	AgFixture fixture;
+	fixture.db.reset();
+	fs::remove(fixture.file);
+	uam::AppState app;
+	app.data_root = fixture.temp.root / "uam-data";
+	uam::StartupNativeImportService service([&](const auto&, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		result.result.omitted_error_count = 1;
+		return result;
+	});
+	UAM_ASSERT(service.DiscoverLocalHistory(app));
+	AgWait(service, app);
+	const auto snapshot = service.Snapshot();
+	UAM_ASSERT_EQ(snapshot.total_count, std::size_t{0});
+	UAM_ASSERT_EQ(snapshot.errors.size(), std::size_t{1});
+	UAM_ASSERT_EQ(snapshot.errors.back(), "1 additional native history issue was omitted; review discovery before importing.");
 }
 
 UAM_TEST(SettingsAntigravityNativeImageOnlyMcpKeepsOwnedOriginalOutOfFrontendToolText)

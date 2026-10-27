@@ -32,14 +32,17 @@ struct Process
 std::string Capture(const std::vector<std::string>& argv, IPlatformProcessService& service, int seconds = 30)
 {
 	Process process(service);
-	if (!process.service.StartStdioProcessWithInput(process.fields, {}, argv, {}, nullptr)) throw std::runtime_error("OpenCode command could not start.");
-	std::array<char, 8192> bytes{};
+	// Separate stdout/stderr like StreamV1: the merged-input launch failed every 2.1.4 export over 64 KiB.
+	if (!process.service.StartStdioProcess(process.fields, {}, argv, nullptr)) throw std::runtime_error("OpenCode command could not start.");
+	process.service.CloseStdioProcessInput(process.fields);
+	std::array<char, 8192> bytes{}, diagnostics{};
 	std::string output;
 	int exit = -1;
 	const auto deadline = Clock::now() + std::chrono::seconds(seconds);
 	while (Clock::now() < deadline)
 	{
 		const auto count = process.service.ReadStdioProcessStdout(process.fields, bytes.data(), bytes.size());
+		process.service.ReadStdioProcessStderr(process.fields, diagnostics.data(), diagnostics.size());
 		if (count > 0)
 		{
 			if (output.size() + static_cast<std::size_t>(count) > 64 * 1024 * 1024) throw std::runtime_error("OpenCode history exceeds the bounded import size.");
@@ -384,10 +387,11 @@ int History(const std::string& operation, std::vector<std::string> command, cons
 	const auto parsed_version = cli_versions::ExtractSemverVersion(Capture(probe, service, 10));
 	if (!parsed_version) throw std::runtime_error("OpenCode history returned no usable CLI version.");
 	const std::string version = *parsed_version;
-	const bool v2 = version == "2.1.2";
+	const bool v2 = IsCheckedHistoryV2(version);
 	command = HistoryArgv(version, std::move(command), operation, id);
 #if !defined(_WIN32)
-	if (!v2 && operation == "export") command = FileBackedStdoutArgv(std::move(command));
+	// 2.1.4 also exits before a large piped export drains (1.8 MiB arrived truncated).
+	if (operation == "export") command = FileBackedStdoutArgv(std::move(command));
 #endif
 	if (!v2) return StreamV1(command, service);
 	Json result = Json::parse(Capture(command, service), nullptr, false);

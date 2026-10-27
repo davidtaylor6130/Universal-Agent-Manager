@@ -396,7 +396,11 @@ namespace uam
 		snapshot.phase = m_phase;
 		snapshot.generation = m_generation;
 		snapshot.errors = m_errors;
-		if (m_omitted_error_count) snapshot.errors.push_back(std::to_string(m_omitted_error_count) + " additional native history issues were omitted; review discovery before importing.");
+		if (m_omitted_error_count)
+		{
+			const bool singular = m_omitted_error_count == 1;
+			snapshot.errors.push_back(std::to_string(m_omitted_error_count) + " additional native history " + (singular ? "issue was" : "issues were") + " omitted; review discovery before importing.");
+		}
 		snapshot.imported_count = m_imported_count;
 		std::vector<const Candidate*> candidates;
 		for (const Candidate& candidate : m_candidates)
