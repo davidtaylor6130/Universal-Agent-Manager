@@ -39,6 +39,10 @@ using namespace uam::query_handler_async;
 
 namespace
 {
+	// Read-only status spawns Git/SVN subprocesses. CEF runs both foreground file lanes on one shared thread, so this lower-priority
+	// sequence lets queued chat history pages (user-blocking) run first; it cannot preempt a status read that has already started.
+	constexpr CefThreadId kVcsStatusThread = TID_FILE_USER_VISIBLE;
+
 	class PendingWorktreeCreationTask final : public CefTask
 	{
 	  public:
@@ -348,7 +352,7 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 		    }
 		    return AsyncSuccess(SerializeGitWorktreeStatus(
 		        uam::GitWorktreeService().Status(snapshot, *chat)));
-	    });
+	    }, std::function<void(AsyncCefResult&)>{}, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -724,7 +728,7 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 		                     !uam::execution_hosts::SameConnection(*current_host, *expected_host) ||
 		                     uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != expected_workspace)
 		                     result = AsyncFailure(409, "The chat workspace changed while its repository context was loading.");
-	                 });
+	                 }, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -789,7 +793,7 @@ void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*
 		        !uam::execution_hosts::SameConnection(*current_host, expected_host) ||
 		        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace)
 		        result = AsyncFailure(409, "The chat, workspace or execution host changed while capturing context. Try again.");
-	    }, TID_FILE_USER_VISIBLE);
+	    }, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
