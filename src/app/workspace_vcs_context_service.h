@@ -30,7 +30,7 @@ namespace uam
 	/// <summary>Bounds read-only probes; skipped workers release their slot with the capture.</summary>
 	std::shared_ptr<void> AcquireWorkspaceVcsContextSlot(const std::shared_ptr<std::atomic<unsigned>>& pending);
 
-	/// <summary>Reads local repository context without switching, fetching, or changing files.</summary>
+	/// <summary>Reads local repository context without switching, fetching, or changing files; local branches are newest commit first.</summary>
 	WorkspaceVcsContext ReadWorkspaceVcsContext(const std::filesystem::path& directory,
 	    bool git_enabled, bool svn_enabled, std::stop_token stop = {});
 }

@@ -62,7 +62,7 @@ namespace uam
 			std::string refs;
 			if (!read(git + "rev-parse --verify HEAD", context.current_commit) || !valid_commit(context.current_commit) ||
 			    !read(git + "branch --show-current", context.current_branch) ||
-			    !read(git + "for-each-ref --format=" + uam::shell::EscapeArg("%(refname)%09%(objectname)%09%(objecttype)") + " refs/heads/", refs))
+			    !read(git + "for-each-ref --sort=-committerdate --format=" + uam::shell::EscapeArg("%(refname)%09%(objectname)%09%(objecttype)") + " refs/heads/", refs))
 			{ context.error = "Could not read local Git branches."; return context; }
 			context.detached = context.current_branch.empty();
 			std::istringstream lines(refs);
