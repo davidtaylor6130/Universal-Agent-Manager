@@ -1135,18 +1135,14 @@ namespace
 		}
 		if (!msg.markdown_store_prompt_blocks.empty())
 		{
+			// Blocks pair positionally with markdown_store_files; an empty block is a
+			// missing snapshot and must keep its slot so later files stay aligned.
 			JsonValue prompt_blocks = uam::json::Array();
 			for (const std::string& prompt_block : msg.markdown_store_prompt_blocks)
 			{
-				if (!prompt_block.empty())
-				{
-					uam::json::PushValue(prompt_blocks, uam::json::String(prompt_block));
-				}
+				uam::json::PushValue(prompt_blocks, uam::json::String(prompt_block));
 			}
-			if (!prompt_blocks.array_value.empty())
-			{
-				uam::json::SetValue(obj, kMessageMarkdownStorePromptBlocksField, std::move(prompt_blocks));
-			}
+			uam::json::SetValue(obj, kMessageMarkdownStorePromptBlocksField, std::move(prompt_blocks));
 		}
 		if (!msg.attachments.empty())
 		{
@@ -1300,7 +1296,7 @@ namespace
 		{
 			for (const JsonValue& prompt_block : prompt_blocks->array_value)
 			{
-				if (prompt_block.type == JsonValue::Type::String && !prompt_block.string_value.empty())
+				if (prompt_block.type == JsonValue::Type::String)
 				{
 					msg.markdown_store_prompt_blocks.push_back(prompt_block.string_value);
 				}

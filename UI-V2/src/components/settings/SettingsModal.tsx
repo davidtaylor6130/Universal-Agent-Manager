@@ -877,14 +877,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
-  // Measure the active nav item so one indicator can glide between items.
+  // Measure the active nav item so one indicator (tint + line) can glide between items.
   useLayoutEffect(() => {
     const nav = navRef.current
     if (!nav) return
     const measure = () => {
       const active = nav.querySelector<HTMLElement>('[data-active="true"]')
-      // Inset 8px so the dash sits inside the item's rounded edges, like the old ::before bar.
-      setNavIndicator(active ? { top: active.offsetTop + 8, height: active.offsetHeight - 16 } : null)
+      setNavIndicator(active ? { top: active.offsetTop, height: active.offsetHeight } : null)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return

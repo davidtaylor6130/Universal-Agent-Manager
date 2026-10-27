@@ -3,8 +3,11 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { ChatBranchPicker } from './ChatBranchPicker'
 import { sendToCEF } from '../../ipc/cefBridge'
+import { useAppStore } from '../../store/useAppStore'
+import type { Session } from '../../types/session'
 
-vi.mock('../../ipc/cefBridge', () => ({
+vi.mock('../../ipc/cefBridge', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../ipc/cefBridge')>(),
   sendToCEF: vi.fn(),
   createRequestId: () => 'rid',
 }))
@@ -35,6 +38,7 @@ async function open(host: HTMLElement) {
 }
 
 beforeEach(() => {
+  useAppStore.setState({ sessions: [] })
   send.mockReset()
   send.mockImplementation(async (request) => {
     if (request.action === 'listChatBranches') {
@@ -58,6 +62,19 @@ it('lists local and remote branches with the current one checked and filters by 
     search.dispatchEvent(new Event('input', { bubbles: true }))
   })
   expect(options().map((option) => option.textContent)).toEqual([expect.stringContaining('feature/tabs')])
+  cleanup()
+})
+
+it('keeps native Git order with other chats\' worktree branches last', async () => {
+  const chat = (id: string, folderId: string, fields: Partial<Session>) => ({ id, folderId, createdAt: new Date(0), updatedAt: new Date(0), ...fields }) as Session
+  useAppStore.setState({ sessions: [
+    chat('chat-1', 'project', { workspaceBranchName: 'main' }),
+    chat('chat-2', 'project', { workspaceBranchName: 'feature/tabs' }),
+    chat('chat-3', 'elsewhere', { workspaceBranchName: 'origin/release' }),
+  ] })
+  const { host, cleanup } = render()
+  await open(host)
+  expect(options().map((option) => option.textContent?.replace('remote', ''))).toEqual(['main', 'origin/release', 'feature/tabs'])
   cleanup()
 })
 

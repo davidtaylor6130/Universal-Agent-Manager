@@ -173,7 +173,7 @@ The recorded empty-chat requirement means that historical branching starts from 
 
 ## Plain-branch blank context
 
-Source review found a preexisting difference between direct native branching and browser preview when replacement text is omitted and all context is explicitly removed from a blank historical user message. The shipped editor does not send this shape. Preserve the existing native eligibility while a public reproduction and intended disposition remain pending; this does not change the [editing agreement](providers/editing-messages.md) or justify treating an empty conversation as historical branching. The V5 log tracks the separate boundary.
+Resolved 2026-10-26: direct native branching previously applied its blank-input guard only to a supplied replacement, so an omitted replacement on a blank historical user message created a branch with nothing to deliver after all files and skills were explicitly removed, or when the message never had context. The browser preview already refused both shapes. Native branching now applies the preview rule: an unedited blank input needs retained file or skill context. A blank message whose context is retained, including implicitly retained skills, still branches unchanged. The shipped editor still does not send this shape; this does not change the [editing agreement](providers/editing-messages.md) or treat an empty conversation as historical branching.
 
 ## Native history timestamp ordering
 

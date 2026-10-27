@@ -1506,7 +1506,7 @@ namespace uam
 		std::filesystem::path worktree;
 		if (!VerifiedBranchSelectionWorkspace(app, chat, worktree, error)) return false;
 		std::string refs;
-		if (!GitOutput(worktree, "for-each-ref " + shell::EscapeArg("--format=%(refname)") + " refs/heads", &refs, &error)) return false;
+		if (!GitOutput(worktree, "for-each-ref --sort=-committerdate " + shell::EscapeArg("--format=%(refname)") + " refs/heads", &refs, &error)) return false;
 		std::istringstream lines(refs);
 		std::string ref;
 		while (std::getline(lines, ref))

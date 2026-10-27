@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { AlertTriangle, Check, GitBranch, GitBranchPlus, LoaderCircle, Plus, Search } from 'lucide-react'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
+import { useAppStore } from '../../store/useAppStore'
+import { chatWorktreeBranches, rankBranches } from '../../utils/branchRecency'
 import { Button, Tooltip, ViewportMenu } from '../ui'
 
 export interface ChatBranch {
@@ -156,7 +158,12 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
         : 'The repository type changed. Refresh this chat before selecting a repository folder.')
       return
     }
-    setBranches(response.data.branches ?? [])
+    // Git: native newest-commit order with other chats' checked-out worktree branches last. SVN keeps discovery order.
+    const { sessions } = useAppStore.getState()
+    const folderId = sessions.find((item) => item.id === chatId)?.folderId
+    setBranches(response.data.vcsType === 'git'
+      ? rankBranches(response.data.branches ?? [], chatWorktreeBranches(sessions, folderId, chatId))
+      : response.data.branches ?? [])
     setVcsType(response.data.vcsType)
     setSvnContext(response.data.svnContext ?? null)
     if (response.data.vcsType === 'svn') {

@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request supersedes its queued or running checks.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   security-evidence:
     name: Dependency evidence
@@ -174,10 +179,27 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: Builds/tests/_deps
-          key: ${{ runner.os }}-${{ matrix.arch }}-uam-test-deps-${{ hashFiles('CMakeLists.txt') }}
+          # Windows now uses Ninja; dependency sub-builds from the Visual Studio generator cannot be reused.
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-uam-test-deps-
-            ${{ runner.os }}-${{ matrix.arch }}-uam-deps-
+            ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-
+
+      # Pull requests reuse the compiler cache saved by the latest base-branch push.
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-native
+          max-size: 2G
+          save: ${{ github.event_name == 'push' }}
+      - name: Exclude build and test files from Defender scanning (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Real-time scanning of compiler outputs and the thousands of fixture files the native suite
+        # creates dominates hosted-runner builds and fixed test deadlines; product code and budgets are unchanged.
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
 
       - run: npm --prefix UI-V2 ci
       - name: Install static zlib (Windows)
@@ -188,14 +210,10 @@ jobs:
         run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - name: Configure native Release tests (Windows x64)
         if: runner.os == 'Windows'
-        run: cmake -S . -B Builds/tests -A x64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
+        # Ninja Multi-Config keeps the Release/ output layout and, unlike Visual Studio, supports ccache.
+        # /Z7 keeps CEF wrapper debug information inside objects so ccache can store them.
+        run: cmake -S . -B Builds/tests -G "Ninja Multi-Config" -DCEF_DEBUG_INFO_FLAG=/Z7 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/tests --config Release --parallel 4
-      - name: Exclude test files from Defender scanning (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        # Real-time scanning of the thousands of fixture files the native suite creates dominates
-        # its fixed test deadlines on hosted runners; product code and budgets are unchanged.
-        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
       - name: Run native core tests
         shell: bash

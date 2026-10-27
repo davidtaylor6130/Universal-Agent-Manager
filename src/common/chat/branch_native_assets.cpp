@@ -28,14 +28,12 @@ namespace uam
 		{
 			if (!retained || retained->empty())
 				return true;
-			if (retained->size() > 128 || source.markdown_store_files.size() != source.markdown_store_prompt_blocks.size())
+			// An empty block is a missing snapshot; any missing snapshot refuses every retention.
+			if (retained->size() > 128 || source.markdown_store_files.size() != source.markdown_store_prompt_blocks.size() || std::ranges::any_of(source.markdown_store_prompt_blocks, &std::string::empty))
 				return false;
 			std::set<std::string> selected;
 			for (const auto& file : *retained)
 				if (file.empty() || file.size() > 16384 || !selected.insert(file).second || std::ranges::count(source.markdown_store_files, file) != 1)
-					return false;
-			for (std::size_t index = 0; index < source.markdown_store_files.size(); ++index)
-				if (selected.contains(source.markdown_store_files[index]) && source.markdown_store_prompt_blocks[index].empty())
 					return false;
 			return true;
 		}
