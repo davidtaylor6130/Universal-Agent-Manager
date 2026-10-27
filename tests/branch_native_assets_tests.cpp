@@ -814,7 +814,7 @@ namespace
 		const auto reloaded = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.source_id);
 		UAM_ASSERT(reloaded && reloaded->messages_loaded && reloaded->messages.size() == 3);
 		UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_files, fixture.files);
-		UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0], fixture.blocks[1]}));
+		UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0], fixture.blocks[1], ""}));
 		UAM_ASSERT_EQ(reloaded->messages[2].attachments, fixture.source_messages[2].attachments);
 		*source = *reloaded;
 		fixture.source_messages = source->messages;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <functional>
 #include <deque>
 #include <cstdint>
@@ -34,10 +35,22 @@ inline int HistoryCommandTimeoutMilliseconds(const std::vector<std::string>& arg
 	// dispatch/pipe retirement. Direct/custom V1 retains its original budget.
 	return argv.size() >= 4 && argv[1] == "--uam-opencode-history" ? 45000 : 30000;
 }
+/// <summary>Returns UAM's own sanitized history/bridge refusal from a worker's stderr tail; native stderr is never surfaced.</summary>
+inline std::string AdapterError(std::string_view diagnostic_tail)
+{
+	constexpr std::string_view prefix = "UAM OpenCode adapter: ";
+	const std::size_t start = diagnostic_tail.rfind(prefix);
+	if (start == std::string_view::npos) return {};
+	const std::string_view line = diagnostic_tail.substr(start + prefix.size());
+	return std::string(line.substr(0, std::min<std::size_t>(line.find_first_of("\r\n"), 512)));
+}
 Json NormalizeExport(const Json& native);
 std::vector<std::string> ServeArgv(std::vector<std::string> command);
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
     const std::string& operation, const std::string& id);
+/// <summary>POSIX only: OpenCode 1.x export can exit 0 before a piped stdout drains (1.19.4 stops at 128/192 KiB),
+/// so its stdout goes to a private regular file that cat then streams completely.</summary>
+std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);
 
 class Session
 {

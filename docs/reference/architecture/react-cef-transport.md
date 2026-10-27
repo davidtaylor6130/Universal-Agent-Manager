@@ -10,6 +10,8 @@ The React app runs inside the native CEF window. React sends action envelopes th
 
 Native text clipped to a byte limit (titles, errors, diagnostics, stderr tails) is cut on UTF-8 code-point boundaries with `uam::strings::Utf8Prefix`/`Utf8Suffix`. As a backstop, `getInitialState` and state pushes replace any remaining invalid UTF-8 with U+FFFD instead of failing; `getInitialState` logs that a replacement happened without the text. CEF accepts bridge messages only from the trusted bundled page and main frame. Keep bridge work asynchronous when a handler can block. For a new action, update the native dispatch/handler, frontend action caller and relevant transport tests together.
 
+`RunAsyncCefQuery` defaults to `TID_FILE_USER_BLOCKING`. CEF currently serves that lane and `TID_FILE_USER_VISIBLE` from one shared foreground thread (observed 2026-10-26) as separate sequences, and runs queued user-blocking work first. Chat history pages stay user-blocking; read-only Git/SVN status (`getVcsCommitStatus`, `getChatWorktreeStatus`, reference-context capture) spawns subprocesses and uses `TID_FILE_USER_VISIBLE` (`kVcsStatusThread` in `vcs_handlers.cpp`). A status read that has already started still delays a page until it returns. On 2026-10-26 the live opening of a 136 MiB, 27,000-message synthetic chat waited about 300 ms behind two equal-priority Git status reads; `VcsStatusSubprocessReadsYieldToChatHistory` guards the priority split. Give new background or automatic subprocess and network work a lower priority than history reads.
+
 ## Ownership and checks
 
 - Frontend transport and state: `UI-V2/src/ipc/cefBridge.ts`, `UI-V2/src/store/useAppStore.ts`, `UI-V2/src/store/push/`.

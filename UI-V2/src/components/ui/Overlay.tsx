@@ -13,6 +13,13 @@ export function motionAllowed(): boolean {
     document.documentElement.getAttribute('data-motion') !== 'off'
 }
 
+/** `ms` scaled by --motion-scale (Appearance > Animation speed), so exit timers end with the scaled --dur-* tokens. */
+export function scaledMs(ms: number): number {
+  if (typeof document === 'undefined') return ms
+  const scale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--motion-scale'))
+  return Number.isFinite(scale) ? ms * scale : ms
+}
+
 /**
  * Keeps an element mounted for its exit animation after `open` turns false.
  * `closing` is true during that window so CSS can play the out-animation.
@@ -23,7 +30,7 @@ export function usePresence(open: boolean, exitMs = EXIT_MS) {
     if (open) { setMounted(true); return }
     if (!mounted) return
     if (!motionAllowed()) { setMounted(false); return }
-    const timer = window.setTimeout(() => setMounted(false), exitMs)
+    const timer = window.setTimeout(() => setMounted(false), scaledMs(exitMs))
     return () => window.clearTimeout(timer)
   }, [open, mounted, exitMs])
   return { mounted: open || mounted, closing: !open && mounted }

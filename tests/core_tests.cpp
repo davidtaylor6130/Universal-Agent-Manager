@@ -4146,6 +4146,27 @@ UAM_TEST(CefInteractiveBridgeAndClipboardStayBounded)
 
 }
 
+UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
+{
+	// History pages are user-blocking; live opening of a huge chat waited ~300 ms behind equal-priority Git status reads.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string vcs = ReadFile(source_root / "src/cef/vcs_handlers.cpp");
+	UAM_ASSERT(vcs.find("constexpr CefThreadId kVcsStatusThread = TID_FILE_USER_VISIBLE;") != std::string::npos);
+	for (const char* handler : {"HandleGetVcsCommitStatus(", "HandleGetChatWorktreeStatus(", "HandleCaptureChatReferenceContext("})
+	{
+		const std::size_t begin = vcs.find(std::string("void UamQueryHandler::") + handler);
+		UAM_ASSERT(begin != std::string::npos);
+		const std::size_t end = vcs.find("\nvoid UamQueryHandler::", begin + 1);
+		const std::string body = vcs.substr(begin, end - begin);
+		UAM_ASSERT(body.find("kVcsStatusThread)") != std::string::npos);
+		UAM_ASSERT(body.find("TID_FILE_USER_BLOCKING") == std::string::npos);
+	}
+	const std::string chats = ReadFile(source_root / "src/cef/chat_handlers.cpp");
+	const std::size_t history = chats.find("void UamQueryHandler::HandleGetChatMessages(");
+	UAM_ASSERT(history != std::string::npos);
+	UAM_ASSERT(chats.find("TID_FILE_USER_BLOCKING", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
+}
+
 UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
@@ -9438,6 +9459,39 @@ UAM_TEST(ChatBranchIdempotentReplayUsesDetachedColdHistoriesWithoutWarmingChats)
 	                                          &*detached_source, &*detached_branch));
 	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), selected_before_collision);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+}
+
+UAM_TEST(PlainBranchOfBlankMessageRequiresRetainedContextLikePreview)
+{
+	TempDir temp("uam-plain-branch-blank-context");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("", "codex-cli");
+	source.id = "blank-source";
+	Message message{MessageRole::User, " \n "};
+	message.attachments = {MessageAttachment{.id = "image", .name = "image.png", .kind = "image", .path = "image.png"}};
+	message.markdown_store_files = {"skill.md"};
+	message.markdown_store_prompt_blocks = {"Captured skill"};
+	source.messages.push_back(message);
+	app.chats.push_back(source);
+	const std::size_t count = app.chats.size();
+	// Same rule as the browser preview: omitted replacement on a blank input with all context removed.
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(app.status_line, std::string("Branch message content or context is required."));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front().attachments.clear();
+	app.chats.front().messages.front().markdown_store_files.clear();
+	app.chats.front().messages.front().markdown_store_prompt_blocks.clear();
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front() = message;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().attachments.empty());
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files, message.markdown_store_files);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::nullopt, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments, message.attachments);
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files.empty());
 }
 
 UAM_TEST(MessageBranchAttachmentSelectionPreservesSourceAndRejectsOperationCollisions)
@@ -23128,6 +23182,51 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, later_discovery, true).imported_count, 1);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(app.data_root, saved_empty.id, true)->messages.front().content, std::string("native question"));
+#endif
+}
+
+UAM_TEST(LocalOpenCodeDiscoveryNamesAdapterRefusalAndFailingSession)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	TempDir temp("uam-opencode-history-failures");
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const std::string listed = nlohmann::json::array({{{"id", "ses_bad"}, {"directory", workspace.string()}}}).dump();
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "list.json", listed));
+	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	profile.interactive_command = "/bin/sh '" + (temp.root / "fixture.sh").string() + "'";
+	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+
+	// An unverified CLI refused by UAM's history adapter must not collapse into "invalid session list".
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "echo 'native private detail' >&2; echo 'UAM OpenCode adapter: OpenCode 2.1.4 history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.' >&2; exit 1\n"));
+	const auto refused = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!refused.result.success);
+	const std::string refusal = uam::strings::Join(refused.result.errors, " ");
+	UAM_ASSERT(refusal.find("OpenCode history discovery failed: OpenCode 2.1.4 history has not been verified") != std::string::npos);
+	UAM_ASSERT(refusal.find("native private detail") == std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else echo '{\"info\":'; fi\n"));
+	const auto malformed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!malformed.result.success);
+	UAM_ASSERT(malformed.chats.empty());
+	UAM_ASSERT(uam::strings::Join(malformed.result.errors, " ").find("OpenCode session ses_bad: ") != std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else exit 3; fi\n"));
+	const auto failed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(uam::strings::Join(failed.result.errors, " ").find("OpenCode session ses_bad: OpenCode could not export the session: exit 3") != std::string::npos);
+
+	// OpenCode 1.19.4 can exit before a piped stdout drains; emulate an export that is complete only to a regular file.
+	const nlohmann::json exported = {{"info", {{"id", "ses_bad"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "user"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "complete export"}}})}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "export.json", exported.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; elif [ -f /dev/stdout ]; then cat '" + (temp.root / "export.json").string() + "'; else head -c 20 '" + (temp.root / "export.json").string() + "'; fi\n"));
+	const auto complete = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	if (!complete.result.success) throw std::runtime_error(uam::strings::Join(complete.result.errors, " "));
+	UAM_ASSERT_EQ(complete.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(complete.chats.front().persisted_message_count, std::size_t{1});
 #endif
 }
 

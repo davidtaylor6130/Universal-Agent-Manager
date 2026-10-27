@@ -587,7 +587,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={Boolean(selected)}
-        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}`}
+        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
           opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,

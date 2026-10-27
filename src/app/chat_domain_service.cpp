@@ -55,7 +55,8 @@ namespace
 		}
 		if (retained->empty())
 			return true;
-		if (retained->size() > 128 || source.markdown_store_files.size() != source.markdown_store_prompt_blocks.size())
+		// An empty block is a missing snapshot; any missing snapshot refuses every retention.
+		if (retained->size() > 128 || source.markdown_store_files.size() != source.markdown_store_prompt_blocks.size() || std::ranges::any_of(source.markdown_store_prompt_blocks, &std::string::empty))
 			return false;
 		std::set<std::string> selected;
 		for (const auto& file : *retained)
@@ -64,8 +65,6 @@ namespace
 		for (std::size_t index = 0; index < source.markdown_store_files.size(); ++index)
 			if (selected.contains(source.markdown_store_files[index]))
 			{
-				if (source.markdown_store_prompt_blocks[index].empty())
-					return false;
 				files.push_back(source.markdown_store_files[index]);
 				blocks.push_back(source.markdown_store_prompt_blocks[index]);
 			}
@@ -979,6 +978,12 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	if (replacement_content.has_value() && uam::strings::IsBlank(*replacement_content) && selected_attachments.empty() && (!retained_markdown_store_files || selected_skill_files.empty()))
 	{
 		app.status_line = "Edited message content is required.";
+		return false;
+	}
+	// Matches the browser preview: an unedited blank input needs retained context.
+	if (!replacement_content.has_value() && uam::strings::IsBlank(selected_message.content) && selected_attachments.empty() && selected_skill_files.empty())
+	{
+		app.status_line = "Branch message content or context is required.";
 		return false;
 	}
 

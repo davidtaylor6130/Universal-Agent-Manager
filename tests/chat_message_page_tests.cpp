@@ -207,6 +207,25 @@ UAM_TEST(LegacyMetadataFirstHistoryGetsExactBoundedPages)
 	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)), original);
 }
 
+UAM_TEST(SavedHistoryKeepsEmptySkillSnapshotsPairedWithFiles)
+{
+	TempDir temp("uam-empty-skill-snapshot");
+	ChatSession chat = PageMetadata();
+	chat.messages.push_back(PageMessage(0));
+	chat.messages.back().markdown_store_files = {"missing-snapshot.md", "captured.md"};
+	chat.messages.back().markdown_store_prompt_blocks = {"", "Captured block"};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded && loaded->messages.size() == 1);
+	UAM_ASSERT_EQ(loaded->messages[0].markdown_store_files, chat.messages[0].markdown_store_files);
+	UAM_ASSERT_EQ(loaded->messages[0].markdown_store_prompt_blocks, chat.messages[0].markdown_store_prompt_blocks);
+	const std::optional<ChatSession> metadata = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(metadata);
+	const std::optional<ChatMessagePage> page = ChatRepository::ReadMessagePage(temp.root, *metadata, 1);
+	UAM_ASSERT(page && page->chat.messages.size() == 1);
+	UAM_ASSERT_EQ(page->chat.messages[0].markdown_store_prompt_blocks, chat.messages[0].markdown_store_prompt_blocks);
+}
+
 UAM_TEST(IndexedHistoryCancellationDoesNotPublishPartialCache)
 {
 	TempDir temp("uam-indexed-page-cancel");
