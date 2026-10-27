@@ -3,6 +3,8 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +44,27 @@ class NativeRunnerTests(unittest.TestCase):
         result, calls, _ = self.exercise(requested=['Case3', 'Case7'])
         self.assertEqual(result, 0)
         self.assertCountEqual(calls, ['Case3', 'Case7'])
+
+    def test_serial_cases_run_alone_after_parallel_batches(self):
+        names = [f'Case{index}' for index in range(75)]
+        batches, running, overlapped, lock = [], [0], [], threading.Lock()
+        def execute(command, **kwargs):
+            if command[1] == '--list-tests':
+                return subprocess.CompletedProcess(command, 0, '\n'.join(names))
+            with lock:
+                running[0] += 1
+                overlapped.append((command[1:], running[0]))
+            time.sleep(0.01)
+            with lock:
+                batches.append(command[1:])
+                running[0] -= 1
+            return subprocess.CompletedProcess(command, 0, ''.join(f'[PASS] {name}\n' for name in command[1:]))
+        with patch.object(runner.subprocess, 'run', side_effect=execute), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(runner.run_tests(Path('/fixture'), 3, serial={'Case4', 'Case70', 'Absent'}), 0)
+        self.assertIn('Serial cases not in this inventory: Absent', output.getvalue())
+        self.assertEqual(batches[-2:], [['Case4'], ['Case70']])
+        self.assertCountEqual([name for batch in batches[:-2] for name in batch], set(names) - {'Case4', 'Case70'})
+        self.assertEqual([depth for batch, depth in overlapped if batch in (['Case4'], ['Case70'])], [1, 1])
 
     def test_incomplete_duplicate_and_failed_batches_fail(self):
         for mode in ['missing', 'duplicate', 'crash']:
