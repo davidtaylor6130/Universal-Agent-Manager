@@ -20,7 +20,7 @@ The solution is grouped to keep the project list readable:
 
 | Folder | What it contains |
 | --- | --- |
-| `App` | The main executable project: `universal_agent_manager` |
+| `App` | The main executable project `universal_agent_manager` and its shared `uam_core_objects`/`uam_app_objects` libraries |
 | `Tests` | Native test executable when `UAM_BUILD_TESTS=ON` |
 | `ThirdParty/CEF` | CEF wrapper and generated CEF targets |
 | `ThirdParty/nlohmann_json` | Header-only JSON dependency targets |
@@ -31,6 +31,7 @@ The solution is grouped to keep the project list readable:
 These are the projects that represent application code:
 
 - `universal_agent_manager`
+- `uam_core_objects` and `uam_app_objects`, object libraries holding the app sources that tests link instead of recompiling
 - `uam_core_tests` when tests are enabled
 
 ## Generated Dependency Targets
