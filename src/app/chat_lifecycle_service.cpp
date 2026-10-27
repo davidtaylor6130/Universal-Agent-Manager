@@ -1728,6 +1728,13 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	if (branch_id_out != nullptr) branch_id_out->clear();
 	if (error_out != nullptr) error_out->clear();
 	if (warning_out != nullptr) warning_out->clear();
+	// A regenerating branch is new provider work: refuse before saving a branch that could only fail to send.
+	if (const ChatSession* source = prepared_source != nullptr ? prepared_source : ChatDomainService().FindChatById(app, source_chat_id);
+	    regenerate && source != nullptr && !ProviderResolutionService().ChatProviderIsAvailable(app, *source))
+	{
+		if (error_out != nullptr) *error_out = ProviderResolutionService().ChatProviderUnavailableReason(app, *source);
+		return false;
+	}
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(app);
 	bool reused_existing_branch = false;
 	std::string created_branch_id;

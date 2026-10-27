@@ -7,6 +7,7 @@
 #include "app/markdown_store_service.h"
 #include "app/persistence_coordinator.h"
 #include "common/chat/chat_repository.h"
+#include "common/config/provider_availability.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -543,6 +544,12 @@ namespace
 			status = "Shell action is no longer available.";
 			return false;
 		}
+		const std::string provider_id = action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id;
+		if (!uam::provider_availability::IsEnabled(app.settings, provider_id))
+		{
+			status = "Shell action '" + action_it->label + "' uses a provider that is disabled on this computer. Enable it in Settings > Providers.";
+			return false;
+		}
 
 		std::vector<fs::path> paths;
 		if (request.contains("paths") && request["paths"].is_array())
@@ -586,9 +593,7 @@ namespace
 			return false;
 		}
 
-		ChatSession chat = ChatDomainService().CreateNewChat(
-		    folder_id,
-		    action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id);
+		ChatSession chat = ChatDomainService().CreateNewChat(folder_id, provider_id);
 		chat.title = action_it->open_workspace ? FolderTitle(workspace) : action_it->label;
 		chat.workspace_directory = uam::paths::Utf8PathString(workspace);
 		chat.svn_update_pending = app.settings.svn_enabled && app.settings.svn_update_before_chat;

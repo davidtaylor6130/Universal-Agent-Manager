@@ -4,6 +4,7 @@
 #include "common/usage/multi_host_history.h"
 #include "common/usage/history_transport.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/usage/account_allowance_service.h"
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
@@ -44,9 +45,10 @@ void UamQueryHandler::RefreshUsageTargets()
 void UamQueryHandler::RefreshAllowanceTargets()
 {
 	std::vector<uam::usage::AccountAllowanceProviderConfig> providers;
-	// Excluded providers carry the placeholder id, which no profile has, so they are never queried.
+	// Excluded providers carry the placeholder id, which no profile has, so they are never queried; providers disabled
+	// on this computer are likewise never read, so their credentials stay untouched.
 	for (const char* id : {uam::provider_ids::kCodexCli, uam::provider_ids::kClaudeCli, uam::provider_ids::kCopilotCli, uam::provider_ids::kGeminiCli, uam::provider_ids::kAntigravityCli})
-		if (const ProviderProfile* profile = ProviderProfileStore::FindById(m_app.provider_profiles, id))
+		if (const ProviderProfile* profile = ProviderProfileStore::FindById(m_app.provider_profiles, id); profile != nullptr && uam::provider_availability::IsEnabled(m_app.settings, id))
 			providers.push_back({id, uam::command_line::SplitWords(profile->interactive_command)});
 	if (m_providerAllowances) { m_providerAllowances->SetProviders(std::move(providers)); return; }
 	m_providerAllowances = std::make_shared<uam::usage::AccountAllowanceService>(m_app.data_root, std::move(providers),

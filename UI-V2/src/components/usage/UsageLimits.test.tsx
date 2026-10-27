@@ -273,6 +273,50 @@ describe('UsageLimits independent account allowances', () => {
     } finally { act(() => root.unmount()) }
   })
 
+  it('shows an unsupported allowance feed as neutral not-available text and keeps failed reads as warnings', async () => {
+    const data = snapshot()
+    data.providers = [
+      { providerId: 'opencode-cli', scope: 'local:opencode', status: 'unavailable', limits: null, error: 'Account allowance is not available from this provider connection.' },
+      { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'error', limits: null, error: 'Could not read account allowance.' },
+    ]
+    window.cefQuery = request => request.onSuccess(JSON.stringify(data))
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsageLimits executionHostId="local" />))
+      const opencode = host.querySelector('[aria-label="OpenCode limits"]')!
+      const unsupported = Array.from(opencode.querySelectorAll('p')).find(p => p.textContent === 'Account allowance is not available from this provider connection.')!
+      expect(unsupported.className).toContain('uam-usage-muted')
+      expect(unsupported.className).not.toContain('uam-limits-notice')
+      expect(opencode.querySelectorAll('[role="meter"]')).toHaveLength(0)
+      const failed = Array.from(host.querySelector('[aria-label="Antigravity limits"]')!.querySelectorAll('p')).find(p => p.textContent === 'Could not read account allowance.')!
+      expect(failed.className).toContain('uam-limits-notice')
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('does not show a provider disabled on the selected computer, like a build-excluded provider', async () => {
+    const previous = useAppStore.getState()
+    useAppStore.setState({ sessions: [], acpBindingBySessionId: {}, providerAvailability: [{ providerId: 'opencode-cli', executionHostId: 'local', enabled: false }, { providerId: 'antigravity-cli', executionHostId: 'lab', enabled: false }] })
+    let reads = 0
+    window.cefQuery = request => { reads += 1; request.onSuccess(JSON.stringify(snapshot())) }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsageLimits executionHostId="local" />))
+      expect(host.querySelector('[aria-label="OpenCode limits"]')).toBeNull()
+      // Re-enabling reconfigures the native reader, so the page reads again instead of waiting for the next poll.
+      const before = reads
+      await act(async () => useAppStore.setState({ providerAvailability: [{ providerId: 'antigravity-cli', executionHostId: 'lab', enabled: false }] }))
+      expect(host.querySelector('[aria-label="OpenCode limits"]')).not.toBeNull()
+      expect(reads).toBeGreaterThan(before)
+      await act(async () => useAppStore.setState({ providerAvailability: [{ providerId: 'opencode-cli', executionHostId: 'local', enabled: false }, { providerId: 'antigravity-cli', executionHostId: 'lab', enabled: false }] }))
+      expect(host.querySelector('[aria-label="Antigravity limits"]')).not.toBeNull()
+      expect(host.textContent).not.toContain('No provider is turned on')
+      act(() => useAppStore.setState({ providerAvailability: ['codex-cli', 'claude-cli', 'gemini-cli', 'opencode-cli', 'copilot-cli', 'antigravity-cli'].map(providerId => ({ providerId, executionHostId: 'local', enabled: false })) }))
+      expect(host.querySelector('[aria-label$=" limits"]')).toBeNull()
+      expect(host.textContent).toContain('No provider is turned on for this computer.')
+      expect(host.textContent).not.toContain('Refresh allowances')
+    } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
+  })
+
   it('explains the refresh cooldown and enables promptly after a cache-only check at its expiry', async () => {
     vi.useFakeTimers(); vi.setSystemTime(now)
     const requests: { refresh?: boolean }[] = []

@@ -35,7 +35,7 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
@@ -780,6 +780,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
+  const providerAvailability = useAppStore((s) => s.providerAvailability)
+  // The composer offers only providers enabled on this chat's computer; it keeps showing the chat's own provider.
+  const composerProviders = useMemo(() => providers.filter((provider) => !providerDisabledOn(providerAvailability, provider.id, session.executionHostId || 'local')), [providers, providerAvailability, session.executionHostId])
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
@@ -3994,7 +3997,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               draftPending={editingMessageIndex === null && draft.trim().length > 0}
               acp={providerAcp}
               provider={currentProvider}
-              providers={providers}
+              providers={composerProviders}
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
               canSend={canSend}

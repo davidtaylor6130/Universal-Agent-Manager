@@ -11,6 +11,7 @@ import {
 } from '../services/updateCatalog'
 import { isSshHost } from '../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../config/buildFeatures'
+import { providerDisabledOn } from '../utils/providerMetadata'
 
 function updateCheckErrorIdentity(message: string): string {
   // ponytail: 64-bit FNV-1a keeps settings bounded; collisions are negligible for UI dismissal state.
@@ -25,6 +26,7 @@ export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
   const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
   const providers = useAppStore((state) => state.providers)
+  const providerAvailability = useAppStore((state) => state.providerAvailability)
   const versionManager = useAppStore((state) => state.cliVersionManager)
   const executionHosts = useAppStore((state) => state.executionHosts)
   const automaticProviderUpdates = useAppStore((state) => state.automaticProviderUpdates)
@@ -105,9 +107,11 @@ export function useUpdateMonitor() {
   }, [cefStateHydrated, checkNow, checking, enabled, lastCheckedAt])
 
   const updates = useMemo(() => [
-    ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions),
+    // Like a build-excluded provider, one disabled on a computer is neither offered nor automatically updated there.
+    ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions)
+      .filter((update) => !update.providerId || !providerDisabledOn(providerAvailability, update.providerId, update.executionHostId || 'local')),
     ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
-  ], [appVersion, catalog, dismissedVersions, executionHosts, providers, runnerProtocolVersion, versionManager])
+  ], [appVersion, catalog, dismissedVersions, executionHosts, providerAvailability, providers, runnerProtocolVersion, versionManager])
 
   const applyRemoteHelperUpdate = useCallback(async (hostId: string): Promise<CEFResponse> => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)
@@ -230,6 +234,7 @@ export function useUpdateMonitor() {
 
   const providerUpdateResults = useMemo(() => providerStates.flatMap((state) => {
     if (state.lastInstallStatus !== 'succeeded' && state.lastInstallStatus !== 'failed') return []
+    if (providerDisabledOn(providerAvailability, state.providerId, state.executionHostId || 'local')) return []
     if (state.lastInstallStatus === 'succeeded' && (state.running || state.checkError)) return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
     return [{
@@ -241,10 +246,10 @@ export function useUpdateMonitor() {
       output: state.lastOutput,
       installedVersion: state.installedVersion,
     }]
-  }), [providers, providerStates])
+  }), [providerAvailability, providers, providerStates])
   const allProviderCheckErrors = useMemo(() => (versionManager.remoteProviders ?? []).flatMap((state) => {
     const host = executionHosts.find((candidate) => candidate.id === state.executionHostId && isSshHost(candidate))
-    if (!host || state.running || !state.checkError) return []
+    if (!host || state.running || !state.checkError || providerDisabledOn(providerAvailability, state.providerId, host.id)) return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
     return [{
       providerId: state.providerId,
@@ -252,7 +257,7 @@ export function useUpdateMonitor() {
       name: `${provider?.shortName || provider?.name || state.providerId} · ${host.label}`,
       message: state.checkError,
     }]
-  }), [executionHosts, providers, versionManager.remoteProviders])
+  }), [executionHosts, providerAvailability, providers, versionManager.remoteProviders])
   const providerCheckErrors = useMemo(() => allProviderCheckErrors.filter((result) =>
     dismissedVersions[JSON.stringify([result.executionHostId, result.providerId])] !== updateCheckErrorIdentity(result.message)
   ), [allProviderCheckErrors, dismissedVersions])

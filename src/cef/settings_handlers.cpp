@@ -1514,6 +1514,7 @@ void UamQueryHandler::HandleSetProviderAvailability(CefRefPtr<CefBrowser> browse
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save provider availability."));
 		return;
 	}
+	if (*enabled) ProviderCliCompatibilityService().CheckReenabledProvider(m_app, provider_id, host_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
