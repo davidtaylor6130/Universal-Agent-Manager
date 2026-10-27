@@ -9,7 +9,7 @@ import sys
 import time
 
 
-def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None):
+def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=None, serial=frozenset()):
     environment = os.environ.copy()
     if sys.platform == 'darwin':
         environment['TMPDIR'] = '/tmp'
@@ -21,6 +21,8 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
     selected = list(requested) if requested else names
     if len(set(selected)) != len(selected) or set(selected) - set(names):
         raise ValueError('Requested tests contain unknown or duplicate names.')
+    if serial - set(names):
+        print(f'Serial cases not in this inventory: {" ".join(sorted(serial - set(names)))}')
     started = time.perf_counter()
     passed = 0
     passed_names = set()
@@ -32,28 +34,33 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
                               stderr=subprocess.STDOUT, text=True, timeout=600,
                               cwd=binary.parent, env=environment)
 
-    # Small batches balance slow process/timeout fixtures without one process per tiny assertion.
-    batches = [selected[index:index + 32] for index in range(0, len(selected), 32)]
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        pending = {pool.submit(execute, batch): batch for batch in batches}
-        for future in as_completed(pending):
-            batch = pending[future]
-            try:
-                result = future.result()
-                print(result.stdout, end='', flush=True)
-                actual = [line[len('[PASS] '):] for line in result.stdout.splitlines()
-                          if line.startswith('[PASS] ')]
-                counts = Counter(actual)
-                passed += sum(counts[name] == 1 for name in batch)
-                passed_names.update(name for name in batch if counts[name] == 1)
-                if result.returncode or counts != Counter(batch):
-                    print(f'Batch failed or returned an incomplete inventory: {batch}', file=sys.stderr)
+    # Small batches balance slow process/timeout fixtures without one process per tiny assertion. Cases with
+    # tight wall-clock budgets then run one at a time, each in a fresh process with nothing else running.
+    phases = [([name for name in selected if name not in serial], jobs, 32),
+              ([name for name in selected if name in serial], 1, 1)]
+    for phase_names, workers, size in phases:
+        batches = [phase_names[index:index + size] for index in range(0, len(phase_names), size)]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = {pool.submit(execute, batch): batch for batch in batches}
+            for future in as_completed(pending):
+                batch = pending[future]
+                try:
+                    result = future.result()
+                    print(result.stdout, end='', flush=True)
+                    actual = [line[len('[PASS] '):] for line in result.stdout.splitlines()
+                              if line.startswith('[PASS] ')]
+                    counts = Counter(actual)
+                    passed += sum(counts[name] == 1 for name in batch)
+                    passed_names.update(name for name in batch if counts[name] == 1)
+                    if result.returncode or counts != Counter(batch):
+                        print(f'Batch failed or returned an incomplete inventory: {batch}', file=sys.stderr)
+                        failed = True
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    print(f'Native test batch failed: {error}', file=sys.stderr)
                     failed = True
-            except (OSError, subprocess.TimeoutExpired) as error:
-                print(f'Native test batch failed: {error}', file=sys.stderr)
-                failed = True
     print(f'Verified {passed}/{len(selected)} native cases in '
-          f'{time.perf_counter() - started:.2f}s with {jobs} processes.')
+          f'{time.perf_counter() - started:.2f}s with {jobs} processes '
+          f'({len(phases[1][0])} run serially).')
     if failed and retry_failed_once:
         # CI-only flake tolerance: each failed case gets exactly one fresh, isolated rerun.
         retry = [name for name in selected if name not in passed_names]
@@ -91,6 +98,8 @@ def main():
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--quarantine', type=Path,
                         help='CI-only list of "<case> #<issue>" lines whose failures are reported, not fatal.')
+    parser.add_argument('--serial', type=Path,
+                        help='List of case names with tight wall-clock budgets; they run one at a time after the rest.')
     parser.add_argument('--retry-failed-once', action='store_true',
                         help='Rerun each failed case once in its own process; for CI timing flakes only.')
     args = parser.parse_intermixed_args()
@@ -104,7 +113,11 @@ def main():
                 if line.strip() and not line.startswith('#'):
                     name, issue = line.split()
                     quarantine[name] = issue
-        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine)
+        serial = frozenset()
+        if args.serial:
+            serial = frozenset(line.split()[0] for line in args.serial.read_text().splitlines()
+                               if line.strip() and not line.strip().startswith('#'))
+        return run_tests(args.binary.resolve(strict=True), args.jobs, args.names, args.retry_failed_once, quarantine, serial)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f'Native tests could not run: {error}', file=sys.stderr)
         return 1

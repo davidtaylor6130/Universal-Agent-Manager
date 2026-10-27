@@ -15,7 +15,7 @@ Keep workspace ownership explicit when loading or saving chats. Do not move app 
 - Native lifecycle and orchestration: `src/app/application.*`, `src/app/persistence_coordinator.*`.
 - Models, chat repository and settings: `src/common/models/`, `src/common/chat/`, `src/common/config/`.
 - Data paths and state JSON: `src/common/paths/`, `src/cef/state_serializer.*`.
-- Focused checks: `tests/core_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`, `tests/workspace_chat_save_ticket_tests.cpp`, `tests/storage_retention_tests.cpp`.
+- Focused checks: `tests/core_*_tests.cpp` (chat repository and state serializer areas), `tests/state_workspace_snapshot_tests.cpp`, `tests/workspace_chat_save_ticket_tests.cpp`, `tests/storage_retention_tests.cpp`.
 
 No measured whole-app persistence latency budget is recorded here. Keep writes bounded and preserve failure handling; use the focused tests before changing file formats or save ownership.
 

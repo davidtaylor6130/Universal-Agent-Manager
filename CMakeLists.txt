@@ -1482,6 +1482,15 @@ if(UAM_BUILD_TESTS)
   add_executable(uam_core_tests
     tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
+    tests/core_agent_control_tests.cpp
+    tests/core_settings_utility_tests.cpp
+    tests/core_chat_repository_tests.cpp
+    tests/core_chat_domain_vcs_tests.cpp
+    tests/core_state_cli_tests.cpp
+    tests/core_native_history_tests.cpp
+    tests/core_bridge_deletion_tests.cpp
+    tests/core_folder_import_tests.cpp
+    tests/core_recent_regression_tests.cpp
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp
     tests/async_byte_writer_receipt_tests.cpp
