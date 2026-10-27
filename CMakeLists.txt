@@ -10,7 +10,7 @@ endif()
 set(UAM_PRODUCT_VERSION "5.0.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
-set(UAM_LOCAL_BUILD_VERSION "" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
+set(UAM_LOCAL_BUILD_VERSION "5.0.0-Alpha-2" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
 uam_local_build_presentation("${UAM_PRODUCT_VERSION}" "${UAM_LOCAL_BUILD_VERSION}" UAM_PRESENTATION_VERSION)
 
 include("${CMAKE_SOURCE_DIR}/cmake/build_features.cmake")

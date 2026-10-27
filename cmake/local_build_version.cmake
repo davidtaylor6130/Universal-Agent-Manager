@@ -2,7 +2,7 @@
 function(uam_local_build_presentation release local_version output)
   set(presentation "${release}")
   if(NOT local_version STREQUAL "")
-    if(NOT local_version MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)-alpha-([1-9][0-9]*)$" OR
+    if(NOT local_version MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)-[Aa]lpha-([1-9][0-9]*)$" OR
        NOT CMAKE_MATCH_1 STREQUAL release)
       message(FATAL_ERROR "UAM_LOCAL_BUILD_VERSION must be ${release}-alpha-Q with a positive counter.")
     endif()

@@ -75,7 +75,7 @@ class LocalBuildVersionTests(unittest.TestCase):
 
     def test_presentation_override_accepts_only_matching_release_alpha(self):
         script = self.source / 'presentation.cmake'
-        for version, expected in [('', '4.9.0'), ('4.9.0-alpha-18', '4.9.0-alpha-18'), ('4.10.0-alpha-18', None), ('4.9.0-alpha-0', None), ('4.9.0-alpha-018', None), ('4.9.0', None)]:
+        for version, expected in [('', '4.9.0'), ('4.9.0-alpha-18', '4.9.0-alpha-18'), ('4.9.0-Alpha-2', '4.9.0-Alpha-2'), ('4.10.0-Alpha-2', None), ('4.10.0-alpha-18', None), ('4.9.0-alpha-0', None), ('4.9.0-alpha-018', None), ('4.9.0', None)]:
             with self.subTest(version=version):
                 script.write_text(f'include("{ALLOCATOR.as_posix()}")\nuam_local_build_presentation("4.9.0" "{version}" presentation)\nfile(WRITE "{(self.source / "presentation.txt").as_posix()}" "${{presentation}}")\n')
                 result = subprocess.run(['cmake', '-P', str(script)], capture_output=True, text=True)

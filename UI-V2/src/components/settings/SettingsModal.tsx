@@ -748,8 +748,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
-  const localVersion = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
-  const displayedVersion = localVersion?.startsWith(`${appVersion.replace(/^v/i, '')}-alpha-`) ? `V${localVersion}` : appVersion
+  const localVersion = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/i)?.[1]
+  const displayedVersion = localVersion?.toLowerCase().startsWith(`${appVersion.replace(/^v/i, '').toLowerCase()}-alpha-`) ? `V${localVersion}` : appVersion
   const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
   const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
   const collapsibleWorkSections = useAppStore((s) => s.collapsibleWorkSections)
