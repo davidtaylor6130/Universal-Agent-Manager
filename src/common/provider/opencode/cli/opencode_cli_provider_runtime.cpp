@@ -654,7 +654,7 @@ namespace
 				if (total_bytes > uam::platform::kCapturedCommandMaxOutputBytes) return fail("OpenCode session response exceeded the output limit.");
 				pending += remote_poll.standard_output;
 				diagnostic += remote_poll.standard_error;
-				if (diagnostic.size() > 4096) diagnostic.erase(0, diagnostic.size() - 4096);
+				if (diagnostic.size() > 4096) diagnostic = std::string(uam::strings::Utf8Suffix(diagnostic, 4096));
 				received = !remote_poll.standard_output.empty() || !remote_poll.standard_error.empty();
 			}
 			else for (bool stderr_stream : {false, true})
@@ -675,7 +675,7 @@ namespace
 					if (stderr_stream)
 					{
 						diagnostic.append(buffer, static_cast<std::size_t>(count));
-						if (diagnostic.size() > 4096) diagnostic.erase(0, diagnostic.size() - 4096);
+						if (diagnostic.size() > 4096) diagnostic = std::string(uam::strings::Utf8Suffix(diagnostic, 4096));
 					}
 					else pending.append(buffer, static_cast<std::size_t>(count));
 				}
@@ -700,7 +700,7 @@ namespace
 				if (response.contains("error"))
 				{
 					const nlohmann::json& detail = response["error"];
-					const std::string message = detail.is_object() && detail.contains("message") && detail["message"].is_string() ? detail["message"].get<std::string>().substr(0, 1024) : "Provider rejected the request.";
+					const std::string message = detail.is_object() && detail.contains("message") && detail["message"].is_string() ? std::string(uam::strings::Utf8Prefix(detail["message"].get_ref<const std::string&>(), 1024)) : "Provider rejected the request.";
 					return fail("OpenCode session creation failed: " + message);
 				}
 				if (!response.contains("result") || !response["result"].is_object()) return fail("OpenCode session response omitted its result.");
@@ -833,7 +833,14 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeDiscoveryAr
 }
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeExportArgv(const ProviderProfile& profile, const ChatSession& chat) const
 {
-	if (!RequiresStructuredCliVersion(profile)) return BuildNativeExportArgv(profile, chat);
+	if (!RequiresStructuredCliVersion(profile))
+	{
+#if defined(_WIN32)
+		return BuildNativeExportArgv(profile, chat);
+#else
+		return uam::opencode_v2::FileBackedStdoutArgv(BuildNativeExportArgv(profile, chat));
+#endif
+	}
 	if (chat.native_session_id.empty()) return {};
 	return LocalHistoryCommand(profile, "export", chat.native_session_id);
 }

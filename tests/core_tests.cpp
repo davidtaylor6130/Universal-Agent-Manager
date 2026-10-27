@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -1520,6 +1521,9 @@ int main(int argc, char** argv)
 		return 0;
 	}
 #endif
+	// Every ordinary test starts outside the developer's native Antigravity store.
+	// Individual fixtures may override these only with their own synthetic roots.
+	uam_test::ScopedNativeHistoryHome native_history_home;
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;

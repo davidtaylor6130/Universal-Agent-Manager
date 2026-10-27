@@ -7,7 +7,7 @@ namespace uam::usage
 	AccountAllowanceFetchResult NormalizeGeminiAccountAllowance(const nlohmann::json& response, std::int64_t now_ms);
 	AccountAllowanceFetchResult NormalizeAntigravityAccountAllowance(const nlohmann::json& response, std::int64_t now_ms);
 	AccountAllowanceFetchResult FetchGeminiAccountAllowance(const std::filesystem::path& working_directory, std::stop_token stop = {});
-	AccountAllowanceFetchResult FetchAntigravityAccountAllowance(const std::filesystem::path& working_directory, std::stop_token stop = {});
+	AccountAllowanceFetchResult FetchAntigravityAccountAllowance(const std::filesystem::path& working_directory, std::stop_token stop = {}, bool allow_prompt = false);
 
 	// Synthetic credentials keep protocol regression tests independent of account storage.
 	AccountAllowanceFetchResult FetchGeminiAccountAllowanceWithProcessService(const IPlatformProcessService& service,

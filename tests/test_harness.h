@@ -87,9 +87,11 @@
 #include "computer_use/computer_use_mcp_server.h"
 #include "computer_use/computer_use_platform.h"
 #include "cef/uam_bridge_request.h"
+#if !defined(UAM_TEST_HARNESS_WITHOUT_CEF)
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
 #include "cef/cef_push.h"
+#endif
 #include "cef/state_serializer.h"
 #include "core/chat_import_utils.h"
 #include "core/gemini_cli_compat.h"
@@ -290,6 +292,36 @@ namespace uam_test
 				unsetenv(name.c_str());
 			}
 #endif
+		}
+	};
+
+	struct ScopedNativeHistoryHome
+	{
+		TempDir directory{"uam-native-history-test-home"};
+		ScopedEnvVar home{"HOME", directory.root.string()};
+		ScopedEnvVar profile{"USERPROFILE", directory.root.string()};
+	};
+
+	/// Fake `.svn` fixtures are not real working copies; SVN snapshots fail closed unless `svn status` succeeds,
+	/// so these fixtures get an `svn` that reports a clean checkout with nothing ignored.
+	struct ScopedCleanSvnStatus
+	{
+		TempDir bin{"uam-clean-svn"};
+		std::unique_ptr<ScopedEnvVar> path;
+
+		ScopedCleanSvnStatus()
+		{
+#if defined(_WIN32)
+			const fs::path shim = bin.root / "svn.cmd";
+			if (!uam::io::WriteTextFile(shim, "@exit /b 0\r\n")) throw std::runtime_error("Could not write the svn test shim.");
+			const std::string separator = ";";
+#else
+			const fs::path shim = bin.root / "svn";
+			if (!uam::io::WriteTextFile(shim, "#!/bin/sh\nexit 0\n")) throw std::runtime_error("Could not write the svn test shim.");
+			fs::permissions(shim, fs::perms::owner_all);
+			const std::string separator = ":";
+#endif
+			path = std::make_unique<ScopedEnvVar>("PATH", bin.root.string() + separator + uam::env::GetNonEmptyString("PATH").value_or(""));
 		}
 	};
 

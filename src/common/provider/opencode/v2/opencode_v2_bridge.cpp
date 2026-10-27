@@ -386,6 +386,9 @@ int History(const std::string& operation, std::vector<std::string> command, cons
 	const std::string version = *parsed_version;
 	const bool v2 = version == "2.1.2";
 	command = HistoryArgv(version, std::move(command), operation, id);
+#if !defined(_WIN32)
+	if (!v2 && operation == "export") command = FileBackedStdoutArgv(std::move(command));
+#endif
 	if (!v2) return StreamV1(command, service);
 	Json result = Json::parse(Capture(command, service), nullptr, false);
 	if (result.is_discarded()) throw std::runtime_error("OpenCode history returned invalid JSON.");

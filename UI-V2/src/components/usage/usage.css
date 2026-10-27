@@ -259,13 +259,43 @@
 }
 .uam-usage-key-item { display: inline-flex; align-items: center; gap: 6px; }
 
-/* Token mix by provider: name, full-width bar with labels inside, total on the right. */
-.uam-usage-mixrow {
-  display: grid;
-  grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr) 4.5rem;
-  align-items: center;
-  gap: var(--sp-3);
+/* Provider totals: name, full-width token bar, tokens and cost with its basis.
+   Providers that need a reason (reading, incomplete, unavailable) keep a row; fully read idle providers share one line. */
+.uam-usage-providers { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.uam-usage-providers th,
+.uam-usage-providers td { height: 30px; padding: 0 0 0 var(--sp-3); text-align: left; vertical-align: middle; }
+.uam-usage-providers tbody th { padding-left: 0; }
+/* Fixed layout takes widths from the columns, so a first row without usage cannot reshape the table. */
+.uam-usage-col-name { width: 9rem; }
+.uam-usage-col-tokens { width: 4.5rem; }
+.uam-usage-col-cost { width: 13rem; }
+.uam-usage-providers tr[data-state="unavailable"] th { color: var(--text-3); }
+/* Amount, then a fixed basis slot, so amounts line up whichever label (or none) follows them. */
+.uam-usage-cost-cell { display: inline-grid; grid-template-columns: auto 6.75rem; align-items: center; justify-content: end; gap: var(--sp-2); width: 100%; }
+.uam-usage-cost-cell > :first-child { justify-self: end; }
+.uam-usage-cost-cell > :nth-child(2) { justify-self: start; }
+
+/* Cost basis: a solid outline for provider-reported charges, dashed wherever an estimate is included. */
+.uam-usage-basis {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--text-3);
+  border-radius: var(--r-full);
+  font-size: var(--fs-xs);
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--text-2);
 }
+.uam-usage-basis[data-estimate] { border-style: dashed; }
+.uam-usage-basis:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Background refresh: the button stays usable and its icon turns; reduced motion relies on the status text. */
+.uam-usage-refresh.is-busy svg { animation: uam-status-spin 1s linear infinite; }
+[data-motion="off"] .uam-usage-refresh.is-busy svg { animation: none; }
+
+/* Previous answer while a new period loads: dim only if the wait is noticeable, so quick answers never flash. */
+.uam-usage-body { transition: opacity var(--dur-base) var(--ease-out-soft); }
+.uam-usage-body[data-kept] { opacity: 0.5; transition-delay: 250ms; }
 
 .uam-usage-model-row.uam-btn {
   display: grid;
@@ -281,7 +311,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: var(--sp-3);
-  animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) both;
+  animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) 250ms both; /* stays hidden for quick answers */
 }
 .uam-usage-skel-tile,
 .uam-usage-skel-chart {
@@ -307,7 +337,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-usage-col-stack,
   .uam-usage-stack > span,
-  .uam-usage-skeleton,
+  .uam-usage-refresh.is-busy svg,
   .uam-pace-prov,
   .uam-pace-fill,
   .uam-limits-tokens[open] > :not(summary) {
@@ -321,6 +351,9 @@
     transition: none;
   }
   .uam-usage-meter > span { animation: none; }
+  /* Keep the delays (no movement) so a quick answer still never flashes a skeleton or a dimmed page. */
+  .uam-usage-skeleton { animation-duration: 0s; }
+  .uam-usage-body { transition-duration: 0s; }
 }
 
 /* Allowance and context meters: threshold colour set inline; fill grows in on mount. */

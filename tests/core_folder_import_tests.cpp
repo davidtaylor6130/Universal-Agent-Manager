@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -1127,6 +1128,51 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 #endif
 }
 
+UAM_TEST(LocalOpenCodeDiscoveryNamesAdapterRefusalAndFailingSession)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	TempDir temp("uam-opencode-history-failures");
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const std::string listed = nlohmann::json::array({{{"id", "ses_bad"}, {"directory", workspace.string()}}}).dump();
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "list.json", listed));
+	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	profile.interactive_command = "/bin/sh '" + (temp.root / "fixture.sh").string() + "'";
+	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+
+	// An unverified CLI refused by UAM's history adapter must not collapse into "invalid session list".
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "echo 'native private detail' >&2; echo 'UAM OpenCode adapter: OpenCode 2.1.4 history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.' >&2; exit 1\n"));
+	const auto refused = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!refused.result.success);
+	const std::string refusal = uam::strings::Join(refused.result.errors, " ");
+	UAM_ASSERT(refusal.find("OpenCode history discovery failed: OpenCode 2.1.4 history has not been verified") != std::string::npos);
+	UAM_ASSERT(refusal.find("native private detail") == std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else echo '{\"info\":'; fi\n"));
+	const auto malformed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!malformed.result.success);
+	UAM_ASSERT(malformed.chats.empty());
+	UAM_ASSERT(uam::strings::Join(malformed.result.errors, " ").find("OpenCode session ses_bad: ") != std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else exit 3; fi\n"));
+	const auto failed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(uam::strings::Join(failed.result.errors, " ").find("OpenCode session ses_bad: OpenCode could not export the session: exit 3") != std::string::npos);
+
+	// OpenCode 1.19.4 can exit before a piped stdout drains; emulate an export that is complete only to a regular file.
+	const nlohmann::json exported = {{"info", {{"id", "ses_bad"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "user"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "complete export"}}})}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "export.json", exported.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; elif [ -f /dev/stdout ]; then cat '" + (temp.root / "export.json").string() + "'; else head -c 20 '" + (temp.root / "export.json").string() + "'; fi\n"));
+	const auto complete = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	if (!complete.result.success) throw std::runtime_error(uam::strings::Join(complete.result.errors, " "));
+	UAM_ASSERT_EQ(complete.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(complete.chats.front().persisted_message_count, std::size_t{1});
+#endif
+}
+
 UAM_TEST(CopilotDelayedCompatibilityRetriesExactlyOnceAndBlocksUnsupported)
 {
 #if !defined(_WIN32)
@@ -2184,6 +2230,27 @@ UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 #endif
 }
 
+UAM_TEST(CopilotTopLevelSessionWithParentAgentTaskIdIsDiscovered)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	// Copilot CLI 1.0.10x writes parentAgentTaskId on every user message of an ordinary top-level session.
+	TempDir temp("uam-copilot-parent-agent-task");
+	const std::string session_id = "55555555-5555-4555-8555-555555555555";
+	const fs::path session_root = temp.root / "session-state" / session_id;
+	fs::create_directories(session_root);
+	fs::create_directories(temp.root / "workspace");
+	UAM_ASSERT(uam::io::WriteTextFile(session_root / "workspace.yaml", "id: " + session_id + "\ncwd: " + nlohmann::json((temp.root / "workspace").string()).dump() + "\n"));
+	const nlohmann::json start = {{"type", "session.start"}, {"timestamp", "2026-10-26T12:00:00.000Z"}, {"data", {{"sessionId", session_id}, {"startTime", "2026-10-26T12:00:00.000Z"}}}};
+	const nlohmann::json user = {{"type", "user.message"}, {"timestamp", "2026-10-26T12:00:01.000Z"}, {"data", {{"content", "Top-level request"}, {"parentAgentTaskId", "root-task"}}}};
+	const nlohmann::json assistant = {{"type", "assistant.message"}, {"timestamp", "2026-10-26T12:00:02.000Z"}, {"data", {{"content", "Reply"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(session_root / "events.jsonl", start.dump() + "\n" + user.dump() + "\n" + assistant.dump() + "\n"));
+	const std::vector<ChatSession> chats = LoadCopilotSessionStateChats(temp.root / "session-state");
+	UAM_ASSERT_EQ(chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(chats.front().native_session_id, session_id);
+	UAM_ASSERT(chats.front().parent_chat_id.empty());
+#endif
+}
+
 UAM_TEST(ImportProviderChatsForFolderIncludesCopilotSessionState)
 {
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
@@ -2192,12 +2259,10 @@ UAM_TEST(ImportProviderChatsForFolderIncludesCopilotSessionState)
 	const fs::path session_state_root = copilot_home / "session-state";
 	const fs::path session_root = session_state_root / "11111111-1111-4111-8111-111111111111";
 	const fs::path detached_subagent_root = session_state_root / "33333333-3333-4333-8333-333333333333";
-	const fs::path task_subagent_root = session_state_root / "44444444-4444-4444-8444-444444444444";
 	const fs::path data_root = temp.root / "data";
 	const fs::path workspace_root = temp.root / "workspace";
 	fs::create_directories(session_root);
 	fs::create_directories(detached_subagent_root);
-	fs::create_directories(task_subagent_root);
 	fs::create_directories(workspace_root);
 
 	const std::string session_id = "11111111-1111-4111-8111-111111111111";
@@ -2224,16 +2289,10 @@ UAM_TEST(ImportProviderChatsForFolderIncludesCopilotSessionState)
 	nlohmann::json detached_start = start;
 	detached_start["data"]["sessionId"] = detached_subagent_root.filename().string();
 	detached_start["data"]["detachedFromSpawningParentSessionId"] = session_id;
-	nlohmann::json task_start = start;
-	task_start["data"]["sessionId"] = task_subagent_root.filename().string();
-	nlohmann::json task_user = user;
-	task_user["data"]["parentAgentTaskId"] = "task-1";
 	UAM_ASSERT(uam::io::WriteTextFile(session_root / "workspace.yaml", workspace(session_id)));
 	UAM_ASSERT(uam::io::WriteTextFile(session_root / "events.jsonl", start.dump() + "\n" + user.dump() + "\n" + assistant.dump() + "\n{\"type\":"));
 	UAM_ASSERT(uam::io::WriteTextFile(detached_subagent_root / "workspace.yaml", workspace(detached_subagent_root.filename().string())));
 	UAM_ASSERT(uam::io::WriteTextFile(detached_subagent_root / "events.jsonl", detached_start.dump() + "\n" + user.dump() + "\n"));
-	UAM_ASSERT(uam::io::WriteTextFile(task_subagent_root / "workspace.yaml", workspace(task_subagent_root.filename().string())));
-	UAM_ASSERT(uam::io::WriteTextFile(task_subagent_root / "events.jsonl", task_start.dump() + "\n" + task_user.dump() + "\n"));
 	ProviderRuntimeHistoryLoadOptions tiny_file_limit;
 	tiny_file_limit.native_max_file_bytes = 1;
 	tiny_file_limit.native_max_messages = 100;

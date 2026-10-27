@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -608,6 +609,27 @@ UAM_TEST(CefInteractiveBridgeAndClipboardStayBounded)
 	UAM_ASSERT(mac_spawn_helpers.find("posix_spawn") != std::string::npos);
 	UAM_ASSERT(mac_spawn_helpers.find("POSIX_SPAWN_START_SUSPENDED") != std::string::npos);
 
+}
+
+UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
+{
+	// History pages are user-blocking; live opening of a huge chat waited ~300 ms behind equal-priority Git status reads.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
+	const std::string vcs = ReadFile(source_root / "src/cef/vcs_handlers.cpp");
+	UAM_ASSERT(vcs.find("constexpr CefThreadId kVcsStatusThread = TID_FILE_USER_VISIBLE;") != std::string::npos);
+	for (const char* handler : {"HandleGetVcsCommitStatus(", "HandleGetChatWorktreeStatus(", "HandleCaptureChatReferenceContext("})
+	{
+		const std::size_t begin = vcs.find(std::string("void UamQueryHandler::") + handler);
+		UAM_ASSERT(begin != std::string::npos);
+		const std::size_t end = vcs.find("\nvoid UamQueryHandler::", begin + 1);
+		const std::string body = vcs.substr(begin, end - begin);
+		UAM_ASSERT(body.find("kVcsStatusThread)") != std::string::npos);
+		UAM_ASSERT(body.find("TID_FILE_USER_BLOCKING") == std::string::npos);
+	}
+	const std::string chats = ReadFile(source_root / "src/cef/chat_handlers.cpp");
+	const std::size_t history = chats.find("void UamQueryHandler::HandleGetChatMessages(");
+	UAM_ASSERT(history != std::string::npos);
+	UAM_ASSERT(chats.find("TID_FILE_USER_BLOCKING", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
 }
 
 UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)
@@ -2297,6 +2319,17 @@ UAM_TEST(SharedAsciiStringUtilitiesBackStrictParsing)
 	UAM_ASSERT(unique_set.contains("beta"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine(std::string_view("xx  First\r\nSecond  yy").substr(2, 16), 32, true), std::string("First  Second"));
 	UAM_ASSERT_EQ(uam::strings::SafeLine("xxxx—", 6), std::string("xxxx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 4), std::string_view("ab"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€cd", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 4), std::string_view("cd"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("ab€cd", 5), std::string_view("€cd"));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xxxx€€", 8), std::string("xxxx..."));
+	UAM_ASSERT_EQ(uam::strings::TrimAndElide("xx€", 3), std::string("xx"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab", 0), std::string_view());
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("ab€", 5), std::string_view("ab€"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a😀", 4), std::string_view("a"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Suffix("😀b", 4), std::string_view("b"));
+	UAM_ASSERT_EQ(uam::strings::Utf8Prefix("a\x80\x80\x80\x80\x80", 5).size(), std::size_t{2}); // Non-UTF-8 input never collapses to empty.
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(padded), std::string("yes"));
 	UAM_ASSERT_EQ(uam::strings::ToLowerAscii(std::string_view("xxMiXeDyy").substr(2, 5)), std::string("mixed"));
 	UAM_ASSERT_EQ(uam::strings::TrimAndLowerAscii(std::string_view("xx  CoDeX  yy").substr(2, 9)), std::string("codex"));

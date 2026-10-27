@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -1164,6 +1165,17 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	UAM_ASSERT(computer_use_tool != control_tools.end());
 	UAM_ASSERT((*goal_tool)["inputSchema"]["required"] == nlohmann::json::array({"objective", "idempotencyKey"}));
 	UAM_ASSERT((*computer_use_tool)["inputSchema"]["required"] == nlohmann::json::array({"reason"}));
+	// Plan children rely on the standard read-only hint; anything that edits or widens access must not carry it.
+	std::size_t hinted = 0;
+	for (const auto& tool : control_tools)
+	{
+		const std::string name = tool.value("name", "");
+		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
+		    name == "skill_read" || name == "goal_get" || name == "user_question";
+		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
+		hinted += read_only ? 1 : 0;
+	}
+	UAM_ASSERT_EQ(hinted, std::size_t{7});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));

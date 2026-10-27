@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -3434,6 +3435,13 @@ UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
 			~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
 		} cleanup{app};
 		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Followup delivery sentinel", &error));
+		// The restart launch waits for the send's full-save receipt before starting the process.
+		for (int attempt = 0; attempt < 200 && (!session.running || session.initialize_request_id == 0); ++attempt)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
 		UAM_ASSERT(session.running);
 		UAM_ASSERT(session.initialize_request_id != 0);
 		const nlohmann::json response = {{"type", "control_response"}, {"response", {

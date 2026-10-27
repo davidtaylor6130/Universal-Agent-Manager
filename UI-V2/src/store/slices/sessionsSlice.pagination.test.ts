@@ -102,6 +102,29 @@ describe('desktop bounded history', () => {
 
 
 describe('truthful initial history read state', () => {
+  it('keeps an explicit native refresh pending past the saved-read bound until it answers', async () => {
+    vi.useFakeTimers()
+    const { get, requests } = fixture()
+    const load = get().loadSessionMessages('chat', true, true)
+    expect(requests[0].payload).toMatchObject({ chatId: 'chat', refreshNative: true })
+    expect(get().chatHistoryReadBySessionId.chat?.refreshNative).toBe(true)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(get().chatHistoryReadBySessionId.chat?.refreshNative).toBe(true)
+    expect(get().chatHistoryErrorBySessionId.chat).toBeUndefined()
+    requests[0].reply(page()); await load
+    expect(get().chatHistoryReadBySessionId.chat).toBeUndefined()
+    expect(get().messages.chat).toHaveLength(50)
+  })
+  it('bounds an unanswered native refresh at five minutes with refresh guidance', async () => {
+    vi.useFakeTimers()
+    const { get } = fixture()
+    const load = get().loadSessionMessages('chat', true, true)
+    await vi.advanceTimersByTimeAsync(299_999)
+    expect(get().chatHistoryReadBySessionId.chat?.refreshNative).toBe(true)
+    await vi.advanceTimersByTimeAsync(1); await load
+    expect(get().chatHistoryReadBySessionId.chat).toBeUndefined()
+    expect(get().chatHistoryErrorBySessionId.chat ?? '').toContain('History refresh did not finish within five minutes')
+  })
   it('bounds a silent history read without replay and rejects its late page', async () => {
     vi.useFakeTimers()
     const { get, set, requests } = fixture()

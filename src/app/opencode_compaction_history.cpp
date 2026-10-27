@@ -7,6 +7,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/opencode/opencode_native_identity.h"
+#include "common/utils/string_utils.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -633,7 +634,7 @@ struct OpenCodeCompactionHistoryService::State
 					if (work->stop.stop_requested()) return;
 					if (!result.ok || result.exit_code != 0 || result.canceled || result.timed_out || result.output_truncated || result.output.size() > kQueryBytes)
 					{
-						std::string error = result.error.substr(0, 512);
+						std::string error(uam::strings::Utf8Prefix(result.error, 512));
 						std::replace(error.begin(), error.end(), '\n', ' ');
 						std::replace(error.begin(), error.end(), '\r', ' ');
 						work->error = "Native history query failed. [chat=" + identity.chat + ", native=" + identity.native +

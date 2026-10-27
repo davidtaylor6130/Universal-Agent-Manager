@@ -8,7 +8,7 @@
 
 namespace uam::native_history
 {
-	enum class NativeRefreshWorkerPool { Shared, TerminalParser, DiscoveryParser };
+	enum class NativeRefreshWorkerPool { Shared, TerminalParser, DiscoveryParser, RemoteRefresh };
 
 	namespace detail
 	{
@@ -22,6 +22,11 @@ namespace uam::native_history
 		// neither consume batch admission capacity nor grow unbounded producers.
 		inline std::atomic<unsigned> discovery_parser_owners{0};
 		inline constexpr unsigned kMaxDiscoveryParserOwners = 2;
+		// Explicit remote refreshes hold their owner through a slow SSH read; they
+		// must not starve local branch, managed-run or metadata preparation.
+		// ponytail: one budget for all hosts; per-host slots if one slow host starves others.
+		inline std::atomic<unsigned> remote_refresh_owners{0};
+		inline constexpr unsigned kMaxRemoteRefreshOwners = 2;
 	}
 
 	/// Arm before admitting any payload, prepared file or transcript. CEF tasks
@@ -35,11 +40,13 @@ namespace uam::native_history
 		{
 			if constexpr (Pool == NativeRefreshWorkerPool::TerminalParser) return detail::terminal_parser_owners;
 			else if constexpr (Pool == NativeRefreshWorkerPool::DiscoveryParser) return detail::discovery_parser_owners;
+			else if constexpr (Pool == NativeRefreshWorkerPool::RemoteRefresh) return detail::remote_refresh_owners;
 			else return detail::refresh_owners;
 		}();
 		constexpr unsigned limit = Pool == NativeRefreshWorkerPool::TerminalParser
 		    ? detail::kMaxTerminalParserOwners : Pool == NativeRefreshWorkerPool::DiscoveryParser
-		        ? detail::kMaxDiscoveryParserOwners : detail::kMaxRefreshOwners;
+		        ? detail::kMaxDiscoveryParserOwners : Pool == NativeRefreshWorkerPool::RemoteRefresh
+		            ? detail::kMaxRemoteRefreshOwners : detail::kMaxRefreshOwners;
 		unsigned count = owners.load();
 		do
 		{

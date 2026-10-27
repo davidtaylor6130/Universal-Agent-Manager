@@ -302,6 +302,25 @@ UAM_TEST(AttachedSkillRetryAfterReloadUsesCapturedPriorAndCurrentSnapshots)
 	UAM_ASSERT_EQ(chat.messages.back().markdown_store_prompt_blocks, std::vector<std::string>{fixture.block});
 }
 
+UAM_TEST(AttachedSkillRetryReloadsStoreForSavedEmptySnapshot)
+{
+	AttachedSkillFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.messages.push_back({MessageRole::Assistant, "Previously delivered output."});
+	chat.messages.push_back({MessageRole::User, "Retry input with a missing snapshot."});
+	chat.messages.back().markdown_store_files = {fixture.skill.file_path.string()};
+	chat.messages.back().markdown_store_prompt_blocks = {""};
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(restored.has_value());
+	chat = *restored;
+	UAM_ASSERT_EQ(chat.messages.back().markdown_store_prompt_blocks, std::vector<std::string>{""});
+	std::string error;
+	UAM_ASSERT(uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
+	// An empty slot is a missing snapshot: the skill reloads from the store, never sends empty.
+	UAM_ASSERT(fixture.Deliver().find(fixture.skill.title) != std::string::npos);
+}
+
 UAM_TEST(AttachedSkillNativeReadDenialNeverResendsInlineBody)
 {
 	AttachedSkillFixture fixture;

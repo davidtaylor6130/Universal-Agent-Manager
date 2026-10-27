@@ -203,7 +203,7 @@ describe('ShellActionsSettings', () => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, '')
         label.dispatchEvent(new Event('input', { bubbles: true }))
       })
-      expect(host.querySelector('[role="status"]')?.textContent).toContain(message)
+      expect(Array.from(host.querySelectorAll('[role="status"]'), status => status.textContent).join(' ')).toContain(message)
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')!.click())

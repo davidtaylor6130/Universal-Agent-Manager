@@ -32,6 +32,8 @@
 /* Newly rendered chat rows settle into place instead of popping. */
 .uam-sb-row {
   animation: uam-sb-row-in var(--dur-base) var(--ease-out-soft) backwards;
+  /* Selection and hover only repaint: no layout property transitions. */
+  transition: background-color var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
 }
 /* Hover and selected share one box (same inset, radius and height from Tailwind classes on the row); only the paint differs. */
 .uam-sb-row:hover { background: var(--sidebar-item-hover); }
@@ -49,6 +51,7 @@
   }
   .uam-sb-row {
     animation: none;
+    transition: none;
   }
 }
 
@@ -75,6 +78,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-sb-progress > span { animation: none; transform: translateX(40%); }
 }
+:root[data-motion="off"] .uam-sb-progress > span { animation: none; transform: translateX(40%); }
 /* Determinate: scaleX from the left edge, inline transform carries the value. */
 .uam-sb-progress--determinate > span {
   width: 100%;

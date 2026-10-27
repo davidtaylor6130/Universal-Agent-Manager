@@ -180,19 +180,34 @@ UAM_TEST(MacAccountCredentialHelperUsesNoPromptSecurityQueryAndKeepsReturnedSecr
 	UAM_ASSERT_EQ(fixture.arguments.at(5), "service with spaces; literal"); UAM_ASSERT_EQ(fixture.arguments.at(6), "existing-account");
 	UAM_ASSERT(fixture.arguments.at(4).find("SecItemCopyMatching") != std::string::npos);
 	UAM_ASSERT(fixture.arguments.at(4).find("kSecUseAuthenticationUIFail") != std::string::npos);
+	UAM_ASSERT(fixture.arguments.at(4).find("SecKeychainSetUserInteractionAllowed") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.arguments.size(), 8u); UAM_ASSERT_EQ(fixture.arguments.at(7), "silent");
 	for (const auto& argument : fixture.arguments) UAM_ASSERT(argument.find("synthetic-private-login") == std::string::npos);
 	UAM_ASSERT(fixture.input.empty()); UAM_ASSERT_EQ(fixture.preloaded_starts, 0); UAM_ASSERT_EQ(fixture.input_closes, 1); UAM_ASSERT_EQ(fixture.stops, 1);
+}
+
+UAM_TEST(MacAccountCredentialHelperAllowsKeychainPromptOnlyForExplicitRefresh)
+{
+	ClaudeAccountHttpsFixture fixture; fixture.response = nlohmann::json{{"status", 0}, {"credential", "synthetic-private-login"}}.dump();
+	const auto result = uam::usage::ReadMacAccountCredentialWithProcessService(fixture, "service", "account", true);
+	UAM_ASSERT(result.error.empty()); UAM_ASSERT_EQ(fixture.arguments.at(7), "prompt");
+	for (int status : {-25293, -25308}) for (bool allow_prompt : {false, true})
+	{
+		ClaudeAccountHttpsFixture denied; denied.response = nlohmann::json{{"status", status}}.dump();
+		const auto failure = uam::usage::ReadMacAccountCredentialWithProcessService(denied, "service", "account", allow_prompt);
+		UAM_ASSERT_EQ(failure.error.find("Refresh allowances") != std::string::npos, !allow_prompt); UAM_ASSERT(!failure.account_unavailable);
+	}
 }
 
 UAM_TEST(MacAccountCredentialHelperCancellationTimeoutAndOversizeKeepPriorAccountEligible)
 {
 	std::stop_source stopped; stopped.request_stop(); ClaudeAccountHttpsFixture initial;
-	UAM_ASSERT(!uam::usage::ReadMacAccountCredentialWithProcessService(initial, "service", "account", stopped.get_token()).error.empty()); UAM_ASSERT_EQ(initial.starts, 0);
+	UAM_ASSERT(!uam::usage::ReadMacAccountCredentialWithProcessService(initial, "service", "account", false, stopped.get_token()).error.empty()); UAM_ASSERT_EQ(initial.starts, 0);
 	for (int mode = 0; mode < 3; ++mode)
 	{
 		ClaudeAccountHttpsFixture fixture; std::stop_source cancel;
 		fixture.silent = mode != 2; fixture.flood = mode == 2; if (mode == 0) fixture.cancel_on_read = &cancel;
-		const auto result = uam::usage::ReadMacAccountCredentialWithProcessService(fixture, "service", "account", cancel.get_token(), std::chrono::milliseconds(mode == 1 ? 10 : 1500));
+		const auto result = uam::usage::ReadMacAccountCredentialWithProcessService(fixture, "service", "account", false, cancel.get_token(), std::chrono::milliseconds(mode == 1 ? 10 : 1500));
 		UAM_ASSERT(result.credential.empty()); UAM_ASSERT(!result.error.empty()); UAM_ASSERT(!result.account_unavailable);
 		UAM_ASSERT_EQ(fixture.starts, 1); UAM_ASSERT_EQ(fixture.stops, 1);
 	}

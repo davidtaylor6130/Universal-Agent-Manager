@@ -193,6 +193,46 @@ void ChatBranching::Normalize(std::vector<ChatSession>& chats)
 	}
 }
 
+ChatSession ChatBranching::LineageOnly(const ChatSession& chat)
+{
+	ChatSession copy;
+	copy.id = chat.id;
+	copy.parent_chat_id = chat.parent_chat_id;
+	copy.branch_root_chat_id = chat.branch_root_chat_id;
+	copy.branch_from_message_index = chat.branch_from_message_index;
+	copy.provider_id = chat.provider_id;
+	copy.native_session_id = chat.native_session_id;
+	copy.execution_host_id = chat.execution_host_id;
+	copy.workspace_directory = chat.workspace_directory;
+	copy.workspace_worktree_directory = chat.workspace_worktree_directory;
+	return copy;
+}
+
+bool ChatBranching::SavedLineageNormalizesToCurrent(const std::vector<ChatSession>& chats, std::string_view chat_id,
+    const std::string& parent_chat_id, const std::string& branch_root_chat_id, int branch_from_message_index)
+{
+	std::vector<ChatSession> lineage;
+	lineage.reserve(chats.size());
+	const ChatSession* current = nullptr;
+	std::size_t target = 0;
+	for (const ChatSession& chat : chats)
+	{
+		ChatSession& copy = lineage.emplace_back(LineageOnly(chat));
+		if (chat.id != chat_id) continue;
+		if (current != nullptr) return false;
+		current = &chat;
+		target = lineage.size() - 1;
+		copy.parent_chat_id = parent_chat_id;
+		copy.branch_root_chat_id = branch_root_chat_id;
+		copy.branch_from_message_index = branch_from_message_index;
+	}
+	if (current == nullptr) return false;
+	Normalize(lineage);
+	const ChatSession& normalized = lineage[target];
+	return normalized.parent_chat_id == current->parent_chat_id && normalized.branch_root_chat_id == current->branch_root_chat_id &&
+	    normalized.branch_from_message_index == current->branch_from_message_index;
+}
+
 void ChatBranching::ReparentChildrenAfterDelete(std::vector<ChatSession>& chats, std::string_view deleted_chat_id)
 {
 	const std::string normalized_deleted_chat_id = uam::strings::Trim(deleted_chat_id);

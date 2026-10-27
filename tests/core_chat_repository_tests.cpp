@@ -1,4 +1,5 @@
 #include "common/companion/protocol.h"
+#include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -1578,6 +1579,42 @@ UAM_TEST(ChatRepositoryDeletesStorageFilesWithSafeIdsOnly)
 	UAM_ASSERT(fs::exists(escaped_file));
 }
 
+UAM_TEST(ChatRepositoryLogsAttributablePrimaryDeletion)
+{
+	TempDir temp("uam-chat-delete-attribution");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+
+	ChatSession chat;
+	chat.id = "chat-delete-attribution";
+	chat.provider_id = "codex-cli";
+	chat.title = "Private title";
+	chat.created_at = "2026-01-01 00:00:00";
+	chat.updated_at = "2026-01-01 00:00:01";
+	ChatDomainService().AddMessage(chat, MessageRole::User, "private prompt body");
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(fs::exists(uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, chat.id))));
+
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "user_deletion").Failed());
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id, "create_rollback").Failed());
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, "../escaped-attribution", "user_deletion").unsafe_chat_id);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("Chat storage delete: reason=user_deletion, chat_id=chat-delete-attribution, primary=removed, backup=removed, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete: reason=create_rollback, chat_id=chat-delete-attribution, primary=absent, backup=absent, result=ok") != std::string::npos);
+	UAM_ASSERT(text.find("Chat storage delete refused: reason=user_deletion, unsafe chat id") != std::string::npos);
+	UAM_ASSERT(text.find("escaped-attribution") == std::string::npos);
+	UAM_ASSERT(text.find("private prompt body") == std::string::npos);
+	UAM_ASSERT(text.find("Private title") == std::string::npos);
+	UAM_ASSERT(text.find(temp.root.string()) == std::string::npos);
+}
+
 UAM_TEST(ChatRepositoryReportsSummaryDeleteFailures)
 {
 	TempDir temp("uam-chat-summary-delete-failure");
@@ -2064,6 +2101,39 @@ UAM_TEST(ChatBranchIdempotentReplayUsesDetachedColdHistoriesWithoutWarmingChats)
 	                                          &*detached_source, &*detached_branch));
 	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), selected_before_collision);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+}
+
+UAM_TEST(PlainBranchOfBlankMessageRequiresRetainedContextLikePreview)
+{
+	TempDir temp("uam-plain-branch-blank-context");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("", "codex-cli");
+	source.id = "blank-source";
+	Message message{MessageRole::User, " \n "};
+	message.attachments = {MessageAttachment{.id = "image", .name = "image.png", .kind = "image", .path = "image.png"}};
+	message.markdown_store_files = {"skill.md"};
+	message.markdown_store_prompt_blocks = {"Captured skill"};
+	source.messages.push_back(message);
+	app.chats.push_back(source);
+	const std::size_t count = app.chats.size();
+	// Same rule as the browser preview: omitted replacement on a blank input with all context removed.
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(app.status_line, std::string("Branch message content or context is required."));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front().attachments.clear();
+	app.chats.front().messages.front().markdown_store_files.clear();
+	app.chats.front().messages.front().markdown_store_prompt_blocks.clear();
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front() = message;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().attachments.empty());
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files, message.markdown_store_files);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::nullopt, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments, message.attachments);
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files.empty());
 }
 
 UAM_TEST(MessageBranchAttachmentSelectionPreservesSourceAndRejectsOperationCollisions)

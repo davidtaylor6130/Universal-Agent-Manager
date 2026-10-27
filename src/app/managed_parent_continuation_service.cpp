@@ -7,6 +7,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/provider/provider_runtime.h"
 #include "common/platform/platform_incremental_sha256.h"
+#include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/config/provider_availability.h"
 #include <algorithm>
@@ -455,8 +456,8 @@ bool ManagedParentContinuationService::Poll(AppState& app)
 		const auto found = std::ranges::find(app.agent_runs, id, &AgentRun::id);
 		if (found == app.agent_runs.end() || RunBinding(*found) != binding) { Revoke(app, chat->id, "child_binding_changed"); return false; }
 		if (found->status != "completed" && found->status != "failed" && found->status != "cancelled" && found->status != "interrupted") continue;
-		results.push_back({{"runId", id}, {"status", found->status}, {"result", found->result_excerpt.substr(0, 16384)},
-		    {"resultTruncated", found->result_excerpt.size() > 16384}, {"diagnosticCode", found->diagnostic_code.substr(0, 256)}});
+		results.push_back({{"runId", id}, {"status", found->status}, {"result", std::string(uam::strings::Utf8Prefix(found->result_excerpt, 16384))},
+		    {"resultTruncated", found->result_excerpt.size() > 16384}, {"diagnosticCode", std::string(uam::strings::Utf8Prefix(found->diagnostic_code, 256))}});
 		batch.push_back(id);
 	}
 	if (batch.empty()) return false;

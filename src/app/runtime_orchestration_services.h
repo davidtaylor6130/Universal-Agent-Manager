@@ -81,6 +81,7 @@ class ChatHistorySyncService
 		std::vector<std::string> confirmed_empty_native_keys;
 		// Exact rows saved by the partial local importer, eligible for sidebar adoption.
 		std::vector<std::string> published_chat_ids;
+		std::size_t omitted_error_count = 0;
 
 		bool partial() const { return imported_count > 0 && !success; }
 		void Fail(std::string error)
@@ -92,6 +93,7 @@ class ChatHistorySyncService
 		{
 			imported_count += other.imported_count;
 			total_count += other.total_count;
+			omitted_error_count += other.omitted_error_count;
 			if (!other.success) success = false;
 			errors.insert(errors.end(), other.errors.begin(), other.errors.end());
 			confirmed_empty_native_keys.insert(confirmed_empty_native_keys.end(), other.confirmed_empty_native_keys.begin(), other.confirmed_empty_native_keys.end());
@@ -162,6 +164,8 @@ class ChatHistorySyncService
 		std::string open_code_list_fingerprint;
 		std::map<std::string, ExecutionHost> expected_hosts;
 		std::map<std::string, ChatFolder> selected_folder_snapshots;
+		// Explicitly reviewed local workspace definitions; published only with selected new chats.
+		std::vector<ChatFolder> selected_new_folders;
 		std::stop_source preparation_stop;
 		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
 		void CancelPending();
@@ -169,9 +173,10 @@ class ChatHistorySyncService
 	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
-	/// <summary>Removes owned, declined, duplicate and unregistered startup candidates without writing history.</summary>
+	/// <summary>Resolves existing workspace ownership without creating folders.</summary>
 	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
-	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr) const;
+	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.</summary>
+	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false) const;
 	/// Revalidate and merge a completed scan on the app thread.
 	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
 	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8, ImportPolicy policy = ImportPolicy::ExplicitImport) const;

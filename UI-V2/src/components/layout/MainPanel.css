@@ -1,5 +1,5 @@
 .uam-pane-glide {
-  animation: uam-pane-glide-in 200ms ease-out backwards;
+  animation: uam-pane-glide-in var(--dur-base) var(--ease-out-soft) backwards;
 }
 
 /* Runtime pill: calm by default, only turns into a red "Stop" on hover. */
