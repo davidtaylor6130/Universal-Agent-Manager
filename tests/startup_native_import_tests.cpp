@@ -46,7 +46,8 @@ namespace
 
 	void WaitForStartup(uam::StartupNativeImportService& service, uam::AppState& app)
 	{
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		// Hang guard, not a speed budget: importing 206 chats takes ~7 s locally and longer on Windows runners.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
 		while (service.Snapshot().phase == "scanning" || service.ImportPending())
 		{
 			UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
@@ -608,7 +609,10 @@ UAM_TEST(StartupNativeDiagnosticsLogErrorsBeyondBoundedSnapshot)
 	});
 	service.Initialize(app);
 	WaitForStartup(service, app);
-	UAM_ASSERT_EQ(service.Snapshot().errors.size(), std::size_t{20});
+	// Twenty kept errors plus one omitted-issues summary.
+	const std::vector<std::string> errors = service.Snapshot().errors;
+	UAM_ASSERT_EQ(errors.size(), std::size_t{21});
+	UAM_ASSERT(errors.back().starts_with("1 additional"));
 	uam::diagnostics::FlushFileLog();
 	UAM_ASSERT(uam::io::ReadTextFile(log).find("private-history-error-20") != std::string::npos);
 }
@@ -1303,7 +1307,10 @@ UAM_TEST(StartupSelectedRemoteAliasesPreserveSingleNativeOwnerAcrossPreparationA
 			if (discovery.publication_sync.valid()) discovery.publication_sync.wait();
 			result.Merge(sync.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly));
 		}
-		UAM_ASSERT(result.success);
+		// Unregistered aliases have no reviewed workspace, so selection refuses rather than guessing one.
+		UAM_ASSERT_EQ(result.success, registered_alias);
+		if (!registered_alias)
+			UAM_ASSERT(std::ranges::find(result.errors, std::string("A selected history has no reviewed workspace; assign it again.")) != result.errors.end());
 		UAM_ASSERT_EQ(result.imported_count, registered_alias ? 1 : 0);
 		UAM_ASSERT_EQ(app.chats.size(), registered_alias ? std::size_t{1} : std::size_t{0});
 		UAM_ASSERT_EQ(app.folders.size(), registered_alias ? std::size_t{3} : std::size_t{1});

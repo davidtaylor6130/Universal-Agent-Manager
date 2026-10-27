@@ -636,6 +636,7 @@ UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
 	uam::AcpSessionState& session = *app.acp_sessions.back();
 	session.chat_id = chat.id;
 	session.provider_id = chat.provider_id;
+	session.process_execution_host_id = uam::execution_hosts::kLocalHostId;
 	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
 	session.codex_thread_id = "thread";
 	session.session_id = "thread";

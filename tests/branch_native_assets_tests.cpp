@@ -1020,6 +1020,7 @@ namespace
 			session->lifecycle_state = "ready";
 			session->current_mode_id = "default";
 			session->current_model_id = Branch().model_id;
+			session->launch_model_options_captured = true; // An owned launch with known Default options, not an unknown reattachment.
 			session->last_process_id = uam::acp_detail::AcpProcessHandleLabel(*session);
 			UAM_ASSERT(session->session_id.empty()); // Claude permits input without inventing a native session ID.
 			UAM_ASSERT(process.WriteToStdioProcess(*session, "\n", 1, &error));

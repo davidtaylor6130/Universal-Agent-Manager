@@ -510,12 +510,20 @@ namespace uam::remote
 		{
 			const std::string script = "$directory=Join-Path $HOME '" + relative + "'; "
 			    "$installed,$backup,$marker,$metadata=Get-UamTransactionPaths $directory '" + plan.nonce + "'; " +
-			    (keep_new_runner ? "Assert-UamPath $marker; if (-not (Test-Path -LiteralPath $marker)) { throw 'Activation is not pending.' }; Remove-UamOptional @($marker); [Console]::WriteLine('UAM_INSTALL_COMMITTED:" + plan.nonce + "'); Complete-UamTransaction $backup $marker $metadata; "
-			                       "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; $uamCurrent=$installed; " + WindowsHelperRetirementScript() :
+			    (keep_new_runner ? "Assert-UamPath $marker; if (-not (Test-Path -LiteralPath $marker)) { throw 'Activation is not pending.' }; Remove-UamOptional @($marker); [Console]::WriteLine('UAM_INSTALL_COMMITTED:" + plan.nonce + "'); Complete-UamTransaction $backup $marker $metadata" :
 			                       "Undo-UamTransaction $installed $backup $marker $metadata");
 			command = wrap_powershell ? PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce, WindowsRunnerTransactionScript() + script)) : script;
 		}
 		return command;
+	}
+
+	// Retirement is its own SSH command: appended to the commit it pushed that command past cmd.exe's 8191-character limit.
+	static std::string BootstrapRetirementCommand(const BootstrapPlan& plan)
+	{
+		const std::string root = uam::execution_hosts::RunnerDirectory("windows", plan.runner_directory);
+		return PowerShellUtf8Command(WindowsRunnerOwnedScript(root, plan.nonce,
+		    "$uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; "
+		    "$uamCurrent=(Join-Path $HOME '" + root + "/" + plan.version + "')+'/uam-runner.exe'; " + WindowsHelperRetirementScript()));
 	}
 
 	bool BuildBootstrapPlan(const std::string& ssh_alias, const std::string& version,
@@ -1122,9 +1130,12 @@ namespace uam::remote
 		if (committed_out) *committed_out = committed;
 		if (!finalized) return fail(std::move(error));
 		if (keep_new_runner && !committed) return fail("The remote helper commit could not be confirmed. Retry setup to reconcile it.");
-		lease->Release();
 		if (keep_new_runner && result.platform == "windows")
 		{
+			// The commit is already confirmed, so a failed retirement pass is only reported; it still runs under the lease.
+			output.clear();
+			if (!lease->Run({"Retire older helpers", SshCommand(plan.ssh_alias, BootstrapRetirementCommand(plan)), ""}, output, error, stop_token))
+				uam::diagnostics::Write("Remote helper activation committed, but retiring older helpers failed.");
 			// Counts only: helper paths can contain private folder names.
 			const auto count = [&output](std::string_view marker)
 			{
@@ -1137,6 +1148,7 @@ namespace uam::remote
 				uam::diagnostics::Write("Remote helper activation retired " + std::to_string(retired) + " older helper(s); kept " +
 				                        std::to_string(kept) + " busy or unchecked; " + std::to_string(failed) + " retirement failure(s).");
 		}
+		lease->Release();
 		return true;
 	}
 }
