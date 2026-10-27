@@ -225,6 +225,7 @@ using namespace uam::query_handler_internal;
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
+	const bool retry_reuses_saved_read = std::exchange(m_retryReusesSavedRead, false);
 	const std::string source_id = payload.value("chatId", "");
 	const std::string native_id = uam::strings::Trim(payload.value("nativeSessionId", ""));
 	ChatSession* source = ChatDomainService().FindChatById(m_app, source_id);
@@ -242,7 +243,9 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	const bool supports_history = provider != nullptr &&
 	    (ProviderRuntime::UsesNativeOverlayHistory(*provider) || ProviderRuntime::UsesLocalHistory(*provider));
 	const bool supported_host = source != nullptr && (uam::paths::IsControllerLocalWorkspace(*source) || provider_id == uam::provider_ids::kOpenCodeCli || provider_id == uam::provider_ids::kCodexCli || native_agent);
-	const bool needs_export = source != nullptr && supports_history && supported_host && !native_id.empty() &&
+	// The next open serves a delivery-cancelled read's saved child instead of reading the provider again.
+	const bool reuse_saved_read = target != nullptr && (m_reusableNativeHistory.erase(target->id) != 0 || retry_reuses_saved_read);
+	const bool needs_export = source != nullptr && supports_history && supported_host && !native_id.empty() && !reuse_saved_read &&
 	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || target == nullptr);
 	const bool needs_preparation = needs_export || (supports_history && supported_host && target != nullptr && !target->messages_loaded);
 	const bool supports_local_passive_media = provider != nullptr &&
@@ -322,23 +325,15 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    (source_mapping && *source_mapping != identity.native_session_id) || m_app.resolved_native_sessions_by_chat_id.contains(native_id))
 		{ cb->Failure(409, "Passive native history ownership is not ready."); return; }
 		const std::string request_key = native_id;
-		if (const auto prior = m_nativeHistoryRequests.find(request_key); prior != m_nativeHistoryRequests.end())
-		{
-			prior->second->request_stop();
-			const auto owner = m_app.branch_preparations.find(source_id);
-			if (owner != m_app.branch_preparations.end())
-				if (const auto previous = owner->second.lock(); previous && previous->cancellation.get_token() == prior->second->get_token())
-					(void)ChatDomainService().ConsumeBranchPreparation(m_app, source_id, previous);
-		}
+		// One provider read per child: a newer open waits for it, then reuses its saved result.
+		if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleOpenNativeSessionChat(browser, payload, cb); })) return;
 		const auto ownership = ChatDomainService().BeginBranchPreparation(m_app, source_id, native_id);
 		if (!ownership) { cb->Failure(409, "Chat preparation is still running. Retry after it settles."); return; }
-		const auto request = std::make_shared<std::stop_source>(ownership->cancellation);
-		m_nativeHistoryRequests[request_key] = request;
+		const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
 		const auto finish = [this, source_id, request_key, request, ownership]()
 		{
-			const auto found = m_nativeHistoryRequests.find(request_key);
-			if (found != m_nativeHistoryRequests.end() && found->second == request) m_nativeHistoryRequests.erase(found);
 			(void)ChatDomainService().ConsumeBranchPreparation(m_app, source_id, ownership);
+			FinishNativeHistoryRead(request_key, request);
 		};
 		const auto admitted = [this, work, source_id, native_id, source_identity, source_metadata, source_digest, source_loaded,
 		    source_primary, source_summary, primary, summary, source_mapping, native_directory, workspace, profile, provider_id, request_key, request, ownership]() -> bool
@@ -429,7 +424,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    work->metadata.incarnation = work->target_present ? work->target_incarnation : candidate.metadata_incarnation;
 				    work->metadata.display_parent_chat_id = lineage.subagent_parent_chat_id;
 				    work->metadata.display_parent_created_at = lineage.subagent_parent_created_at;
-				    if (payload.value("selectChat", true)) work->metadata.last_opened_at = uam::time::TimestampNow();
+				    if (payload.value("selectChat", true) && !request->delivery_cancelled) work->metadata.last_opened_at = uam::time::TimestampNow();
 				    bool preparation_queued = false;
 				    try
 				    {
@@ -448,13 +443,14 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 						        return work->prepared ? AsyncSuccess(nlohmann::json::object()) :
 						            AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Passive originals could not be prepared."));
 					        },
-					        [this, browser, cb, payload, work, native_id, admitted, finish](AsyncCefResult& response)
+					        [this, browser, cb, payload, work, native_id, request, admitted, finish](AsyncCefResult& response)
 					        {
 						        bool deferred_ack = false;
 						        struct Exit { std::function<void()> finish; bool& deferred; ~Exit() { if (!deferred) finish(); } } exit{finish, deferred_ack};
 						        if (!admitted()) { response = AsyncFailure(409, "Source or child changed before passive publication."); return; }
 						        if (!response.ok || !work->prepared) return;
-						        const bool select = payload.value("selectChat", true);
+						        // A cancelled open still saves the child but never moves the user's selection.
+						        const bool select = payload.value("selectChat", true) && !request->delivery_cancelled;
 						        const auto previous_selection = ChatDomainService().SelectedChatId(m_app);
 						        const auto previous_draft = m_app.composer_text;
 						        const auto restore_selection = [&]()
@@ -516,10 +512,11 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 						        static_assert(std::is_nothrow_swappable_v<ChatSession>);
 						        std::swap(*current, *work->retired); // Old heavy graph retires on the same worker owner.
 						        work->staged_new = false;
+						        request->cache_filled = true;
 						        ChatDomainService().SortChatsByRecent(m_app.chats);
 						        if (select) ChatDomainService().SelectChatById(m_app, native_id); else restore_selection();
 						        work->outcome = AsyncSuccess({{"chatId", native_id}});
-						        const auto complete_ack = [this, browser, work, finish](AsyncCefResult& ack)
+						        const auto complete_ack = [this, browser, work, request, finish](AsyncCefResult& ack)
 						        {
 							        const bool uncertain = !ack.ok || !work->ack_error.empty();
 							        ack = work->outcome;
@@ -532,7 +529,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 								        if (m_app.data_root == work->root) m_app.status_line = warning;
 							        }
 							        finish();
-							        uam::PushStateUpdateIfChanged(browser, m_app);
+							        if (!request->delivery_cancelled) uam::PushStateUpdateIfChanged(browser, m_app);
 						        };
 						        bool ack_queued = false;
 						        try
@@ -558,7 +555,9 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 
 	if (!needs_preparation)
 	{
-		const AsyncCefResult result = FinishOpenNativeSessionChat(browser, payload);
+		nlohmann::json open = payload;
+		if (reuse_saved_read) open["refreshHistory"] = false;
+		const AsyncCefResult result = FinishOpenNativeSessionChat(browser, open);
 		if (result.ok) cb->Success(result.body);
 		else cb->Failure(result.status, result.error);
 		return;
@@ -612,26 +611,15 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	}
 
 	const std::string request_key = target_id.empty() ? source_id + "/" + native_id : target_id;
-	const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator previous_request = m_nativeHistoryRequests.find(request_key);
-	if (previous_request != m_nativeHistoryRequests.end())
-	{
-		previous_request->second->request_stop();
-		const std::unordered_map<std::string, std::weak_ptr<uam::BranchPreparationOwnership>>::const_iterator previous_owner = m_app.branch_preparations.find(source_id);
-		if (previous_owner != m_app.branch_preparations.end())
-		{
-			const std::shared_ptr<uam::BranchPreparationOwnership> owner = previous_owner->second.lock();
-			if (owner && owner->cancellation.get_token() == previous_request->second->get_token())
-				(void)domain.ConsumeBranchPreparation(m_app, source_id, owner);
-		}
-	}
+	// One provider read per child: a newer open waits for it, then reuses its saved result.
+	if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleOpenNativeSessionChat(browser, payload, cb); })) return;
 	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = domain.BeginBranchPreparation(m_app, source_id, target_id);
 	if (!ownership)
 	{
 		cb->Failure(409, "Chat preparation is still running. Retry after it settles.");
 		return;
 	}
-	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>(ownership->cancellation);
-	m_nativeHistoryRequests[request_key] = request;
+	const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
 
 	ChatSession identity;
 	identity.id = source_id;
@@ -778,7 +766,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    return AsyncSuccess({});
 	    },
 	    [this, browser, payload, identity, snapshot, prepared_revision, remote_host, target_id, baseline, target_identity, target_storage,
-	     source_identity, data_root, request_key, request, ownership, profile_id = provider->id,
+	     source_identity, data_root, request_key, request, ownership, needs_export, profile_id = provider->id,
 	     resolved_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *source), native_history_directory = m_app.native_history_chats_dir](AsyncCefResult& result)
 	    {
 		    const auto pending = m_nativeHistoryRequests.find(request_key);
@@ -787,8 +775,10 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    result = AsyncFailure(409, "A newer history refresh was requested.");
 			    return;
 		    }
-		    m_nativeHistoryRequests.erase(pending);
-		    if (!ChatDomainService().ConsumeBranchPreparation(m_app, identity.id, ownership) || request->stop_requested())
+		    const bool owned = ChatDomainService().ConsumeBranchPreparation(m_app, identity.id, ownership);
+		    const auto complete = [&]()
+		    {
+		    if (!owned || request->stop_requested())
 		    {
 			    result = AsyncFailure(409, "Child history preparation was stopped or replaced.");
 			    return;
@@ -837,8 +827,15 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    result = AsyncFailure(409, "Saved child history changed while loading.");
 			    return;
 		    }
-		    result = FinishOpenNativeSessionChat(browser, payload, snapshot.get(), true, *prepared_revision);
-
+		    // A cancelled open still saves the child but neither selects nor publishes it.
+		    nlohmann::json delivery = payload;
+		    if (request->delivery_cancelled) delivery["selectChat"] = false;
+		    result = FinishOpenNativeSessionChat(browser, delivery, snapshot.get(), true, *prepared_revision, !request->delivery_cancelled);
+		    request->cache_filled = result.ok && needs_export; // A saved-only reopen read no provider history.
+		    };
+		    try { complete(); }
+		    catch (...) { FinishNativeHistoryRead(request_key, request); throw; }
+		    FinishNativeHistoryRead(request_key, request);
 	    })))
 	{
 		m_nativeHistoryRequests.erase(request_key);
@@ -847,7 +844,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	}
 }
 
-uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot, bool native_snapshot_prepared, const std::string& expected_storage_revision)
+uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot, bool native_snapshot_prepared, const std::string& expected_storage_revision, bool publish)
 {
 	using namespace uam::query_handler_async;
 	const std::string source_chat_id = payload.value("chatId", "");
@@ -1029,7 +1026,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	ChatDomainService().SortChatsByRecent(m_app.chats);
 	if (select_chat) ChatDomainService().SelectChatById(m_app, target_chat_id);
 	else desktop_selection.Restore();
-	uam::PushStateUpdateIfChanged(browser, m_app);
+	if (publish) uam::PushStateUpdateIfChanged(browser, m_app);
 	return AsyncSuccess(nlohmann::json{{"chatId", target_chat_id}});
 }
 
@@ -1813,8 +1810,8 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 				cb->Failure(409, "Managed agent transcript history is already loading.");
 				return;
 			}
-			const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
-			m_nativeHistoryRequests[transcript_chat_id] = request;
+			// Saved-file read with no cache write: a cancelled request only loses delivery.
+			const auto request = BeginNativeHistoryRead(transcript_chat_id, cb);
 			const std::filesystem::path data_root = m_app.data_root;
 			auto read_result = std::make_shared<uam::ManagedAgentTranscriptReadResult>();
 			auto detached_response = std::make_shared<nlohmann::json>();
@@ -1846,7 +1843,7 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 					    response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
 					    return;
 				    }
-				    m_nativeHistoryRequests.erase(pending);
+				    FinishNativeHistoryRead(transcript_chat_id, request);
 				    if (!response.ok) return;
 				    if (!uam::MatchesManagedAgentTranscriptRead(m_app, identity, read_result->transcript))
 				    {
@@ -1857,9 +1854,7 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 				    response = AsyncSuccess(std::move(*detached_response));
 			    }))
 			{
-				const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
-				if (pending != m_nativeHistoryRequests.end() && pending->second == request)
-					m_nativeHistoryRequests.erase(pending);
+				FinishNativeHistoryRead(transcript_chat_id, request);
 				return;
 			}
 			return;

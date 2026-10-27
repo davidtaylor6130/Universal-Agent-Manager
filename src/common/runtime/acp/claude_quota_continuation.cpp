@@ -8,7 +8,9 @@
 #include "app/chat_domain_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/provider_resolution_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -61,6 +63,233 @@ namespace uam::acp_detail
 			    owner.native_session_id == chat.native_session_id && owner.native_session_id == ResolvedAcpResumeIdForChat(app, chat) &&
 			    owner.context == ClaudeQuotaContext(app, chat) && ValidReset(owner) && owner.user_message_index >= 0 &&
 			    owner.message_count == (chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count);
+		}
+
+		bool QuotaRuntimeAvailable(const AppState& app, const ChatSession& chat, const AcpSessionState* session, bool cold_settlement = false)
+		{
+			return !app.managed_initial_shutdown && !AcpStopInProgress(app, chat.id) && !chat.side_cleanup_requested &&
+			    !chat.acp_queue_held && !chat.acp_queue_storage_error &&
+			    !chat.remote_turn_reconnect_pending && !chat.remote_stop_cleanup_pending && !chat.remote_restart_pending &&
+			    !app.worktree_operation_chat_ids.contains(chat.id) &&
+			    (!session || (session->provider_id == chat.provider_id && session->transport_ownership_error.empty() &&
+			     (!session->running || (session->session_id == chat.native_session_id && session->process_execution_host_id == chat.execution_host_id)) &&
+			     !AcpSessionHasPendingCancel(*session) && !AcpSessionIsWaitingForInput(*session) &&
+			     !session->manual_compaction_pending && !session->context_compaction_in_progress &&
+			     !session->pending_compaction && !session->turn_checkpoint_commit_pending && !session->local_stop_pending &&
+			     !session->remote_stop_pending && !session->remote_stop_unconfirmed && !session->queue_held &&
+			     !session->remote_source_exit_reported && !session->recovering_remote_turn && !session->recovering_remote_process &&
+			     !session->pending_agent_input && !session->pending_queued_history && (!session->pending_local_launch || cold_settlement) &&
+			     !session->pending_local_session_receipt && (!session->worktree_launch_pending || cold_settlement) &&
+			     (!session->reconnect_pending || cold_settlement) && session->claude_live_background_task_ids.empty()));
+		}
+
+		struct QuotaPublication
+		{
+			std::filesystem::path root;
+			std::string id, queue, runtime_scope, prompt, host, token;
+			std::shared_ptr<const std::uint8_t> incarnation;
+			ClaudeQuotaContinuation owner;
+			std::optional<GoalPromptReceiptScope> goal_scope;
+			std::deque<AcpQueuedUserPromptState> raw_queue;
+			const AcpSessionState* session = nullptr;
+			std::shared_ptr<platform::AsyncByteWriter> writer;
+			int serial = 0, protocol = 0, user_index = -1;
+			std::optional<Message> input;
+			bool processing = false;
+			bool attempted = false;
+			bool worktree_pending = false, reconnect_pending = false;
+			std::shared_ptr<std::stop_source> worktree_cancellation;
+			std::shared_ptr<PendingLocalAcpLaunch> launch;
+		};
+
+		std::shared_ptr<QuotaPublication> CaptureQuotaPublication(const AppState& app, const ChatSession& chat)
+		{
+			auto scope = std::make_shared<QuotaPublication>();
+			scope->root = app.data_root;
+			scope->id = chat.id;
+			scope->incarnation = chat.metadata_incarnation;
+			scope->owner = chat.claude_quota_continuation;
+			scope->queue = ChatRepository::QueueAdmissionFingerprint(chat);
+			scope->session = FindAcpSessionForChat(app, chat.id);
+			if (!scope->session)
+			{
+				AcpSessionState absent;
+				absent.provider_id = chat.provider_id;
+				if (chat.small_model_mode) scope->goal_scope = CaptureGoalPromptReceiptScope(app, absent, chat);
+				scope->runtime_scope = LocalSessionReceiptOwnership(app, absent, chat);
+			}
+			if (scope->session)
+			{
+				if (chat.small_model_mode) scope->goal_scope = CaptureGoalPromptReceiptScope(app, *scope->session, chat);
+				scope->runtime_scope = LocalSessionReceiptOwnership(app, *scope->session, chat);
+				scope->worktree_pending = scope->session->worktree_launch_pending;
+				scope->worktree_cancellation = scope->session->worktree_launch_cancellation;
+				scope->reconnect_pending = scope->session->reconnect_pending;
+				scope->launch = scope->session->pending_local_launch;
+				scope->writer = scope->session->stdin_writer;
+				scope->raw_queue = scope->session->queued_user_prompts;
+				scope->serial = scope->session->turn_serial;
+				scope->processing = scope->session->processing;
+				scope->prompt = scope->session->queued_prompt;
+				scope->host = scope->session->process_execution_host_id;
+				scope->token = scope->session->remote_output_delivery_token;
+				scope->protocol = scope->session->remote_runner_protocol_version;
+				scope->user_index = scope->session->turn_user_message_index;
+				if (scope->processing && scope->user_index >= 0 && scope->user_index < static_cast<int>(chat.messages.size()))
+					scope->input = chat.messages[scope->user_index];
+			}
+			return scope;
+		}
+
+		bool OwnsQuotaPublication(const AppState& app, const QuotaPublication& scope)
+		{
+			const auto* chat = ChatDomainService().FindChatById(app, scope.id);
+			const auto* session = FindAcpSessionForChat(app, scope.id);
+			if (!chat || app.data_root != scope.root || chat->metadata_incarnation != scope.incarnation ||
+			    chat->claude_quota_continuation != scope.owner || chat->provider_id != "claude-cli" ||
+			    chat->native_session_id != scope.owner.native_session_id || chat->native_session_reset_pending ||
+			    chat->imported_read_only || !provider_availability::IsEnabled(app.settings, chat->provider_id, chat->execution_host_id) ||
+			    ResolvedAcpResumeIdForChat(app, *chat) != scope.owner.native_session_id ||
+			    ClaudeQuotaContext(app, *chat) != scope.owner.context || !chat->messages_loaded ||
+			    scope.owner.user_message_index < 0 || scope.owner.user_message_index >= static_cast<int>(chat->messages.size()) ||
+			    chat->messages[scope.owner.user_message_index].role != MessageRole::User ||
+			    chat->messages[scope.owner.user_message_index].acp_prompt_not_sent ||
+			    AcceptedMessageDigest(chat->messages[scope.owner.user_message_index]) != scope.owner.accepted_message_digest ||
+			    ChatRepository::QueueAdmissionFingerprint(*chat) != scope.queue || session != scope.session ||
+			    (chat->small_model_mode && !scope.goal_scope) ||
+			    !QuotaRuntimeAvailable(app, *chat, session, scope.processing && session && !session->running)) return false;
+			if (!session)
+			{
+				AcpSessionState absent;
+				absent.provider_id = chat->provider_id;
+				return !scope.processing && (!chat->small_model_mode ||
+				    CaptureGoalPromptReceiptScope(app, absent, *chat) == scope.goal_scope) &&
+				    LocalSessionReceiptOwnership(app, absent, *chat) == scope.runtime_scope;
+			}
+			return (!session->running || (session->session_ready &&
+			    (chat->execution_host_id == execution_hosts::kLocalHostId || ValidateAcpRestartOwnership(app, *session, *chat, nullptr)))) &&
+			    session->prompt_request_id == 0 && session->worktree_launch_pending == scope.worktree_pending &&
+			    session->worktree_launch_cancellation == scope.worktree_cancellation &&
+			    (!scope.worktree_cancellation || !scope.worktree_cancellation->stop_requested()) &&
+			    session->reconnect_pending == scope.reconnect_pending && session->pending_local_launch == scope.launch &&
+			    session->turn_serial == scope.serial && session->processing == scope.processing &&
+			    session->queued_prompt == scope.prompt && session->stdin_writer == scope.writer && session->queued_user_prompts == scope.raw_queue &&
+			    session->process_execution_host_id == scope.host && session->remote_output_delivery_token == scope.token &&
+			    session->remote_runner_protocol_version == scope.protocol &&
+			    (!chat->small_model_mode || CaptureGoalPromptReceiptScope(app, *session, *chat) == scope.goal_scope) &&
+			    (!scope.input || (session->turn_user_message_index == scope.user_index && scope.user_index >= 0 &&
+			     scope.user_index < static_cast<int>(chat->messages.size()) && chat->messages[scope.user_index] == *scope.input)) &&
+			    (!scope.processing || (session->claude_quota_delivery_id == scope.owner.id && ValidateClaudeQuotaDelivery(app, *session, *chat))) &&
+			    !session->pending_prompt_delivery && !AcpSessionHasPendingRuntimeRequest(*session) &&
+			    LocalSessionReceiptOwnership(app, *session, *chat) == scope.runtime_scope;
+		}
+
+		void HoldQuotaPublication(AppState& app, const QuotaPublication& scope)
+		{
+			auto* chat = ChatDomainService().FindChatById(app, scope.id);
+			if (!chat || app.data_root != scope.root || chat->metadata_incarnation != scope.incarnation ||
+			    chat->claude_quota_continuation != scope.owner) return;
+			chat->claude_quota_continuation.state = "held";
+			ScheduleChatSave(app, *chat, 0.0);
+		}
+
+		bool CanStageQuotaPublication(const AppState& app, const ChatSession& chat, const AcpSessionState* session)
+		{
+			if (!session || !session->running) return true;
+			if (!session->session_ready) return false;
+			if (CanDeferRemotePromptAdmission(app, *session, chat) || CanStageRemoteGoalPromptAdmission(app, *session, chat)) return true;
+			if (chat.execution_host_id != execution_hosts::kLocalHostId) return false;
+#if defined(_WIN32)
+			return session->stdin_write != INVALID_HANDLE_VALUE && session->stdin_write != nullptr;
+#else
+			return session->stdin_write_fd >= 0;
+#endif
+		}
+
+		void StageQuotaSettlement(AppState& app, ChatSession& chat)
+		{
+			const auto scope = CaptureQuotaPublication(app, chat);
+			const auto owned = [&app, scope]() { return OwnsQuotaPublication(app, *scope); };
+			const auto complete = [&app, scope](DurableAdmissionState state)
+			{
+				if (state == DurableAdmissionState::Committed) return;
+				// Even a root/metadata replacement must retire this exact unattempted runtime input;
+				// it must not rebase itself onto the next save once the failed task leaves the map.
+				auto* session = FindAcpSessionForChat(app, scope->id);
+				if (scope->processing && session == scope->session && session->turn_serial == scope->serial &&
+				    session->prompt_request_id == 0 && session->queued_prompt == scope->prompt &&
+				    session->claude_quota_delivery_id == scope->owner.id)
+				{
+					session->last_error = "Native quota continuation lost its owned settlement receipt.";
+					session->goal_resume_suppressed = true;
+					CompletePromptTurn(*session, kAcpLifecycleError);
+				}
+				HoldQuotaPublication(app, *scope);
+			};
+			// This owns the newly admitted continuation, so a failed full save rejects that exact unsent turn.
+			if (BeginDurableAdmission(app, chat, owned, complete, DurableAdmissionFailurePurpose::Prompt) != DurableAdmissionState::Pending)
+				complete(DurableAdmissionState::Failed);
+			PinDurableAdmissionRoot(app, chat.id);
+		}
+
+		void DispatchQuotaClaim(AppState& app, ChatSession& chat, const std::string& owner_id, bool staged)
+		{
+			const auto id = chat.id;
+			const auto incarnation = chat.metadata_incarnation;
+			const auto root = app.data_root;
+			const auto claimed = chat.claude_quota_continuation;
+			bool sent = false;
+			{
+				struct DispatchScope
+				{
+					std::string& value;
+					std::string previous;
+					~DispatchScope() { value = std::move(previous); }
+				} dispatch_scope{app.claude_quota_dispatch_id, app.claude_quota_dispatch_id};
+				app.claude_quota_dispatch_id = owner_id;
+				std::string error;
+				sent = StartClaudeQuotaContinuation(app, chat, &error);
+			}
+			auto* current = ChatDomainService().FindChatById(app, id);
+			if (!current || app.data_root != root || current->metadata_incarnation != incarnation ||
+			    current->claude_quota_continuation != claimed || current->native_session_id != claimed.native_session_id ||
+			    current->claude_quota_continuation.state != "claimed") return;
+			current->claude_quota_continuation.state = sent ? "continued" : "held";
+			if (sent) current->claude_quota_continuation.context = ClaudeQuotaContext(app, *current);
+			auto* native = FindAcpSessionForChat(app, id);
+			if (sent && native && HasPendingAcpColdLaunch(*native))
+				BindPendingAcpColdLaunch(app, *native, *current, true); // Settlement and cold authority share a full receipt.
+			else if (staged && CanStageQuotaPublication(app, *current, native))
+			{
+				if (sent && native && !RebindPendingAcpQuotaConfiguration(app, *native, *current))
+				{
+					native->last_error = "Quota launch configuration changed before settlement.";
+					CompletePromptTurn(*native, kAcpLifecycleError);
+					current->claude_quota_continuation.state = "held";
+					ScheduleChatSave(app, *current, 0.0);
+				}
+				else StageQuotaSettlement(app, *current);
+			}
+			else (void)SaveChatQuietly(app, *current); // Legacy/restarting transport keeps its separate control barrier.
+		}
+
+		void StageQuotaClaim(AppState& app, ChatSession& chat)
+		{
+			const auto scope = CaptureQuotaPublication(app, chat);
+			const auto owned = [&app, scope]()
+			{
+				return !scope->attempted && OwnsQuotaPublication(app, *scope) &&
+				    ChatDomainService().FindChatById(app, scope->id)->messages.size() == scope->owner.message_count;
+			};
+			const auto complete = [&app, scope, owned](DurableAdmissionState state)
+			{
+				if (state != DurableAdmissionState::Committed || !owned()) { HoldQuotaPublication(app, *scope); return; }
+				scope->attempted = true; // Mark before dispatch; a save callback is never retry authority.
+				DispatchQuotaClaim(app, *ChatDomainService().FindChatById(app, scope->id), scope->owner.id, true);
+			};
+			if (BeginDurableAdmission(app, chat, owned, complete, DurableAdmissionFailurePurpose::BindingOnly) != DurableAdmissionState::Pending)
+				complete(DurableAdmissionState::Failed);
+			PinDurableAdmissionRoot(app, chat.id);
 		}
 	}
 
@@ -196,18 +425,26 @@ namespace uam::acp_detail
 	{
 		AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 		const bool waiting = chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "cancelled";
+		const bool pending_transport = session == nullptr || !session->running || !session->session_ready;
 		bool usable = session != nullptr && session->running && session->session_ready;
 #if defined(_WIN32)
 		usable = usable && session->stdin_write != INVALID_HANDLE_VALUE && session->stdin_write != nullptr;
 #else
 		usable = usable && session->stdin_write_fd >= 0;
 #endif
-		if (!waiting || !usable || chat.provider_id != "claude-cli" || chat.execution_host_id != "local" ||
+		const bool remote_admission = usable && session->transport_ownership_error.empty() &&
+		    (CanDeferRemotePromptAdmission(app, *session, chat) || CanStageRemoteGoalPromptAdmission(app, *session, chat));
+		if (!waiting || chat.provider_id != "claude-cli" ||
+		    (chat.execution_host_id == execution_hosts::kLocalHostId ? (!pending_transport && !usable) : !remote_admission) ||
 		    !app.claude_quota_dispatch_id.empty()) return CancelClaudeQuotaWait(app, chat);
+		// Local, ordinary v3 and separately goal-owned remote admission stage full input before dispatch.
 		// This tombstone stops the in-memory scheduler; the subsequent full receipt makes it durable.
 		chat.claude_quota_continuation.state = "cancelled";
-		session->claude_quota_reset_epoch_s = 0;
-		session->claude_quota_evidence_turn_serial = 0;
+		if (session != nullptr)
+		{
+			session->claude_quota_reset_epoch_s = 0;
+			session->claude_quota_evidence_turn_serial = 0;
+		}
 		ScheduleChatSave(app, chat, 0.0);
 		return true;
 	}
@@ -278,7 +515,8 @@ namespace uam::acp_detail
 				continue;
 			}
 			const AcpSessionState* session = FindAcpSessionForChat(app, id);
-			if (chat->execution_host_id == "local")
+			if (app.pending_chat_save_at_by_chat_id.contains(id) || !QuotaRuntimeAvailable(app, *chat, session)) continue;
+			if (chat->execution_host_id == execution_hosts::kLocalHostId)
 			{
 				const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find("claude-cli");
 				if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked ||
@@ -290,23 +528,14 @@ namespace uam::acp_detail
 			    !session->claude_live_background_task_ids.empty() || session->queue_held ||
 			    (session->running && (!session->session_ready || session->session_id != owner.native_session_id))))) continue;
 			if (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending || chat->remote_restart_pending || chat->acp_queue_held) continue;
+			const bool staged = CanStageQuotaPublication(app, *chat, session);
 			const std::string owner_id = owner.id;
 			chat->claude_quota_continuation.state = "claimed";
-			if (!SaveChatQuietly(app, *chat)) { chat->claude_quota_continuation.state = "waiting"; continue; }
-			struct DispatchScope
+			if (staged) StageQuotaClaim(app, *chat);
+			else
 			{
-				std::string& value;
-				~DispatchScope() { value.clear(); }
-			} dispatch_scope{app.claude_quota_dispatch_id};
-			app.claude_quota_dispatch_id = owner_id;
-			std::string error;
-			const bool sent = StartClaudeQuotaContinuation(app, *chat, &error);
-			chat = ChatDomainService().FindChatById(app, id);
-			if (chat != nullptr && chat->claude_quota_continuation.id == owner_id && chat->claude_quota_continuation.state == "claimed")
-			{
-				chat->claude_quota_continuation.state = sent ? "continued" : "held";
-				if (sent) chat->claude_quota_continuation.context = ClaudeQuotaContext(app, *chat);
-				(void)SaveChatQuietly(app, *chat);
+				if (!SaveChatQuietly(app, *chat)) { chat->claude_quota_continuation.state = "waiting"; continue; }
+				DispatchQuotaClaim(app, *chat, owner_id, false);
 			}
 			changed = true;
 		}

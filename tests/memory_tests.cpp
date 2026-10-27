@@ -3551,3 +3551,163 @@ UAM_TEST(MemoryRecallHasDeterministicFiveEntryLimit)
 	UAM_ASSERT(recall.find("Database rule 5") == std::string::npos);
 	UAM_ASSERT(recall.find("Database rule 6") == std::string::npos);
 }
+
+#include <atomic>
+#include <new>
+#include "common/utils/diagnostic_log.h"
+
+#if !defined(_WIN32)
+namespace
+{
+	std::atomic<const char*> g_memory_fault_stage{nullptr};
+	std::atomic<bool> g_memory_fault_non_std{false};
+
+	void ThrowAtMemoryWorkerStage(std::string_view stage)
+	{
+		const char* target = g_memory_fault_stage.load();
+		if (target == nullptr || stage != target) return;
+		if (g_memory_fault_non_std.load()) throw 7;
+		throw std::bad_alloc();
+	}
+}
+
+UAM_TEST(MemoryWorkerThrowingHistoryOrOutputSkipsChatWithoutTerminate)
+{
+	struct ClearFault
+	{
+		~ClearFault() { MemoryService::SetWorkerFaultForTests(nullptr); }
+	} clear;
+	// stage == nullptr is the control: the identical fixture extracts and advances progress.
+	const auto run = [](const char* stage, bool non_std)
+	{
+		g_memory_fault_stage = stage;
+		g_memory_fault_non_std = non_std;
+		MemoryService::SetWorkerFaultForTests(stage ? &ThrowAtMemoryWorkerStage : nullptr);
+		TempDir temp("uam-memory-worker-fault");
+		const fs::path worker = temp.root / "fixture-memory-worker";
+		UAM_ASSERT(uam::io::WriteTextFile(worker, R"(#!/bin/sh
+cat > /dev/null
+: > "$0.ran"
+printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Target lesson","memory":"Use Allman braces in this project.","evidence":"User explicitly requested Allman braces.","confidence":"high"}]}'
+)"));
+		fs::permissions(worker, fs::perms::owner_all);
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+		profile.interactive_command = uam::shell::EscapeArg(worker.string());
+		app.provider_profiles = {profile};
+		app.settings.memory_worker_bindings.clear();
+		app.settings.provider_availability.clear();
+		const fs::path workspace = temp.root / "workspace";
+		fs::create_directories(workspace);
+		ChatSession chat;
+		chat.id = "memory-worker-fault";
+		chat.provider_id = profile.id;
+		chat.workspace_directory = workspace.string();
+		chat.memory_enabled = true;
+		chat.memory_level = "open";
+		chat.memory_last_processed_at = "before-fault";
+		chat.messages.push_back({MessageRole::User, "Please remember to use Allman braces in this project.", "now"});
+		chat.messages.push_back({MessageRole::Assistant, "I will use Allman braces.", "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const fs::path source = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const std::string original = uam::io::ReadTextFile(source);
+		app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+		UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(!app.chats.front().messages_loaded); // The worker thread reads saved history.
+		int queued = 0;
+		std::string error;
+		UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), static_cast<std::size_t>(1));
+		const std::shared_ptr<uam::AsyncMemoryExtractionState> extraction = app.memory_extraction_tasks.front().extraction_state;
+		DrainMemoryWork(app); // Reaching the assertions below is the no-std::terminate witness.
+		const fs::path lesson = workspace / ".UAM/Lessons/User_Lessons/target-lesson.md";
+		UAM_ASSERT_EQ(fs::exists(worker.string() + ".ran"), stage == nullptr || std::string_view(stage) == "output");
+		if (stage == nullptr)
+		{
+			UAM_ASSERT(!extraction->hydration_failed);
+			UAM_ASSERT(fs::exists(lesson));
+			UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 2);
+			return;
+		}
+		UAM_ASSERT(extraction->hydration_failed);
+		UAM_ASSERT(!extraction->output_prepared && !extraction->prepared_output);
+		UAM_ASSERT(app.memory_last_status.find("History and progress are unchanged.") != std::string::npos);
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
+		UAM_ASSERT(app.memory_retry_not_before_by_chat_id.at(chat.id) > uam::GetAppTimeSeconds());
+		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT(app.memory_extraction_queue.front().manual);
+		UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_at, std::string("before-fault"));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(source), original);
+		UAM_ASSERT(!fs::exists(workspace / ".UAM"));
+		UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
+	};
+	for (const char* stage : {"history", "output"})
+		for (const bool non_std : {false, true})
+			run(stage, non_std);
+	run(nullptr, false);
+}
+#endif
+
+UAM_TEST(MemoryFailureDiagnosticsWithholdRawWorkerErrorText)
+{
+	TempDir temp("uam-memory-failure-log");
+	const fs::path log = temp.root / "diagnostics.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+	const std::string raw[] = {
+	    "Remote process cleanup failed: ssh: connect to /home/private-user/project as private-user@private-host failed\nprivate-second-line",
+	    "Remote command failed: token=private-token-value",
+	    "ssh: Could not resolve hostname corp-box.internal: nodename nor servname provided",
+	    "Connection to private-host.lan closed by 10.0.0.5",
+	    "\nprivate-second-line",
+	};
+	for (std::size_t index = 0; index < std::size(raw); ++index)
+	{
+		uam::AppState app;
+		app.data_root = temp.root / ("data-" + std::to_string(index));
+		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
+		const fs::path workspace = temp.root / "workspace";
+		fs::create_directories(workspace);
+		ChatSession chat;
+		chat.id = "memory-failure-log-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = workspace.string();
+		chat.memory_enabled = true;
+		chat.messages_loaded = true;
+		chat.messages.push_back({MessageRole::User, "Please remember that this project uses Allman braces.", "now"});
+		app.chats.push_back(chat);
+		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
+		task.running = true;
+		task.chat_id = chat.id;
+		task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
+		task.workspace_root = workspace;
+		task.message_count = 1;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->provider_id = "codex-cli";
+		task.state->result.exit_code = 1;
+		task.state->result.error = raw[index];
+		task.state->completed = true;
+		app.memory_extraction_tasks.push_back(std::move(task));
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
+		UAM_ASSERT_EQ(app.memory_last_status, raw[index]); // The inline UI state keeps the full reason.
+	}
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(log);
+	UAM_ASSERT(text.find("memory: chat=memory-failure-log-0 Remote process cleanup failed: [details withheld]") != std::string::npos);
+	UAM_ASSERT(text.find("memory: chat=memory-failure-log-1 [failure details withheld]") != std::string::npos);
+	UAM_ASSERT(text.find("memory: chat=memory-failure-log-2 ssh: [details withheld]") != std::string::npos);
+	UAM_ASSERT(text.find("memory: chat=memory-failure-log-3 Connection to [redacted] closed by [redacted]") != std::string::npos);
+	UAM_ASSERT(text.find("memory: chat=memory-failure-log-4 Memory worker failed.") != std::string::npos);
+	for (const char* secret : {"private-user", "private-host", "private-second-line", "private-token-value", "/home/", "corp-box", "10.0.0.5", "nodename"})
+		UAM_ASSERT(text.find(secret) == std::string::npos);
+}

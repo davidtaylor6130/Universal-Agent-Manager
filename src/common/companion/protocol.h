@@ -91,6 +91,12 @@ namespace uam::companion
 		return found == std::end(kActions) ? nullptr : found;
 	}
 
+	// The desktop-owned Phone setting, never the phone, decides whether an allowance refresh may show the macOS Keychain dialog.
+	inline void ApplyKeychainPromptPolicy(std::string_view action, nlohmann::json& payload, bool allowed)
+	{
+		if (action == "getProviderAllowances" && payload.is_object()) payload["allowKeychainPrompt"] = allowed;
+	}
+
 	inline bool IsRequestTransferAction(std::string_view action)
 	{
 		return action == "beginCompanionRequestTransfer" || action == "appendCompanionRequestChunk" || action == "commitCompanionRequestTransfer";

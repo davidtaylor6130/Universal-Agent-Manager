@@ -37,7 +37,7 @@ import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
-import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
+import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -502,6 +502,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const historyLoading = historyReadPending && messages.length === 0 && !chatHistoryError &&
     (session.messageCount ?? 0) > 0 && !hasRetainedInput
   const historyIncomplete = historyLoading || (historyPageMissing && (session.messageCount ?? 0) > 0)
+  // A native refresh finishes its read before answering; show it over loaded messages once it is not instant.
+  const historyRefreshing = historyReadPending && Boolean(historyRead?.refreshNative) && !historyLoading &&
+    messages.length > 0 && !chatHistoryError
+  const [historyRefreshShown, setHistoryRefreshShown] = useState(false)
+  useEffect(() => {
+    setHistoryRefreshShown(false)
+    if (!historyRefreshing) return
+    const timer = window.setTimeout(() => setHistoryRefreshShown(true), 400)
+    return () => window.clearTimeout(timer)
+  }, [historyRefreshing])
   const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queuedPrompts ?? [], acp?.pendingDirectPrompts ?? []),
     [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queuedPrompts, acp?.pendingDirectPrompts])
   const unsentByLoadedIndex = useMemo(() => new Map(unsentProjection.prompts.map((prompt) => [prompt.messageIndex - historyStartIndex, prompt])),
@@ -3438,6 +3448,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   )}
                 </section>
               )}
+              <ChatStatusStrip open={historyRefreshShown && historyRefreshing} tone="info" scene={<RefreshingScene />} title="Refreshing history" />
               <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
               <SubagentWaitStatus binding={acp} />
               <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
