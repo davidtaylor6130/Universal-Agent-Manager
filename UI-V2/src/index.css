@@ -472,7 +472,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   gap: 8px;
   padding: 10px 7px;
   background: color-mix(in srgb, var(--window-bg) 96%, var(--bg));
-  z-index: 2;
+  z-index: 21; /* above sliding panels (closing ones sit at 20), which pass under the rail */
 }
 
 .uam-side-rail--left {
@@ -1954,12 +1954,12 @@ button.uam-commit-check { cursor: pointer; }
 .uam-commit-message:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: 0 0 0 3px var(--accent-dim); }
 
 /* ── Side panels open and close on the compositor ──────────────
-   The slot changes once; only opacity and transform animate, so the chat
-   area never relayouts per frame. Content slides from the panel's own edge. */
+   The slot changes once; only transform animates, so the chat area never
+   relayouts per frame. Panels slide in and out of their rail like a drawer. */
 .uam-shell-panel { --panel-dir: -1; overflow: hidden; animation: uam-panel-in var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-shell-panel--right { --panel-dir: 1; }
 .uam-shell-panel[data-state="closed"] { animation: uam-panel-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-/* A docked panel that is closing leaves the layout at once and fades out where it was (beside its rail),
+/* A docked panel that is closing leaves the layout at once and slides out from where it was (beside its rail),
    above the chat's own layers; narrow windows already show panels as fixed overlays. */
 @media not all and (max-width: 1000px) {
   /* Below the native window strip, which pads .uam-app (absolute boxes start at its padding edge). */
@@ -1967,12 +1967,9 @@ button.uam-commit-check { cursor: pointer; }
   .uam-shell-panel--left[data-state="closed"] { left: 44px; }
   .uam-shell-panel--right[data-state="closed"] { right: 44px; }
 }
-.uam-shell-panel > * { width: 100%; animation: uam-panel-content-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-shell-panel[data-state="closed"] > * { animation: uam-panel-content-out var(--dur-exit) var(--ease) forwards; }
-@keyframes uam-panel-in { from { opacity: 0; } }
-@keyframes uam-panel-out { to { opacity: 0; } }
-@keyframes uam-panel-content-in { from { transform: translateX(calc(var(--panel-dir) * 24px)); } }
-@keyframes uam-panel-content-out { to { transform: translateX(calc(var(--panel-dir) * 24px)); } }
+.uam-shell-panel > * { width: 100%; }
+@keyframes uam-panel-in { from { transform: translateX(calc(var(--panel-dir) * 100%)); } }
+@keyframes uam-panel-out { to { transform: translateX(calc(var(--panel-dir) * 100%)); } }
 
 /* ── Inline forms (new workspace / collection) and text fields ── */
 .uam-field {

@@ -45,10 +45,13 @@ describe('shared motion contract', () => {
   })
 
   it('animates panels, menus and the settings selection with transform and opacity only', () => {
-    for (const name of ['uam-panel-in', 'uam-panel-out', 'uam-panel-content-in', 'uam-panel-content-out', 'uam-menu-in', 'uam-menu-out']) {
+    for (const name of ['uam-panel-in', 'uam-panel-out', 'uam-menu-in', 'uam-menu-out']) {
       expect(animatedProperties(keyframes(styles, name)).every((property) => property === 'opacity' || property === 'transform'), name).toBe(true)
     }
     expect(styles).not.toMatch(/@keyframes uam-panel-(grow|shrink)/)
+    // Drawer: panels travel their full width into the rail, which stays above them.
+    expect(keyframes(styles, 'uam-panel-out')).toContain('translateX(calc(var(--panel-dir) * 100%))')
+    expect(rule(styles, '.uam-side-rail')).toMatch(/z-index: 21;/)
     expect(rule(settingsShell, '.uam-settings-nav__indicator')).toContain('transition: transform var(--dur-enter) var(--ease-out-soft);')
     expect(rule(sidebar, '.uam-sb-row')).toContain('transition: background-color var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);')
     expect(sessionItem).not.toMatch(/uam-sb-row[^`]*transition-all/)
