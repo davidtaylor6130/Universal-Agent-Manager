@@ -87,9 +87,11 @@
 #include "computer_use/computer_use_mcp_server.h"
 #include "computer_use/computer_use_platform.h"
 #include "cef/uam_bridge_request.h"
+#if !defined(UAM_TEST_HARNESS_WITHOUT_CEF)
 #include "cef/uam_cef_command_line_config.h"
 #include "cef/uam_cef_security.h"
 #include "cef/cef_push.h"
+#endif
 #include "cef/state_serializer.h"
 #include "core/chat_import_utils.h"
 #include "core/gemini_cli_compat.h"
@@ -291,6 +293,13 @@ namespace uam_test
 			}
 #endif
 		}
+	};
+
+	struct ScopedNativeHistoryHome
+	{
+		TempDir directory{"uam-native-history-test-home"};
+		ScopedEnvVar home{"HOME", directory.root.string()};
+		ScopedEnvVar profile{"USERPROFILE", directory.root.string()};
 	};
 
 	/// Fake `.svn` fixtures are not real working copies; SVN snapshots fail closed unless `svn status` succeeds,
