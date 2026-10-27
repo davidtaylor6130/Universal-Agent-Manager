@@ -1131,6 +1131,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     workspaceSourceDirectory: isString(value.workspaceSourceDirectory) ? value.workspaceSourceDirectory : undefined,
     workspaceBaseRef: isString(value.workspaceBaseRef) ? value.workspaceBaseRef : undefined,
     workspaceBranchName: isString(value.workspaceBranchName) ? value.workspaceBranchName : undefined,
+    pendingGitBranch: isString(value.pendingGitBranch) ? value.pendingGitBranch : undefined,
     routingMode: value.routingMode === 'automatic' ? 'automatic' : 'explicit',
     routingSourceFolderId: isString(value.routingSourceFolderId) ? value.routingSourceFolderId : undefined,
     routingSourceDirectory: isString(value.routingSourceDirectory) ? value.routingSourceDirectory : undefined,

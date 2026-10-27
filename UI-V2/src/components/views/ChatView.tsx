@@ -1761,6 +1761,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       if (status?.available && status.activeVcsType === vcsType) setComposerVcsBranch({ scope: composerBranchScope, status })
     })
   }
+  // Native creates a pending branch on the first send; refresh the composer's own read once it lands.
+  const pendingBranchRef = useRef(session.pendingGitBranch)
+  useEffect(() => {
+    if (pendingBranchRef.current && !session.pendingGitBranch && session.workspaceBranchName) handleBranchSwitched(session.workspaceBranchName)
+    pendingBranchRef.current = session.pendingGitBranch
+  })
   const sideBusyRef = useRef(false)
   const [sideBusy, setSideBusy] = useState(false)
   // A main chat keeps at most one live side chat; reopening it is a local switch,
@@ -3749,7 +3755,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
                   {composerBranch && (canSwitchComposerBranch
-                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
                     : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
                       <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
                         {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>

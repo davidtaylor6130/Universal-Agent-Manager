@@ -191,6 +191,7 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 	if (chat_id.empty() || objective.empty()) { cb->Failure(400, "Missing chat id or goal objective."); return; }
 	ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
 	if (!chat) { cb->Failure(404, "Chat not found."); return; }
+	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleSetGoal(browser, payload, cb); })) return;
 	const GoalMutationSnapshot previous(*chat);
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat);
 	const bool provider_managed = payload.value("executionOwner", "uam") == "provider" && !uam::strings::IsBlank(provider.native_goal_command);
@@ -446,6 +447,7 @@ void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nloh
 	if (chat_id.empty() || goal_id.empty()) { cb->Failure(400, "Missing chat or goal id."); return; }
 	ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
 	if (!chat) { cb->Failure(404, "Chat not found."); return; }
+	if (ApplyPendingChatBranch(browser, *chat, cb, [this, browser, payload, cb]() { HandleResumeGoal(browser, payload, cb); })) return;
 	const GoalMutationSnapshot previous(*chat);
 	const bool restart = payload.value("restart", false);
 	std::string error;

@@ -10,6 +10,7 @@
 #include "common/paths/path_utils.h"
 #include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include <chrono>
 #include <optional>
@@ -37,6 +38,29 @@ namespace
 		IMPLEMENT_REFCOUNTING(PendingBranchStopTask);
 	};
 
+	/// Resumes the launching request after the pending branch exists, or fails it with the branch error.
+	class PendingBranchCallback final : public CefMessageRouterBrowserSide::Callback
+	{
+	  public:
+		PendingBranchCallback(CefRefPtr<Callback> callback, std::string branch, std::function<void()> resume)
+		    : m_callback(std::move(callback)), m_branch(std::move(branch)), m_resume(std::move(resume)) {}
+		void Success(const CefString&) override { Resume(); }
+		void Success(const void*, size_t) override { Resume(); }
+		void Failure(int code, const CefString& message) override
+		{ m_callback->Failure(code, "Branch " + m_branch + " could not be created before the chat started. " + message.ToString()); }
+
+	  private:
+		void Resume()
+		{
+			try { m_resume(); }
+			catch (const std::exception&) { m_callback->Failure(400, "The request could not be read after creating the branch."); }
+		}
+		CefRefPtr<Callback> m_callback;
+		std::string m_branch;
+		std::function<void()> m_resume;
+		IMPLEMENT_REFCOUNTING(PendingBranchCallback);
+	};
+
 	bool BranchRuntimeSettled(const uam::AppState& app, const std::string& chat_id)
 	{
 		if (uam::AcpStopInProgress(app, chat_id) || uam::IsWorktreeLaunchPreparationPending(app, chat_id) ||
@@ -46,6 +70,18 @@ namespace
 			if (session && session->chat_id == chat_id && (session->running || session->local_stop_pending || session->remote_stop_pending)) return false;
 		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
 			if (terminal && terminal->running && uam::CliTerminalMatchesChatId(*terminal, chat_id)) return false;
+		return true;
+	}
+
+	/// A pending branch is applied on the next launch, so nothing may already be working in the chat.
+	bool ChatRuntimeIdleForPendingBranch(const uam::AppState& app, const ChatSession& chat)
+	{
+		if (chat.acp_queue_held || !chat.acp_queued_prompts.empty() || uam::IsWorktreeLaunchPreparationPending(app, chat.id)) return false;
+		for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)
+			if (session && session->chat_id == chat.id && (session->processing || !session->queued_user_prompts.empty() || session->pending_agent_input))
+				return false;
+		for (const std::unique_ptr<uam::CliTerminalState>& terminal : app.cli_terminals)
+			if (terminal && terminal->running && uam::CliTerminalMatchesChatId(*terminal, chat.id)) return false;
 		return true;
 	}
 
@@ -176,6 +212,15 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 	const bool svn = payload.value("vcsType", std::string{}) == "svn";
 	const auto svn_context = svn ? ParseSvnContext(payload) : uam::SvnBranchContext{};
 	if (svn && create) { cb->Failure(400, "SVN selection does not create repository folders."); return; }
+	if (!svn && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
+	{
+		// Withdrawing a pending first-message branch is metadata only, so dirty files cannot trap it.
+		chat->pending_git_branch_name.clear();
+		uam::acp_detail::ScheduleChatSave(m_app, *chat, 0.0);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"branch", branch}}.dump());
+		return;
+	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
 	{
@@ -190,15 +235,52 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		if (!uam::GitWorktreeService().ValidateChatBranchSelection(snapshot, request->chat, branch, create, error))
 			return uam::query_handler_async::AsyncFailure(400, error);
 		return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-	}, [this, browser, payload, cb, request](uam::query_handler_async::AsyncCefResult& result)
+	}, [this, browser, payload, cb, request, branch, create, svn](uam::query_handler_async::AsyncCefResult& result)
 	{
 		if (!result.ok) return;
 		if (!BranchRequestCurrent(m_app, *request))
 		{ result = uam::query_handler_async::AsyncFailure(409, "The chat changed before branch selection."); return; }
+		ChatSession* current = ChatDomainService().FindChatById(m_app, request->chat.id);
+		if (create && !svn && uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(*current) && ChatRuntimeIdleForPendingBranch(m_app, *current))
+		{
+			// Avoid branches for chats that never start; the first send creates it from the same HEAD.
+			current->pending_git_branch_name = branch;
+			uam::acp_detail::ScheduleChatSave(m_app, *current, 0.0);
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			result = uam::query_handler_async::AsyncSuccess({{"branch", branch}, {"pending", true}});
+			return;
+		}
 		ContinueSwitchChatBranch(browser, payload, cb);
 		result.callback_deferred = true;
 	});
 }
+bool UamQueryHandler::ApplyPendingChatBranch(CefRefPtr<CefBrowser> browser, ChatSession& chat, CefRefPtr<Callback> cb, std::function<void()> resume)
+{
+	if (chat.pending_git_branch_name.empty()) return false;
+	if (!uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(chat))
+	{
+		// The chat already started on its checked-out branch, so a late branch would split its history.
+		chat.pending_git_branch_name.clear();
+		uam::acp_detail::ScheduleChatSave(m_app, chat, 0.0);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		return false;
+	}
+	// The pending choice may still be saving; switching requires settled history.
+	CefRefPtr<PendingBranchStopTask> task = new PendingBranchStopTask(m_asyncLifetime, [this, browser, cb, resume = std::move(resume), id = chat.id](bool expired)
+	{
+		if (!expired && (m_app.pending_chat_save_at_by_chat_id.contains(id) || m_app.pending_chat_save_tasks.contains(id))) return false;
+		const ChatSession* current = ChatDomainService().FindChatById(m_app, id);
+		if (!current) { cb->Failure(404, "Chat not found."); return true; }
+		// Read the name now, so a withdrawal or rename while saving is honoured.
+		if (current->pending_git_branch_name.empty()) { CefRefPtr<Callback>(new PendingBranchCallback(cb, {}, resume))->Success(CefString()); return true; }
+		ContinueSwitchChatBranch(browser, {{"chatId", id}, {"branch", current->pending_git_branch_name}, {"create", true}},
+		    new PendingBranchCallback(cb, current->pending_git_branch_name, resume));
+		return true;
+	});
+	task->Execute();
+	return true;
+}
+
 void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	ChatSession* chat = uam::query_handler_internal::FindPayloadChatOrFail(m_app, payload, cb);
@@ -304,6 +386,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 					if (!svn)
 					{
 						current->workspace_branch_name = request->chat.workspace_branch_name;
+						current->pending_git_branch_name = request->chat.pending_git_branch_name;
 						current->updated_at = request->chat.updated_at;
 					}
 					uam::PushStateUpdateIfChanged(browser, m_app);

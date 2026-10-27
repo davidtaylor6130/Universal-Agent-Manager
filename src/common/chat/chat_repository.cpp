@@ -182,6 +182,7 @@ namespace
 	constexpr std::string_view kChatWorkspaceBranchNameField = "workspace_branch_name";
 	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
 	constexpr std::string_view kChatSvnUpdatePendingField = "svn_update_pending";
+	constexpr std::string_view kChatPendingGitBranchNameField = "pending_git_branch_name";
 	constexpr std::string_view kChatImportedReadOnlyField = "imported_read_only";
 	constexpr std::string_view kChatApprovalModeField = "approval_mode";
 	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
@@ -1574,7 +1575,7 @@ namespace
 			return false;
 		}
 
-		return lhs.workspace_branch_name == rhs.workspace_branch_name &&
+		return lhs.workspace_branch_name == rhs.workspace_branch_name && lhs.pending_git_branch_name == rhs.pending_git_branch_name &&
 		       lhs.workspace_worktree_directory == rhs.workspace_worktree_directory &&
 		       lhs.svn_update_pending == rhs.svn_update_pending &&
 		       lhs.imported_read_only == rhs.imported_read_only;
@@ -2239,6 +2240,7 @@ namespace
 		}
 		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
+		chat.pending_git_branch_name = JsonStringOrEmpty(root.Find(kChatPendingGitBranchNameField));
 		chat.svn_update_pending = JsonBoolOrDefault(root.Find(kChatSvnUpdatePendingField), false);
 		chat.imported_read_only = JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
 		if (!chat.imported_read_only)
@@ -3403,6 +3405,7 @@ namespace
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
 		    lhs.workspace_base_ref == rhs.workspace_base_ref && lhs.git_base_branch_override == rhs.git_base_branch_override && lhs.workspace_branch_name == rhs.workspace_branch_name &&
+		    lhs.pending_git_branch_name == rhs.pending_git_branch_name &&
 		    lhs.workspace_worktree_directory == rhs.workspace_worktree_directory && lhs.svn_update_pending == rhs.svn_update_pending && lhs.imported_read_only == rhs.imported_read_only &&
 		    lhs.managed_followup_incarnation == rhs.managed_followup_incarnation &&
 		    lhs.managed_followup_input_unavailable == rhs.managed_followup_input_unavailable &&
@@ -4169,6 +4172,7 @@ try
 	uam::json::SetValue(root, kChatGitBaseBranchOverrideField, chat.git_base_branch_override ? uam::json::String(*chat.git_base_branch_override) : JsonValue{});
 	uam::json::SetString(root, kChatWorkspaceBranchNameField, chat.workspace_branch_name);
 	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
+	if (!chat.pending_git_branch_name.empty()) uam::json::SetString(root, kChatPendingGitBranchNameField, chat.pending_git_branch_name);
 	uam::json::SetBool(root, kChatSvnUpdatePendingField, chat.svn_update_pending);
 	uam::json::SetBool(root, kChatImportedReadOnlyField, chat.imported_read_only);
 	if (!chat.imported_read_only && !chat.acp_unsent_prompt_recoveries.empty())
@@ -5415,6 +5419,7 @@ namespace
 		hydrated.git_base_branch_override = summary.git_base_branch_override;
 		hydrated.workspace_branch_name = summary.workspace_branch_name;
 		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
+		hydrated.pending_git_branch_name = summary.pending_git_branch_name;
 		hydrated.svn_update_pending = summary.svn_update_pending;
 		hydrated.imported_read_only = summary.imported_read_only;
 		hydrated.approval_mode = summary.approval_mode;
@@ -6346,7 +6351,8 @@ try
 	    candidate.workspace_isolation_kind != previous.workspace_isolation_kind ||
 	    candidate.workspace_source_directory != previous.workspace_source_directory ||
 	    candidate.workspace_base_ref != previous.workspace_base_ref || candidate.git_base_branch_override != previous.git_base_branch_override ||
-	    candidate.workspace_branch_name != previous.workspace_branch_name || candidate.svn_update_pending != previous.svn_update_pending ||
+	    candidate.workspace_branch_name != previous.workspace_branch_name || candidate.pending_git_branch_name != previous.pending_git_branch_name ||
+	    candidate.svn_update_pending != previous.svn_update_pending ||
 	    candidate.workspace_worktree_directory != previous.workspace_worktree_directory ||
 	    candidate.parent_chat_id != previous.parent_chat_id || candidate.branch_root_chat_id != previous.branch_root_chat_id ||
 	    candidate.subagent_parent_chat_id != previous.subagent_parent_chat_id || candidate.subagent_parent_created_at != previous.subagent_parent_created_at ||

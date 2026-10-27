@@ -140,6 +140,8 @@ export interface CppChat {
   workspaceSourceDirectory?: string
   workspaceBaseRef?: string
   workspaceBranchName?: string
+  /** New branch chosen before the first message; created when that message is sent. */
+  pendingGitBranch?: string
   workspaceWorktreeDirectory?: string
   importedReadOnly?: boolean
   createdAt: string

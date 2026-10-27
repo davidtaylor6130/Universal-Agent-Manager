@@ -360,6 +360,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleListChatBranches(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	/// Creates a branch chosen before the first message, then runs resume; false when none is pending.
+	bool ApplyPendingChatBranch(CefRefPtr<CefBrowser> browser, ChatSession& chat, CefRefPtr<Callback> cb, std::function<void()> resume);
 	void HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

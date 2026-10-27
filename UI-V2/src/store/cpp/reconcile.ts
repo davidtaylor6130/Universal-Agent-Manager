@@ -202,6 +202,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.workspaceSourceDirectory ?? '') === (next.workspaceSourceDirectory ?? '') &&
     (previous.workspaceBaseRef ?? '') === (next.workspaceBaseRef ?? '') &&
     (previous.workspaceBranchName ?? '') === (next.workspaceBranchName ?? '') &&
+    (previous.pendingGitBranch ?? '') === (next.pendingGitBranch ?? '') &&
     (previous.workspaceWorktreeDirectory ?? '') === (next.workspaceWorktreeDirectory ?? '') &&
     (previous.importedReadOnly ?? false) === (next.importedReadOnly ?? false) &&
     (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
@@ -278,6 +279,7 @@ export function sessionFromCppChat(
     workspaceSourceDirectory: chat.workspaceSourceDirectory ?? '',
     workspaceBaseRef: chat.workspaceBaseRef ?? '',
     workspaceBranchName: chat.workspaceBranchName ?? '',
+    pendingGitBranch: chat.pendingGitBranch,
     routingMode: chat.routingMode,
     routingSourceFolderId: chat.routingSourceFolderId,
     routingSourceDirectory: chat.routingSourceDirectory,

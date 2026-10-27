@@ -283,6 +283,7 @@ namespace uam
 			chat_json["workspaceBaseRef"] = chat.workspace_base_ref;
 			chat_json["gitBaseBranch"] = chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr);
 			chat_json["workspaceBranchName"] = chat.workspace_branch_name;
+			if (!chat.pending_git_branch_name.empty()) chat_json["pendingGitBranch"] = chat.pending_git_branch_name;
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
 
