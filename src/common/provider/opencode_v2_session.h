@@ -46,6 +46,7 @@ inline std::string AdapterError(std::string_view diagnostic_tail)
 }
 Json NormalizeExport(const Json& native);
 std::vector<std::string> ServeArgv(std::vector<std::string> command);
+bool IsCheckedHistoryV2(std::string_view version);
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
     const std::string& operation, const std::string& id);
 /// <summary>POSIX only: OpenCode 1.x export can exit 0 before a piped stdout drains (1.19.4 stops at 128/192 KiB),
