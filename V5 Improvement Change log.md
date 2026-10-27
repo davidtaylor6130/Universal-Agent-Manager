@@ -4128,6 +4128,11 @@ Task-0891 now puts the minimum 44-point frame and hit shape inside managed actio
 
 Focused shared/application tests and a 45-child paging/Stop-padding component fixture are authored, including exact request observation, visible Auto reasons, 44-point geometry, same-host foreign-workspace exclusion and exact newer-draft preservation. These changed-input native tests and captures have not executed: available disk remains below the existing validation/capture floors, with no compiler or simulator started and no cleanup or floor override. Dependency-free fixture/source checks are recorded privately; they do not verify Swift types or touch behavior. Required affected code review, Claude GUI follow-up, actual-app captures, live/platform/physical-iPhone checks and David acceptance remain outstanding. Owner stays Unassigned behind the authenticated UAM identity/contact gate; Un-Reviewed, Claude Review and Not User Tested are retained. Existing failures and raw review receipts remain intact; there is no task staging, commit, upload, remote write, merge, owner transfer or Complete claim.
 
+## V5 Alpha 4 local package — 2026-10-27
+David requested the `v5/ci-green` CI repairs merged into the alpha release with a new Alpha 4 package. The alpha branch merges `v5/ci-green` (`e33f5be3`: Windows helper cmd.exe length fix, native regression repairs, CI quarantine cleared) on top of Alpha 3 plus the Linux empty working-directory helper fix (#625), with the local presentation `5.0.0-Alpha-4`; the product/helper release stays `5.0.0` and protocol 3. `v5/ci-green` itself is unchanged.
+
+| Build and evidence | Misc | V5 Alpha Four Package | The alpha branch builds the Alpha 4 About and macOS presentation identifier with the CI-green repairs and the Linux helper fix in a complete local app and helper package. | Un-Reviewed; Not User Tested |
+
 ## V5 Alpha 3 local package — 2026-10-27
 David requested a rebuild from the latest merged V5 with updated serverside helpers so he can test real use cases. Its alpha branch was taken to the latest fetched merged V5 source `f590b8d4` (recent merges through #619) with the local presentation `5.0.0-Alpha-3`; the product/helper release stays `5.0.0` and protocol 3. The earlier Alpha 2 history rows and narratives are preserved; this section covers the Alpha 3 rebuild.
 
