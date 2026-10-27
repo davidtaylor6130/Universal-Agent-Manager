@@ -3,10 +3,10 @@ import { useAppStore } from '../../store/useAppStore'
 import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, type UsageProviderId } from '../../services/usageHistory'
 import type { AcpContextUsage, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
-import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
-import type { ProviderAllowance } from '../../services/providerAllowances'
+import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
 import { Button } from '../ui'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
@@ -113,6 +113,10 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
   const sessions = useAppStore(state => state.sessions)
   const bindings = useAppStore(state => state.acpBindingBySessionId)
   const account = useProviderAllowances(executionHostId)
+  const overrides = useAppStore(state => state.providerAvailability)
+  const providers = useMemo(() => USAGE_PROVIDERS.filter(provider => !providerDisabledOn(overrides, provider, executionHostId)), [overrides, executionHostId])
+  // Re-enabling reconfigures the native reader; read again now rather than showing its empty row until the next poll.
+  useEffect(() => { void preloadProviderAllowances(executionHostId) }, [overrides, executionHostId])
   const now = Math.max(clock, Date.now())
   const latest = useMemo(() => {
     const contexts = new Map<string, { usage: AcpContextUsage; title: string }>()
@@ -130,7 +134,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
     return { contexts, tokens }
   }, [sessions, bindings, executionHostId])
   // The most-used window across providers, named in one sentence when it is near its limit.
-  const closest = USAGE_PROVIDERS.flatMap(provider => {
+  const closest = providers.flatMap(provider => {
     const name = providerShortName(undefined, provider)
     return windowRows(provider, name, account.data?.providers.find(row => row.providerId === provider))
       .filter(row => row.window && !row.unlimited && isValidPercent(row.window.usedPercent))
@@ -138,6 +142,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
   }).reduce<{ name: string; row: WindowRow } | null>((top, next) => !top || next.row.window!.usedPercent > top.row.window!.usedPercent ? next : top, null)
   const closestWindow = closest?.row.window
   const lede = closest && closestWindow && closestWindow.usedPercent >= 80 ? <p className="uam-limits-lede"><b>{closest.name} is closest to its limit:</b> {formatPercent(closestWindow.usedPercent)}% of {closest.row.label} used{closestWindow.resetsAt !== null && closestWindow.resetsAt * 1000 > now ? `, resets ${relativeIn(closestWindow.resetsAt * 1000, now)}` : ''}.</p> : null
+  if (providers.length === 0) return <p className="text-xs uam-usage-muted">No provider is turned on for this computer. Turn one on in Settings &gt; Providers.</p>
   return <div className="grid gap-4">
     <div className="flex items-start justify-between gap-4">
       <div className="grid gap-2 min-w-0">
@@ -149,7 +154,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
     {executionHostId === 'local' && <div className="uam-pace-key" aria-hidden><span><i />Where you are in the reset period</span><span><b />Used</span></div>}
     {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly</p>}
     {account.error && <p role="status" className="text-xs" style={{ color: 'var(--warning)' }}>{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
-    <div className="uam-pace-list">{USAGE_PROVIDERS.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
+    <div className="uam-pace-list">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
 }
 
@@ -184,7 +189,8 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
       {hasAllowance && <span className="uam-limits-updated" title={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}>{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span>}
     </header>
     {(loading || allowance?.status === 'loading') && <p role="status" className="text-xs uam-usage-muted animate-pulse">Reading allowances…</p>}
-    {allowance?.error && <p className="uam-limits-notice">{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
+    {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
+    {allowance?.error && <p className={allowance.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice'}>{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
     {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="text-xs uam-usage-muted">Account allowances unavailable.</p>}
     {showWindowRows && <div className="uam-pace-rows">
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}

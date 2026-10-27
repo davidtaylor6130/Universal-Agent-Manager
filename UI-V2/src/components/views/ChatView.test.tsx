@@ -1089,6 +1089,28 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('does not offer a provider disabled on the chat computer in the composer, like a build-excluded provider', () => {
+    const previous = useAppStore.getState().providerAvailability
+    useAppStore.setState((state) => ({
+      providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }],
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => { (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click() })
+      const providerButton = (label: string) => document.body.querySelector(`[data-model-picker-sidebar] button[aria-label="${label}"]`)
+      expect(providerButton('Gemini')).not.toBeNull()
+      expect(providerButton('Codex')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ providerAvailability: previous })
+    }
+  })
+
   it('confirms provider handoff before changing anything', async () => {
     const originalSetSessionModel = useAppStore.getState().setSessionModel
     const setSessionModel = vi.fn().mockResolvedValue(true)

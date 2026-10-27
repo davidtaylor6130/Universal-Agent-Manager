@@ -319,6 +319,11 @@ const PROVIDER_ID_ALIASES: Record<string, string> = {
   ...(COPILOT_ENABLED ? { copilot: COPILOT_CLI_PROVIDER_ID, 'github-copilot': COPILOT_CLI_PROVIDER_ID, [COPILOT_CLI_PROVIDER_ID]: COPILOT_CLI_PROVIDER_ID } : {}),
 }
 
+/** Like a build-excluded provider, one disabled on a computer is shown only in Settings, where it is turned back on. */
+export function providerDisabledOn(overrides: readonly { providerId: string; executionHostId: string; enabled: boolean }[], providerId: string, executionHostId: string): boolean {
+  return overrides.some((entry) => entry.providerId === providerId && entry.executionHostId === executionHostId && !entry.enabled)
+}
+
 export function normalizeCliProviderIdAlias(providerId: string): string {
   const trimmed = providerId.trim()
   if (!trimmed) return ''

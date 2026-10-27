@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 
 vi.mock('../sidebar/ChatSearchBar', () => ({
-  ChatSearchBar: ({ value, onChange, onClear, onToggleDeepSearch }: { value: string; onChange: (value: string) => void; onClear: () => void; onToggleDeepSearch: () => void }) => (
-    <div data-testid="chat-search">
+  ChatSearchBar: ({ value, onChange, onClear, onToggleDeepSearch, providerOptions }: { value: string; onChange: (value: string) => void; onClear: () => void; onToggleDeepSearch: () => void; providerOptions: { id: string }[] }) => (
+    <div data-testid="chat-search" data-providers={providerOptions.map((option) => option.id).join()}>
       <input value={value} onChange={(event) => onChange(event.currentTarget.value)} />
       <button type="button" onClick={onClear}>Clear</button>
       <button type="button" onClick={onToggleDeepSearch}>Deep</button>
@@ -29,8 +29,22 @@ describe('Sidebar', () => {
       setNewChatModalOpen: vi.fn(),
       sessions: [],
       providers: [],
+      providerAvailability: [],
       chatSearchNavigation: null,
     })
+  })
+
+  it('offers a provider disabled on this computer as a chat filter only while chats use it', () => {
+    useAppStore.setState({
+      providers: [{ id: 'codex-cli', name: 'Codex CLI' }, { id: 'gemini-cli', name: 'Gemini CLI' }, { id: 'claude-cli', name: 'Claude Code' }] as ReturnType<typeof useAppStore.getState>['providers'],
+      providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }, { providerId: 'gemini-cli', executionHostId: 'local', enabled: false }],
+      sessions: [{ id: 'old', name: 'Old Gemini chat', providerId: 'gemini-cli' }] as ReturnType<typeof useAppStore.getState>['sessions'],
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    act(() => root.render(<Sidebar />))
+    try {
+      expect(host.querySelector('[data-testid="chat-search"]')!.getAttribute('data-providers')!.split(',').sort()).toEqual(['claude-cli', 'gemini-cli'])
+    } finally { act(() => root.unmount()) }
   })
 
   it('distinguishes a failed deep search from no matches and retries', async () => {

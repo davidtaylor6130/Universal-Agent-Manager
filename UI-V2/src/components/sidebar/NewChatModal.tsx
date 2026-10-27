@@ -4,7 +4,7 @@ import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -12,7 +12,7 @@ import type { Provider } from '../../types/provider'
 import { SelectionGrid } from '../shared/SelectionGrid'
 import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
-import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerCapabilities, providerDisabledOn } from '../../utils/providerMetadata'
 import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { ModelPickerContent } from '../chat/ModelPickerContent'
@@ -27,7 +27,10 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
-  const providers = useAppStore(useShallow((s) => s.providers))
+  const allProviders = useAppStore(useShallow((s) => s.providers))
+  const providerAvailabilityOverrides = useAppStore(useShallow((s) => s.providerAvailability))
+  // Like build-excluded providers, a provider switched off for a computer is not offered there.
+  const providersFor = (hostId: string) => allProviders.filter((provider) => !providerDisabledOn(providerAvailabilityOverrides, provider.id, hostId))
   const globalDefaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
   const globalProviderChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
   const hostScopedSettingsValues = useAppStore(useShallow((s) => s.hostScopedSettingsValues))
@@ -61,15 +64,21 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const defaultState = { defaultNewChatProviderId: globalDefaultNewChatProviderId, providerChatDefaults: globalProviderChatDefaults, hostScopedSettingsValues, executionHosts }
   const initialDefaults = defaultsForExecutionHost(defaultState, initialFolder?.executionHostId || 'local')
+  const initialProviders = providersFor(initialFolder?.executionHostId || 'local')
   const initialProviderId =
-    providers.some((provider) => provider.id === initialDefaults.defaultNewChatProviderId)
+    initialProviders.some((provider) => provider.id === initialDefaults.defaultNewChatProviderId)
       ? initialDefaults.defaultNewChatProviderId
-      : providers[0]?.id ?? DEFAULT_PROVIDER_ID
-  const [providerId, setProviderId] = useState(initialProviderId)
+      : initialProviders[0]?.id ?? DEFAULT_PROVIDER_ID
+  const [chosenProviderId, setProviderId] = useState(initialProviderId)
 	const [executionHostId, setExecutionHostId] = useState(initialFolder?.executionHostId || 'local')
+  // Automatic routing chooses the computer later and natively skips disabled host/provider pairs.
+  const providers = useMemo(() => routingMode === 'automatic' ? allProviders : providersFor(executionHostId), [allProviders, providerAvailabilityOverrides, executionHostId, routingMode])
   const effectiveDefaults = routingMode === 'explicit' ? defaultsForExecutionHost(defaultState, executionHostId) : defaultState
   const defaultNewChatProviderId = effectiveDefaults.defaultNewChatProviderId
   const providerChatDefaults = effectiveDefaults.providerChatDefaults
+  // A choice hidden by the computer switch falls back in the same render, so nothing acts on the hidden provider.
+  const providerId = providers.some((provider) => provider.id === chosenProviderId) ? chosenProviderId
+    : providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0]?.id ?? chosenProviderId
   const providerChoiceExplicit = useRef(false)
 	const [remoteWorkspace, setRemoteWorkspace] = useState(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local' ? initialFolder.directory : '')
   const [modelId, setModelId] = useState(initialDefaults.providerChatDefaults[initialProviderId]?.modelId ?? '')
@@ -131,14 +140,12 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   }, [folders, newChatFolderId])
 
   useEffect(() => {
-    if (providers.length === 0) return
-    if (!providers.some((provider) => provider.id === providerId)) {
-      const nextProviderId = providers.some((provider) => provider.id === defaultNewChatProviderId) ? defaultNewChatProviderId : providers[0].id
-      setProviderId(nextProviderId)
-      setModelId(providerChatDefaults[nextProviderId]?.modelId ?? '')
-	  setReasoningEffort(providerChatDefaults[nextProviderId]?.reasoningEffort ?? '')
+    if (providerId !== chosenProviderId) {
+      setProviderId(providerId)
+      setModelId(providerChatDefaults[providerId]?.modelId ?? '')
+	  setReasoningEffort(providerChatDefaults[providerId]?.reasoningEffort ?? '')
     }
-  }, [providers, providerId, defaultNewChatProviderId, providerChatDefaults])
+  }, [providerId, chosenProviderId, providerChatDefaults])
 
   // Close on Escape
   useEffect(() => {
@@ -189,7 +196,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const terminalBlocked = !provider || provider.supportsCli === false ||
       (routingMode !== 'automatic' && !isRemote && (status === 'unavailable' || (provider.id === COPILOT_CLI_PROVIDER_ID && status === 'known-incompatible')))
     const issues: string[] = []
-    if (!provider) issues.push('No provider is available. Configure a provider in Settings.')
+    if (!provider) issues.push('No provider is available. Enable one in Settings > Providers.')
     else {
       if (provider.supportsStructured === false) issues.push(provider.supportsCli !== false ? 'This provider supports terminal chat only.' : 'This provider does not support structured chat. Choose another provider or check Settings.')
       if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
@@ -327,7 +334,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const saved = workspaceChoices.current[hostId]
     const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
     const preferred = defaultsForExecutionHost(defaultState, hostId).defaultNewChatProviderId
-    const nextProvider = !providerChoiceExplicit.current && providers.some(provider => provider.id === preferred) ? preferred : providerId
+    const nextProvider = !providerChoiceExplicit.current && providersFor(hostId).some(provider => provider.id === preferred) ? preferred : providerId
     chooseProvider(nextProvider, hostId, false)
     setExecutionHostId(hostId)
     setFolderId(saved ? saved.folderId : compatible?.id ?? null)
@@ -524,7 +531,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             }}
           >
             <ModelPickerContent
-              providers={providers} providerId={providerId} currentModelId={selectedModelId}
+              key={providers.map((provider) => provider.id).join()} providers={providers} providerId={providerId} currentModelId={selectedModelId}
               activeOptions={modelOptions} activeLoading={cachedAcp?.modelsLoading} activeError={cachedAcp?.modelRefreshError}
               modelDisabled={routingMode === 'automatic'} canChangeProvider={routingMode !== 'automatic'}
               workspaceDirectory={selectedWorkspace} executionHostId={executionHostId} listHeight={400}

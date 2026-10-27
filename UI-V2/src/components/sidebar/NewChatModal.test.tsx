@@ -34,6 +34,7 @@ describe('NewChatModal', () => {
 	  acpBindingBySessionId: {},
       providerModelCatalogs: [],
       cliVersionManager: { providers: [] },
+      providerAvailability: [],
       discoverProviderModels: originalDiscoverProviderModels,
       listRemoteDirectories: originalListRemoteDirectories,
       executionRouting: { enabled: false, hosts: [] },
@@ -419,6 +420,30 @@ describe('NewChatModal', () => {
 
     expect(discoverProviderModels).not.toHaveBeenCalled()
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not offer a provider disabled on the selected computer, like a build-excluded provider', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+    const tab = (label: string) => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+    expect(tab('Gemini')?.getAttribute('aria-pressed')).toBe('true')
+
+    // Switching the open provider off moves New chat and its picker to the next provider in the same render.
+    await act(async () => { useAppStore.setState({ providerAvailability: [{ providerId: 'gemini-cli', executionHostId: 'local', enabled: false }] }) })
+    expect(tab('Gemini')).toBeNull()
+    expect(tab('Codex')?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click())
+    expect(addSession.mock.calls[0]?.[2]).toBe('codex-cli')
+
+    // The same provider disabled only on another computer is still offered here.
+    await act(async () => { useAppStore.setState({ providerAvailability: [{ providerId: 'gemini-cli', executionHostId: 'lab', enabled: false }] }) })
+    expect(tab('Gemini')).not.toBeNull()
     act(() => root.unmount())
     host.remove()
   })

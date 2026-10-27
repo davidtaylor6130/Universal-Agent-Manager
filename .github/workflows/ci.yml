@@ -217,11 +217,12 @@ jobs:
       - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
       - name: Run native core tests
         shell: bash
-        # Serial like ctest, but a case that fails a real-time budget gets one fresh retry; budgets are unchanged.
+        # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
+        # gets one fresh serial retry. Budgets are unchanged.
         run: |
           binary=Builds/tests/uam_core_tests python=python3
           if [ "$RUNNER_OS" = Windows ]; then binary=Builds/tests/Release/uam_core_tests.exe python=python; fi
-          "$python" scripts/run_native_tests.py --jobs 1 --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
+          "$python" scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
       - name: Package macOS review build
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}

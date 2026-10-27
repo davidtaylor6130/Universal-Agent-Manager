@@ -11,7 +11,7 @@ on:
       - 'src/computer_use/**'
       - 'src/common/provider/**'
       - 'src/common/runtime/acp/**'
-      - 'tests/core_tests.cpp'
+      - 'tests/core_*tests.cpp'
       - 'tests/computer_use_tests.cpp'
 
 permissions:

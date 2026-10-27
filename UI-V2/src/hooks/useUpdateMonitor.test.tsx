@@ -489,3 +489,30 @@ it('automatically installs only opted-in idle providers and defers running sessi
     delete window.cefQuery
   }
 })
+
+it('neither offers nor automatically installs an update for a provider disabled on that computer', async () => {
+  const previous = useAppStore.getState()
+  const originalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+  const entries = new Map<string, string>()
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => entries.set(key, value), removeItem: (key: string) => entries.delete(key) } })
+  window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ checkedAt: new Date().toISOString(), uam: { version: '4.9.0', url: '' }, providers: { 'codex-cli': { version: '2.0.0', url: '' } } }))
+  const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, blockingChatIds: [], lastCommand: '', lastOutput: '' }
+  useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: true, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [provider] }, providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }] })
+  const requests: { action: string }[] = []
+  window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  let result: ReturnType<typeof useUpdateMonitor> | undefined
+  function Results() { result = useUpdateMonitor(); return null }
+  const root = createRoot(document.createElement('div'))
+  try {
+    await act(async () => root.render(<Results />))
+    expect(result!.updates.map((update) => update.providerId)).not.toContain('codex-cli')
+    expect(requests.filter((request) => request.action === 'applyCliProviderVersions')).toEqual([])
+    await act(async () => useAppStore.setState({ providerAvailability: [] }))
+    expect(result!.updates.map((update) => update.providerId)).toContain('codex-cli')
+  } finally {
+    await act(async () => root.unmount())
+    useAppStore.setState(previous, true)
+    if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
+    delete window.cefQuery
+  }
+})
