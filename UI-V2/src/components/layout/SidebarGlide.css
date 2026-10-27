@@ -1,10 +1,5 @@
-.uam-sidebar-glide [data-session-id][aria-current='page'],
-.uam-sidebar-glide [data-session-id][data-selected='true'] {
-  animation: uam-sidebar-glide-select 200ms ease-out backwards;
-}
-
 .uam-sidebar-glide .uam-folder-expand-glide {
-  animation: uam-sidebar-glide-in 200ms ease-out backwards;
+  animation: uam-sidebar-glide-in var(--dur-base) var(--ease-out-soft) backwards;
 }
 
 @keyframes uam-sidebar-glide-in {
@@ -12,17 +7,7 @@
   to { transform: translateY(0); }
 }
 
-@keyframes uam-sidebar-glide-select {
-  from { transform: translateX(-2px); }
-  to { transform: translateX(0); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .uam-sidebar-glide [data-session-id][aria-current='page'],
-  .uam-sidebar-glide [data-session-id][data-selected='true'] {
-    animation: none;
-  }
-
   .uam-sidebar-glide .uam-folder-expand-glide {
     animation: none;
   }

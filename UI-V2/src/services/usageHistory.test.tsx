@@ -1,8 +1,8 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useUsageHistory } from '../hooks/useUsageHistory'
-import { formatUsageCost, parseUsageHistory, USAGE_PROVIDERS, usageWindow, type UsageHistory, type UsageTotals } from './usageHistory'
+import { clearUsageHistoryCache, useUsageHistory } from '../hooks/useUsageHistory'
+import { formatUsageCost, parseUsageHistory, USAGE_PROVIDERS, usageCostBasis, usageWindow, type UsageHistory, type UsageTotals } from './usageHistory'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const windowRange = { startMs: 86400000, endMs: 172800000, days: 1 as const }
@@ -14,7 +14,7 @@ function history(overrides: Partial<UsageHistory> = {}): UsageHistory {
     providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : { ...total, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }), providerId, available: providerId === 'codex-cli', files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
     models: [{ ...total, providerId: 'codex-cli', modelId: 'test-model', speed: 'standard' }], days: [{ ...total, startMs: 86400000 }], hours: [], providerDays: [{ ...total, providerId: 'codex-cli', startMs: 86400000 }], providerHours: [], ...overrides }
 }
-afterEach(() => { delete window.cefQuery; vi.useRealTimers() })
+afterEach(() => { delete window.cefQuery; vi.useRealTimers(); clearUsageHistoryCache() })
 
 describe('usage history contract', () => {
   it('accepts All Time adaptive cohorts with exact totals and rejects lost or malformed chart coverage', () => {
@@ -93,6 +93,19 @@ describe('usage history contract', () => {
   })
 })
 
+describe('usage cost basis', () => {
+  it('names reported, estimated, mixed, partial and unpriced amounts without calling empty usage free', () => {
+    const priced = { ...total, unpricedTokens: 0 }
+    expect(usageCostBasis({ ...total, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, unpricedTokens: 0 })).toBe('none')
+    expect(usageCostBasis(total)).toBe('unpriced')
+    expect(usageCostBasis({ ...priced, reportedCostTokens: 17, reportedCostUsd: 1 })).toBe('reported')
+    expect(usageCostBasis({ ...priced, reportedCostTokens: 17 })).toBe('reported')
+    expect(usageCostBasis({ ...priced, estimatedCostTokens: 17, estimatedCostUsd: 1 })).toBe('estimated')
+    expect(usageCostBasis({ ...priced, reportedCostTokens: 7, estimatedCostTokens: 10 })).toBe('mixed')
+    expect(usageCostBasis({ ...total, estimatedCostTokens: 10, unpricedTokens: 7 })).toBe('partial')
+  })
+})
+
 describe('usage history loading', () => {
   it('polls price refreshes promptly after history is complete, then returns to background cadence', async () => {
     vi.useFakeTimers()
@@ -111,6 +124,29 @@ describe('usage history loading', () => {
       expect(calls).toBe(2)
       await act(async () => vi.advanceTimersByTimeAsync(1))
       expect(calls).toBe(3)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('reuses a cached answer only for the same host, period and prices', async () => {
+    const pending: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []
+    window.cefQuery = request => { pending.push(request) }
+    const priced = [{ providerId: 'codex-cli', modelId: 'test-model', speed: 'standard' as const, inputPerMillion: 1, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: null }]
+    let state!: ReturnType<typeof useUsageHistory>
+    function Probe({ host = 'local', prices = [] as typeof priced }) { state = useUsageHistory(host, windowRange, prices); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(<Probe />))
+      await act(async () => pending[0].onSuccess(JSON.stringify(history())))
+      for (const next of [<Probe host="remote" />, <Probe prices={priced} />]) {
+        await act(async () => root.render(next))
+        expect(state.kept).toBe(true)
+        expect(state.loading).toBe(true)
+      }
+      // Opening the same question again (a second mount) shows the cached answer at once while it refreshes.
+      const again = createRoot(document.createElement('div'))
+      await act(async () => again.render(<Probe />))
+      expect(state.kept).toBe(false); expect(state.data?.executionHostId).toBe('local'); expect(state.loading).toBe(true)
+      act(() => again.unmount())
     } finally { act(() => root.unmount()) }
   })
 

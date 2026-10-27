@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #if defined(_WIN32)
@@ -12,6 +13,24 @@
 
 namespace uam::paths
 {
+	/// Convert the already decoded absolute path portion of a local file URI.
+	/// URI authority, escaping and content validation remain with the reader.
+	inline std::filesystem::path PathFromDecodedLocalFileUri(std::string value)
+	{
+		const bool drive_uri = value.size() > 3 && value[0] == '/' && value[2] == ':' && value[3] == '/' &&
+		    ((value[1] >= 'a' && value[1] <= 'z') || (value[1] >= 'A' && value[1] <= 'Z'));
+#if defined(_WIN32)
+		if (drive_uri)
+			value.erase(0, 1);
+#else
+		// A foreign drive URI does not attest a different POSIX workspace.
+		if (drive_uri)
+			return {};
+#endif
+		const auto* begin = reinterpret_cast<const char8_t*>(value.data());
+		return std::filesystem::path(std::u8string_view(begin, value.size()));
+	}
+
 	inline void StoreError(std::error_code* error_out, const std::error_code& error)
 	{
 		if (error_out != nullptr)

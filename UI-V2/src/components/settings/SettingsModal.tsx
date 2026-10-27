@@ -1,5 +1,6 @@
 import { VcsSettingsSection } from './VcsSettingsSection'
 import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
+import { NativeHistorySettings } from './NativeHistorySettings'
 import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './DataFolderSettingsSection'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
@@ -500,7 +501,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(COMPUTER_USE_ENABLED ? { 'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos' } : {}),
   editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
-  'chat-data': 'chat data history storage import export backup',
+  'chat-data': 'chat data native provider history discovery storage import export backup',
   about: 'version build release updates app information',
 }
 
@@ -876,14 +877,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
-  // Measure the active nav item so one indicator can glide between items.
+  // Measure the active nav item so one indicator (tint + line) can glide between items.
   useLayoutEffect(() => {
     const nav = navRef.current
     if (!nav) return
     const measure = () => {
       const active = nav.querySelector<HTMLElement>('[data-active="true"]')
-      // Inset 8px so the dash sits inside the item's rounded edges, like the old ::before bar.
-      setNavIndicator(active ? { top: active.offsetTop + 8, height: active.offsetHeight - 16 } : null)
+      setNavIndicator(active ? { top: active.offsetTop, height: active.offsetHeight } : null)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return
@@ -3214,6 +3214,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'chat-data') {
       return (
         <div className="grid gap-0">
+          <NativeHistorySettings />
           <SettingsSection title="Chat bundle">
             <SettingRow
               title="Export all chats"

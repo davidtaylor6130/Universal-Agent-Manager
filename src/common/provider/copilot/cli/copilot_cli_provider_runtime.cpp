@@ -218,7 +218,7 @@ namespace
 			{
 				completed_text = false;
 				completed_text_id.clear();
-				if (!value(data, "parentAgentTaskId").empty()) child_session = true;
+				// Copilot CLI 1.0.10x stamps parentAgentTaskId on every top-level user message; it does not mark a sub-agent session.
 				const std::string content = value(data, "content");
 				if (uam::strings::TrimAsciiView(content).empty()) return true;
 				uam::copilot::presentation::AcceptedBoundary(mcp_origins, record, data);

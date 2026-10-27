@@ -20,7 +20,7 @@ Safety controls with incomplete native cleanup keep a pending status and truthfu
 
 ## Navigation and motion
 
-The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The line glides using transform; hover and active backgrounds share the same item box. Reduced motion disables the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
+The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The tint and line form one indicator that glides between items using transform only; hover and active backgrounds share the same item box. Reduced motion and Motion Off move it without the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
 
 ## Environment control
 

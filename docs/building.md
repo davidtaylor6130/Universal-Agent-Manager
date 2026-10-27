@@ -35,7 +35,7 @@ Disable remote-helper packaging when you only need a local development build:
 
 Keep this build folder between edits and rerun only `cmake --build`; native and frontend
 inputs are tracked automatically. Run `npm ci` again only when the lockfile changes.
-Make/Ninja builds use an installed `ccache` automatically. Agent verification commands,
+Make/Ninja builds use an installed `ccache` automatically; with ccache 4.8+ worktrees that use the same build-folder name share its cache. Agent verification commands,
 including focused cases and the parallel full native inventory, are in [AGENTS.md](../AGENTS.md).
 
 ```bash
@@ -122,5 +122,7 @@ Pull-request CI also runs:
 - Native Release builds and CTest on macOS ARM, macOS Intel, and Windows x64.
 - Packaged-app smoke tests that validate the bundled UI, CEF resources, helper checksums, launch, and shutdown.
 - Separate Computer Use and provider CLI contract checks.
+
+Native CI jobs restore a per-platform `ccache` saved by the latest push to the base branch; pull requests read it without saving. Windows CI uses Ninja Multi-Config inside the MSVC developer environment so the cache applies there too, keeping the `Release/` output layout. A newer push to the same pull request cancels its older CI run.
 
 Release tags must match the numeric version in `UI-V2/package.json`, optionally followed by a prerelease suffix (for example `v5.0.0-alpha.1` for version `5.0.0`); suffixed tags are published as GitHub prereleases so they never replace the latest release. The release job gates native core cases like CI, through one retry and `tests/ci_quarantine.txt`. The release workflow publishes the two macOS archives, the Windows archive, and the frontend SBOM.

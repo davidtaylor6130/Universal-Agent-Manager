@@ -636,6 +636,7 @@ UAM_TEST(AcpWorkspaceRetryActiveTurnRejectsDuplicateWithoutNewInput)
 UAM_TEST(AcpDirectRetryRejectsInvalidPriorSkillBeforeAgentOrGoalMutation)
 {
 	for (const bool missing_agent : {false, true})
+	for (const bool empty_snapshot : {false, true})
 	{
 		RetryWorkspaceFixture fixture;
 		ChatSession& chat = fixture.app.chats.front();
@@ -643,6 +644,8 @@ UAM_TEST(AcpDirectRetryRejectsInvalidPriorSkillBeforeAgentOrGoalMutation)
 		chat.svn_update_pending = false;
 		chat.small_model_mode = true;
 		chat.messages.front().markdown_store_files = {"missing-original-snapshot.md"};
+		// A reloaded empty block keeps its slot but is still a missing snapshot.
+		if (empty_snapshot) chat.messages.front().markdown_store_prompt_blocks = {""};
 		if (missing_agent) chat.uam_agent_id = "private-unavailable-agent";
 		std::string error;
 		UAM_ASSERT(!uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));

@@ -25,6 +25,8 @@ namespace uam
 		std::string workspace_directory;
 		std::string execution_host_id;
 		std::string updated_at;
+		std::string workspace_title;
+		bool new_workspace = false;
 	};
 
 	struct StartupNativeImportSnapshot
@@ -66,7 +68,7 @@ namespace uam
 		std::vector<StartupNativeImportRemoteScope> remote_scopes;
 	};
 
-	/// <summary>Scans provider history once off-thread; only explicit selections may publish chats.</summary>
+	/// <summary>Stages provider history off-thread; only explicit selections may publish chats.</summary>
 	class StartupNativeImportService
 	{
 	  public:
@@ -75,6 +77,11 @@ namespace uam
 		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {});
 		~StartupNativeImportService();
 		void Initialize(const AppState& app);
+		/// <summary>Starts a fresh controller-local scan without changing saved chats or overlapping active discovery/import.</summary>
+		bool DiscoverLocalHistory(const AppState& app, std::string* error_out = nullptr);
+		/// <summary>Stage an exact native workspace assignment without saving folders or chats.</summary>
+		bool AssignWorkspace(AppState& app, const std::string& generation, const std::string& candidate_id,
+		    const std::string& title, std::string* error_out = nullptr);
 		bool Poll(AppState& app);
 		/// <summary>Returns bounded metadata only, with a cursor for the remaining candidates.</summary>
 		StartupNativeImportSnapshot Snapshot(std::size_t offset = 0, std::size_t limit = 100,
@@ -97,9 +104,11 @@ namespace uam
 			std::filesystem::path rollout;
 			opencode_import::Spool open_code_export;
 			ChatFolder owner;
+			bool new_workspace = false;
 			std::optional<ExecutionHost> host;
 		};
 		bool Revalidate(AppState& app, std::string* error_out);
+		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);
 		void FinishImport(AppState& app);
 		std::vector<StartupNativeImportRemoteScope> PendingRemoteScopes(const AppState& app);
@@ -111,6 +120,7 @@ namespace uam
 		std::map<std::string, ExecutionHost> m_remote_hosts;
 		std::map<std::string, ChatFolder> m_remote_folders;
 		bool m_initialized = false;
+		bool m_include_unregistered_local = false;
 		std::stop_source m_stop;
 		std::future<ChatHistorySyncService::LocalHistoryDiscovery> m_scan;
 		std::string m_phase = "idle";
@@ -119,6 +129,7 @@ namespace uam
 		std::vector<Candidate> m_selected;
 		ChatHistorySyncService::LocalHistoryDiscovery m_import;
 		std::vector<std::string> m_errors;
+		std::size_t m_omitted_error_count = 0;
 		int m_imported_count = 0;
 	};
 }

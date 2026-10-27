@@ -203,19 +203,7 @@ namespace
 		std::vector<ChatSession> lineage;
 		lineage.reserve(app.chats.size());
 		for (const ChatSession& chat : app.chats)
-		{
-			ChatSession projected;
-			projected.id = chat.id;
-			projected.parent_chat_id = chat.parent_chat_id;
-			projected.branch_root_chat_id = chat.branch_root_chat_id;
-			projected.branch_from_message_index = chat.branch_from_message_index;
-			projected.provider_id = chat.provider_id;
-			projected.native_session_id = chat.native_session_id;
-			projected.execution_host_id = chat.execution_host_id;
-			projected.workspace_directory = chat.workspace_directory;
-			projected.workspace_worktree_directory = chat.workspace_worktree_directory;
-			lineage.push_back(std::move(projected));
-		}
+			lineage.push_back(ChatBranching::LineageOnly(chat));
 		ChatBranching::ReparentChildrenAfterDeletes(lineage, deleted_ids);
 		std::erase_if(lineage, [&](const ChatSession& chat) { return deleted_ids.contains(chat.id); });
 		ChatBranching::Normalize(lineage);
