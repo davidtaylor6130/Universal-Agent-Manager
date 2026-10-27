@@ -125,10 +125,11 @@ namespace uam::platform_linux_impl
 			    const std::vector<std::string>& argv, std::string* error_out,
 			    const std::vector<std::pair<std::string, std::string>>& environment) const override
 			{
-				if (argv.empty() || argv.front().empty() || !working_directory.is_absolute() ||
-				    !std::filesystem::is_directory(working_directory))
+				// An empty working directory inherits the current one, matching macOS and Windows.
+				if (argv.empty() || argv.front().empty() || (!working_directory.empty() &&
+				    (!working_directory.is_absolute() || !std::filesystem::is_directory(working_directory))))
 				{
-					if (error_out != nullptr) *error_out = "A valid command and absolute working directory are required.";
+					if (error_out != nullptr) *error_out = "A valid command and an empty or absolute working directory are required.";
 					return false;
 				}
 				for (const auto& [name, value] : environment)
@@ -173,7 +174,7 @@ namespace uam::platform_linux_impl
 				if (child == 0)
 				{
 					(void)setpgid(0, 0);
-					if (chdir(working_directory.c_str()) != 0 ||
+					if ((!working_directory.empty() && chdir(working_directory.c_str()) != 0) ||
 					    dup2(input[0], STDIN_FILENO) < 0 ||
 					    dup2(output[1], STDOUT_FILENO) < 0 ||
 					    dup2(diagnostic[1], STDERR_FILENO) < 0)
