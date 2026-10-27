@@ -230,15 +230,18 @@ UAM_TEST(OpenCodeV2TransportLossHoldsQueueThroughSharedPolling)
 		if (path == 1) uam::acp_detail::RecoverDisconnectedRemoteAcpTransport(fixture.app, fixture.Session(), fixture.Chat(), "Owned input transport failed");
 		if (path == 2)
 		{
-			// Private empty files give the real poller clean EOF, so closed-handle
+			// Private empty files (closed pipes on Windows) give the real poller clean EOF, so closed-handle
 			// read errors cannot accidentally satisfy the observed-exit regression.
 			// No process, input sink or provider is launched.
 			const fs::path empty = fixture.temp.root / "empty-output";
 			UAM_ASSERT(uam::io::WriteTextFile(empty, ""));
 #if defined(_WIN32)
-			fixture.Session().stdout_read = CreateFileW(empty.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-			fixture.Session().stderr_read = CreateFileW(empty.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-			UAM_ASSERT(fixture.Session().stdout_read != INVALID_HANDLE_VALUE && fixture.Session().stderr_read != INVALID_HANDLE_VALUE);
+			for (HANDLE* read : {&fixture.Session().stdout_read, &fixture.Session().stderr_read})
+			{
+				HANDLE write = nullptr;
+				UAM_ASSERT(CreatePipe(read, &write, nullptr, 0));
+				CloseHandle(write);
+			}
 #else
 			fixture.Session().stdout_read_fd = ::open(empty.c_str(), O_RDONLY);
 			fixture.Session().stderr_read_fd = ::open(empty.c_str(), O_RDONLY);

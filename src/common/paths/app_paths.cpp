@@ -359,3 +359,13 @@ bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesys
 {
 	return PathsEquivalent(NormalizePathForCompare(lhs), NormalizePathForCompare(rhs));
 }
+
+std::filesystem::path FolderDirectoryCompareKey(const std::filesystem::path& directory)
+{
+	return NormalizePathForCompare(directory);
+}
+
+bool FolderDirectoryKeysMatch(const std::filesystem::path& lhs_key, const std::filesystem::path& rhs_key)
+{
+	return PathsEquivalent(lhs_key, rhs_key);
+}

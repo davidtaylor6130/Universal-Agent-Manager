@@ -13277,9 +13277,11 @@ UAM_TEST(AcpQueuedDispatchPreservesAgentBoundaries)
 	chat.provider_id = "codex-cli";
 	chat.workspace_directory = temp.root.string();
 	app.chats.push_back(std::move(chat));
-	uam::AcpSessionState session;
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *owned;
 	session.chat_id = app.chats.front().id;
 	session.provider_id = "codex-cli";
+	session.process_execution_host_id = "local";
 	session.running = true;
 	session.protocol_kind = "codex-app-server";
 	session.initialized = true;
@@ -13296,6 +13298,7 @@ UAM_TEST(AcpQueuedDispatchPreservesAgentBoundaries)
 	second.uam_agent_workspace_access = "read-only";
 	second.uam_agent_instructions = "REVIEW_INSTRUCTIONS";
 	session.queued_user_prompts = {first, second};
+	app.chats.front().acp_queued_prompts.assign(session.queued_user_prompts.begin(), session.queued_user_prompts.end()); // The durable outbox mirrors the runtime queue.
 #if defined(_WIN32)
 	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
 #else
@@ -13303,6 +13306,7 @@ UAM_TEST(AcpQueuedDispatchPreservesAgentBoundaries)
 #endif
 	std::string error;
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, sink_argv, &error));
+	app.acp_sessions.push_back(std::move(owned));
 	const bool dispatched = uam::DrainNextQueuedAcpUserPrompt(app, session, app.chats.front());
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
@@ -13333,6 +13337,7 @@ UAM_TEST(AcpQueuedPromptManagementRemovesAndPrioritizesSelectedPrompt)
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-queued-management";
 	session->provider_id = "codex-cli";
+	session->process_execution_host_id = "local";
 	session->protocol_kind = "codex-app-server";
 	session->running = true;
 	session->initialized = true;
@@ -16448,6 +16453,14 @@ UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 		if (boundary == "owned")
 		{
 			UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, now + 60));
+			// A local claim dispatches only after its durable claim save is acknowledged.
+			UAM_ASSERT_EQ(owner.state, std::string("claimed"));
+			const auto claim_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (owner.state == "claimed" && std::chrono::steady_clock::now() < claim_deadline)
+			{
+				uam::FlushPendingChatSaves(fixture.app);
+				std::this_thread::yield();
+			}
 			accepted = owner.state == "continued";
 			UAM_ASSERT(fixture.app.claude_quota_dispatch_id.empty());
 		}
@@ -17517,9 +17530,10 @@ UAM_TEST(AcpRevokedOwnerClosedInputHoldsExactHeadWithoutDispatchOrSaveLoop)
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(session);
 	UAM_ASSERT(session.stdin_write_fd < 0 && !session.stdin_writer);
 	UAM_ASSERT(!PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session));
-	// Keep local routing and launch settings unchanged so the failure reaches the transport leg.
+	// Keep local routing and launch settings unchanged so only the revoked native owner refuses.
 	chat.native_session_id = "01a0728e-38ac-7452-bbdb-50f6561e0039";
-	UAM_ASSERT(!uam::acp_detail::ValidateAcpRestartOwnership(fixture.app, session, chat, &error));
+	std::string ownership_error;
+	UAM_ASSERT(!uam::acp_detail::ValidateAcpRestartOwnership(fixture.app, session, chat, &ownership_error));
 	int dispatch_gates = 0;
 	fixture.app.opencode_compaction_before_dispatch = [&dispatch_gates](uam::AcpSessionState&, ChatSession&, std::string&)
 	{
@@ -17537,11 +17551,11 @@ UAM_TEST(AcpRevokedOwnerClosedInputHoldsExactHeadWithoutDispatchOrSaveLoop)
 		UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(chat.id));
 	};
 	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat));
-	// Preconditions distinguish an actual failed wire attempt from early admission rejection.
-	UAM_ASSERT_EQ(dispatch_gates, 1);
-	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "write_failed"), std::size_t{1});
-	UAM_ASSERT_EQ(session.turn_serial, original_serial + 1);
-	UAM_ASSERT(session.last_turn_error.find("stdin pipe handle is closed") != std::string::npos);
+	// Ownership refuses admission before any dispatch gate, turn or wire attempt.
+	UAM_ASSERT_EQ(dispatch_gates, 0);
+	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "write_failed"), std::size_t{0});
+	UAM_ASSERT_EQ(session.turn_serial, original_serial);
+	UAM_ASSERT_EQ(session.last_error, ownership_error);
 	settle();
 	const auto first_revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, chat.id);
 	UAM_ASSERT(first_revision.has_value());
@@ -17556,15 +17570,15 @@ UAM_TEST(AcpRevokedOwnerClosedInputHoldsExactHeadWithoutDispatchOrSaveLoop)
 		settle();
 		revisions.push_back(ChatRepository::ChatStorageRevision(fixture.app.data_root, chat.id));
 	}
-	UAM_ASSERT_EQ(dispatch_gates, 1);
-	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "write_failed"), std::size_t{1});
+	UAM_ASSERT_EQ(dispatch_gates, 0);
+	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "write_failed"), std::size_t{0});
 	UAM_ASSERT_EQ(session.diagnostics.size(), diagnostic_count);
 	UAM_ASSERT(std::none_of(changed.begin(), changed.end(), [](bool value) { return value; }));
 	UAM_ASSERT(std::none_of(scheduled.begin(), scheduled.end(), [](bool value) { return value; }));
 	UAM_ASSERT(std::all_of(revisions.begin(), revisions.end(), [&first_revision](const auto& value) { return value == first_revision; }));
 	UAM_ASSERT(session.queue_held && chat.acp_queue_held && !session.reconnect_pending);
 	UAM_ASSERT_EQ(session.next_request_id, first_request_id);
-	UAM_ASSERT_EQ(session.turn_serial, original_serial + 1);
+	UAM_ASSERT_EQ(session.turn_serial, original_serial);
 	UAM_ASSERT(session.running && !session.processing && session.prompt_request_id == 0 && session.queued_prompt.empty());
 	UAM_ASSERT(session.queued_user_prompts.size() == 1 && session.queued_user_prompts.front() == head);
 	UAM_ASSERT(chat.acp_queued_prompts == std::vector<uam::AcpQueuedUserPromptState>{head} && chat.messages == original_messages);
@@ -19338,6 +19352,8 @@ namespace
 			session->running = session->initialized = session->session_ready = true;
 			session->lifecycle_state = "ready";
 			session->current_mode_id = "plan";
+			// An owned launch with known Default options, not an unknown reattachment.
+			session->launch_model_options_captured = true;
 			session->last_process_id = uam::acp_detail::AcpProcessHandleLabel(*session);
 			UAM_ASSERT(process.WriteToStdioProcess(*session, "\n", 1, &error));
 			transport = session->stdin_writer;

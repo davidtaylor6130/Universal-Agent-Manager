@@ -408,6 +408,10 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 	const auto cancelled = fixture.Take("_mcp_cancel_request");
 	UAM_ASSERT_EQ(cancelled.at("arguments"), (nlohmann::json{{"connectionId", connection}, {"requestId", wait.at("requestId")}}));
 	fixture.Reply(wait, {{"forbiddenOldPayload", true}}); // Must never be adopted by the next call.
+	// The proxy leaves the raced reply for the manager, whose wait retirement removes it while handling the cancel.
+	const fs::path raced_reply = fixture.capability / "responses" / (wait.at("requestId").get<std::string>() + ".json");
+	UAM_ASSERT(fs::exists(raced_reply));
+	fs::remove(raced_reply);
 	fixture.Reply(cancelled);
 	fixture.Send({{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/call"},
 	    {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}});
@@ -416,7 +420,6 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 	const auto response = fixture.Native(3); // Any late cancelled-wait output fails this exact ID check.
 	UAM_ASSERT_EQ(nlohmann::json::parse(response.at("result").at("content")[0].at("text").get<std::string>()),
 	    (nlohmann::json{{"sentinel", "next-call-only"}}));
-	UAM_ASSERT(!fs::exists(fixture.capability / "responses" / (wait.at("requestId").get<std::string>() + ".json")));
 	// JSON-RPC string "23" must not cancel numeric23. No fake result can mask a bad match.
 	fixture.Wait(23);
 	const auto numeric_wait = fixture.Take("agent_wait");

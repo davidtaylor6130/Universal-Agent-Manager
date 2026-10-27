@@ -33,6 +33,30 @@ namespace uam::provider_setup
 		return name != "owner.json";
 	}
 
+	/// <summary>Refuse one existing path component that is a symbolic link or reparse point.</summary>
+	inline bool UnlinkedComponent(const std::filesystem::path& current)
+	{
+		std::error_code error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(current, error);
+		if (error && error != std::errc::no_such_file_or_directory) return false;
+		// One lstat per component; Windows also refuses junctions and other reparse points.
+#if defined(_WIN32)
+		const DWORD attributes = GetFileAttributesW(current.c_str());
+		const bool reparse_point = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+		const bool reparse_point = false;
+#endif
+		if (std::filesystem::is_symlink(status) || reparse_point)
+		{
+#if defined(__APPLE__)
+			// macOS exposes these system directories through fixed root aliases.
+			if ((current == "/var" || current == "/tmp" || current == "/etc") && std::filesystem::read_symlink(current, error) == std::filesystem::path("private") / current.filename()) return true;
+#endif
+			return false;
+		}
+		return true;
+	}
+
 	/// <summary>Check every existing path component before reading or writing managed resources.</summary>
 	inline bool NoSymlinks(const std::filesystem::path& path)
 	{
@@ -40,75 +64,117 @@ namespace uam::provider_setup
 		for (const std::filesystem::path& part : path)
 		{
 			current /= part;
-			std::error_code error;
-			const std::filesystem::file_status status = std::filesystem::symlink_status(current, error);
-			if (error && error != std::errc::no_such_file_or_directory) return false;
-			// One lstat per component; Windows also refuses junctions and other reparse points.
-#if defined(_WIN32)
-			const DWORD attributes = GetFileAttributesW(current.c_str());
-			const bool reparse_point = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-#else
-			const bool reparse_point = false;
-#endif
-			if (std::filesystem::is_symlink(status) || reparse_point)
-			{
-#if defined(__APPLE__)
-				// macOS exposes these system directories through fixed root aliases.
-				if ((current == "/var" || current == "/tmp" || current == "/etc") && std::filesystem::read_symlink(current, error) == std::filesystem::path("private") / current.filename()) continue;
-#endif
-				return false;
-			}
+			if (!UnlinkedComponent(current)) return false;
 		}
 		return true;
 	}
 
-	inline bool ReadFile(const std::filesystem::path& path, std::string& bytes, std::string& error)
+	/// <summary>Check only the components of path below verified_root, which the caller already proved unlinked.</summary>
+	/// <remarks>Invariant: verified_root must have passed a full NoSymlinks check after it existed, earlier in the same
+	/// install operation (Prepare does this through owner.json). Every component below it is still checked on each use, so a
+	/// bundle file or subdirectory replaced by a link is refused exactly as before. Anything that is not a plain lexical
+	/// descendant (empty root, other prefix, empty/"."/".." parts) falls back to the full ancestor walk.
+	/// ponytail: an ancestor of the root swapped by a same-user process after Prepare is no longer caught per file; the
+	/// lstat-then-open checks were never atomic. Upgrade path: open the root once (O_DIRECTORY|O_NOFOLLOW) and use *at() calls.</remarks>
+	inline bool NoSymlinks(const std::filesystem::path& path, const std::filesystem::path& verified_root)
+	{
+		if (verified_root.empty() || !verified_root.is_absolute()) return NoSymlinks(path);
+		const auto [root_part, below] = std::mismatch(verified_root.begin(), verified_root.end(), path.begin(), path.end());
+		if (root_part != verified_root.end() || below == path.end()) return NoSymlinks(path);
+		for (std::filesystem::path::iterator part = below; part != path.end(); ++part)
+			if (part->empty() || *part == "." || *part == "..") return NoSymlinks(path);
+		std::filesystem::path current = verified_root;
+		for (std::filesystem::path::iterator part = below; part != path.end(); ++part)
+		{
+			current /= *part;
+			if (!UnlinkedComponent(current)) return false;
+		}
+		return true;
+	}
+
+#if !defined(_WIN32)
+	/// <summary>Publish without replacement: fails with EEXIST when target exists, including as a dangling link.</summary>
+	inline int PublishExclusive(const std::filesystem::path& source, const std::filesystem::path& target)
+	{
+#if defined(__APPLE__)
+		if (::renamex_np(source.c_str(), target.c_str(), RENAME_EXCL) == 0) return 0;
+		if (errno != EINVAL && errno != ENOSYS && errno != ENOTSUP && errno != EOPNOTSUPP) return errno;
+#elif defined(__linux__)
+		// Raw syscall: older glibc lacks the renameat2 wrapper. ENOTSUP equals EOPNOTSUPP on Linux.
+		if (::syscall(SYS_renameat2, AT_FDCWD, source.c_str(), AT_FDCWD, target.c_str(), RENAME_NOREPLACE) == 0) return 0;
+		if (errno != EINVAL && errno != ENOSYS && errno != ENOTSUP) return errno;
+#endif
+		// Filesystems without exclusive rename keep hard-link publication; the caller removes the staged name.
+		return ::link(source.c_str(), target.c_str()) == 0 ? 0 : errno;
+	}
+#endif
+
+	inline bool ReadFile(const std::filesystem::path& path, std::string& bytes, std::string& error, const std::filesystem::path& verified_root = {})
 	{
 		std::error_code ec;
-		if (!NoSymlinks(path) || !std::filesystem::is_regular_file(path, ec) || ec || std::filesystem::file_size(path, ec) > kMaxFileBytes || ec)
+		if (!NoSymlinks(path, verified_root) || !std::filesystem::is_regular_file(path, ec) || ec || std::filesystem::file_size(path, ec) > kMaxFileBytes || ec)
 		{ error = "A central resource is missing, too large or a symbolic link: " + uam::paths::Utf8PathString(path); return false; }
-		std::ifstream input(path, std::ios::binary);
 		// Bound the read itself as well as the initial stat, including files growing during launch.
 		bytes.clear();
 		std::array<char, 16384> chunk;
+#if defined(_WIN32)
+		// A concurrent publisher's MoveFileExW keeps DELETE access on the just-published name until it closes its handle;
+		// std::ifstream does not share delete, so it fails with ERROR_SHARING_VIOLATION in that window.
+		std::filesystem::path native;
+		const HANDLE input = uam::io::NativeFilePath(path, native, error)
+		    ? CreateFileW(native.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+		          FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr)
+		    : INVALID_HANDLE_VALUE;
+		bool read = input != INVALID_HANDLE_VALUE;
+		DWORD count = 0;
+		while (read && bytes.size() <= kMaxFileBytes &&
+		    (read = ::ReadFile(input, chunk.data(), static_cast<DWORD>(std::min(chunk.size(), kMaxFileBytes + 1 - bytes.size())), &count, nullptr) != FALSE) && count > 0)
+			bytes.append(chunk.data(), count);
+		if (input != INVALID_HANDLE_VALUE) CloseHandle(input);
+		if (!read || bytes.size() > kMaxFileBytes) { error = "Could not read central resource: " + uam::paths::Utf8PathString(path); return false; }
+#else
+		std::ifstream input(path, std::ios::binary);
 		while (input && bytes.size() <= kMaxFileBytes)
 		{
 			input.read(chunk.data(), static_cast<std::streamsize>(std::min(chunk.size(), kMaxFileBytes + 1 - bytes.size())));
 			bytes.append(chunk.data(), static_cast<std::size_t>(input.gcount()));
 		}
 		if (input.bad() || !input.eof() || bytes.size() > kMaxFileBytes) { error = "Could not read central resource: " + uam::paths::Utf8PathString(path); return false; }
+#endif
 		return true;
 	}
 
 	/// <summary>Publish complete files atomically; immutable bundle files accept only an identical existing value.</summary>
-	inline bool WriteRuntimeFile(const std::filesystem::path& target, std::string_view bytes, std::string& error, bool replace_existing = true)
+	inline bool WriteRuntimeFile(const std::filesystem::path& target, std::string_view bytes, std::string& error, bool replace_existing = true,
+	    const std::filesystem::path& verified_root = {})
 	{
-		if (!NoSymlinks(target)) { error = "Central runtime path contains a symbolic link."; return false; }
+		if (!NoSymlinks(target, verified_root)) { error = "Central runtime path contains a symbolic link."; return false; }
 		std::filesystem::path temporary;
 		if (!uam::provider_native_context::WritePrivateSettings(target.parent_path(), bytes, temporary))
 		{ error = "Could not stage central runtime configuration."; return false; }
 		std::error_code ec;
 #if defined(_WIN32)
-		// Immutable digest-addressed resources match POSIX link(): Prepare re-verifies them, and a
+		// Immutable digest-addressed resources match POSIX exclusive publication: Prepare re-verifies them, and a
 		// per-file write-through flush made thousand-file skill bundles take seconds to install.
 		if (!MoveFileExW(temporary.c_str(), target.c_str(), replace_existing ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH : 0))
 			ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
 #else
 		if (replace_existing) std::filesystem::rename(temporary, target, ec);
-		else if (::link(temporary.c_str(), target.c_str()) != 0) ec = std::error_code(errno, std::generic_category());
+		else if (const int publication = PublishExclusive(temporary, target); publication != 0) ec = std::error_code(publication, std::generic_category());
 #endif
 		if (ec)
 		{
 			// Windows may deny replacement while a concurrent reader holds the identical published file.
 			std::string published;
 			std::string read_error;
-			const bool already_published = ReadFile(target, published, read_error) && published == bytes;
+			const bool already_published = ReadFile(target, published, read_error, verified_root) && published == bytes;
 			const std::string publication_error = ec.message();
 			std::filesystem::remove(temporary, ec);
 			if (already_published) return true;
 			error = "Could not publish central runtime configuration: " + publication_error;
 			return false;
 		}
+		// Only the hard-link fallback leaves the staged name behind.
 		if (!replace_existing) std::filesystem::remove(temporary, ec);
 		return true;
 	}
@@ -187,11 +253,12 @@ namespace uam::provider_setup
 		missing.clear();
 		for (const auto& [name, entry] : manifest["files"].items())
 		{
+			// owner.json's full ReadFile above verified directory after creation; each file checks only its own components.
 			const std::filesystem::path path = directory / uam::paths::PathFromUtf8(name);
-			if (!NoSymlinks(path)) { error = "Central resource path contains a symbolic link."; return false; }
+			if (!NoSymlinks(path, directory)) { error = "Central resource path contains a symbolic link."; return false; }
 			if (!std::filesystem::exists(path, ec)) { missing.push_back(name); continue; }
 			std::string bytes;
-			if (!ReadFile(path, bytes, error) || bytes.size() != entry["size"].get<std::size_t>() || Digest(bytes) != entry["digest"].get<std::string>())
+			if (!ReadFile(path, bytes, error, directory) || bytes.size() != entry["size"].get<std::size_t>() || Digest(bytes) != entry["digest"].get<std::string>())
 			{ error = "Installed central resource differs from its manifest: " + name; return false; }
 		}
 		return true;

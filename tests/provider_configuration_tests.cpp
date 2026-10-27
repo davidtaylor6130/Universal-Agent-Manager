@@ -132,7 +132,7 @@ UAM_TEST(RemoteOpenCodeCanceledVersionPreparationCannotLaunchAfterCheckCompletes
 UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
 {
 #if defined(__APPLE__)
-	for (const std::string version : {"1.18.36", "1.17.19", ""})
+	for (const std::string version : {"1.18.36", "1.17.19"})
 	{
 		RemoteOpenCodeVersionLaunchFixture fixture;
 		fixture.Checked(version);
@@ -142,6 +142,15 @@ UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
 		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
 		UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
 	}
+	// Default opencode needs a structured version; an empty completed check holds instead of launching.
+	RemoteOpenCodeVersionLaunchFixture unknown;
+	unknown.Checked("");
+	unknown.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", unknown.host.id)].supported = false;
+	std::string error;
+	UAM_ASSERT(!unknown.Start(&error));
+	UAM_ASSERT(error.find("no usable protocol identity") != std::string::npos);
+	UAM_ASSERT(!unknown.Session().running && unknown.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(unknown.Session().queue_held && unknown.app.chats.front().acp_queue_held);
 #endif
 }
 

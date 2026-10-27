@@ -261,12 +261,13 @@ namespace uam
 		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
 		std::vector<std::string> missing;
 		if (!provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, error)) return false;
+		// Prepare fully verified the existing bundle directory; each install still checks every component below it.
 		for (const std::string& name : missing)
 		{
 			const std::filesystem::path target = bundle.local_directory / uam::paths::PathFromUtf8(name);
 			std::error_code ec;
 			std::filesystem::create_directories(target.parent_path(), ec);
-			if (ec || !provider_setup::WriteRuntimeFile(target, bundle.files.at(name), error, false)) { error = "Could not install central resource: " + name; return false; }
+			if (ec || !provider_setup::WriteRuntimeFile(target, bundle.files.at(name), error, false, bundle.local_directory)) { error = "Could not install central resource: " + name; return false; }
 		}
 		return true;
 	}

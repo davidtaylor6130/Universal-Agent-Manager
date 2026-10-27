@@ -1339,6 +1339,7 @@ namespace
 			session->turn_serial = 1;
 			session->turn_user_message_index = 0;
 			session->active_uam_agent_definition_hash = "builtin-build-v1";
+			session->launch_model_options_captured = true; // An owned launch with known Default options, not an unknown reattachment.
 			app.acp_sessions.push_back(std::move(owned));
 		}
 		~ClaudeQuotaFixture()
