@@ -85,6 +85,33 @@ UAM_TEST(WorkspaceVcsContextReadsOnlyLocalGitBranchesAndDetachedCommit)
 	UAM_ASSERT(!fs::exists(temp.root / "worktrees"));
 }
 
+UAM_TEST(WorkspaceVcsContextListsNewestCommitBranchFirst)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-branch-commit-order");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "source.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add source.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m base"));
+	UAM_ASSERT(RunGitForTest(repo, "branch aaa-older"));
+	UAM_ASSERT(RunGitForTest(repo, "checkout -b zzz-newer"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "source.txt", "newer\n"));
+	{
+		ScopedEnvVar date("GIT_COMMITTER_DATE", "2090-01-01T00:00:00+0000");
+		UAM_ASSERT(RunGitForTest(repo, "commit -am newer"));
+	}
+	UAM_ASSERT(RunGitForTest(repo, "checkout aaa-older"));
+	const uam::WorkspaceVcsContext context = uam::ReadWorkspaceVcsContext(repo, true, false);
+	UAM_ASSERT(context.error.empty());
+	UAM_ASSERT_EQ(context.local_branches.size(), 3u);
+	// The furthest-ahead branch leads even though it sorts last by name and is not checked out.
+	UAM_ASSERT_EQ(context.local_branches.front().name, "zzz-newer");
+}
+
 UAM_TEST(WorkspaceVcsContextDisabledCanceledAndPlainDirectoryDoNotMutate)
 {
 	TempDir temp("uam-local-context-policies");

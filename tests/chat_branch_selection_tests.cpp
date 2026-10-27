@@ -68,6 +68,25 @@ UAM_TEST(ChatBranchSelectionPreservesCwdHistoryAndSource)
 	UAM_ASSERT_EQ(fixture.Git(cwd, "symbolic-ref --short HEAD"), "created/branch");
 }
 
+UAM_TEST(ChatBranchListLeadsWithNewestCommit)
+{
+	if (!GitAvailableForTests()) return;
+	ChatBranchFixture fixture;
+	UAM_ASSERT(RunGitForTest(fixture.repository, "checkout -b zzz-newer"));
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.repository / "source.txt", "newer\n"));
+	{
+		ScopedEnvVar date("GIT_COMMITTER_DATE", "2090-01-01T00:00:00+0000");
+		UAM_ASSERT(RunGitForTest(fixture.repository, "commit -am newer"));
+	}
+	UAM_ASSERT(RunGitForTest(fixture.repository, "checkout -"));
+	std::vector<uam::GitChatBranch> branches;
+	bool svn = false;
+	std::string error;
+	UAM_ASSERT(uam::GitWorktreeService().ListChatBranches(fixture.app, fixture.app.chats.front(), branches, svn, error));
+	UAM_ASSERT(!branches.empty());
+	UAM_ASSERT_EQ(branches.front().name, "zzz-newer");
+}
+
 UAM_TEST(ChatBranchSelectionRejectsUnsafeBoundaries)
 {
 	if (!GitAvailableForTests()) return;

@@ -133,7 +133,7 @@ cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```
 
-Tests use a custom framework in `tests/core_tests.cpp`, a CMake platform ifdef guard, and Vitest for `UI-V2`.
+Tests use a custom framework in `tests/test_harness.h` (runner `main` in `tests/core_tests.cpp`, general cases split by area in `tests/core_*_tests.cpp`), a CMake platform ifdef guard, and Vitest for `UI-V2`.
 
 ## UI Design
 

@@ -45,10 +45,10 @@ describe('NewChatModal', () => {
   })
 
   it.each(['removed', 'detached', 'read-failure', 'unchanged', 'pending-create'].flatMap((result) =>
-    ['feature/base', 'Current branch (main)'].map((choice) => ({ result, choice }))))(
+    ['feature/base', 'Current branch (dev)'].map((choice) => ({ result, choice }))))(
     'reconciles a refreshed starting branch with the real creation payload: $choice / $result', async ({ result, choice }) => {
       const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
-      const context = { vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }
+      const context = { vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }
       let finishRefresh!: () => void
       let reads = 0
       window.cefQuery = ({ request, onSuccess, onFailure }) => {
@@ -62,7 +62,7 @@ describe('NewChatModal', () => {
           if (result === 'read-failure') onFailure(409, 'Branches are unavailable.')
           else onSuccess(JSON.stringify(result === 'detached'
             ? { vcs: 'git', currentBranch: '', detached: true }
-            : { ...context, localBranches: result === 'removed' ? context.localBranches.slice(0, 1) : context.localBranches }))
+            : { ...context, localBranches: result === 'removed' ? context.localBranches.filter((branch) => branch.name !== 'feature/base') : context.localBranches }))
         }
       }
       useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
@@ -99,14 +99,14 @@ describe('NewChatModal', () => {
     },
   )
 
-  it.each(['feature/base', 'Current branch (main)', 'Use default (main)'])(
+  it.each(['feature/base', 'Current branch (dev)', 'Use default (main)'])(
     'passes %s through the real creation store while deferring provider and worktree work', async (choice) => {
       const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
       window.cefQuery = ({ request, onSuccess }) => {
         const query = JSON.parse(request)
         requests.push(query)
         onSuccess(JSON.stringify(query.action === 'getWorkspaceVcsContext'
-          ? { vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }
+          ? { vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }
           : { chatId: 'created-fixture' }))
       }
       useAppStore.setState({ addSession: originalAddSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main', isNewChatModalOpen: true })
@@ -136,13 +136,13 @@ describe('NewChatModal', () => {
     },
   )
 
-  it.each(['feature/base', 'Current branch (main)', 'Use default (main)'])(
+  it.each(['feature/base', 'Current branch (dev)', 'Use default (main)'])(
     'creates in the chosen workspace with starting branch choice %s and no repository mutation', async (choice) => {
       const addSession = vi.fn().mockResolvedValue(false)
       const requests: Array<{ action: string; payload: unknown }> = []
       window.cefQuery = ({ request, onSuccess }) => {
         requests.push(JSON.parse(request))
-        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'main', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }] }))
+        onSuccess(JSON.stringify({ vcs: 'git', currentBranch: 'dev', currentCommit: 'a'.repeat(40), detached: false, localBranches: [{ name: 'main', commit: 'a'.repeat(40) }, { name: 'feature/base', commit: 'b'.repeat(40) }, { name: 'dev', commit: 'a'.repeat(40) }] }))
       }
       useAppStore.setState({ addSession, gitEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: 'main' })
       const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
