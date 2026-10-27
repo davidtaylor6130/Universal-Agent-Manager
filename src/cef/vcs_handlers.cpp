@@ -39,6 +39,10 @@ using namespace uam::query_handler_async;
 
 namespace
 {
+	// Read-only status spawns Git/SVN subprocesses. CEF runs both foreground file lanes on one shared thread, so this lower-priority
+	// sequence lets queued chat history pages (user-blocking) run first; it cannot preempt a status read that has already started.
+	constexpr CefThreadId kVcsStatusThread = TID_FILE_USER_VISIBLE;
+
 	class PendingWorktreeCreationTask final : public CefTask
 	{
 	  public:
@@ -348,7 +352,7 @@ void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browse
 		    }
 		    return AsyncSuccess(SerializeGitWorktreeStatus(
 		        uam::GitWorktreeService().Status(snapshot, *chat)));
-	    });
+	    }, std::function<void(AsyncCefResult&)>{}, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -724,7 +728,7 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 		                     !uam::execution_hosts::SameConnection(*current_host, *expected_host) ||
 		                     uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != expected_workspace)
 		                     result = AsyncFailure(409, "The chat workspace changed while its repository context was loading.");
-	                 });
+	                 }, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -789,7 +793,7 @@ void UamQueryHandler::HandleCaptureChatReferenceContext(CefRefPtr<CefBrowser> /*
 		        !uam::execution_hosts::SameConnection(*current_host, expected_host) ||
 		        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace)
 		        result = AsyncFailure(409, "The chat, workspace or execution host changed while capturing context. Try again.");
-	    }, TID_FILE_USER_VISIBLE);
+	    }, kVcsStatusThread);
 }
 
 void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -896,6 +900,11 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 
+	// A commit mutates the working copy: hold workspace retention and the per-chat operation guard until it settles.
+	// DispatchAction already refuses chats that are inside another worktree operation.
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
+
 	const std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const std::string message = payload.value("message", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
@@ -903,18 +912,22 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 	uam::AppState* live_app = &m_app;
-	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files, remote_vcs_lease]() mutable
+	const std::string chat_id = chat->id;
+	m_app.worktree_operation_chat_ids.insert(chat_id);
+	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, message, files, lease, remote_vcs_lease]() mutable
 	                 {
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
 		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
 		                 return AsyncSuccess(SerializeVcsCommitResult(result));
 	                 },
-	                 [live_app, browser](AsyncCefResult& result)
+	                 [live_app, browser, chat_id](AsyncCefResult& result)
 	                 {
+		                 live_app->worktree_operation_chat_ids.erase(chat_id);
 		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, *live_app);
-	                 });
+	                 }))
+		m_app.worktree_operation_chat_ids.erase(chat_id);
 }
 
 void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

@@ -833,7 +833,14 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeDiscoveryAr
 }
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildLocalNativeExportArgv(const ProviderProfile& profile, const ChatSession& chat) const
 {
-	if (!RequiresStructuredCliVersion(profile)) return BuildNativeExportArgv(profile, chat);
+	if (!RequiresStructuredCliVersion(profile))
+	{
+#if defined(_WIN32)
+		return BuildNativeExportArgv(profile, chat);
+#else
+		return uam::opencode_v2::FileBackedStdoutArgv(BuildNativeExportArgv(profile, chat));
+#endif
+	}
 	if (chat.native_session_id.empty()) return {};
 	return LocalHistoryCommand(profile, "export", chat.native_session_id);
 }

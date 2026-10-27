@@ -151,6 +151,11 @@ namespace
 		}
 	}
 
+	bool KeychainPromptsAllowed(const nlohmann::json& config)
+	{
+		return config.contains("allow_keychain_prompts") && config["allow_keychain_prompts"].is_boolean() && config["allow_keychain_prompts"].get<bool>();
+	}
+
 	bool WriteCompanionConfig(const uam::AppState& app, const nlohmann::json& config)
 	{
 		return uam::io::WriteTextFileWithBackup(CompanionConfigPath(app), config.dump(2) + "\n");
@@ -796,7 +801,23 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 	cb->Success("{}");
 }
 
+bool UamQueryHandler::CompanionAllowsKeychainPrompts() const
+{
+	nlohmann::json config;
+	return ReadCompanionConfig(m_app, config) && KeychainPromptsAllowed(config);
+}
+
 nlohmann::json UamQueryHandler::CompanionConnectionStatus(const nlohmann::json& config) const
+{
+	auto response = CompanionTransportStatus(config);
+#if defined(__APPLE__)
+	// Only macOS has the Keychain dialog this Phone setting controls.
+	response["allowKeychainPrompts"] = KeychainPromptsAllowed(config);
+#endif
+	return response;
+}
+
+nlohmann::json UamQueryHandler::CompanionTransportStatus(const nlohmann::json& config) const
 {
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) return m_companion->Status();
@@ -871,6 +892,17 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, c
 		uam::platform::RequestMacLocalNetworkAccess();
 #endif
 	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleSetCompanionKeychainPrompts(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> allowed = uam::nlohmann_json::BoolFieldStrict(payload, "allowed");
+	if (!allowed) { cb->Failure(400, "allowed must be a boolean."); return; }
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string()) { cb->Failure(409, "Phone access is not configured."); return; }
+	config["allow_keychain_prompts"] = *allowed;
+	if (!WriteCompanionConfig(m_app, config)) { cb->Failure(500, "Failed to persist phone access settings."); return; }
 	cb->Success(CompanionConnectionStatus(config).dump());
 }
 

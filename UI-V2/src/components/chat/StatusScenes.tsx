@@ -57,6 +57,16 @@ export function AgentsScene({ working, idle }: { working: number; idle: number }
   )
 }
 
+/** Refreshing history: lines are read onto a page one after another. */
+export function RefreshingScene() {
+  return (
+    <svg className="status-scene status-scene--refresh" viewBox="0 0 24 20" width="24" height="20" aria-hidden>
+      <path className="status-page__sheet" d="M5 1.5h10l4 4v13h-14z" />
+      {[8, 11.5, 15].map((y, index) => <line key={y} className={`status-page__line status-page__line--${index + 1}`} x1="8" y1={y} x2="16" y2={y} />)}
+    </svg>
+  )
+}
+
 /** Stopped after timeout: the AI has gone to bed. The blanket rises and falls; little z's drift up. */
 export function SleepingScene() {
   return (

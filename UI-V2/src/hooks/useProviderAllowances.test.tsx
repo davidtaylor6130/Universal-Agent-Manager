@@ -27,12 +27,14 @@ describe('independent provider allowance cache', () => {
     const first = await mount(), second = await mount()
     try {
       expect(pending).toHaveLength(1)
+      // Polls carry prompt permission too so background reads never start the desktop Refresh cooldown; only refresh may prompt.
+      expect(JSON.parse(pending[0].request).payload).toEqual({ executionHostId: 'local', allowKeychainPrompt: true })
       await act(async () => pending[0].onSuccess(JSON.stringify(snapshot())))
       expect(first.state.data?.providers[0].limits?.primary?.usedPercent).toBe(29)
       expect(second.state.data).toBe(first.state.data)
       await act(async () => { first.state.refresh(); second.state.refresh() })
       expect(pending).toHaveLength(2)
-      expect(JSON.parse(pending[1].request)).toMatchObject({ action: 'getProviderAllowances', payload: { executionHostId: 'local', refresh: true } })
+      expect(JSON.parse(pending[1].request)).toMatchObject({ action: 'getProviderAllowances', payload: { executionHostId: 'local', refresh: true, allowKeychainPrompt: true } })
       expect(first.state.data?.providers[0].limits?.primary?.usedPercent).toBe(29)
       await act(async () => pending[1].onSuccess(JSON.stringify(snapshot())))
     } finally { first.close(); second.close() }

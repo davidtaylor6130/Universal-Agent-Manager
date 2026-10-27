@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/opencode_native_activity_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include <algorithm>
 
 using namespace uam_test;
 
@@ -272,6 +273,7 @@ UAM_TEST(OpenCodeNativeCompanionStopsAfterConsecutiveObservationFailures)
 	fixture.Until([&] { return !fixture.Session().running; });
 	UAM_ASSERT_EQ(fixture.failures_left->load(), 0);
 	UAM_ASSERT(fixture.Session().last_error.find("Simulated transient native HTTP failure") != std::string::npos);
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures" && entry.detail == "failures=3"; }));
 	UAM_ASSERT_EQ(fixture.replies->load(), 0);
 	fixture.service->Stop();
 }
@@ -287,6 +289,7 @@ UAM_TEST(OpenCodeNativeCompanionRejectsConfirmedRootConflictImmediately)
 	fixture.Session().processing = true;
 	fixture.Until([&] { return !fixture.Session().running; });
 	UAM_ASSERT_EQ(fixture.queries->load(), before + 1);
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "ownership_conflict"; }));
 	UAM_ASSERT_EQ(fixture.replies->load(), 0);
 	fixture.service->Stop();
 }

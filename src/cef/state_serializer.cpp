@@ -761,7 +761,7 @@ namespace uam
 				nlohmann::json blocks = JsonArrayWithCapacity(message.blocks.size());
 				for (const MessageBlock& block : message.blocks)
 				{
-					if (!block.type.empty())
+					if (!block.type.empty() && !block.type.starts_with("native_"))
 					{
 						blocks.push_back(SerializeMessageBlockForFrontend(block));
 					}
@@ -1799,7 +1799,7 @@ namespace uam
 			candidates.push_back({{"candidateId", candidate.candidate_id}, {"providerId", candidate.provider_id},
 			    {"nativeSessionId", candidate.native_session_id}, {"title", candidate.title}, {"folderId", candidate.folder_id},
 			    {"workspaceDirectory", candidate.workspace_directory}, {"executionHostId", candidate.execution_host_id},
-			    {"updatedAt", candidate.updated_at}});
+			    {"updatedAt", candidate.updated_at}, {"workspaceTitle", candidate.workspace_title}, {"newWorkspace", candidate.new_workspace}});
 		}
 		return {{"phase", snapshot.phase}, {"generation", snapshot.generation}, {"candidates", candidates},
 		    {"totalCount", snapshot.total_count}, {"nextOffset", snapshot.next_offset},

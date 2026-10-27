@@ -13,7 +13,8 @@ namespace uam::usage
 	{
 		constexpr std::size_t kCredentialLimit = 64 * 1024;
 		constexpr std::size_t kOutputLimit = kCredentialLimit * 6 + 1024;
-		// No Apple events or UI automation: only a no-prompt Security.framework read.
+		// No Apple events or UI automation. kSecUseAuthenticationUIFail does not stop login-keychain ACL dialogs,
+		// so automatic reads also disable Keychain interaction for this helper process.
 		// The fixed system host lets cancellation reap a slow Keychain request without
 		// leaving an uninterruptible Security.framework call in the desktop process.
 		constexpr std::string_view kCredentialReadScript = R"JXA(ObjC.import('Foundation');
@@ -22,13 +23,19 @@ ObjC.bindFunction('SecItemCopyMatching', ['int', ['id', 'id*']]);
 function run(argv)
 {
     function object(value) { return ObjC.castRefToObject(value); }
+    const prompt = argv[2] === 'prompt';
+    if (!prompt)
+    {
+        ObjC.bindFunction('SecKeychainSetUserInteractionAllowed', ['int', ['bool']]);
+        if ($.SecKeychainSetUserInteractionAllowed(false) !== 0) return JSON.stringify({ status: -25308 });
+    }
     const query = $.NSMutableDictionary.alloc.init;
     query.setObjectForKey(object($.kSecClassGenericPassword), object($.kSecClass));
     query.setObjectForKey($(argv[0]), object($.kSecAttrService));
     query.setObjectForKey($(argv[1]), object($.kSecAttrAccount));
     query.setObjectForKey($.NSNumber.numberWithBool(true), object($.kSecReturnData));
     query.setObjectForKey(object($.kSecMatchLimitOne), object($.kSecMatchLimit));
-    query.setObjectForKey(object($.kSecUseAuthenticationUIFail), object($.kSecUseAuthenticationUI));
+    if (!prompt) query.setObjectForKey(object($.kSecUseAuthenticationUIFail), object($.kSecUseAuthenticationUI));
     const result = Ref();
     const status = $.SecItemCopyMatching(query, result);
     if (status !== 0) return JSON.stringify({ status: status });
@@ -42,19 +49,19 @@ function run(argv)
 		}
 	}
 
-	MacAccountCredentialResult ReadMacAccountCredential(std::string_view service, std::string_view account,
+	MacAccountCredentialResult ReadMacAccountCredential(std::string_view service, std::string_view account, bool allow_prompt,
 	    std::stop_token stop, std::chrono::milliseconds timeout)
 	{
 #if defined(__APPLE__)
-		return ReadMacAccountCredentialWithProcessService(PlatformServicesFactory::Instance().process_service, service, account, stop, timeout);
+		return ReadMacAccountCredentialWithProcessService(PlatformServicesFactory::Instance().process_service, service, account, allow_prompt, stop, timeout);
 #else
-		(void)service; (void)account; (void)stop; (void)timeout;
+		(void)service; (void)account; (void)allow_prompt; (void)stop; (void)timeout;
 		return Failure("macOS account storage is unavailable on this platform.");
 #endif
 	}
 
 	MacAccountCredentialResult ReadMacAccountCredentialWithProcessService(const IPlatformProcessService& process_service,
-	    std::string_view service, std::string_view account, std::stop_token stop, std::chrono::milliseconds timeout)
+	    std::string_view service, std::string_view account, bool allow_prompt, std::stop_token stop, std::chrono::milliseconds timeout)
 	{
 		if (stop.stop_requested()) return Failure("macOS account access was canceled.");
 		if (timeout.count() <= 0) return Failure("macOS account access timed out; unlock your existing login keychain and refresh.");
@@ -62,7 +69,7 @@ function run(argv)
 			if (name.empty() || name.size() > 1024 || std::any_of(name.begin(), name.end(), [](unsigned char character) { return character < 32 || character == 127; }))
 				return Failure("macOS account storage identifiers are invalid.");
 		const auto deadline = std::chrono::steady_clock::now() + std::min(timeout, std::chrono::milliseconds(120000));
-		const std::vector<std::string> arguments{"/usr/bin/osascript", "-l", "JavaScript", "-e", std::string(kCredentialReadScript), std::string(service), std::string(account)};
+		const std::vector<std::string> arguments{"/usr/bin/osascript", "-l", "JavaScript", "-e", std::string(kCredentialReadScript), std::string(service), std::string(account), allow_prompt ? "prompt" : "silent"};
 		platform::StdioProcessPlatformFields process;
 		if (!process_service.StartStdioProcess(process, {}, arguments, nullptr)) return Failure("macOS account storage could not be opened.");
 		struct Guard
@@ -94,6 +101,8 @@ function run(argv)
 		const auto response = nlohmann::json::parse(output, nullptr, false); std::fill(output.begin(), output.end(), '\0');
 		if (!response.is_object() || !response.contains("status") || !response["status"].is_number_integer()) return Failure("macOS account storage response is invalid.");
 		if (response["status"] == -25300) return Failure("No existing account credential was found in the login keychain.", true);
+		if (!allow_prompt && (response["status"] == -25293 || response["status"] == -25308))
+			return Failure("macOS needs permission or an unlocked keychain to read the existing login; choose Refresh allowances on this Mac to allow it.");
 		if (response["status"] != 0) return Failure("macOS did not allow access to the existing login keychain.");
 		if (!response.contains("credential") || !response["credential"].is_string() || response["credential"].get_ref<const std::string&>().empty() || response["credential"].get_ref<const std::string&>().size() > kCredentialLimit)
 			return Failure("macOS account storage returned an invalid credential.");

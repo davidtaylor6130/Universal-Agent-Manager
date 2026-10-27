@@ -10,12 +10,24 @@ interface HistoryState {
   dataScope: string
 }
 
+// The last answer per host, period and price set, kept for the app session so reopening Usage or
+// returning to a period shows it at once while a fresh answer loads in the background.
+// ponytail: in-memory only; after a restart the native ledger answers the first request.
+const cache = new Map<string, UsageHistory>()
+const CACHE_LIMIT = 24
+export function clearUsageHistoryCache() { cache.clear() }
+
 /** Poll cached accounting snapshots; obsolete replies never replace the selected host/window. */
 export function useUsageHistory(executionHostId: string, window: UsageWindow, prices: UsagePriceOverride[] = [], enabled = true) {
   const [refreshIndex, setRefreshIndex] = useState(0)
-  const [state, setState] = useState<HistoryState>({ data: null, loading: true, error: '', scope: '', dataScope: '' })
   const priceKey = JSON.stringify(prices)
   const scope = JSON.stringify([executionHostId, window.startMs, window.endMs, window.days, priceKey, refreshIndex])
+  // A named period is the same question whenever it is asked; native answers it from its own clock.
+  const cacheKey = JSON.stringify([executionHostId, window.days ?? [window.startMs, window.endMs], priceKey])
+  const [state, setState] = useState<HistoryState>(() => {
+    const cached = enabled ? cache.get(cacheKey) : undefined
+    return { data: cached ?? null, loading: true, error: '', scope: cached ? scope : '', dataScope: cached ? scope : '' }
+  })
   const refresh = useCallback(() => setRefreshIndex(index => index + 1), [])
   useEffect(() => {
     if (!enabled) return
@@ -23,7 +35,8 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
     let timer: ReturnType<typeof setTimeout> | undefined
     let timeout: ReturnType<typeof setTimeout> | undefined
     const refreshId = createRequestId('usage')
-    setState(previous => ({ ...previous, loading: true, error: '', scope }))
+    const cached = cache.get(cacheKey)
+    setState(previous => cached ? { data: cached, loading: true, error: '', scope, dataScope: scope } : { ...previous, loading: true, error: '', scope })
     const load = async () => {
       let expired = false
       try {
@@ -53,6 +66,9 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
           return
         }
         const data = parseUsageHistory(reply.data, executionHostId, window)
+        cache.delete(cacheKey)
+        cache.set(cacheKey, data)
+        if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!)
         setState({ data, loading: data.version === 3 ? Boolean(data.collecting) : !data.complete, error: data.collectionError || '', scope, dataScope: scope })
         timer = setTimeout(() => { void load() }, (data.collecting || data.pricing?.refreshing) ? 2000 : 30000)
       } catch (error) {
@@ -62,7 +78,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
     }
     void load()
     return () => { obsolete = true; clearTimeout(timer); clearTimeout(timeout) }
-  }, [executionHostId, window.startMs, window.endMs, window.days, priceKey, scope, enabled])
+  }, [executionHostId, window.startMs, window.endMs, window.days, priceKey, scope, cacheKey, enabled])
   const current = state.scope === scope
   const kept = state.data !== null && state.dataScope !== scope
   return { data: state.data, loading: enabled && (!current || state.loading), error: current ? state.error : '', kept, refresh }

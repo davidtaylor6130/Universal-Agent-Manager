@@ -347,7 +347,12 @@ void RunOpenCodeV2TransportFixtures()
 		OutputCapture capture;
 		Require(RunCommand({"uam-fixture", "--uam-opencode-history", "export", "ses_v1", "--", "opencode"}, native) == std::optional<int>{0}, "V1 history dispatcher failed");
 		Require(capture.Read() == native.history, "V1 history bytes were changed");
+#if defined(_WIN32)
 		Require(native.commands.back() == std::vector<std::string>({"opencode", "export", "ses_v1", "--pure"}), "V1 export argv changed");
+#else
+		// POSIX V1 export writes to a private file first: OpenCode 1.19.4 can exit before a piped stdout drains.
+		Require(native.commands.back() == FileBackedStdoutArgv({"opencode", "export", "ses_v1", "--pure"}), "V1 export bypassed file-backed stdout");
+#endif
 	}
 	{
 		SimulatedProcesses native;

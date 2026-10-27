@@ -94,6 +94,7 @@ struct Options
 	std::string_view switches;
 	std::string_view values;
 	bool require_git_helper_suppression = false;
+	bool require_svn_internal_diff = false;
 };
 
 inline bool Arguments(const std::vector<std::string>& words, std::size_t first, const Options& allowed,
@@ -102,6 +103,7 @@ inline bool Arguments(const std::vector<std::string>& words, std::size_t first, 
 	// Do not consume a following option as a value: several native options have optional arguments.
 	bool paths_only = false;
 	unsigned disabled_git_helpers = 0;
+	bool internal_diff = false;
 	for (std::size_t index = first; index < words.size(); ++index)
 	{
 		const std::string argument = powershell ? Lower(words[index]) : words[index];
@@ -120,6 +122,7 @@ inline bool Arguments(const std::vector<std::string>& words, std::size_t first, 
 			// Only actual parsed switches count: operands and option values never establish this proof.
 			if (argument == "--no-ext-diff") disabled_git_helpers |= 1u;
 			if (argument == "--no-textconv") disabled_git_helpers |= 2u;
+			if (argument == "--internal-diff") internal_diff = true;
 			continue;
 		}
 		const auto equals = argument.find('=');
@@ -142,7 +145,7 @@ inline bool Arguments(const std::vector<std::string>& words, std::size_t first, 
 			break; // The rest of this token, or the next token, is this option's value.
 		}
 	}
-	return !allowed.require_git_helper_suppression || disabled_git_helpers == 3u;
+	return (!allowed.require_git_helper_suppression || disabled_git_helpers == 3u) && (!allowed.require_svn_internal_diff || internal_diff);
 }
 }
 
@@ -164,6 +167,30 @@ inline bool IsReadOnlyCommand(std::string_view command)
 	if (executable == "which") return Arguments(words, 1, {"as", "", "--all|--skip-alias|--skip-functions|--skip-dot|--skip-tilde|--show-dot|--show-tilde", ""});
 	if (executable == "where" || executable == "type") return Arguments(words, 1, {"", "", "", ""});
 	if (Lower(executable) == "get-content") return Arguments(words, 1, {"", "", "-raw|-force|-wait|-asbytestream", "-path|-literalpath|-totalcount|-tail|-encoding|-readcount|-delimiter"}, true, true);
+	if (executable == "svn")
+	{
+		// Only literal local-or-repository reads. Diffs must use the internal engine so no configured diff-cmd runs;
+		// --config-dir/--config-option and every write subcommand stay unrecognized.
+		if (words.size() < 2) return false;
+		const std::string& action = words[1];
+		constexpr std::string_view common = "--non-interactive|--quiet|--verbose|--xml|--incremental";
+		const auto with = [&](std::string_view switches, std::string_view values, bool internal_diff = false)
+		{
+			const std::string all = std::string(common) + (switches.empty() ? "" : "|") + std::string(switches);
+			Options options{"qvRu", "rcl", all, values};
+			options.require_svn_internal_diff = internal_diff;
+			return Arguments(words, 2, options);
+		};
+		if (Named("status|stat|st", action)) return with("--show-updates|--no-ignore|--ignore-externals", "--depth|--changelist|--cl");
+		if (action == "info") return with("--no-newline|--recursive|--include-externals", "--show-item|--depth|--revision|--changelist|--cl");
+		if (Named("log", action)) return with("--stop-on-copy|--use-merge-history|--with-all-revprops|--with-no-revprops", "--limit|--revision|--search|--search-and|--depth|--with-revprop");
+		if (Named("list|ls", action)) return with("--recursive|--include-externals|--human-readable", "--depth|--revision");
+		if (action == "cat") return with("--ignore-keywords", "--revision");
+		if (Named("blame|praise|annotate|ann", action)) return with("--use-merge-history|--force", "--revision");
+		if (Named("propget|pget|pg|proplist|plist|pl", action)) return with("--recursive|--revprop|--strict|--no-newline|--show-inherited-props", "--depth|--revision|--changelist|--cl");
+		if (Named("diff|di", action)) return with("--internal-diff|--summarize|--git|--ignore-properties|--properties-only|--show-copies-as-adds|--notice-ancestry|--patch-compatible|--force", "--revision|--change|--depth|--changelist|--cl|--old|--new", true);
+		return false;
+	}
 	if (executable != "git") return false;
 
 	std::size_t subcommand = 1;

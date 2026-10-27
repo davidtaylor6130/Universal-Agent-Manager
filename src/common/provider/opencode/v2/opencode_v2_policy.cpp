@@ -24,7 +24,8 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 	const std::string& operation, const std::string& id)
 {
 	const bool v2 = version == "2.1.2";
-	if (command.empty() || (!v2 && !version.starts_with("1."))) throw std::runtime_error("This OpenCode history protocol has not been verified.");
+	if (command.empty() || (!v2 && !version.starts_with("1.")))
+		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});
@@ -36,6 +37,17 @@ std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::
 		command.insert(command.end(), {"export", id, v2 ? "--standalone" : "--pure"});
 	}
 	else throw std::runtime_error("Invalid OpenCode history request.");
+	return command;
+}
+
+std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command)
+{
+	// The private file is unlinked once open, so no transcript survives a killed or timed-out export.
+	command.insert(command.begin(), {"/bin/sh", "-c",
+	    "command -v \"$1\" >/dev/null 2>&1 || { echo 'UAM OpenCode adapter: The OpenCode command was not found on this host.' >&2; exit 127; }; "
+	    "f=$(mktemp) || { echo 'UAM OpenCode adapter: A private export file could not be created.' >&2; exit 1; }; "
+	    "exec 3>\"$f\" 4<\"$f\"; rm -f \"$f\"; \"$@\" >&3 3>&- 4<&- || exit $?; exec 3>&-; cat <&4",
+	    "uam-opencode-export"});
 	return command;
 }
 

@@ -248,6 +248,16 @@ namespace uam
 			bundle.manifest["files"]["AGENTS.md"] = {{"size", agent_instructions.size()}, {"digest", provider_setup::Digest(agent_instructions)}, {"executable", false}};
 			diagnostics::Write("[Memory] Detail resources unavailable; retaining bounded recall: " + memory_manifest_error);
 		}
+		if (provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli))
+		{
+			// Compaction-headroom reports need UAM's own fixed setup overhead per launch; no URLs, headers or file bodies.
+			std::string names;
+			for (const McpServerConfiguration& server : servers) names += (names.empty() ? "" : ",") + server.id;
+			const auto instructions = bundle.files.find("AGENTS.md");
+			diagnostics::Write("[OpenCode setup] host=" + host.id + " version=" + (checked_provider_version.empty() ? std::string("unchecked") : std::string(checked_provider_version)) +
+			    " progressiveMcp=" + (open_code_discovery ? "applied" : "not-applied") + " mcpServers=" + std::to_string(servers.size()) + " [" + names + "]" +
+			    " instructionsBytes=" + std::to_string(instructions == bundle.files.end() ? 0 : instructions->second.size()));
+		}
 		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
 		std::vector<std::string> missing;
 		if (!provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, error)) return false;

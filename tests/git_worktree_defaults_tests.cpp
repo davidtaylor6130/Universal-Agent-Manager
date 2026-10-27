@@ -116,6 +116,7 @@ UAM_TEST(GitWorktreeDefaultBaseUsesLocalCommitAndPreservesExplicitBranches)
 
 UAM_TEST(GitWorktreeDefaultBasePreservesManagedAndSvnSnapshots)
 {
+	const ScopedCleanSvnStatus clean_svn;
 	if (!GitAvailableForTests()) return;
 	TempDir temp("uam-worktree-managed-default-base");
 	for (const bool svn : {false, true})
@@ -197,6 +198,7 @@ UAM_TEST(ManagedSnapshotOptOutKeepsExistingOwnedWorktree)
 
 UAM_TEST(ManagedSnapshotIndependentOptInAndRealGitRemainAvailable)
 {
+	const ScopedCleanSvnStatus clean_svn;
 	UAM_ASSERT(GitAvailableForTests());
 	for (const std::string_view kind : {"svn", "plain", "git"})
 	{
@@ -286,6 +288,7 @@ UAM_TEST(ManagedSnapshotUnbornSkipsIgnoredDependencyLinks)
 
 UAM_TEST(ManagedSnapshotPreservesRelativeSymlinkNodes)
 {
+	const ScopedCleanSvnStatus clean_svn;
 	UAM_ASSERT(GitAvailableForTests());
 	for (const int kind : {0, 1, 2})
 	{
@@ -423,6 +426,7 @@ UAM_TEST(ManagedSnapshotUnbornRefusesStagedPathBehindReplacedLink)
 
 UAM_TEST(ManagedSnapshotAcceptsEquivalentSourceRootSpellings)
 {
+	const ScopedCleanSvnStatus clean_svn;
 	UAM_ASSERT(GitAvailableForTests());
 	for (const int kind : {0, 1, 2})
 	{

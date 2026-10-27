@@ -1098,6 +1098,8 @@ struct ProcessExecutionResult
 	int exit_code = -1;
 	std::string output;
 	std::string error;
+	// Bounded stderr tail of a structured-stdout worker; never logged without a caller-owned filter.
+	std::string diagnostic_tail;
 };
 
 struct AsyncProcessTaskState
