@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { ViewportMenu } from '../ui'
+import { ViewportMenu, scaledMs } from '../ui'
 
 const HOVER_OPEN_DELAY = 150 // hover intent: sweeping across rows must not flash submenus
 const HOVER_CLOSE_DELAY = 120
@@ -28,7 +28,7 @@ export function RowSubmenu({ label, ariaLabel, icon, children }: { label: string
     if (restoreFocus) triggerRef.current?.focus()
     if (phase === 'closed') return
     setPhase('closing')
-    timerRef.current = setTimeout(() => setPhase('closed'), EXIT_MS)
+    timerRef.current = setTimeout(() => setPhase('closed'), scaledMs(EXIT_MS))
   }
   const scheduleClose = () => later(HOVER_CLOSE_DELAY, () => close())
 

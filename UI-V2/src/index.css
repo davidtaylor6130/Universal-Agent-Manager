@@ -375,7 +375,9 @@
 }
 
 /* Menus grow out of whatever opened them. */
-[data-viewport-menu] { animation: uam-menu-in 180ms var(--ease-out-soft) backwards; }
+[data-viewport-menu] { animation: uam-menu-in var(--dur-base) var(--ease-out-soft) backwards; }
+/* ViewportMenu leaves an inert copy behind on close so every menu shrinks back faster than it opened. */
+[data-viewport-menu][data-state="closed"] { animation: uam-menu-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 [data-viewport-menu][data-menu-side="bottom"] { transform-origin: top center; }
 [data-viewport-menu][data-menu-side="top"] { transform-origin: bottom center; }
 [data-viewport-menu][data-menu-side="point"] { transform-origin: top left; }
@@ -383,6 +385,9 @@
 [data-viewport-menu][data-menu-side="right"] { transform-origin: center left; }
 @keyframes uam-menu-in {
   from { opacity: 0; transform: scale(0.95) translateY(-2px); }
+}
+@keyframes uam-menu-out {
+  to { opacity: 0; transform: scale(0.97); }
 }
 
 /* Native <details> open and close smoothly instead of snapping. */
@@ -447,6 +452,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-app {
+  position: relative; /* containing block for closing panels; same box as the viewport */
   min-width: 0;
   min-height: 0;
   width: 100%;
@@ -466,7 +472,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
   gap: 8px;
   padding: 10px 7px;
   background: color-mix(in srgb, var(--window-bg) 96%, var(--bg));
-  z-index: 2;
+  z-index: 21; /* above sliding panels (closing ones sit at 20), which pass under the rail */
 }
 
 .uam-side-rail--left {
@@ -1947,21 +1953,27 @@ button.uam-commit-check { cursor: pointer; }
 }
 .uam-commit-message:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: 0 0 0 3px var(--accent-dim); }
 
-/* ── Side panels grow and shrink instead of popping ─────────────
-   The panel animates its own width while its content keeps the final
-   width (clipped), so the chat area eases over rather than jumping. */
-.uam-shell-panel { animation: uam-panel-grow var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-shell-panel[data-state="closed"] { animation: uam-panel-shrink var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-/* Content slides with the panel edge instead of squashing while the width animates. */
-.uam-shell-panel { overflow: hidden; }
-.uam-shell-panel > * { animation: uam-panel-content-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-shell-panel[data-state="closed"] > * { animation: uam-panel-content-out var(--dur-exit) var(--ease) forwards; }
-@keyframes uam-panel-content-in { from { transform: translateX(24px); opacity: 0; } }
-@keyframes uam-panel-content-out { to { transform: translateX(24px); opacity: 0; } }
-.uam-shell-panel > * { width: 100%; min-width: var(--panel-w, auto); }
-.uam-shell-panel--right { align-items: flex-end; }
-@keyframes uam-panel-grow { from { width: 0; flex-basis: 0; opacity: 0; } }
-@keyframes uam-panel-shrink { to { width: 0; flex-basis: 0; opacity: 0; } }
+/* ── Side panels open and close on the compositor ──────────────
+   The slot changes once; only transform animates, so the chat area never
+   relayouts per frame. Panels slide in and out of their rail like a drawer. */
+.uam-shell-panel { --panel-dir: -1; overflow: hidden; animation: uam-panel-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-shell-panel--right { --panel-dir: 1; }
+.uam-shell-panel[data-state="closed"] { animation: uam-panel-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* A docked panel that is closing leaves the layout at once and slides out from where it was (beside its rail),
+   above the chat's own layers; narrow windows already show panels as fixed overlays. */
+@media not all and (max-width: 1000px) {
+  /* Below the native window strip, which pads .uam-app (absolute boxes start at its padding edge). */
+  .uam-shell-panel[data-state="closed"] { position: absolute; top: var(--uam-window-strip-height, 0px); bottom: 0; height: auto; z-index: 20; }
+  /* The chat list's only edge is its resize handle, which unmounts on close, so it draws its own (right panels have one). */
+  .uam-shell-panel--left[data-state="closed"] { left: 44px; border-right: 1px solid var(--border); }
+  .uam-shell-panel--right[data-state="closed"] { right: 44px; }
+}
+.uam-shell-panel > * { width: 100%; }
+/* The handle mounts at its final place; it fades in once the opening panel has arrived beside it. */
+.uam-resize-handle { animation: uam-handle-in var(--dur-fast) var(--ease-out-soft) var(--dur-enter) backwards; }
+@keyframes uam-handle-in { from { opacity: 0; } }
+@keyframes uam-panel-in { from { transform: translateX(calc(var(--panel-dir) * 100%)); } }
+@keyframes uam-panel-out { to { transform: translateX(calc(var(--panel-dir) * 100%)); } }
 
 /* ── Inline forms (new workspace / collection) and text fields ── */
 .uam-field {
@@ -2227,7 +2239,8 @@ button.uam-commit-check { cursor: pointer; }
 }
 .uam-settings-nav-item svg { color: var(--text-3); transition: color var(--dur-fast) var(--ease); }
 .uam-settings-nav-item:hover { background: var(--sidebar-item-hover); color: var(--text); }
-.uam-settings-nav-item[data-active="true"] { background: var(--accent-dim); color: var(--text); }
+/* The active tint lives on the gliding .uam-settings-nav__indicator, so the item itself stays clear (also on hover). */
+.uam-settings-nav-item[data-active="true"] { background: transparent; color: var(--text); }
 .uam-settings-nav .uam-settings-nav-item { z-index: 1; }
 .uam-settings-nav-item[data-active="true"] svg { color: var(--accent); }
 .uam-settings-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
