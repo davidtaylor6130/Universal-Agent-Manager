@@ -23152,6 +23152,51 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 #endif
 }
 
+UAM_TEST(LocalOpenCodeDiscoveryNamesAdapterRefusalAndFailingSession)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	TempDir temp("uam-opencode-history-failures");
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const std::string listed = nlohmann::json::array({{{"id", "ses_bad"}, {"directory", workspace.string()}}}).dump();
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "list.json", listed));
+	ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	profile.interactive_command = "/bin/sh '" + (temp.root / "fixture.sh").string() + "'";
+	ChatFolder folder{"folder", "Workspace", workspace.string(), false};
+
+	// An unverified CLI refused by UAM's history adapter must not collapse into "invalid session list".
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "echo 'native private detail' >&2; echo 'UAM OpenCode adapter: OpenCode 2.1.4 history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.' >&2; exit 1\n"));
+	const auto refused = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!refused.result.success);
+	const std::string refusal = uam::strings::Join(refused.result.errors, " ");
+	UAM_ASSERT(refusal.find("OpenCode history discovery failed: OpenCode 2.1.4 history has not been verified") != std::string::npos);
+	UAM_ASSERT(refusal.find("native private detail") == std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else echo '{\"info\":'; fi\n"));
+	const auto malformed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(!malformed.result.success);
+	UAM_ASSERT(malformed.chats.empty());
+	UAM_ASSERT(uam::strings::Join(malformed.result.errors, " ").find("OpenCode session ses_bad: ") != std::string::npos);
+
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else exit 3; fi\n"));
+	const auto failed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	UAM_ASSERT(uam::strings::Join(failed.result.errors, " ").find("OpenCode session ses_bad: OpenCode could not export the session: exit 3") != std::string::npos);
+
+	// OpenCode 1.19.4 can exit before a piped stdout drains; emulate an export that is complete only to a regular file.
+	const nlohmann::json exported = {{"info", {{"id", "ses_bad"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "user"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "complete export"}}})}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "export.json", exported.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; elif [ -f /dev/stdout ]; then cat '" + (temp.root / "export.json").string() + "'; else head -c 20 '" + (temp.root / "export.json").string() + "'; fi\n"));
+	const auto complete = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
+	if (!complete.result.success) throw std::runtime_error(uam::strings::Join(complete.result.errors, " "));
+	UAM_ASSERT_EQ(complete.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(complete.chats.front().persisted_message_count, std::size_t{1});
+#endif
+}
+
 UAM_TEST(CopilotDelayedCompatibilityRetriesExactlyOnceAndBlocksUnsupported)
 {
 #if !defined(_WIN32)

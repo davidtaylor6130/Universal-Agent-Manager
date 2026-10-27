@@ -659,6 +659,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 	{
 		AppendAcpDiagnostic(session, "response", "jsonrpc_result", method, request_id, false, 0, "", "result=" + CapDiagnosticString(result.dump(), kMaxAcpDiagnosticDetailBytes));
 	}
+	else if (uam::acp_methods::IsSessionModeOrModelUpdateMethod(method))
+	{
+		// Acknowledgement only: a startup timeline must show which setup write was answered before the prompt.
+		AppendAcpDiagnostic(session, "response", "jsonrpc_result", method, request_id);
+	}
 	if (method == uam::acp_methods::kInitialize)
 	{
 		session.initialize_request_id = 0;

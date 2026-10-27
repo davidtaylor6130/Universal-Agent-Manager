@@ -148,7 +148,13 @@ namespace
 		std::array<char, 4096> buffer{};
 		std::string read_error;
 		const std::ptrdiff_t bytes = process_service.ReadStdioProcessStderr(process, buffer.data(), buffer.size(), &read_error);
-		if (bytes > 0) return ProviderWorkerReadStatus::Data;
+		if (bytes > 0)
+		{
+			constexpr std::size_t kMaxDiagnosticTail = 4096;
+			result.diagnostic_tail.append(buffer.data(), static_cast<std::size_t>(bytes));
+			if (result.diagnostic_tail.size() > kMaxDiagnosticTail) result.diagnostic_tail.erase(0, result.diagnostic_tail.size() - kMaxDiagnosticTail);
+			return ProviderWorkerReadStatus::Data;
+		}
 		if (bytes == 0) return ProviderWorkerReadStatus::Closed;
 		if (bytes == -2) return ProviderWorkerReadStatus::NoData;
 		result.error = "Failed to read provider worker diagnostics.";
