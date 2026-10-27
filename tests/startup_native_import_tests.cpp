@@ -46,7 +46,8 @@ namespace
 
 	void WaitForStartup(uam::StartupNativeImportService& service, uam::AppState& app)
 	{
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		// Hang guard, not a speed budget: importing 206 chats takes ~7 s locally and longer on Windows runners.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
 		while (service.Snapshot().phase == "scanning" || service.ImportPending())
 		{
 			UAM_ASSERT(std::chrono::steady_clock::now() < deadline);

@@ -1361,6 +1361,10 @@ foreach(_uam_objects IN ITEMS uam_core_objects uam_app_objects)
   endforeach()
   target_link_libraries(${_uam_objects} PRIVATE nlohmann_json::nlohmann_json libcef_dll_wrapper uam_sqlite ZLIB::ZLIB)
   set_target_properties(${_uam_objects} PROPERTIES FOLDER "App")
+  # Large orchestration units exceed MSVC's default object section limit in Debug (C1128).
+  if(MSVC)
+    target_compile_options(${_uam_objects} PRIVATE /bigobj)
+  endif()
 endforeach()
 
 foreach(_cmake_target IN ITEMS ALL_BUILD ZERO_CHECK RUN_TESTS Experimental Nightly NightlyMemoryCheck Continuous)
