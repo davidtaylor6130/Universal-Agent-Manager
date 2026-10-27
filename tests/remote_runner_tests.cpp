@@ -5539,6 +5539,8 @@ namespace
 			owned->session_id = app.chats.front().native_session_id;
 			owned->process_execution_host_id = host.id;
 			owned->current_mode_id = "default";
+			// This represents an owned launch with known Default options, not an unknown reattachment.
+			owned->launch_model_options_captured = true;
 			owned->remote_runner_protocol_version = 3;
 			owned->remote_output_delivery_token = token;
 			session = owned.get();
