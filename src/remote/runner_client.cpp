@@ -1,4 +1,5 @@
 #include <fstream>
+#include "common/platform/observed_process_stop.h"
 #include "common/utils/io_utils.h"
 #include "common/provider/provider_setup.h"
 #include "common/config/build_features.h"
@@ -380,7 +381,8 @@ namespace uam::remote
 					*error_out = read_error.empty() ? "The remote runner bridge closed." : read_error;
 				return false;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			// Stdout only: unread bridge diagnostics on stderr would otherwise wake this wait constantly.
+			uam::platform::WaitForStdioProcessOutput(m_bridge, std::chrono::milliseconds(5), false);
 		}
 		if (error_out != nullptr) *error_out = "The remote runner did not respond within 15 seconds.";
 		return false;

@@ -1328,6 +1328,11 @@ UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
 		return uam::remote::HandleRunnerRequest({{"id", "lease-check"}, {"type", type},
 		    {"sessionId", id}, {"controlToken", token}}, "test-version", &state);
 	};
+	// Pace the lease from observed renewal times, not from sleeps that oversleep on a loaded host.
+	using Clock = std::chrono::steady_clock;
+	constexpr auto kLease = std::chrono::milliseconds(250);
+	Clock::time_point renewed = Clock::now(); // No later than the transient start's own renewal.
+	Clock::time_point renewed_by = renewed;
 	for (const bool transient : {false, true})
 	{
 		nlohmann::json start = {{"id", "lease-start"}, {"type", "process.start"},
@@ -1335,17 +1340,28 @@ UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
 		    {"cwd", fs::temp_directory_path().string()}, {"argv", {"/bin/sh", "-c", "sleep 10"}}};
 		if (transient) start["transientLeaseMs"] = 250;
 		UAM_ASSERT(uam::remote::HandleRunnerRequest(start, "test-version", &state).value("ok", false));
+		renewed_by = Clock::now();
 	}
-	for (int heartbeat = 0; heartbeat < 5; ++heartbeat)
+	const auto require_unexpired = [&]()
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		if (Clock::now() - renewed >= kLease) throw TestFailure("The host stalled this test past the discovery lease; renewal cannot be proven.");
+	};
+	// Owned heartbeats keep the transient process alive for two whole leases.
+	for (const auto begun = renewed; Clock::now() - begun < 2 * kLease;)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		const Clock::time_point before = Clock::now();
 		const nlohmann::json polled = request("process.poll", "discovery", "owned-token");
+		require_unexpired();
 		UAM_ASSERT(polled.value("ok", false) && polled["result"].value("running", false));
+		renewed = before;
+		renewed_by = Clock::now();
 	}
-	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	// A wrong token is refused while the lease is live and does not renew it.
 	const nlohmann::json denied = request("process.poll", "discovery", "wrong-token");
+	require_unexpired();
 	UAM_ASSERT(!denied.value("ok", true) && denied["error"].value("code", "") == "unauthorized");
-	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	std::this_thread::sleep_until(renewed_by + kLease + std::chrono::milliseconds(50));
 	UAM_ASSERT(state.HasManagedProcesses());
 	nlohmann::json expired = request("process.poll", "discovery", "owned-token");
 	// Expiry rejects access immediately; owned nonblocking retirement can still need confirmation.
@@ -1969,8 +1985,13 @@ esac
 		decoded_commands.push_back('\n');
 	}
 	uam_test::bootstrap_command_checks::WindowsArtifact(plan, decoded_commands);
-	// Activation retires the host's other idle helpers and their login entries after the commit.
-	UAM_ASSERT(decoded_commands.find("Complete-UamTransaction $backup $marker $metadata; $uamHelperRoot=$HOME; $uamRunKey='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'; $uamCurrent=$installed; " + uam::remote::WindowsHelperRetirementScript()) != std::string::npos);
+	// Activation retires the host's other idle helpers in its own command after the commit, keeping both under cmd.exe's limit.
+	const std::size_t commit = decoded_commands.rfind("UAM_INSTALL_COMMITTED:nonce-1");
+	const std::size_t retire = decoded_commands.find("$uamCurrent=(Join-Path $HOME 'tools/uam/4.5.7')+'/uam-runner.exe';");
+	UAM_ASSERT(commit != std::string::npos && retire != std::string::npos && commit < retire);
+	UAM_ASSERT(decoded_commands.find('\n', commit) < retire);
+	UAM_ASSERT(decoded_commands.find("UAM_HELPER_RETIRED:", commit) > decoded_commands.find('\n', commit));
+	UAM_ASSERT(decoded_commands.find("UAM_HELPER_RETIRED:", retire) != std::string::npos);
 	UAM_ASSERT(commands.find(runner.string()) == std::string::npos);
 }
 #endif
@@ -7084,6 +7105,7 @@ UAM_TEST(AcpRecoveredPreparedPrefixResumesAsOneFreshReadOnlyNativeInput)
 	chat.uam_agent_id = "plan";
 	chat.created_at = chat.updated_at = "2026-10-14T20:17:11.000Z";
 	chat.remote_process_exists = true;
+	chat.remote_process_control_token = fixture.token; // Restart ownership requires the remote process authority.
 	chat.messages.push_back({.role = MessageRole::User, .content = "Original raw input.", .created_at = "2026-10-14T20:17:08.000Z", .interrupted = true, .acp_prompt_not_sent = true});
 	uam::AcpQueuedUserPromptState old;
 	old.text = "Old injected agent context.\n\nOriginal raw input.";
@@ -7908,6 +7930,10 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 		chat.provider_id = session.provider_id = "claude-cli";
 		session.protocol_kind = "claude-code-stream-json";
 		UAM_ASSERT(!chat.small_model_mode); // Exercise only the ordinary deferred marker boundary.
+		// An owned remote launch: matching process authority and known Default launch options.
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = fixture.token;
+		session.launch_model_options_captured = true;
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		std::string error;
 		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Native input must retain unrelated RPC state on save failure.", &error));

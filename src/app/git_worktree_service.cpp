@@ -365,7 +365,10 @@ namespace uam
 			path = WorktreeRootForChat(app, source_root, relative_name);
 #if defined(_WIN32)
 			constexpr std::size_t kMaxGitAdministrativePathBytes = 220;
-			const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(path);
+			// Git checks GIT_DIR on its real path (8.3 aliases and junctions expanded), so budget that spelling.
+			std::error_code canonical_error;
+			std::filesystem::path absolute = std::filesystem::weakly_canonical(uam::paths::AbsolutePathNoThrow(path), canonical_error);
+			if (canonical_error) absolute = uam::paths::AbsolutePathNoThrow(path);
 			if (uam::paths::Utf8PathString(absolute / ".git").size() > kMaxGitAdministrativePathBytes)
 			{
 				const std::filesystem::path parent = absolute.parent_path();

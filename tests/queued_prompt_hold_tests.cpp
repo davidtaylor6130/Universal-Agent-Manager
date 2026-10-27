@@ -327,11 +327,13 @@ UAM_TEST(TransportRecoveryDoesNotNewlyHoldQueuesOrReplayAcceptedRemotePrefix)
 		UAM_ASSERT(cleanup_session.remote_stop_pending && cleanup_session.queue_held);
 		UAM_ASSERT_EQ(cleanup_session.queued_user_prompts.size(), std::size_t{2});
 		UAM_ASSERT_EQ(cleanup.app.pending_acp_remote_stops.size(), std::size_t{1});
-		const fs::path good_root = cleanup.app.data_root;
+		// Obstruct only the primary: the stop owner captured this data root and must still match it.
+		const fs::path primary = AppPaths::UamChatFilePath(cleanup.app.data_root, cleanup_chat.id);
+		const fs::path retained = primary.string() + ".test-retained";
 		if (save_fails)
 		{
-			cleanup.app.data_root = cleanup.temp.root / "blocked";
-			UAM_ASSERT(uam::io::WriteTextFile(cleanup.app.data_root, "blocked"));
+			fs::rename(primary, retained);
+			fs::create_directory(primary);
 		}
 		const double deadline = uam::GetAppTimeSeconds() + 2.0;
 		while (!cleanup.app.pending_acp_remote_stops.empty() && uam::GetAppTimeSeconds() < deadline)
@@ -347,7 +349,8 @@ UAM_TEST(TransportRecoveryDoesNotNewlyHoldQueuesOrReplayAcceptedRemotePrefix)
 		if (save_fails)
 		{
 			UAM_ASSERT(cleanup.app.pending_chat_save_at_by_chat_id.contains(cleanup_chat.id));
-			cleanup.app.data_root = good_root;
+			fs::remove(primary);
+			fs::rename(retained, primary);
 			uam::FlushPendingChatSaves(cleanup.app, true);
 		}
 		const std::optional<ChatSession> saved_cleanup = ChatRepository::LoadLocalChat(cleanup.app.data_root, "held-queue");

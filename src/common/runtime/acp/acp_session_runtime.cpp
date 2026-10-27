@@ -1,4 +1,5 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/runtime/acp/acp_process_handoff.h"
 #include <type_traits>
 #include "common/chat/acp_prompt_recovery.h"
@@ -4796,8 +4797,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (!ValidateQueuedReplayBeforeLaunch(app, session, chat)) return false;
-		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready &&
-		    !CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
+		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready)
+		{
+			// A revoked owner holds the exact head once; a silent refusal would re-check it every poll.
+			std::string ownership_error;
+			if (!ValidateAcpRestartOwnership(app, session, chat, &ownership_error))
+			{
+				session.last_error = std::move(ownership_error);
+				session.queue_held = chat.acp_queue_held = true;
+				session.reconnect_pending = false;
+				session.lifecycle_state = kAcpLifecycleError;
+				ScheduleChatSave(app, chat, 0.0);
+				return false;
+			}
+			if (!CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
+		}
 		if (chat.routing_mode == "automatic")
 		{
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
@@ -8145,8 +8159,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;
-			// Keep draining active pipes within the existing shutdown deadline.
-			if (!made_progress) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			// Keep draining active pipes within the existing shutdown deadline, waking as soon as output arrives.
+			if (!made_progress)
+			{
+				const auto pending = std::ranges::find_if(idle_remote_stops, [](const IdleRemoteStop& stop) { return !stop.confirmed; });
+				if (pending == idle_remote_stops.end()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				else uam::platform::WaitForStdioProcessOutput(*pending->session, std::chrono::milliseconds(10));
+			}
 		}
 		for (const IdleRemoteStop& stop : idle_remote_stops)
 		{

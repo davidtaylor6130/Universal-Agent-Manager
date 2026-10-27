@@ -195,7 +195,6 @@ namespace
 		usage.last.output_tokens = session.antigravity_output_tokens;
 		usage.last.total_tokens = session.antigravity_input_tokens + session.antigravity_output_tokens;
 		usage.last_available = true;
-		uam::acp_detail::RecordGoalReviewTurnUsage(session, usage.last.total_tokens);
 	}
 
 	Goal* BoundAntigravityGoal(uam::AppState& app, const uam::AcpSessionState& session, bool require_revision = true)
@@ -230,7 +229,7 @@ namespace
 		session.goal_resume_suppressed = true;
 		session.last_error = reason;
 		std::string stop_error;
-		(void)uam::CancelAcpTurn(app, chat.id, &stop_error, false, true);
+		(void)uam::CancelAcpTurn(app, chat.id, &stop_error, false, true, true);
 	}
 
 	bool AccountAntigravityGoalDelta(uam::AppState& app, uam::AcpSessionState& session, Goal& goal, int64_t delta)
@@ -502,7 +501,7 @@ bool AntigravityCliProviderRuntime::OnAcpGoalControlCommitted(uam::AppState& app
 	if (!OwnsAntigravityGoalControl(app, session, chat, goal_id))
 		return true;
 	session.goal_resume_suppressed = true;
-	return uam::CancelAcpTurn(app, chat.id, &error, false, true);
+	return uam::CancelAcpTurn(app, chat.id, &error, false, true, true);
 }
 
 std::string AntigravityCliProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
@@ -682,6 +681,9 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 		}
 		if (turn > 0 && turn <= session.antigravity_completed_turns) return true;
 		FinishAntigravityUsage(session);
+		// A bound Antigravity goal turn charges itself below; only unbound reviews use the shared receipt.
+		if (session.provider_usage.token_usage.last_available && !BoundAntigravityGoal(app, session, false))
+			uam::acp_detail::RecordGoalReviewTurnUsage(session, session.provider_usage.token_usage.last.total_tokens);
 		ApplyAntigravityDenialEvidence(payload, session, chat);
 		if (status == "SUCCESS" && session.provider_usage.token_usage.last_available && BoundAntigravityGoal(app, session, false))
 			session.antigravity_goal_turn.result_tokens = session.provider_usage.token_usage.last.total_tokens;

@@ -33,7 +33,7 @@
 #include "common/provider/claude/cli/claude_tool_projection.h"
 #include "common/provider/native_provider_agent_history.h"
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-#include "common/provider/antigravity/cli/antigravity_native_history.h"
+#include "common/provider/antigravity_native_history.h"
 #endif
 #include "common/provider/copilot_native_history.h"
 #include "common/provider/copilot/cli/copilot_session_paths.h"
@@ -493,6 +493,8 @@ namespace
 		const std::vector<ChatSession> loaded = sidebar == nullptr ? ChatRepository::LoadLocalChatSummaries(data_root) : std::vector<ChatSession>{};
 		const std::vector<ChatSession>& local_chats = sidebar != nullptr ? *sidebar : loaded;
 		NativeImportIndex import_index;
+		// Many chats share a workspace; resolve each distinct path once per index build.
+		chat_identity::NativeWorkspaceCache workspaces;
 		NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
 		import_index.tombstones_available = tombstones.available;
 		import_index.tombstoned_native_keys = std::move(tombstones.keys);
@@ -508,7 +510,7 @@ namespace
 			if (!uam::strings::IsBlank(chat.native_session_id))
 			{
 
-				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces);
 				const std::string remote_key = RemoteImportOwnershipKey(app, chat);
 				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
 				if (uam::strings::StartsWith(chat.id, "chat-")) import_index.owned_native_keys.insert(native_key);
@@ -529,7 +531,7 @@ namespace
 		{
 			import_index.existing_ids.insert(chat.id);
 			if (uam::strings::IsBlank(chat.native_session_id)) continue;
-			import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces));
 			const std::string remote_key = RemoteImportOwnershipKey(app, chat);
 			if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
 		}
@@ -539,7 +541,7 @@ namespace
 			{
 				import_index.existing_ids.insert(chat.id);
 				if (uam::strings::IsBlank(chat.native_session_id)) continue;
-				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces));
 				const std::string remote_key = RemoteImportOwnershipKey(app, chat);
 				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
 			}
@@ -562,7 +564,7 @@ namespace
 			if (resolved != app.resolved_native_sessions_by_chat_id.end()) linked.native_session_id = resolved->second;
 			if (NativeSessionLinkService().HasRealNativeSessionId(linked))
 			{
-				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked));
+				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked, workspaces));
 				const std::string remote_key = RemoteImportOwnershipKey(app, linked);
 				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
 			}
@@ -573,7 +575,7 @@ namespace
 				// A provider can write its rollout before returning its session ID.
 				// Defer imports in this workspace until the live attachment settles.
 				linked.native_session_id.clear();
-				import_index.pending_native_workspace_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked));
+				import_index.pending_native_workspace_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked, workspaces));
 				const std::string remote_key = RemoteImportOwnershipKey(app, linked, true);
 				if (!remote_key.empty()) import_index.remote_pending_workspace_keys.insert(remote_key);
 			}
