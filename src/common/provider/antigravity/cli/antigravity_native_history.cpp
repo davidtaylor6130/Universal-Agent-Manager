@@ -452,7 +452,8 @@ namespace uam::antigravity::history
 				const int read = sqlite3_step(row.get());
 				if (read == SQLITE_ROW)
 				{
-					Require(Column(row.get(), 2) == "antigravity-cli" && Column(row.get(), 3).empty() && Column(row.get(), 6).empty() && sqlite3_column_type(row.get(), 4) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 4) == 0 && sqlite3_column_type(row.get(), 5) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 5) == 0, "Antigravity workspace index has active, nested or foreign conversation context.");
+				// The CLI leaves `source` empty on real stores; only a non-empty value that is not ours is foreign.
+				Require((Column(row.get(), 2).empty() || Column(row.get(), 2) == "antigravity-cli") && Column(row.get(), 3).empty() && Column(row.get(), 6).empty() && sqlite3_column_type(row.get(), 4) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 4) == 0 && sqlite3_column_type(row.get(), 5) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 5) == 0, "Antigravity workspace index has active, nested or foreign conversation context.");
 					Require(sqlite3_column_type(row.get(), 1) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 1) >= 0 && sqlite3_column_int64(row.get(), 1) <= static_cast<sqlite3_int64>(kMaxSteps), "Antigravity native workspace index has an invalid step count.");
 					result.steps = static_cast<std::size_t>(sqlite3_column_int64(row.get(), 1));
 					const auto uris = nlohmann::json::parse(Column(row.get(), 0), nullptr, false);

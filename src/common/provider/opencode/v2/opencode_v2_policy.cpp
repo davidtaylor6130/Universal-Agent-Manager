@@ -20,12 +20,17 @@ std::vector<std::string> ServeArgv(std::vector<std::string> command)
 	command.insert(command.end(), {"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"});
 	return command;
 }
+bool IsCheckedHistoryV2(std::string_view version)
+{
+	// History list/export only; the live chat adapter stays pinned to 2.1.2.
+	return version == "2.1.2" || version == "2.1.4";
+}
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
 	const std::string& operation, const std::string& id)
 {
-	const bool v2 = version == "2.1.2";
+	const bool v2 = IsCheckedHistoryV2(version);
 	if (command.empty() || (!v2 && !version.starts_with("1.")))
-		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2.");
+		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2 and 2.1.4.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});
