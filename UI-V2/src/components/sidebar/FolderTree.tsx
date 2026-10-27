@@ -24,7 +24,7 @@ import {
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
-import { ChatSelectionContext, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
+import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
@@ -1523,15 +1523,17 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         </Tooltip>}
       </div>
       {menuOpen && (
-        <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
+        <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} onRequestClose={() => { setMenuOpen(false); setMenuPoint(null) }} onClick={(e) => e.stopPropagation()} className="fixed z-50 rounded-md py-1 animate-fade-in" style={{ minWidth: 168, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
           {selectionTargets ? <>
-            <SingleOnlyMenuItem noun="collection" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" icon={<Pencil size={12} />} label="Rename" />
-            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }}>Change icon for {selectionTargets.length} collections</button>
-            <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); onDeleteSelected() }}><Trash2 size={12} />Delete {selectionTargets.length} collections…</button>
+            <SingleOnlyMenuItem noun="collection" icon={<Pencil size={14} aria-hidden />} label="Rename" />
+            <FolderMenuItem icon={<Library size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} collections`} onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }} />
+            <MenuDivider />
+            <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={`Delete ${selectionTargets.length} collections…`} danger onClick={() => { setMenuOpen(false); onDeleteSelected() }} />
           </> : <>
-          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
-          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }}>Change icon</button>
-          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
+          <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename" onClick={() => { setMenuOpen(false); setEditing(true) }} />
+          <FolderMenuItem icon={<Library size={14} aria-hidden />} label="Change icon" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }} />
+          <MenuDivider />
+          <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete" danger onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }} />
           </>}
         </ViewportMenu>
       )}

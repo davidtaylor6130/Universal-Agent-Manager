@@ -569,6 +569,15 @@ describe('FolderTree', () => {
     expect(menu?.textContent).toContain('Rename')
     expect(menu?.textContent).toContain('Delete')
 
+    const rows = Array.from(menu?.querySelectorAll('.uam-sb-menu-item') ?? [])
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(row.querySelector('svg')).not.toBeNull()
+    }
+    const deleteRow = rows.find((r) => r.textContent?.includes('Delete'))
+    expect(deleteRow?.className).toContain('uam-sb-menu-item--danger')
+    expect(menu?.querySelector('.uam-sb-menu-divider')).not.toBeNull()
+
     act(() => root.unmount())
     host.remove()
     vi.unstubAllGlobals()
