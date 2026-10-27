@@ -287,6 +287,12 @@ namespace uam
 
 		using namespace acp_detail;
 
+		// Skill files pair positionally with captured blocks; an empty block is a missing snapshot.
+		bool SkillSnapshotsComplete(const std::vector<std::string>& files, const std::vector<std::string>& blocks)
+		{
+			return files.size() == blocks.size() && std::ranges::none_of(blocks, &std::string::empty);
+		}
+
 		bool RemoteSourceCleanupPending(const AcpSessionState& session, const ChatSession& chat)
 		{
 			return session.remote_source_exit_reported &&
@@ -1711,7 +1717,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (!queued.markdown_store_files.empty())
 			{
 				const std::filesystem::path markdown_store_root = MarkdownStoreService::NormalizeRoot(app.settings.markdown_store_directory);
-				const bool has_snapshots = queued.markdown_store_prompt_blocks.size() == queued.markdown_store_files.size();
+				// Any missing snapshot (empty block) keeps the store-reload path for every file.
+				const bool has_snapshots = SkillSnapshotsComplete(queued.markdown_store_files, queued.markdown_store_prompt_blocks);
 				for (std::size_t index = 0; index < queued.markdown_store_files.size(); ++index)
 				{
 					std::string prompt_block;
@@ -1830,7 +1837,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else if (prior.role == MessageRole::User)
 				{
-					if (!prior.markdown_store_files.empty() && prior.markdown_store_files.size() != prior.markdown_store_prompt_blocks.size())
+					if (!prior.markdown_store_files.empty() && !SkillSnapshotsComplete(prior.markdown_store_files, prior.markdown_store_prompt_blocks))
 					{
 						if (error_out) *error_out = "The original attached skill snapshots are unavailable.";
 						return false;
@@ -5186,7 +5193,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::optional<AcpUnsentPromptRecovery> captured;
 		if (!ResolveCapturedRetryPolicy(app, *chat, message_index, captured, error_out, CapturedUnsentPolicyUse::OwnedMutation))
 			return false;
-		if (original.markdown_store_files.size() != original.markdown_store_prompt_blocks.size())
+		if (!SkillSnapshotsComplete(original.markdown_store_files, original.markdown_store_prompt_blocks))
 			return reject("The saved skill context is incomplete. The original input is unchanged.");
 		std::vector<MessageAttachment> attachments = original.attachments;
 		if (retained_attachment_ids)
@@ -5272,7 +5279,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!head.prepared_for_delivery || head.append_user_message || head.prepared_user_message_count != 1 ||
 		    head.existing_user_message_index >= 0 || !head.claude_quota_continuation_id.empty() ||
 		    head.goal_mode || head.computer_use_mode || message.content.empty() || message.created_at.empty() ||
-		    message.markdown_store_files.size() != message.markdown_store_prompt_blocks.size()) return false;
+		    !SkillSnapshotsComplete(message.markdown_store_files, message.markdown_store_prompt_blocks)) return false;
 		for (std::size_t index = 0; index < session.queued_user_prompts.size(); ++index)
 			if (chat.acp_queued_prompts[index + 1] != session.queued_user_prompts[index] ||
 			    session.queued_user_prompts[index].prepared_for_delivery ||
@@ -5455,7 +5462,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("The original message creation time is unavailable. Create a new branch before retrying.");
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		if (!host) return reject("The retry execution host is unavailable.");
-		if (queued.markdown_store_files.size() != queued.markdown_store_prompt_blocks.size())
+		if (!SkillSnapshotsComplete(queued.markdown_store_files, queued.markdown_store_prompt_blocks))
 			return reject("The original attached skill snapshots are unavailable.");
 		if (!QueuedUserPromptFits(session.queued_user_prompts, queued, error_out) ||
 		    !QueuedMarkdownStoreContentFits(session.queued_user_prompts, queued, error_out)) return false;
@@ -5627,7 +5634,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const bool held_prepared = HeldPreparedAcpPrefixMatches(app, *chat, *session, message_index);
 		if (AcpRetryHasPendingWork(app, *chat, *session, held_prepared))
 			return reject("Wait for pending runtime work or delivery recovery before retrying.");
-		if (message.markdown_store_files.size() != message.markdown_store_prompt_blocks.size())
+		if (!SkillSnapshotsComplete(message.markdown_store_files, message.markdown_store_prompt_blocks))
 			return reject("The original attached skill snapshots are unavailable.");
 		AcpQueuedUserPromptState queued;
 		queued.text = message.content;

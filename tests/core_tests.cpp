@@ -9461,6 +9461,39 @@ UAM_TEST(ChatBranchIdempotentReplayUsesDetachedColdHistoriesWithoutWarmingChats)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
 }
 
+UAM_TEST(PlainBranchOfBlankMessageRequiresRetainedContextLikePreview)
+{
+	TempDir temp("uam-plain-branch-blank-context");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("", "codex-cli");
+	source.id = "blank-source";
+	Message message{MessageRole::User, " \n "};
+	message.attachments = {MessageAttachment{.id = "image", .name = "image.png", .kind = "image", .path = "image.png"}};
+	message.markdown_store_files = {"skill.md"};
+	message.markdown_store_prompt_blocks = {"Captured skill"};
+	source.messages.push_back(message);
+	app.chats.push_back(source);
+	const std::size_t count = app.chats.size();
+	// Same rule as the browser preview: omitted replacement on a blank input with all context removed.
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(app.status_line, std::string("Branch message content or context is required."));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front().attachments.clear();
+	app.chats.front().messages.front().markdown_store_files.clear();
+	app.chats.front().messages.front().markdown_store_prompt_blocks.clear();
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0));
+	UAM_ASSERT_EQ(app.chats.size(), count);
+	app.chats.front().messages.front() = message;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().attachments.empty());
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files, message.markdown_store_files);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::nullopt, nullptr, std::nullopt, nullptr, nullptr, nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments, message.attachments);
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().markdown_store_files.empty());
+}
+
 UAM_TEST(MessageBranchAttachmentSelectionPreservesSourceAndRejectsOperationCollisions)
 {
 	TempDir temp("uam-message-branch-attachments");
