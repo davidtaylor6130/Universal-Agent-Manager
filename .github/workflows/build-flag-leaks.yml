@@ -74,6 +74,16 @@ jobs:
       - name: Check the bundle for excluded names
         run: python3 scripts/check_build_flag_leaks.py --dist "$RUNNER_TEMP/dist" --disabled ${{ matrix.off }}
 
+  # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
+  native-skipped:
+    name: Native flag builds not requested (add the build-flags label to run 18 full builds)
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'build-flags')
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "### Native build-flag rows skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "Each native row is a full application build with one feature or provider set turned off. Pull requests run them only with the \`build-flags\` label; pushes, schedules and manual runs always do. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
+
   native:
     name: Native ${{ matrix.name }}
     needs: ui
