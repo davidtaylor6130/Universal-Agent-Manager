@@ -27,7 +27,8 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
   FetchContent_MakeAvailable(nlohmann_json)
 endif()
 add_executable(uam_bootstrap_metadata_tests native_fixture.cpp "${UAM_SOURCE_ROOT}/src/remote/runner_bootstrap.cpp" "${UAM_SOURCE_ROOT}/src/remote/runner_client.cpp"
-  "${UAM_SOURCE_ROOT}/src/app/memory_library_service.cpp" "${UAM_SOURCE_ROOT}/src/common/memory/memory_library_store.cpp")
+  "${UAM_SOURCE_ROOT}/src/app/memory_library_service.cpp" "${UAM_SOURCE_ROOT}/src/common/memory/memory_library_store.cpp"
+  "${UAM_SOURCE_ROOT}/src/common/utils/diagnostic_log.cpp")
 target_compile_features(uam_bootstrap_metadata_tests PRIVATE cxx_std_20)
 target_include_directories(uam_bootstrap_metadata_tests PRIVATE "${UAM_SOURCE_ROOT}/src")
 target_link_libraries(uam_bootstrap_metadata_tests PRIVATE nlohmann_json::nlohmann_json)
@@ -38,12 +39,16 @@ foreach(provider IN ITEMS GEMINI CODEX OPENCODE CLAUDE COPILOT ANTIGRAVITY)
 endforeach()
 # build_features.h requires every feature flag; this isolated check uses the full profile.
 target_compile_definitions(uam_bootstrap_metadata_tests PRIVATE UAM_ENABLE_COMPUTER_USE=1 UAM_ENABLE_SSH=1 UAM_ENABLE_MOBILE_COMPANION=1)
+# windows.h otherwise defines min/max macros that break std::numeric_limits<T>::max() and std::min/std::max.
+target_compile_definitions(uam_bootstrap_metadata_tests PRIVATE NOMINMAX)
 # This isolated executable uses client admission/file APIs, not accounting collection.
 # Discard unreachable client methods rather than link unrelated product services.
 if(APPLE)
   target_link_options(uam_bootstrap_metadata_tests PRIVATE "LINKER:-dead_strip")
 elseif(MSVC)
   target_compile_options(uam_bootstrap_metadata_tests PRIVATE /Gy /Gw)
+  # MSVC resolves references before /OPT:REF discards code; name the unreachable services instead of linking them.
+  target_sources(uam_bootstrap_metadata_tests PRIVATE unreachable_services.cpp)
   target_link_options(uam_bootstrap_metadata_tests PRIVATE /OPT:REF)
 else()
   target_compile_options(uam_bootstrap_metadata_tests PRIVATE -ffunction-sections -fdata-sections)
