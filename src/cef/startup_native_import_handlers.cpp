@@ -3,6 +3,61 @@
 #include "cef/cef_push.h"
 #include "cef/state_serializer.h"
 
+void UamQueryHandler::HandleDiscoverSystemNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	if (!m_app.startup_native_import_service)
+	{
+		cb->Failure(409, "Native history discovery is unavailable.");
+		return;
+	}
+	std::string error;
+	if (!m_app.startup_native_import_service->DiscoverLocalHistory(m_app, &error))
+	{
+		cb->Failure(409, error);
+		return;
+	}
+	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(m_app.startup_native_import_service->Snapshot()).dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleAssignSystemNativeImportWorkspace(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.is_object())
+	{
+		cb->Failure(400, "Invalid workspace assignment.");
+		return;
+	}
+	for (const auto& [key, limit] : {std::pair{"generation", std::size_t{128}}, std::pair{"candidateId", std::size_t{128}}, std::pair{"title", std::size_t{256}}})
+	{
+		const auto value = payload.find(key);
+		if (value == payload.end() || !value->is_string() || value->get_ref<const std::string&>().empty() || value->get_ref<const std::string&>().size() > limit)
+		{
+			cb->Failure(400, "Invalid workspace assignment.");
+			return;
+		}
+	}
+	const auto offset = payload.find("offset"), limit = payload.find("limit"), folder = payload.find("folderId");
+	if ((offset != payload.end() && (!offset->is_number_integer() || *offset < 0 || *offset > 1000000)) ||
+	    (limit != payload.end() && (!limit->is_number_integer() || *limit < 1 || *limit > 200)) ||
+	    (folder != payload.end() && !folder->is_null() && (!folder->is_string() || folder->get_ref<const std::string&>().empty() || folder->get_ref<const std::string&>().size() > 128)))
+	{
+		cb->Failure(400, "Invalid import page.");
+		return;
+	}
+	const std::size_t page_offset = payload.value("offset", std::size_t{0}), page_limit = payload.value("limit", std::size_t{100});
+	const std::string folder_id = folder == payload.end() || folder->is_null() ? std::string{} : folder->get<std::string>();
+
+	std::string error;
+	if (!m_app.startup_native_import_service || !m_app.startup_native_import_service->AssignWorkspace(m_app,
+	    payload.at("generation").get<std::string>(), payload.at("candidateId").get<std::string>(), payload.at("title").get<std::string>(), &error))
+	{
+		cb->Failure(409, error.empty() ? "Native workspace assignment is unavailable." : error);
+		return;
+	}
+	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(m_app.startup_native_import_service->Snapshot(page_offset, page_limit, folder_id)).dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
 void UamQueryHandler::HandleGetStartupNativeImports(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const int64_t offset = payload.value("offset", int64_t{0});

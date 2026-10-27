@@ -14,6 +14,8 @@ export interface StartupNativeImportCandidate {
   workspaceDirectory: string
   executionHostId: string
   updatedAt: string
+  workspaceTitle?: string
+  newWorkspace?: boolean
 }
 
 export interface StartupNativeImportPage extends StartupNativeImportStatus {
@@ -52,9 +54,11 @@ export function parseStartupNativeImportPage(value: unknown): StartupNativeImpor
     const candidate = value as Record<string, unknown>
     if (!text(candidate.candidateId, 128) || !candidate.candidateId || ids.has(candidate.candidateId) ||
       !text(candidate.providerId, 128) || !text(candidate.nativeSessionId, 4096) || !text(candidate.title, 4096) ||
-      !text(candidate.folderId, 128) || !text(candidate.workspaceDirectory, 32768) || !text(candidate.executionHostId, 128) || !text(candidate.updatedAt, 128)) return null
+      !text(candidate.folderId, 128) || !text(candidate.workspaceDirectory, 32768) || !text(candidate.executionHostId, 128) || !text(candidate.updatedAt, 128) ||
+      (candidate.workspaceTitle !== undefined && !text(candidate.workspaceTitle, 512)) || (candidate.newWorkspace !== undefined && typeof candidate.newWorkspace !== 'boolean')) return null
     ids.add(candidate.candidateId)
-    candidates.push({ candidateId: candidate.candidateId, providerId: candidate.providerId, nativeSessionId: candidate.nativeSessionId, title: candidate.title, folderId: candidate.folderId, workspaceDirectory: candidate.workspaceDirectory, executionHostId: candidate.executionHostId, updatedAt: candidate.updatedAt })
+    candidates.push({ candidateId: candidate.candidateId, providerId: candidate.providerId, nativeSessionId: candidate.nativeSessionId, title: candidate.title, folderId: candidate.folderId, workspaceDirectory: candidate.workspaceDirectory, executionHostId: candidate.executionHostId, updatedAt: candidate.updatedAt,
+      ...(candidate.workspaceTitle !== undefined ? { workspaceTitle: candidate.workspaceTitle as string } : {}), ...(candidate.newWorkspace !== undefined ? { newWorkspace: candidate.newWorkspace as boolean } : {}) })
   }
   return { ...status, candidates, nextOffset: record.nextOffset, errors: record.errors as string[] }
 }

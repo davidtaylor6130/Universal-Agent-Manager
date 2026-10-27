@@ -11,6 +11,7 @@ Every provider checklist must account for every row. Conditional features must c
 | `structured-chat` | [Structured chat](structured-chat.md) |
 | `terminal-view` | [CLI terminal view](terminal-view/terminal-view.md) |
 | `terminal-sync` | [Chat and terminal continuity](terminal-view/session-continuity.md) |
+| `native-import` | [Native history discovery/import](../chat/native-imports.md) and the explicit [Chat Data entry point](../settings/chat-data.md#native-provider-histories) |
 | `chat-lifecycle` | [Create, select, rename and delete](../chat/lifecycle.md) |
 | `concurrency` | [Concurrent instances](concurrency.md) |
 | `branching` | [Branching](branching.md) |

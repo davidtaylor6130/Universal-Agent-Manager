@@ -180,6 +180,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 #if UAM_ENABLE_MOBILE_COMPANION
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
+		if (request.value("action", std::string{}) == "discoverSystemNativeImports" || request.value("action", std::string{}) == "assignSystemNativeImportWorkspace")
+		{ callback->Failure(403, "Native history discovery and assignment require the desktop app."); return; }
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
@@ -264,6 +266,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
 		{"getChatRuntimeMetrics", &UamQueryHandler::HandleGetChatRuntimeMetrics},
 		{"getStartupNativeImports", &UamQueryHandler::HandleGetStartupNativeImports},
+		{"discoverSystemNativeImports", &UamQueryHandler::HandleDiscoverSystemNativeImports},
+		{"assignSystemNativeImportWorkspace", &UamQueryHandler::HandleAssignSystemNativeImportWorkspace},
 		{"resolveStartupNativeImports", &UamQueryHandler::HandleResolveStartupNativeImports},
 		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
 		{"requestAppPermission", &UamQueryHandler::HandleRequestAppPermission},
