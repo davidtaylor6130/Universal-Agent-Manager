@@ -352,6 +352,14 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
 /// <summary>Keeps model binding and worker launch ownership on the same effective setup scope.</summary>
+// An owned cold transaction binds admitted input before its one process/control attempt.
+bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat,
+    std::function<bool(AppState&, AcpSessionState&, ChatSession&)> start);
+void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, bool quota_settlement = false);
+bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool HasPendingAcpColdLaunch(const AcpSessionState& session);
+bool AcpLaunchConfigurationFinished(const AcpSessionState& session);
+void PinDurableAdmissionRoot(AppState& app, const std::string& chat_id);
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Reject native permission snapshots on launch paths that cannot enforce them.</summary>
 bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
@@ -363,7 +371,9 @@ void RevokeSavedImageRetry(AcpSessionState& session);
 std::shared_ptr<ColdRetryBinding> PrepareColdRetryLaunchBinding(AppState&, AcpSessionState&, const ChatSession&,
     std::shared_ptr<const SavedImageRetryPermission>, std::shared_ptr<const StoppedChatLaunchStorageReceipt>);
 void RevokeColdRetryBinding(AcpSessionState&);
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr, std::shared_ptr<ColdRetryBinding> cold_binding = {});
+// Only send admission opts into defer_until_saved; other callers launch and report errors synchronously.
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr, std::shared_ptr<ColdRetryBinding> cold_binding = {},
+    bool defer_until_saved = false);
 /// <summary>Apply the same captured instructions and current MCP authority to initial and replacement setup.</summary>
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
     const std::string& cwd, nlohmann::json& request);
@@ -380,6 +390,16 @@ enum class AcpPromptFailurePurpose
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPromptFailurePurpose* failure_purpose = nullptr);
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+struct GoalPromptReceiptScope
+{
+	std::string owner_id;
+	std::shared_ptr<const std::uint8_t> owner_incarnation;
+	std::string identity;
+	std::optional<NativeGoalBinding> native_binding;
+	bool operator==(const GoalPromptReceiptScope&) const = default;
+};
+std::optional<GoalPromptReceiptScope> CaptureGoalPromptReceiptScope(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+bool CanStageRemoteGoalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
 bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat, std::optional<int> cold_request_id = std::nullopt);
 /// Historical exact sink DATA only; holding or copying this handle never authorizes input/replay.
@@ -470,6 +490,8 @@ void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id)
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
 void AbandonPendingLocalSteers(AcpSessionState& session);
 bool AgentInputPreparationReady(const AcpSessionState& session);
+// True while completed preparation admits its own input, before its marker is cleared.
+bool AgentInputPreparationResuming(const AcpSessionState& session);
 std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Persists removal of a rejected resume ID; failure restores it and invalidates transport without losing queued work.</summary>

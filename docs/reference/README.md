@@ -12,6 +12,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Antigravity runtime and goals](antigravity-runtime-goals.md) | CLI-conversation UAM goal lifecycle and all 26 capability source boundaries |
 | [OpenCode V2 protocol assessment](opencode-v2-protocol-assessment.md) | Pinned V2.1.2 native adapter contracts, session/history differences, permission guard and verification limits |
 | [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
+| [Asynchronous send durability](asynchronous-send-durability.md) | Current admission predicates, remaining publication work and retained ownership barriers |
 | [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
 | [Persistence](architecture/app-state-persistence.md) | Storage/cache relationships |
 | [Data-folder transition](data-folder-transition.md) | Preference and stopped handoff/rollback implemented in source; live activation gated |
