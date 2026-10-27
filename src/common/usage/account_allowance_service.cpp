@@ -93,7 +93,9 @@ namespace uam::usage
 		nlohmann::json row;
 		std::uint64_t generation = 0;
 		bool requested = false;
+		bool manual = false;
 		bool in_flight = false;
+		bool last_manual = false;
 		bool account_unavailable = false;
 		std::optional<std::chrono::steady_clock::time_point> last_attempt;
 	};
@@ -125,30 +127,33 @@ namespace uam::usage
 			const auto found = std::ranges::find_if(providers, [&](const auto& config) { return config.provider_id == provider->config.provider_id; });
 			AccountAllowanceProviderConfig next = found == providers.end() ? AccountAllowanceProviderConfig{provider->config.provider_id, {}} : *found;
 			if (next == provider->config) continue;
-			provider->config = std::move(next); ++provider->generation; provider->row = EmptyRow(provider->config.provider_id); provider->last_attempt = {}; provider->account_unavailable = false;
+			provider->config = std::move(next); ++provider->generation; provider->row = EmptyRow(provider->config.provider_id); provider->last_attempt = {}; provider->account_unavailable = false; provider->manual = false;
 			provider->requested = !provider->config.command.empty();
 			if (provider->requested) { provider->row["status"] = "loading"; provider->row["error"] = ""; }
 		}
 		m_wake.notify_all();
 	}
 
-	nlohmann::json AccountAllowanceService::Query(std::string_view host, bool refresh)
+	nlohmann::json AccountAllowanceService::Query(std::string_view host, bool refresh, bool allow_prompt)
 	{
 		nlohmann::json rows = nlohmann::json::array(); bool refreshing = false;
 		std::int64_t refresh_after_ms = 30000; bool has_targets = false;
 		std::lock_guard lock(m_mutex);
-		const auto now = m_clock();
+		const auto now = m_clock(); const bool prompting = refresh && allow_prompt;
 		for (auto& provider : m_providers)
 		{
 			if (host != "local") { auto row = EmptyRow(provider->config.provider_id); row["scope"] = "remote-unavailable"; row["error"] = "Independent account allowances are not available on this remote connection."; rows.push_back(std::move(row)); continue; }
 			if (!provider->config.command.empty() && !provider->requested && !provider->in_flight && (refresh || !provider->account_unavailable) &&
-			    (!provider->last_attempt || now - *provider->last_attempt >= (refresh ? std::chrono::seconds(30) : std::chrono::seconds(300))))
-			{ provider->requested = true; provider->row["status"] = "loading"; provider->row["error"] = ""; }
+			    (!provider->last_attempt || (prompting && !provider->last_manual) || now - *provider->last_attempt >= (refresh ? std::chrono::seconds(30) : std::chrono::seconds(300))))
+			{ provider->requested = true; provider->manual = prompting; provider->row["status"] = "loading"; provider->row["error"] = ""; }
+			// A prompting refresh is not held back by automatic reads: it takes over a queued one, follows an in-flight one,
+			// or skips the manual cooldown, so it can still offer the Keychain prompt.
+			else if (prompting && (provider->requested || (provider->in_flight && !provider->last_manual))) { provider->requested = true; provider->manual = true; }
 			refreshing = refreshing || provider->requested || provider->in_flight;
 			if (!provider->config.command.empty())
 			{
 				has_targets = true;
-				const auto elapsed = provider->last_attempt ? std::chrono::duration_cast<std::chrono::milliseconds>(now - *provider->last_attempt).count() : 30000;
+				const auto elapsed = provider->last_attempt && (provider->last_manual || !allow_prompt) ? std::chrono::duration_cast<std::chrono::milliseconds>(now - *provider->last_attempt).count() : 30000;
 				refresh_after_ms = std::min(refresh_after_ms, std::clamp<std::int64_t>(30000 - elapsed, 0, 30000));
 			}
 			auto row = provider->row;
@@ -163,14 +168,14 @@ namespace uam::usage
 	{
 		while (!stop.stop_requested())
 		{
-			AccountAllowanceProviderConfig config; std::uint64_t generation;
+			AccountAllowanceProviderConfig config; std::uint64_t generation; bool manual;
 			{
 				std::unique_lock lock(m_mutex);
 				if (!m_wake.wait(lock, stop, [&] { return m_providers[index]->requested; })) return;
-				auto& provider = *m_providers[index]; provider.requested = false; provider.in_flight = true; provider.last_attempt = m_clock(); config = provider.config; generation = provider.generation;
+				auto& provider = *m_providers[index]; provider.requested = false; manual = provider.manual; provider.manual = false; provider.in_flight = true; provider.last_manual = manual; provider.last_attempt = m_clock(); config = provider.config; generation = provider.generation;
 			}
 			AccountAllowanceFetchResult result;
-			try { if (m_fetcher) result = m_fetcher(config, m_dataRoot, stop); }
+			try { if (m_fetcher) result = m_fetcher(config, m_dataRoot, stop, manual); }
 			catch (...) { result.error = "Could not read account allowance."; }
 			if (stop.stop_requested()) return;
 			bool save = false;

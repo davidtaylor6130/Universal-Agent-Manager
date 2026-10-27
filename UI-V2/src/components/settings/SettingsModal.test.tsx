@@ -456,6 +456,49 @@ describe('SettingsModal memory settings', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('saves whether phone refreshes may show the macOS Keychain dialog', async () => {
+    const payloads: unknown[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload?: { allowed?: boolean } }
+      if (parsed.action === 'getCompanionSettings') {
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', allowKeychainPrompts: false, generation: 1 }))
+      } else if (parsed.action === 'setCompanionKeychainPrompts') {
+        payloads.push(parsed.payload)
+        onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', allowKeychainPrompts: true, generation: 1 }))
+      } else {
+        onSuccess('{}')
+      }
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+
+    const toggle = host.querySelector('input[aria-label="Allow Keychain prompts from phone"]') as HTMLInputElement
+    expect(toggle).toBeTruthy()
+    expect(toggle.checked).toBe(false)
+    act(() => toggle.click())
+    await act(async () => {})
+    expect(payloads).toEqual([{ allowed: true }])
+    expect((host.querySelector('input[aria-label="Allow Keychain prompts from phone"]') as HTMLInputElement).checked).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides the Keychain prompt setting where the computer reports none', async () => {
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      onSuccess(parsed.action === 'getCompanionSettings' ? JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion' }) : '{}')
+    }
+    const { host, root } = renderModal()
+    act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+    await act(async () => {})
+    expect(host.querySelector('input[aria-label="Allow Keychain prompts from phone"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {

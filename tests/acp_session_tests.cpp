@@ -4848,6 +4848,38 @@ UAM_TEST(AcpRuntimeActivityRequiresAValidProtocolMessage)
 	UAM_ASSERT(raw_session->last_runtime_activity_time_s >= 0.0);
 }
 
+UAM_TEST(AcpSetupWriteAcknowledgementsAppearInDiagnosticsWithoutPayload)
+{
+	TempDir temp("uam-acp-setup-ack-diagnostics");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-setup-ack";
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-setup-ack";
+	session->provider_id = uam::provider_ids::kOpenCodeCli;
+	session->running = true;
+	session->session_ready = true;
+	session->pending_request_methods[3] = "session/set_mode";
+	session->pending_request_methods[4] = "session/set_model";
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":3,"result":{"secret":"not logged"}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":4,"result":{}})"));
+	std::vector<std::string> acknowledged;
+	for (const auto& diagnostic : raw_session->diagnostics)
+	{
+		if (diagnostic.event != "response" || diagnostic.reason != "jsonrpc_result") continue;
+		acknowledged.push_back(diagnostic.method + "#" + diagnostic.request_id);
+		UAM_ASSERT(diagnostic.detail.empty());
+	}
+	UAM_ASSERT_EQ(acknowledged, (std::vector<std::string>{"session/set_mode#3", "session/set_model#4"}));
+}
+
 UAM_TEST(AcpJsonRpcErrorsIncludeRequestDiagnostics)
 {
 	TempDir temp("uam-acp-jsonrpc-diagnostics");

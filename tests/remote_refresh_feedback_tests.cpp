@@ -2,6 +2,7 @@
 #include "cef_handler_fixture.h"
 #include "cef/uam_query_handler_async.h"
 #include "common/chat/chat_branching.h"
+#include "cef/cef_push.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "app/transcript_retention_service.h"
@@ -44,6 +45,8 @@ struct RemoteRefreshFeedbackTestAccess
 		handler.m_nativeMediaRefreshDispatcherForTests = std::move(dispatch);
 		handler.m_remoteNativeHistoryReaderForTests = std::move(reader);
 	}
+	static void Query(UamQueryHandler& handler, int64_t query_id) { handler.m_dispatchingQuery = {-1, "", query_id}; }
+	static void Cancel(UamQueryHandler& handler, int64_t query_id) { handler.OnQueryCanceled(nullptr, nullptr, query_id); }
 	static void Fault(UamQueryHandler& handler, uam::io::AtomicWriteStage stage, bool throws)
 	{
 		handler.m_nativeMediaPublicationStageGateForTests = [stage, throws](auto reached)
@@ -700,5 +703,51 @@ UAM_TEST(RemoteRefreshFeedbackChangedPostcommitOwnerNeverRedrawsOldHistory)
 	UAM_ASSERT(cb->error.find("New native answer") == std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT_EQ(fixture.app.status_line, kPriorWarning); fixture.AssertDraft();
+}
+UAM_TEST(RemoteRefreshFeedbackCancelledQuerySavesWithoutDeliveryAndNextRequestReusesIt)
+{
+	FeedbackFixture fixture;
+	fixture.app.selected_chat_index = -1; // Selected-chat summaries are throttled; observe pushes on an unthrottled row.
+	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app); // Baseline before the refresh.
+	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, 41);
+	const auto cancelled = fixture.Start();
+	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, -1);
+	RemoteRefreshFeedbackTestAccess::Cancel(*fixture.handler, 41);
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
+	// Delivery only: no history reaches the cancelled callback or the state push.
+	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
+	UAM_ASSERT(cancelled->error.find("New native answer") == std::string::npos);
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app));
+	// The read and its save still finished.
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id, true, nullptr, false);
+	UAM_ASSERT(saved); UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(fixture.reads->load(), 1);
+	// The next refresh serves the saved result without a second provider read.
+	const auto next = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
+	fixture.AssertPublished(next);
+	UAM_ASSERT_EQ(fixture.reads->load(), 1);
+}
+
+UAM_TEST(RemoteRefreshFeedbackNewerRequestWaitsForTheReadInsteadOfReadingAgain)
+{
+	FeedbackFixture fixture;
+	const auto first = fixture.Start();
+	const auto second = fixture.Start();
+	const auto third = fixture.Start();
+	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, 43);
+	const auto abandoned = fixture.Start();
+	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, -1);
+	RemoteRefreshFeedbackTestAccess::Cancel(*fixture.handler, 43); // A cancelled waiter never retries.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1}); // Newer requests wait; nothing is stopped or reread.
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
+	UAM_ASSERT_EQ(first->successes, 0); UAM_ASSERT_EQ(first->failures, 1); UAM_ASSERT_EQ(first->status, 409);
+	fixture.AssertPublished(second); fixture.AssertPublished(third);
+	UAM_ASSERT_EQ(abandoned->successes + abandoned->failures, 0);
+	UAM_ASSERT_EQ(fixture.reads->load(), 1); UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
+	// The reuse is consumed once; a later explicit refresh reads again.
+	const auto later = fixture.Start(); fixture.Complete(3);
+	UAM_ASSERT_EQ(fixture.reads->load(), 2);
+	(void)later;
 }
 #endif

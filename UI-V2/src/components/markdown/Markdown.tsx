@@ -73,7 +73,8 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
   return nodes
 }
 
-function MarkdownTextBlock({ text, blockKey, chips }: { text: string; blockKey: string; chips: boolean }) {
+// Settled text before a streaming code fence keeps its props, so memo skips re-parsing it.
+export const MarkdownTextBlock = memo(function MarkdownTextBlock({ text, blockKey, chips }: { text: string; blockKey: string; chips: boolean }) {
   const inspect = useContext(FileInspectionContext)
   const knownBranches = useContext(KnownBranchesContext)
   const chipBranches = chips ? knownBranches : null
@@ -217,7 +218,7 @@ function MarkdownTextBlock({ text, blockKey, chips }: { text: string; blockKey: 
 
   flushParagraph()
   return <>{nodes}</>
-}
+})
 
 export const MarkdownContent = memo(function MarkdownContent({ content, chips = false }: { content: string; chips?: boolean }) {
   if (!content.trim()) return null

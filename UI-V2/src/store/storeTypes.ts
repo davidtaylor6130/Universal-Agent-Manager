@@ -99,7 +99,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   chatHistoryErrorBySessionId: Record<string, string>
   // Failed request context changes notice wording only, never native save authority.
   chatHistoryErrorWasRefreshBySessionId: Record<string, boolean>
-  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
+  /** refreshNative marks an explicit native refresh, shown while it runs even over loaded messages. */
+  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number; refreshNative?: boolean }>
   chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>

@@ -1689,7 +1689,13 @@ done
 	UAM_ASSERT(accepted);
 	UAM_ASSERT(feedback <= std::chrono::milliseconds(100));
 	UAM_ASSERT(!app.acp_sessions.empty() && (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch));
-	bool configuration_worker_used = app.acp_sessions.front()->pending_local_launch != nullptr;
+	// A staged cold launch also uses pending_local_launch; only a non-cold task is the configuration worker.
+	const auto configuration_worker_pending = [&app]
+	{
+		const uam::AcpSessionState& session = *app.acp_sessions.front();
+		return session.pending_local_launch != nullptr && !uam::acp_detail::HasPendingAcpColdLaunch(session);
+	};
+	bool configuration_worker_used = configuration_worker_pending();
 	bool session_receipt_used = false;
 	if (app.acp_sessions.front()->pending_agent_input)
 	{
@@ -1813,7 +1819,7 @@ done
 			    {"recoveringProcess", current.recovering_remote_process}, {"running", current.running}, {"ready", current.session_ready},
 			    {"pendingReceipt", current.pending_local_session_receipt != nullptr}}.dump());
 		}
-		configuration_worker_used = configuration_worker_used || app.acp_sessions.front()->pending_local_launch != nullptr;
+		configuration_worker_used = configuration_worker_used || configuration_worker_pending();
 		session_receipt_used = session_receipt_used || app.acp_sessions.front()->pending_local_session_receipt != nullptr;
 		if (variation == "receiptexit" && app.acp_sessions.front()->pending_local_session_receipt &&
 		    !app.acp_sessions.front()->running && !app.acp_sessions.front()->pending_local_launch &&

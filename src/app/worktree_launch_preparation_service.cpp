@@ -73,12 +73,8 @@ namespace uam
 
 		std::filesystem::path SvnCheckoutRoot(const std::filesystem::path& source)
 		{
-			for (std::filesystem::path directory = paths::NormalizeExistingOrAbsolutePath(source); !directory.empty(); directory = directory.parent_path())
-			{
-				if (paths::PathExistsNoThrow(directory / ".svn")) return directory;
-				if (paths::PathExistsNoThrow(directory / ".git") || directory == directory.parent_path()) break;
-			}
-			return {};
+			const paths::NearestVcsRoot nearest = paths::FindNearestVcsRoot(paths::NormalizeExistingOrAbsolutePath(source));
+			return nearest.svn ? nearest.root : std::filesystem::path{};
 		}
 
 		bool PrepareSvnUpdate(const std::filesystem::path& root, const ChatSession& metadata, bool validate_only,
@@ -95,23 +91,34 @@ namespace uam
 			}
 			if (!paths::IsDirectoryNoThrow(source) || paths::IsLinkOrReparsePointNoThrow(checkout / ".svn"))
 			{ error = "The SVN workspace is unavailable or unsafe."; return false; }
-			const std::string target = shell::EscapeArg(paths::Utf8PathString(checkout));
 			bool command_uncertain = false;
-			const auto command = [&](const std::string& arguments, std::string& output, int timeout = 10000)
+			const auto command = [&](std::vector<std::string> arguments, std::string& output, int timeout = 10000)
 			{
-				const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-				    "svn " + arguments + " --non-interactive -- " + target, timeout, stop);
+				arguments.insert(arguments.end(), {"--non-interactive", "--", "."});
+				const ProcessExecutionResult result = RunSvn(checkout, arguments, timeout, stop);
 				command_uncertain = stop.stop_requested() || result.canceled || result.timed_out || result.output_truncated;
 				if (stop.stop_requested() || result.canceled) { error = "SVN update was canceled. Retry opening the chat."; return false; }
 				if (result.timed_out) { error = "SVN update timed out. Retry after checking the working copy."; return false; }
 				if (!result.ok || result.exit_code != 0 || result.output_truncated)
-				{ error = "SVN preparation failed. Check the working copy and authentication, then retry."; return false; }
-				output = strings::Trim(result.output);
+				{
+					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error.
+					const std::string detail = SvnFailureSummary(result);
+					error = detail.empty() ? "SVN preparation failed. Check the working copy and authentication, then retry."
+					    : "SVN preparation failed (" + detail + "). Check the working copy and authentication, then retry.";
+					return false;
+				}
+				// Status columns are positional, so leading spaces must survive; info values are trimmed below.
+				output = result.output;
 				return true;
 			};
 			std::string checkout_root, url, uuid;
-			if (!command("info --show-item wc-root", checkout_root) || !command("info --show-item url", url) ||
-			    !command("info --show-item repos-uuid", uuid) || url.empty() || uuid.empty() ||
+			const auto info = [&](const char* item, std::string& value)
+			{
+				const bool ok = command({"info", "--show-item", item}, value);
+				value = strings::Trim(value);
+				return ok;
+			};
+			if (!info("wc-root", checkout_root) || !info("url", url) || !info("repos-uuid", uuid) || url.empty() || uuid.empty() ||
 			    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(checkout_root)) != checkout)
 			{ if (error.empty()) error = "SVN checkout ownership could not be verified."; return false; }
 			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(directory) || paths::IsLinkOrReparsePointNoThrow(receipt))
@@ -125,8 +132,16 @@ namespace uam
 					if ((!line.empty() && line[0] == 'C') || (line.size() > 1 && line[1] == 'C') || (line.size() > 6 && line[6] == 'C')) return true;
 				return false;
 			};
-			if (!command("status", status)) return false;
+			if (!command({"status"}, status)) return false;
 			if (conflicts(status)) { error = "Resolve SVN conflicts before starting the chat."; return false; }
+			const auto locked = [](const std::string& value)
+			{
+				std::istringstream lines(value);
+				std::string line;
+				while (std::getline(lines, line))
+					if (line.size() > 2 && line[2] == 'L') return true;
+				return false;
+			};
 			const nlohmann::json identity = {{"version", 1}, {"chatId", metadata.id}, {"createdAt", metadata.created_at},
 			    {"source", paths::Utf8PathString(source)}, {"checkout", paths::Utf8PathString(checkout)}, {"url", url}, {"uuid", uuid}};
 			std::error_code ec;
@@ -143,8 +158,11 @@ namespace uam
 					if (saved != identity)
 					{ error = "The saved SVN update belongs to a different workspace. The working copy was preserved."; return false; }
 					if (state == "complete") return true;
-					if (state != "failed" || validate_only)
-					{ error = "An interrupted SVN update needs working-copy verification before another update."; return false; }
+					if (validate_only) { error = "An interrupted SVN update needs working-copy verification before another update."; return false; }
+					// Fresh info, status, conflict and lock checks verify the working copy, so an interrupted ("started")
+					// update is retried like a failed one instead of blocking every later update.
+					if (state != "failed" && locked(status))
+					{ error = "An interrupted SVN update left the working copy locked. Run svn cleanup, then retry."; return false; }
 				}
 				catch (const std::exception&) { error = "The saved SVN update receipt could not be verified."; return false; }
 			}
@@ -158,12 +176,12 @@ namespace uam
 			if (stop.stop_requested()) { error = "SVN update was canceled."; return false; }
 			if (!save_receipt("started")) { error = "Could not record SVN update ownership."; return false; }
 			std::string output;
-			if (!command("update --accept postpone", output, 120000))
+			if (!command({"update", "--accept", "postpone"}, output, 120000))
 			{
 				if (!command_uncertain) (void)save_receipt("failed");
 				return false;
 			}
-			if (!command("status", status)) return false;
+			if (!command({"status"}, status)) return false;
 			if (conflicts(status))
 			{ (void)save_receipt("failed"); error = "SVN update left conflicts. Resolve them before starting the chat."; return false; }
 			if (!save_receipt("complete"))
