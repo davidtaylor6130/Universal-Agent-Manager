@@ -259,8 +259,8 @@
 }
 .uam-usage-key-item { display: inline-flex; align-items: center; gap: 6px; }
 
-/* Provider totals: name, full-width token bar, tokens and (table layout) cost with its basis.
-   Providers without usage keep their row and say why, so the list never changes shape. */
+/* Provider totals: name, full-width token bar, tokens and cost with its basis.
+   Providers that need a reason (reading, incomplete, unavailable) keep a row; fully read idle providers share one line. */
 .uam-usage-providers { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .uam-usage-providers th,
 .uam-usage-providers td { height: 30px; padding: 0 0 0 var(--sp-3); text-align: left; vertical-align: middle; }

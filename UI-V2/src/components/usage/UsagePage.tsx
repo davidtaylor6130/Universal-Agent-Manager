@@ -51,11 +51,6 @@ const providerState = (provider: UsageProvider, collecting = false) => provider.
   : !provider.available ? 'unavailable' : collecting ? 'reading' : provider.errors || provider.invalidLines || provider.oversizedLines || provider.pendingLines ? 'incomplete' : 'idle'
 const EMPTY_TEXT = { idle: 'No usage in this range', reading: 'Still reading history', incomplete: 'Usage history incomplete', unavailable: 'Usage history unavailable' } as const
 const EMPTY_CHIP = { idle: 'No usage', reading: 'Reading…', incomplete: 'Incomplete', unavailable: 'Unavailable' } as const
-/**
- * Provider totals layout (see the usage-experience PR preview): 'table' lists every provider with tokens, cost and its
- * basis under Totals; 'inline' keeps the tokens-only provider rows and moves the cost basis into the provider chips.
- */
-const PROVIDER_TOTALS: 'table' | 'inline' = 'table'
 
 const BASIS_LABEL: Record<UsageCostBasis, string> = { none: '', unpriced: '', reported: 'Reported', estimated: 'Estimated', mixed: 'Reported + est.', partial: 'Known cost' }
 const source = (totals: UsageTotals) => {
@@ -208,6 +203,9 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const refresh = () => { setRange(usageWindow(days)); history.refresh() }
   const shownAt = data?.asOfMs ? new Date(data.asOfMs).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''
   const visibleProviders = (data?.providers ?? []).filter(provider => !hiddenProviders.has(provider.providerId))
+  // Fully read providers with nothing in the range fold into one line; rows that need a reason (reading, incomplete, unavailable) stay.
+  const providerStates = visibleProviders.map(provider => ({ provider, state: providerState(provider, data?.collecting) }) as const)
+  const providerRows = providerStates.filter(row => row.state !== 'idle'), idleProviders = providerStates.filter(row => row.state === 'idle').map(row => row.provider)
   const warnings = data?.providers.filter(provider => provider.errors || provider.invalidLines || provider.oversizedLines || provider.pendingLines) ?? []
   // Re-keying the plot replays the grow-in animation when the metric, period or provider filter changes.
   const plotKey = [metric, days, hostId, [...hiddenProviders].sort().join(',')].join('|')
@@ -287,7 +285,6 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <ProviderLogo providerId={provider.providerId} size={14} />
               <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
               <span className="uam-usage-chip-value tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{providerValue(provider)}</span>
-              {PROVIDER_TOTALS === 'inline' && metric === 'cost' && providerState(provider, data.collecting) === 'used' && <CostBasis totals={provider} pending={pricingPending} />}
             </button>
           })}</div>
           {totals.totalTokens === 0 && !history.loading && <p className="uam-usage-empty">No usage recorded in this range.</p>}
@@ -335,19 +332,21 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p>}</div>
             <TokenStack total={totals} height={16} labels />
             <TokenLegend total={totals} />
-            <div className="grid gap-3 pt-2"><h3 className="uam-usage-label" id={providerHeadingId}>{PROVIDER_TOTALS === 'table' ? 'By provider' : 'Token mix by provider'}</h3>
-              {visibleProviders.length > 0 ? <table className={cx('uam-usage-providers text-xs', PROVIDER_TOTALS === 'table' && 'has-cost')} aria-labelledby={providerHeadingId}>
-                <colgroup><col className="uam-usage-col-name" /><col /><col className="uam-usage-col-tokens" />{PROVIDER_TOTALS === 'table' && <col className="uam-usage-col-cost" />}</colgroup>
-                <thead className="sr-only"><tr><th scope="col">Provider</th><th scope="col">Token mix</th><th scope="col">Tokens</th>{PROVIDER_TOTALS === 'table' && <th scope="col">Cost</th>}</tr></thead>
-                <tbody>{visibleProviders.map(provider => { const state = providerState(provider, data.collecting); return <tr key={provider.providerId} data-state={state}>
+            <div className="grid gap-3 pt-2"><h3 className="uam-usage-label" id={providerHeadingId}>By provider</h3>
+              {providerRows.length > 0 && <table className="uam-usage-providers text-xs" aria-labelledby={providerHeadingId}>
+                <colgroup><col className="uam-usage-col-name" /><col /><col className="uam-usage-col-tokens" /><col className="uam-usage-col-cost" /></colgroup>
+                <thead className="sr-only"><tr><th scope="col">Provider</th><th scope="col">Token mix</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
+                <tbody>{providerRows.map(({ provider, state }) => <tr key={provider.providerId} data-state={state}>
                   <th scope="row"><span className="flex min-w-0 items-center gap-2 font-normal"><i className="uam-usage-swatch" style={{ '--c': providerColor[provider.providerId] } as CSSProperties} aria-hidden /><span className="truncate">{providerLabel(provider.providerId)}</span></span></th>
                   {state === 'used' ? <>
                     <td><TokenStack total={provider} height={14} labels /><span className="sr-only">{TOKEN_SEGMENTS.filter(segment => segment.key !== 'reasoning' && segment.value(provider) > 0).map(segment => `${segment.label} ${percentOf(segment.value(provider), provider.totalTokens)}`).join(', ')}</span></td>
                     <td className="text-right tabular-nums" title={provider.totalTokens.toLocaleString()}>{formatUsageCount(provider.totalTokens)}</td>
-                    {PROVIDER_TOTALS === 'table' && <td><span className="uam-usage-cost-cell"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></td>}
-                  </> : <td colSpan={PROVIDER_TOTALS === 'table' ? 3 : 2} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
-                </tr> })}</tbody>
-              </table> : <p className="text-xs uam-usage-muted">All providers are filtered out.</p>}
+                    <td><span className="uam-usage-cost-cell"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></td>
+                  </> : <td colSpan={3} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
+                </tr>)}</tbody>
+              </table>}
+              {idleProviders.length > 0 && <p className="text-xs uam-usage-muted">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p>}
+              {visibleProviders.length === 0 && <p className="text-xs uam-usage-muted">All providers are filtered out.</p>}
             </div>
           </section>
           <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><div role="group" aria-label="Usage breakdown" className="uam-usage-seg"><Button size="sm" variant={breakdown === 'model' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'model'} onClick={() => setBreakdown('model')}>Models</Button><Button size="sm" variant={breakdown === 'time' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'time'} onClick={() => setBreakdown('time')}>Time</Button></div></div>

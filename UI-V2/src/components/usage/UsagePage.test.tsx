@@ -230,7 +230,7 @@ describe('UsagePage', () => {
       models: Object.entries(rows).map(([providerId, row]) => ({ ...row, providerId, modelId: `${providerId}-model`, speed: 'standard' })), days: [], hours: [], providerDays: [], providerHours: [] })
   }
 
-  it('labels each provider and model cost with its basis and gives idle and unsupported providers the same empty rows', async () => {
+  it('labels each provider and model cost with its basis, folds idle providers into one line and keeps a reason row for unsupported providers', async () => {
     storage()
     window.cefQuery = request => request.onSuccess(basisHistory(JSON.parse(request.request).payload))
     const host = document.createElement('div'), root = createRoot(host)
@@ -239,9 +239,10 @@ describe('UsagePage', () => {
       const row = (name: string) => Array.from(host.querySelectorAll('.uam-usage-providers tbody tr')).find(tr => tr.querySelector('th')?.textContent === name)?.textContent
       expect(row('Codex')).toContain('$1.50Estimated')
       expect(row('Claude')).toContain('$2.00Reported')
-      expect(row('Gemini')).toContain('No usage in this range')
+      expect(row('Gemini')).toBeUndefined()
+      expect(host.textContent).toContain('No usage in this range: Gemini')
       expect(row('OpenCode')).toContain('Usage history unavailable')
-      expect(host.querySelectorAll('.uam-usage-providers tbody tr')).toHaveLength(USAGE_PROVIDERS.length)
+      expect(host.querySelectorAll('.uam-usage-providers tbody tr')).toHaveLength(USAGE_PROVIDERS.length - 1)
       const chip = (name: string) => host.querySelector(`[aria-label="Include ${name} usage"]`)?.textContent
       expect(chip('Gemini')).toBe('GeminiNo usage')
       expect(chip('OpenCode')).toBe('OpenCodeUnavailable')
@@ -256,6 +257,24 @@ describe('UsagePage', () => {
       expect(host.querySelector('.uam-usage-providers [data-basis="estimated"]')?.hasAttribute('data-estimate')).toBe(true)
       expect(host.querySelector('.uam-usage-providers .uam-usage-basis')?.getAttribute('tabindex')).toBe('0')
       expect(host.querySelector('.uam-usage-model-row .uam-usage-basis')?.hasAttribute('tabindex')).toBe(false)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('folds every provider into the No usage line, without an empty table, when nothing was used', async () => {
+    storage()
+    window.cefQuery = request => {
+      const reply = JSON.parse(basisHistory(JSON.parse(request.request).payload))
+      reply.providers = reply.providers.map((row: { providerId: string }) => ({ ...row, ...blank, available: true }))
+      Object.assign(reply, { totals: sumProviderUsage(reply.providers), models: [] })
+      request.onSuccess(JSON.stringify(reply))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      expect(host.querySelector('.uam-usage-providers')).toBeNull()
+      expect(host.textContent).toContain(`No usage in this range: ${Array.from(host.querySelectorAll('.uam-usage-chip-name'), name => name.textContent).join(', ')}`)
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Gemini usage"]')!.click())
+      expect(host.textContent).not.toMatch(/No usage in this range: .*Gemini/)
     } finally { act(() => root.unmount()) }
   })
 
