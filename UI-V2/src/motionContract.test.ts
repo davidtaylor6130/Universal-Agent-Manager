@@ -51,7 +51,10 @@ describe('shared motion contract', () => {
     expect(styles).not.toMatch(/@keyframes uam-panel-(grow|shrink)/)
     // Drawer: panels travel their full width into the rail, which stays above them.
     expect(keyframes(styles, 'uam-panel-out')).toContain('translateX(calc(var(--panel-dir) * 100%))')
-    expect(rule(styles, '.uam-side-rail')).toMatch(/z-index: 21;/)
+    const z = (css: string) => Number(/z-index: (\d+)/.exec(css)?.[1])
+    const closingPanel = /\.uam-shell-panel\[data-state="closed"\] \{ position: absolute;[^}]*\}/.exec(styles)?.[0] ?? ''
+    expect(z(closingPanel)).toBeLessThan(z(rule(styles, '.uam-side-rail')))
+    expect(animatedProperties(keyframes(styles, 'uam-handle-in'))).toEqual(['opacity'])
     expect(rule(settingsShell, '.uam-settings-nav__indicator')).toContain('transition: transform var(--dur-enter) var(--ease-out-soft);')
     expect(rule(sidebar, '.uam-sb-row')).toContain('transition: background-color var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);')
     expect(sessionItem).not.toMatch(/uam-sb-row[^`]*transition-all/)

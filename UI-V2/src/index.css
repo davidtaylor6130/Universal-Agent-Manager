@@ -1964,10 +1964,14 @@ button.uam-commit-check { cursor: pointer; }
 @media not all and (max-width: 1000px) {
   /* Below the native window strip, which pads .uam-app (absolute boxes start at its padding edge). */
   .uam-shell-panel[data-state="closed"] { position: absolute; top: var(--uam-window-strip-height, 0px); bottom: 0; height: auto; z-index: 20; }
-  .uam-shell-panel--left[data-state="closed"] { left: 44px; }
-  .uam-shell-panel--right[data-state="closed"] { right: 44px; }
+  /* The resize handle (the docked edge) unmounts on close, so the sliding panel draws its own. */
+  .uam-shell-panel--left[data-state="closed"] { left: 44px; border-right: 1px solid var(--border); }
+  .uam-shell-panel--right[data-state="closed"] { right: 44px; border-left: 1px solid var(--border); }
 }
 .uam-shell-panel > * { width: 100%; }
+/* The handle mounts at its final place; it fades in once the opening panel has arrived beside it. */
+.uam-resize-handle { animation: uam-handle-in var(--dur-fast) var(--ease-out-soft) var(--dur-enter) backwards; }
+@keyframes uam-handle-in { from { opacity: 0; } }
 @keyframes uam-panel-in { from { transform: translateX(calc(var(--panel-dir) * 100%)); } }
 @keyframes uam-panel-out { to { transform: translateX(calc(var(--panel-dir) * 100%)); } }
 
