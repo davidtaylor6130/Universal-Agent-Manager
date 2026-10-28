@@ -4132,6 +4132,11 @@ Task-0891 now puts the minimum 44-point frame and hit shape inside managed actio
 
 Focused shared/application tests and a 45-child paging/Stop-padding component fixture are authored, including exact request observation, visible Auto reasons, 44-point geometry, same-host foreign-workspace exclusion and exact newer-draft preservation. These changed-input native tests and captures have not executed: available disk remains below the existing validation/capture floors, with no compiler or simulator started and no cleanup or floor override. Dependency-free fixture/source checks are recorded privately; they do not verify Swift types or touch behavior. Required affected code review, Claude GUI follow-up, actual-app captures, live/platform/physical-iPhone checks and David acceptance remain outstanding. Owner stays Unassigned behind the authenticated UAM identity/contact gate; Un-Reviewed, Claude Review and Not User Tested are retained. Existing failures and raw review receipts remain intact; there is no task staging, commit, upload, remote write, merge, owner transfer or Complete claim.
 
+## V5 Alpha 5 local package — 2026-10-28
+David requested PR #649 merged and the alpha branch moved to Alpha 5. The alpha branch merges `uam/v5-improvements` at `96276329` (PR #649 Copilot start fixes: first prompt delivery after worktree preparation, and no PowerShell 7 requirement on Windows) on top of Alpha 4, with the local presentation `5.0.0-Alpha-5`; the product/helper release stays `5.0.0` and protocol 3. The unpushed duplicate PowerShell commit on the alpha branch was replaced by the merged PR version.
+
+| Build and evidence | Misc | V5 Alpha Five Package | The alpha branch builds the Alpha 5 About and macOS presentation identifier with the Copilot start fixes on top of Alpha 4. | Un-Reviewed; Not User Tested |
+
 ## Copilot start fixes — 2026-10-28
 
 | Group | Type | Change | Summary | Status |
