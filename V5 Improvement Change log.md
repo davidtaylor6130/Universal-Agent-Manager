@@ -4133,7 +4133,7 @@ Focused shared/application tests and a 45-child paging/Stop-padding component fi
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
-| Version control | Bugfix | SVN File Diffs Open | Opening a changed SVN file in Chat changes or the commit panel shows its diff instead of `E155010` on SVN 1.15, while names containing `@` still diff on older clients; a file missing from the workspace diff gets its own line counts. | Un-Reviewed; Not User Tested |
+| Version control | Bugfix | SVN File Diffs Open | Opening a changed SVN file in Chat changes or the commit panel shows its diff instead of `E155010` on SVN 1.15, while names containing `@` still diff on older clients; when the whole-workspace diff fails (for example one very large diff), each file is counted from its own diff. | Un-Reviewed; Not User Tested |
 | Version control | Bugfix | Unversioned SVN Files Show As New | An unversioned SVN file is shown as entirely added with its lines counted and an all-added diff, locally and on remote hosts with Git; unversioned folders stay one row. | Un-Reviewed; Not User Tested |
 
 ## Copilot start fixes — 2026-10-28

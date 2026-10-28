@@ -260,15 +260,24 @@ UAM_TEST(SvnLineStatsFallBackToEachFileAndOlderPegSpelling)
 		else if (target == "a@1.txt@") result.output = "Index: a@1.txt\n--- a@1.txt\n+++ a@1.txt\n@@ -1,2 +1 @@\n-x\n-y\n+z\n";
 		// An older client reads the unescaped name as a peg revision of another path and succeeds with the wrong diff.
 		else if (target == "a@1.txt") result.output = "Index: a\n--- a\n+++ a\n@@ -1 +1,9 @@\n+wrong\n";
+		else if (target == "huge.txt") { result.ok = false; result.output_truncated = true; }
+		else if (target == "image.bin") { result.exit_code = 0; result.output = "Index: image.bin\nCannot display: file marked as a binary type.\n"; }
+		else if (target == "after.txt" || target == "late.txt") { result.exit_code = 0; result.output = "Index: " + target + "\n@@ -0,0 +1 @@\n+x\n"; }
 		return result;
 	};
-	std::vector<uam::VcsChangedFile> files = {{"edit.txt", "M", true}, {"a@1.txt", "M", true}, {"new.txt", "?", true}};
+	// A file whose own diff exceeds the capture limit keeps 0/0 without stopping later rows; any other failure stops them.
+	std::vector<uam::VcsChangedFile> files = {{"edit.txt", "M", true}, {"a@1.txt", "M", true}, {"new.txt", "?", true}, {"huge.txt", "M", true},
+	                                          {"image.bin", "M", true}, {"after.txt", "M", true}, {"locked.txt", "M", true}, {"late.txt", "M", true}};
 	uam::VcsCommitService::ApplySvnLineStatsForTests(svn, files);
 	UAM_ASSERT_EQ(files[0].additions, 2);
 	UAM_ASSERT_EQ(files[0].deletions, 1);
 	UAM_ASSERT_EQ(files[1].additions, 1);
 	UAM_ASSERT_EQ(files[1].deletions, 2);
 	UAM_ASSERT_EQ(files[2].additions, 0);
+	UAM_ASSERT_EQ(files[3].additions, 0);
+	UAM_ASSERT(files[4].binary);
+	UAM_ASSERT_EQ(files[5].additions, 1);
+	UAM_ASSERT_EQ(files[7].additions, 0);
 	for (const std::vector<std::string>& call : calls)
 		UAM_ASSERT(call.back() != "new.txt" && call.back() != "new.txt@");
 }
