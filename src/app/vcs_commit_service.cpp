@@ -1026,16 +1026,32 @@ namespace uam
 			return {"diff", "--internal-diff", "--non-interactive", "--", target};
 		}
 
-		/// SVN 1.15 diff reads a trailing peg '@' as part of the name; older clients need it for names containing '@'.
-		// ponytail: an older client reads "name@123" as revision 123 of "name"; only such numeric-suffixed names can mis-diff.
+		/// SVN 1.15 diff reads a trailing peg '@' as part of the name, while older clients need it for names containing '@'
+		/// (unescaped, "name@123" could diff revision 123 of "name"). Names with '@' try the peg form first; 1.15 then misses it.
 		bool SvnFileDiff(const SvnRunner& svn, const std::string& path, std::string& output, std::string& error)
 		{
-			if (SvnOutput(svn, SvnDiffArgs(path), &output, error)) return true;
 			std::string peg_error;
-			return SvnOutput(svn, SvnDiffArgs(path + "@"), &output, peg_error);
+			if (path.find('@') != std::string::npos && SvnOutput(svn, SvnDiffArgs(path + "@"), &output, peg_error)) return true;
+			return SvnOutput(svn, SvnDiffArgs(path), &output, error);
 		}
 
 		bool IsSvnUnversioned(const VcsChangedFile& file) { return file.status == "?"; }
+
+		/// Splits svn diff output on "Index: " headers, keyed by slash-normalised path.
+		std::map<std::string, std::string> SvnDiffSections(const std::string& output)
+		{
+			std::map<std::string, std::string> sections;
+			std::string* section = nullptr;
+			std::istringstream lines(output);
+			std::string line;
+			while (std::getline(lines, line))
+			{
+				if (!line.empty() && line.back() == '\r') line.pop_back();
+				if (line.starts_with("Index: ")) { section = &sections[SlashKey(line.substr(7))]; continue; }
+				if (section != nullptr) { *section += line; *section += '\n'; }
+			}
+			return sections;
+		}
 
 		/// One workspace diff split on "Index: " headers instead of one process per changed file.
 		void ApplySvnLineStats(const SvnRunner& svn, std::vector<VcsChangedFile>& files)
@@ -1044,27 +1060,26 @@ namespace uam
 			std::string ignored;
 			if (files.empty()) return;
 			std::map<std::string, std::string> sections;
-			if (SvnOutput(svn, SvnDiffArgs("."), &output, ignored))
-			{
-				std::string* section = nullptr;
-				std::istringstream lines(output);
-				std::string line;
-				while (std::getline(lines, line))
-				{
-					if (!line.empty() && line.back() == '\r') line.pop_back();
-					if (line.starts_with("Index: ")) { section = &sections[SlashKey(line.substr(7))]; continue; }
-					if (section != nullptr) { *section += line; *section += '\n'; }
-				}
-			}
+			if (SvnOutput(svn, SvnDiffArgs("."), &output, ignored)) sections = SvnDiffSections(output);
+			// A failed workspace diff or a header spelt differently from status still gets each file's own diff,
+			// until one of those fails too (a locked or unreadable working copy would fail them all).
+			bool per_file = true;
 			for (VcsChangedFile& file : files)
 			{
 				// SVN never diffs unversioned items; callers count those as new files.
 				if (IsSvnUnversioned(file)) continue;
-				const auto found = sections.find(SlashKey(file.path));
-				std::string single;
-				// A failed workspace diff or a header spelt differently from status still gets this file's own diff.
-				if (found == sections.end() && !SvnFileDiff(svn, file.path, single, ignored)) continue;
-				const LineStats stats = ParseUnifiedDiffLineStats(found == sections.end() ? single : found->second);
+				auto found = sections.find(SlashKey(file.path));
+				if (found == sections.end() && per_file)
+				{
+					std::string single;
+					per_file = SvnFileDiff(svn, file.path, single, ignored);
+					// A folder's own diff lists its children, which have their own rows; count only this path's section.
+					if (per_file) for (auto& [path, section] : SvnDiffSections(single)) sections.try_emplace(path, std::move(section));
+					found = sections.find(SlashKey(file.path));
+				}
+				if (found == sections.end()) continue;
+				file.binary = found->second.find("Cannot display: file marked as a binary type.") != std::string::npos;
+				const LineStats stats = ParseUnifiedDiffLineStats(found->second);
 				file.additions = stats.additions;
 				file.deletions = stats.deletions;
 			}
@@ -1081,13 +1096,22 @@ namespace uam
 				error = "This new folder is listed as one item; its files are not compared individually.";
 				return false;
 			}
+			constexpr std::uintmax_t kMaxUnversionedDiffBytes = 4 * 1024 * 1024;
+			std::error_code size_error;
+			const std::uintmax_t size = status_error ? 0 : std::filesystem::file_size(file, size_error);
 			std::string content;
-			if (status_error || !std::filesystem::is_regular_file(status) || !uam::io::TryReadBinaryFile(file, content))
+			if (status_error || size_error || !std::filesystem::is_regular_file(status) ||
+			    (size <= kMaxUnversionedDiffBytes && !uam::io::TryReadBinaryFile(file, content)))
 			{
 				error = "The new file could not be read.";
 				return false;
 			}
 			output = "Index: " + path + "\n===================================================================\n";
+			if (size > kMaxUnversionedDiffBytes)
+			{
+				output += "Cannot display: the new file is larger than 4 MB.\n";
+				return true;
+			}
 			if (content.find('\0') != std::string::npos)
 			{
 				output += "Cannot display: file marked as a binary type.\n";
@@ -1587,7 +1611,8 @@ namespace uam
 			    (untracked.exit_code != 0 && untracked.exit_code != 1))
 				return;
 			const auto parsed = ParseGitNumstat(untracked.output);
-			if (const auto found = parsed.find(file.path); found != parsed.end())
+			// Windows SVN status rows use `\`; Git prints `/`.
+			if (const auto found = parsed.find(SlashKey(file.path)); found != parsed.end())
 			{
 				file.additions = found->second.additions;
 				file.deletions = found->second.deletions;
@@ -1799,7 +1824,10 @@ namespace uam
 				if (result.ok && !result.timed_out && !result.canceled &&
 				    (result.exit_code == 0 || result.exit_code == 1))
 					return uam::strings::Trim(result.output);
-				if (error_out != nullptr) *error_out = CommandOutputOrError(result);
+				if (error_out != nullptr)
+					*error_out = IsSvnUnversioned(*selected)
+					    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
+					    : CommandOutputOrError(result);
 				return {};
 			}
 			std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};

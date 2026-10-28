@@ -255,12 +255,14 @@ UAM_TEST(SvnLineStatsFallBackToEachFileAndOlderPegSpelling)
 		ProcessExecutionResult result;
 		result.ok = true;
 		const std::string& target = args.back();
-		result.exit_code = target == "edit.txt" || target == "a@b.txt@" ? 0 : 1;
+		result.exit_code = target == "edit.txt" || target == "a@1.txt@" || target == "a@1.txt" ? 0 : 1;
 		if (target == "edit.txt") result.output = "Index: edit.txt\n--- edit.txt\n+++ edit.txt\n@@ -1 +1,2 @@\n-old\n+new\n+more\n";
-		else if (target == "a@b.txt@") result.output = "Index: a@b.txt\n--- a@b.txt\n+++ a@b.txt\n@@ -1,2 +1 @@\n-x\n-y\n+z\n";
+		else if (target == "a@1.txt@") result.output = "Index: a@1.txt\n--- a@1.txt\n+++ a@1.txt\n@@ -1,2 +1 @@\n-x\n-y\n+z\n";
+		// An older client reads the unescaped name as a peg revision of another path and succeeds with the wrong diff.
+		else if (target == "a@1.txt") result.output = "Index: a\n--- a\n+++ a\n@@ -1 +1,9 @@\n+wrong\n";
 		return result;
 	};
-	std::vector<uam::VcsChangedFile> files = {{"edit.txt", "M", true}, {"a@b.txt", "M", true}, {"new.txt", "?", true}};
+	std::vector<uam::VcsChangedFile> files = {{"edit.txt", "M", true}, {"a@1.txt", "M", true}, {"new.txt", "?", true}};
 	uam::VcsCommitService::ApplySvnLineStatsForTests(svn, files);
 	UAM_ASSERT_EQ(files[0].additions, 2);
 	UAM_ASSERT_EQ(files[0].deletions, 1);
@@ -434,8 +436,13 @@ UAM_TEST(SvnRealChatChangesCountAndOpenTrackedAndNewFiles)
 	if (!svn.ready) return;
 	for (const std::string name : {"tracked.txt", "at@name.txt"})
 		UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / name, "one\ntwo\n"));
-	UAM_ASSERT(svn.Svn({"add", "--", "tracked.txt", "at@name.txt@"}));
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "image.bin", std::string("a\0b", 3)));
+	UAM_ASSERT(svn.Svn({"add", "--", "tracked.txt", "at@name.txt@", "image.bin"}));
 	UAM_ASSERT(svn.Svn({"commit", "-m", "baseline"}));
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "image.bin", std::string("c\0d", 3)));
+	fs::create_directories(svn.workspace / "added");
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "added" / "f.txt", "x\ny\n"));
+	UAM_ASSERT(svn.Svn({"add", "--", "added"}));
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "tracked.txt", "one\nchanged\nthree\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "at@name.txt", "one\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "new.txt", "a\nb\nc"));
@@ -447,7 +454,11 @@ UAM_TEST(SvnRealChatChangesCountAndOpenTrackedAndNewFiles)
 	UAM_ASSERT(status.error.empty());
 	std::map<std::string, uam::VcsChangedFile> files;
 	for (const uam::VcsChangedFile& file : status.changed_files) files[file.path] = file;
-	UAM_ASSERT_EQ(files.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT_EQ(files.size(), static_cast<std::size_t>(8));
+	// The scheduled folder's own row must not repeat its child's lines.
+	UAM_ASSERT_EQ(files["added"].additions, 0);
+	UAM_ASSERT_EQ(files["added/f.txt"].additions, 2);
+	UAM_ASSERT(files["image.bin"].binary);
 	UAM_ASSERT_EQ(files["tracked.txt"].additions, 2);
 	UAM_ASSERT_EQ(files["tracked.txt"].deletions, 1);
 	UAM_ASSERT_EQ(files["at@name.txt"].additions, 0);
