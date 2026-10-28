@@ -4132,6 +4132,13 @@ Task-0891 now puts the minimum 44-point frame and hit shape inside managed actio
 
 Focused shared/application tests and a 45-child paging/Stop-padding component fixture are authored, including exact request observation, visible Auto reasons, 44-point geometry, same-host foreign-workspace exclusion and exact newer-draft preservation. These changed-input native tests and captures have not executed: available disk remains below the existing validation/capture floors, with no compiler or simulator started and no cleanup or floor override. Dependency-free fixture/source checks are recorded privately; they do not verify Swift types or touch behavior. Required affected code review, Claude GUI follow-up, actual-app captures, live/platform/physical-iPhone checks and David acceptance remain outstanding. Owner stays Unassigned behind the authenticated UAM identity/contact gate; Un-Reviewed, Claude Review and Not User Tested are retained. Existing failures and raw review receipts remain intact; there is no task staging, commit, upload, remote write, merge, owner transfer or Complete claim.
 
+## Copilot start fixes — 2026-10-28
+
+| Group | Type | Change | Summary | Status |
+|---|---|---|---|---|
+| Providers | Bugfix | Copilot First Prompt Delivery | A new Copilot chat whose first launch waits for worktree preparation now starts with its queued prompt's agent, so the first prompt is delivered instead of failing with "Failed to deliver queued prompt." after a restart. Verified with the real Copilot CLI through a headless app run. | Un-Reviewed; Not User Tested |
+| Providers | Bugfix | Copilot Without PowerShell 7 | On Windows, UAM checks and starts GitHub Copilot through built-in Windows PowerShell and cmd.exe and no longer reports Copilot unavailable when PowerShell 7 (pwsh) is missing; terminal windows keep the Editors PowerShell choice. Copilot itself may still ask for PowerShell 7 for its own shell commands, which then appears as Copilot's error. | Un-Reviewed; Not User Tested |
+
 ## V5 Alpha 4 local package — 2026-10-27
 David requested the `v5/ci-green` CI repairs merged into the alpha release with a new Alpha 4 package. The alpha branch merges `v5/ci-green` (`e33f5be3`: Windows helper cmd.exe length fix, native regression repairs, CI quarantine cleared) on top of Alpha 3 plus the Linux empty working-directory helper fix (#625), with the local presentation `5.0.0-Alpha-4`; the product/helper release stays `5.0.0` and protocol 3. `v5/ci-green` itself is unchanged.
 

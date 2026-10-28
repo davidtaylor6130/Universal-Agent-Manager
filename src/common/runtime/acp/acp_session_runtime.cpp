@@ -839,6 +839,14 @@ namespace uam
 				}
 				BindQueuedAgentForLaunch(session, session.queued_user_prompts.front());
 			}
+			else if (!session.running && !session.processing && !session.queue_held && !session.queued_user_prompts.empty() &&
+			    session.managed_agent_run_id.empty() && !session.model_discovery_only && !session.goal_internal_session &&
+			    !session.recovering_remote_turn && !session.recovering_remote_process)
+			{
+				// A deferred first launch (for example after worktree preparation) must start with the queued
+				// input's captured agent; otherwise session setup sees a changed native adapter and restarts.
+				BindQueuedAgentForLaunch(session, session.queued_user_prompts.front());
+			}
 
 			std::string error;
 			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error) ||
