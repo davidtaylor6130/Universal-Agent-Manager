@@ -6482,6 +6482,53 @@ UAM_TEST(CopilotNativeRefreshesReasoningAcrossModelChangesAndResume)
 	UAM_ASSERT_EQ(resume_a["params"]["sessionId"], chat.native_session_id);
 }
 
+UAM_TEST(CopilotDeferredFirstLaunchBindsQueuedAgentBeforeStarting)
+{
+	// A first launch deferred by worktree preparation reconnects later; it must start with the
+	// queued input's agent, or session setup sees a changed adapter, restarts and drops the input.
+	TempDir temp("uam-copilot-deferred-agent");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-copilot-deferred-agent";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	chat.workspace_directory = temp.root.string();
+	chat.uam_agent_id = "build";
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "queued-copilot-agent";
+	queued.revision = 1;
+	queued.text = "First prompt";
+	queued.append_user_message = true;
+	queued.direct_admission = true;
+	queued.uam_agent_id = "build";
+	queued.uam_agent_definition_hash = "builtin-build-v2";
+	queued.uam_agent_definition_snapshot = "builtin:build:v2";
+	queued.uam_agent_execution_capability = uam::AgentDefinitionService::ExecutionCapabilityForProvider(uam::provider_ids::kCopilotCli);
+	queued.uam_agent_instructions = "Implement the requested change and verify it.";
+	queued.uam_agent_workspace_access = "write";
+	chat.acp_queued_prompts.push_back(queued);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = uam::provider_ids::kCopilotCli;
+	session->protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
+	session->lifecycle_state = "starting";
+	session->reconnect_pending = true;
+	session->queued_user_prompts.push_back(queued);
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(raw_session->active_uam_agent_definition_hash.empty());
+
+	(void)uam::PollAllAcpSessions(app);
+
+	UAM_ASSERT_EQ(raw_session->active_uam_agent_id, std::string("build"));
+	UAM_ASSERT_EQ(raw_session->active_uam_agent_definition_hash, std::string("builtin-build-v2"));
+	UAM_ASSERT_EQ(raw_session->active_uam_agent_instructions, queued.uam_agent_instructions);
+	(void)uam::StopAcpSession(app, app.chats.front().id);
+}
+
 UAM_TEST(CopilotFirstQueuedPromptWaitsForSafeModeAfterSessionSetup)
 {
 	TempDir temp("uam-copilot-first-prompt-mode");
