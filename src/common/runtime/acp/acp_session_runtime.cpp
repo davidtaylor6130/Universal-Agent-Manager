@@ -839,7 +839,7 @@ namespace uam
 				}
 				BindQueuedAgentForLaunch(session, session.queued_user_prompts.front());
 			}
-			else if (!session.running && !session.processing && !session.queued_user_prompts.empty() &&
+			else if (!session.running && !session.processing && !session.queue_held && !session.queued_user_prompts.empty() &&
 			    session.managed_agent_run_id.empty() && !session.model_discovery_only && !session.goal_internal_session &&
 			    !session.recovering_remote_turn && !session.recovering_remote_process)
 			{

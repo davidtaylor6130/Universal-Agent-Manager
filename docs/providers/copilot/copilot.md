@@ -2,7 +2,9 @@
 
 GitHub Copilot structured Chat uses the native SDK server JSON-RPC protocol over framed stdio; CLI View retains the interactive Copilot CLI. Common behaviour is defined once in the [provider agreements](../providers.md); this checklist only records delivery and known limits. Native capabilities depend on the installed CLI, selected model and execution environment; shared UAM routes do not imply that every native variant is supported.
 
-On Windows, UAM checks and starts the npm (`@github/copilot`) or winget (`GitHub.Copilot`) install through built-in Windows PowerShell and `cmd.exe`; it never requires PowerShell 7 (`pwsh`). Terminal windows use the [Editors](../../settings/editors.md) PowerShell choice. Shell commands that Copilot itself runs inside a chat are Copilot's own and may still ask for PowerShell 7. A new chat's first prompt is delivered after worktree preparation without restarting Copilot for its selected agent. Both are found when installed while UAM or its SSH helper is running ([provider settings](../../settings/providers.md)).
+On Windows, UAM checks and starts the npm (`@github/copilot`) or winget (`GitHub.Copilot`) install through built-in Windows PowerShell and `cmd.exe`; it never requires PowerShell 7 (`pwsh`). Terminal windows use the [Editors](../../settings/editors.md) PowerShell choice. Shell commands that Copilot itself runs inside a chat are Copilot's own and may still ask for PowerShell 7. Both are found when installed while UAM or its SSH helper is running ([provider settings](../../settings/providers.md)).
+
+A new chat whose first launch waits for worktree preparation starts Copilot with its queued prompt's agent, so the first prompt is delivered without restarting Copilot.
 
 **Assessment:** source routes and retained verification evidence, 2026-10-17. Implemented is not live verification or David’s acceptance. Consult the [status definitions](../../documentation-rules.md#agreements-and-implementation) and [V5 log](<../../../V5 Improvement Change log.md>).
 

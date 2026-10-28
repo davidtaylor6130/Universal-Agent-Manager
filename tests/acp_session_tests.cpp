@@ -6520,6 +6520,12 @@ UAM_TEST(CopilotDeferredFirstLaunchBindsQueuedAgentBeforeStarting)
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
 	UAM_ASSERT(raw_session->active_uam_agent_definition_hash.empty());
+	// An in-flight version check holds the launch, so the test never spawns a real Copilot CLI.
+	app.runtime_cli_version_check_task.running = true;
+	app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+	app.runtime_cli_version_provider_id = uam::provider_ids::kCopilotCli;
+	if (const ExecutionHost* local = uam::execution_hosts::Find(app.settings.execution_hosts, uam::execution_hosts::kLocalHostId))
+		app.runtime_cli_version_check_task.execution_host = *local;
 
 	(void)uam::PollAllAcpSessions(app);
 
