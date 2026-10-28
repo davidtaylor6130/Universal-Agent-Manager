@@ -262,12 +262,15 @@ UAM_TEST(SvnLineStatsFallBackToEachFileAndOlderPegSpelling)
 		else if (target == "a@1.txt") result.output = "Index: a\n--- a\n+++ a\n@@ -1 +1,9 @@\n+wrong\n";
 		else if (target == "huge.txt") { result.ok = false; result.output_truncated = true; }
 		else if (target == "image.bin") { result.exit_code = 0; result.output = "Index: image.bin\nCannot display: file marked as a binary type.\n"; }
-		else if (target == "after.txt" || target == "late.txt") { result.exit_code = 0; result.output = "Index: " + target + "\n@@ -0,0 +1 @@\n+x\n"; }
+		else if (target == "after.txt" || target == "late.txt" || target == "b@2.txt") { result.exit_code = 0; result.output = "Index: " + target + "\n@@ -0,0 +1 @@\n+x\n"; }
+		// SVN 1.15 rejects the peg spelling; the plain retry is accepted only when it diffed that path.
+		else if (target == "b@2.txt@" || target == "c@3.txt@") result.error = "svn: E155010: The node '" + target + "' was not found.";
+		else if (target == "c@3.txt") { result.exit_code = 0; result.output = "Index: c\n@@ -0,0 +1 @@\n+wrong\n"; }
 		return result;
 	};
 	// A file whose own diff exceeds the capture limit keeps 0/0 without stopping later rows; any other failure stops them.
 	std::vector<uam::VcsChangedFile> files = {{"edit.txt", "M", true}, {"a@1.txt", "M", true}, {"new.txt", "?", true}, {"huge.txt", "M", true},
-	                                          {"image.bin", "M", true}, {"after.txt", "M", true}, {"locked.txt", "M", true}, {"late.txt", "M", true}};
+	                                          {"image.bin", "M", true}, {"after.txt", "M", true}, {"b@2.txt", "M", true}, {"c@3.txt", "M", true}, {"late.txt", "M", true}};
 	uam::VcsCommitService::ApplySvnLineStatsForTests(svn, files);
 	UAM_ASSERT_EQ(files[0].additions, 2);
 	UAM_ASSERT_EQ(files[0].deletions, 1);
@@ -277,9 +280,28 @@ UAM_TEST(SvnLineStatsFallBackToEachFileAndOlderPegSpelling)
 	UAM_ASSERT_EQ(files[3].additions, 0);
 	UAM_ASSERT(files[4].binary);
 	UAM_ASSERT_EQ(files[5].additions, 1);
+	UAM_ASSERT_EQ(files[6].additions, 1);
 	UAM_ASSERT_EQ(files[7].additions, 0);
+	UAM_ASSERT_EQ(files[8].additions, 0);
 	for (const std::vector<std::string>& call : calls)
 		UAM_ASSERT(call.back() != "new.txt" && call.back() != "new.txt@");
+
+	// A successful workspace diff never spawns per-file diffs, even for a sectionless scheduled folder.
+	calls.clear();
+	const auto workspace = [&](const std::vector<std::string>& args)
+	{
+		calls.push_back(args);
+		ProcessExecutionResult result;
+		result.ok = true;
+		result.exit_code = 0;
+		if (args.back() == ".") result.output = "Index: dir/f.txt\n@@ -0,0 +1 @@\n+x\n";
+		return result;
+	};
+	std::vector<uam::VcsChangedFile> scheduled = {{"dir", "A", true}, {"dir/f.txt", "A", true}};
+	uam::VcsCommitService::ApplySvnLineStatsForTests(workspace, scheduled);
+	UAM_ASSERT_EQ(calls.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(scheduled[0].additions, 0);
+	UAM_ASSERT_EQ(scheduled[1].additions, 1);
 }
 
 UAM_TEST(SvnReadOnlyCommandsAvoidPromptsWithoutAllowingWritesOrDiffHelpers)
