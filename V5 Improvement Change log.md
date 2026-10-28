@@ -4129,6 +4129,13 @@ Task-0891 now puts the minimum 44-point frame and hit shape inside managed actio
 
 Focused shared/application tests and a 45-child paging/Stop-padding component fixture are authored, including exact request observation, visible Auto reasons, 44-point geometry, same-host foreign-workspace exclusion and exact newer-draft preservation. These changed-input native tests and captures have not executed: available disk remains below the existing validation/capture floors, with no compiler or simulator started and no cleanup or floor override. Dependency-free fixture/source checks are recorded privately; they do not verify Swift types or touch behavior. Required affected code review, Claude GUI follow-up, actual-app captures, live/platform/physical-iPhone checks and David acceptance remain outstanding. Owner stays Unassigned behind the authenticated UAM identity/contact gate; Un-Reviewed, Claude Review and Not User Tested are retained. Existing failures and raw review receipts remain intact; there is no task staging, commit, upload, remote write, merge, owner transfer or Complete claim.
 
+## SVN Chat changes fixes — 2026-10-28
+
+| Group | Type | Change | Summary | Status |
+|---|---|---|---|---|
+| Version control | Bugfix | SVN File Diffs Open | Opening a changed SVN file in Chat changes or the commit panel shows its diff instead of `E155010` on SVN 1.15, while names containing `@` still diff on older clients; a file missing from the workspace diff gets its own line counts. | Un-Reviewed; Not User Tested |
+| Version control | Bugfix | Unversioned SVN Files Show As New | An unversioned SVN file is shown as entirely added with its lines counted and an all-added diff, locally and on remote hosts with Git; unversioned folders stay one row. | Un-Reviewed; Not User Tested |
+
 ## Copilot start fixes — 2026-10-28
 
 | Group | Type | Change | Summary | Status |
