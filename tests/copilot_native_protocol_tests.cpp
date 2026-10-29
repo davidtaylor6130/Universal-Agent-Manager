@@ -178,7 +178,7 @@ UAM_TEST(CopilotNativePermissionResponsesRespectTransportAndDenial)
 	const nlohmann::json event = runtime.OnAcpBuildPermissionResponse(session, "reject_once", false);
 	UAM_ASSERT_EQ(event["method"], "session.permissions.handlePendingPermissionRequest");
 	UAM_ASSERT_EQ(event["params"]["requestId"], "permission-1");
-	UAM_ASSERT_EQ(event["params"]["result"]["kind"], "denied-interactively-by-user");
+	UAM_ASSERT_EQ(event["params"]["result"]["kind"], "reject");
 	UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "allow_once", true)["params"]["result"]["kind"], "user-not-available");
 }
 

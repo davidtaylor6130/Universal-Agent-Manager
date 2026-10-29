@@ -89,12 +89,12 @@ void FinishMaintenance(AcpSessionState& session)
 nlohmann::json PermissionResponse(const AcpSessionState& session,
     const AcpPendingPermissionState& pending, const std::string& option, bool cancelled)
 {
-	const std::string decision = cancelled ? "user-not-available" :
-	    option == "allow_once" ? "approved" : "denied-interactively-by-user";
-	const nlohmann::json result = {{"kind", decision}};
+	const bool allowed = option == "allow_once";
 	const nlohmann::json request_id = StableStringToJsonRpcId(pending.request_id_json);
 	if (pending.provider_request_method == "permission.request")
-		return uam::acp_json_rpc::SuccessResponse(request_id, {{"result", result}});
+		return uam::acp_json_rpc::SuccessResponse(request_id, {{"result", {{"kind", cancelled ? "user-not-available" : allowed ? "approved" : "denied-interactively-by-user"}}}});
+	// handlePendingPermissionRequest takes a PermissionDecision; Copilot 1.0.105 rejects the older result kinds.
+	const nlohmann::json result = {{"kind", cancelled ? "user-not-available" : allowed ? "approve-once" : "reject"}};
 	// Permission decisions are independent of prompt/cancel IDs. A namespaced
 	// string ID avoids colliding with the monotonically allocated integer IDs.
 	return {{"jsonrpc", "2.0"}, {"id", "uam-permission:" + pending.request_id_json},
