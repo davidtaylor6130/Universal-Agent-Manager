@@ -27,7 +27,8 @@ const LATEX_SYMBOLS: Record<string, string> = {
 export function replaceInlineLatexSymbols(text: string): string {
   if (!text.includes('$') || !text.includes('\\')) return text
   // As in Markdown math: no space just inside either $, and no digit after the closing $ (so "$5 \to $10" stays text).
-  return text.replace(/\$(?!\s)([^$\n]{1,120}?)(?<!\s)\\?\$(?!\d)/g, (span, body: string) => {
+  // An escaped (\$), doubled ($$) or word-attached $ never delimits a span.
+  return text.replace(/(?<![\\$\w])\$(?!\s|\$)([^$\n]{1,120}?)(?<!\s)\\?\$(?![\d$])/g, (span, body: string) => {
     if (!/\\[A-Za-z]/.test(body)) return span
     let known = true
     const rendered = body

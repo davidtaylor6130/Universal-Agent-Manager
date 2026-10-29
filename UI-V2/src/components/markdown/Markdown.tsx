@@ -53,12 +53,12 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
       nodes.push(
         href ? (
           <a key={key} href={href} target="_blank" rel="noreferrer">
-            {link?.[1]}
+            {replaceInlineLatexSymbols(link?.[1] ?? '')}
           </a>
         ) : file ? (
-          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{link?.[1]}</button>
+          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{replaceInlineLatexSymbols(link?.[1] ?? '')}</button>
         ) : (
-          <span key={key}>{link?.[1] ?? token}</span>
+          <span key={key}>{link ? replaceInlineLatexSymbols(link[1]) : token}</span>
         )
       )
     }
