@@ -26,6 +26,7 @@ struct CopilotPrivateWriter
 {
 	uam::AcpSessionState& session;
 	std::FILE* file = std::tmpfile();
+	std::shared_ptr<std::string> written = std::make_shared<std::string>();
 	explicit CopilotPrivateWriter(uam::AcpSessionState& target) : session(target)
 	{
 		UAM_ASSERT(file != nullptr);
@@ -35,7 +36,7 @@ struct CopilotPrivateWriter
 		session.stdin_write_fd = fileno(file);
 #endif
 		session.stdin_writer = std::make_shared<uam::platform::AsyncByteWriter>(
-		    [](const char*, std::size_t count, std::string&) -> std::ptrdiff_t { return static_cast<std::ptrdiff_t>(count); }, [] {});
+		    [written = written](const char* data, std::size_t count, std::string&) -> std::ptrdiff_t { written->append(data, count); return static_cast<std::ptrdiff_t>(count); }, [] {});
 	}
 	~CopilotPrivateWriter()
 	{
@@ -487,6 +488,40 @@ UAM_TEST(CopilotNativeUnansweredPermissionsSurviveResetAndSavedAnswersReplay)
 	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat,
 	    {{"jsonrpc", "2.0"}, {"id", saved["id"]}, {"error", {{"code", -32603}, {"message", "Permission request not found"}}}}, nullptr));
 	UAM_ASSERT(session.last_error.empty());
+}
+
+UAM_TEST(CopilotNativeSavedOldPermissionKindReplaysAsCurrentDecision)
+{
+	TempDir root("uam-copilot-old-permission-replay");
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli);
+	uam::AppState app;
+	app.data_root = root.root;
+	ChatSession chat;
+	chat.id = "old-permission-replay";
+	chat.provider_id = "copilot-cli";
+	chat.execution_host_id = "remote";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "copilot-sdk";
+	session.session_id = "native-session";
+	session.processing = true;
+	const nlohmann::json event = CopilotEvent("permission.requested", {{"requestId", "permission"}, {"permissionRequest", {{"kind", "shell"}, {"fullCommandText", "echo private-fixture"}, {"managedApprovalRequired", true}}}}, "permission-event");
+	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, event, nullptr));
+	nlohmann::json saved = runtime.OnAcpBuildPermissionResponse(session, "allow_once", false);
+	// A decision saved before the SDK decision kinds were adopted.
+	saved["params"]["result"]["kind"] = "approved";
+	chat.remote_interaction_responses.push_back({"\"permission\"", saved.dump()});
+	uam::acp_detail::ResetAcpPendingInteractionState(session);
+	CopilotPrivateWriter writer(session);
+	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, event, nullptr));
+	UAM_ASSERT(!session.waiting_for_permission);
+	if (session.stdin_writer) (void)session.stdin_writer->Flush(std::chrono::seconds(2));
+	std::string bytes = *writer.written;
+	std::fflush(writer.file);
+	std::rewind(writer.file);
+	for (int c; (c = std::fgetc(writer.file)) != EOF;) bytes.push_back(static_cast<char>(c));
+	UAM_ASSERT(bytes.find("\"approve-once\"") != std::string::npos);
+	UAM_ASSERT(bytes.find("\"approved\"") == std::string::npos);
 }
 
 UAM_TEST(CopilotNativeSetupSaveFailureRetainsUnsentInputAndNativeIdentity)

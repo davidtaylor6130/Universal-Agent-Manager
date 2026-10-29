@@ -6157,6 +6157,13 @@ UAM_TEST(CopilotNativeEmptyModelListOffersAuto)
 	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "8", {{"models", nlohmann::json::array()}}));
 	UAM_ASSERT_EQ(session.available_models.size(), std::size_t{1});
 	UAM_ASSERT_EQ(session.available_models.front().id, std::string("auto"));
+	// A malformed result, or one whose every model policy disables, is not offered Auto.
+	session.available_models.clear();
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "9", nlohmann::json::object()));
+	UAM_ASSERT(session.available_models.empty());
+	const nlohmann::json disabled = {{"id", "gpt-x"}, {"name", "GPT X"}, {"policy", {{"state", "disabled"}}}};
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "10", {{"models", {disabled}}}));
+	UAM_ASSERT(session.available_models.empty());
 }
 
 UAM_TEST(CopilotNativeUsesModelSpecificReasoningOptions)
@@ -13745,6 +13752,13 @@ UAM_TEST(GeminiLoadReplayAfterResponseNeverEntersNextTurn)
 	UAM_ASSERT(!session.session_ready);
 	const double held_until = session.load_replay_quiet_until_s;
 	UAM_ASSERT(held_until > 0.0);
+	// The poll loop must not send session/load again while the held load replays.
+	session.running = true;
+	session.initialized = true;
+	const auto methods_before = session.pending_request_methods;
+	UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_request_methods == methods_before);
+	UAM_ASSERT_EQ(session.load_replay_quiet_until_s, held_until);
 	const auto send = [&](const nlohmann::json& update)
 	{
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
@@ -16427,6 +16441,43 @@ UAM_TEST(AcpNongenericLocalRestartFailureRetainsDurableRawFifo)
 			UAM_ASSERT_EQ(saved->acp_dispatched_queued_prompt_count, std::size_t{0});
 			UAM_ASSERT_EQ(saved->messages, messages);
 		}
+	}
+}
+
+UAM_TEST(AcpStagedLaunchStaysStartingWhileItsAdmissionSaveIsPending)
+{
+	TempDir temp("uam-staged-launch-workspace-poll");
+	uam::AppState app;
+	app.data_root = temp.root;
+	if (!uam::execution_hosts::Find(app.settings.execution_hosts, uam::execution_hosts::kLocalHostId))
+	{
+		ExecutionHost local;
+		local.id = uam::execution_hosts::kLocalHostId;
+		local.transport = "local";
+		app.settings.execution_hosts.push_back(local);
+	}
+	ChatSession chat;
+	chat.id = "staged-launch-workspace-poll";
+	chat.provider_id = uam::provider_ids::kDefaultCliProviderId;
+	chat.execution_host_id = uam::execution_hosts::kLocalHostId;
+	chat.workspace_directory = temp.root.string();
+	chat.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+	app.chats.push_back(chat);
+	// A launch's own durable-admission save makes workspace preparation answer Pending on each poll.
+	app.pending_chat_save_at_by_chat_id[chat.id] = 0.0;
+	for (const bool staged : {false, true})
+	{
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.lifecycle_state = uam::acp_detail::kAcpLifecycleStarting;
+		if (staged)
+			UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, session, app.chats.front(),
+			    [](uam::AppState&, uam::AcpSessionState&, ChatSession&) { return true; }));
+		UAM_ASSERT_EQ(uam::acp_detail::PrepareAcpWorkspaceForLaunch(app, session, app.chats.front()), uam::WorktreeLaunchPreparationState::Pending);
+		UAM_ASSERT(session.worktree_launch_pending);
+		// Staying starting keeps the staged launch's UAM control reservation retained.
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string(staged ? uam::acp_detail::kAcpLifecycleStarting : "waiting_workspace"));
 	}
 }
 

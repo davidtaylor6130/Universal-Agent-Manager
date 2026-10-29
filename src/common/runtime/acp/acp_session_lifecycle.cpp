@@ -271,10 +271,7 @@ bool ShouldRetainPendingLocalAcpControlCapability(const AppState& app,
 	const AcpSessionState* session = FindAcpSessionForChat(app, capability.session_chat_id);
 	const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 	const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
-	// A staged cold launch re-polls workspace preparation, which can briefly report waiting_workspace;
-	// its reservation stays owned because OwnsColdLaunch below still checks the workspace.
-	if (!session || !chat || !root || session->running ||
-	    (session->lifecycle_state != kAcpLifecycleStarting && !(HasPendingAcpColdLaunch(*session) && session->lifecycle_state == "waiting_workspace")) ||
+	if (!session || !chat || !root || session->running || session->lifecycle_state != kAcpLifecycleStarting ||
 	    session->model_discovery_only || ((session->recovering_remote_turn || session->recovering_remote_process) && !HasPendingAcpColdLaunch(*session)) ||
 	    session->queue_held || session->managed_cancellation_pending || AcpSessionHasPendingCancel(*session) ||
 	    session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed ||
@@ -1893,7 +1890,9 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 	if (session.worktree_launch_pending)
 	{
 		session.worktree_launch_cancellation = workspace.cancellation;
-		session.lifecycle_state = "waiting_workspace";
+		// A staged launch re-polls preparation, which reports Pending while its own admission save
+		// is outstanding; it stays starting so its UAM control reservation is retained.
+		if (!session.pending_local_launch) session.lifecycle_state = "waiting_workspace";
 		return workspace.state;
 	}
 	session.worktree_launch_cancellation.reset();
@@ -2997,7 +2996,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (!AgentRunScheduler::InitialSessionOwned(app, session, chat))
 		return false;
 	if (session.remote_source_exit_reported) return false;
-	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0)
+	// A held Gemini load already has its session; it finishes in SettleAcpLoadReplay.
+	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0 ||
+	    session.load_replay_quiet_until_s > 0.0)
 	{
 		return false;
 	}
