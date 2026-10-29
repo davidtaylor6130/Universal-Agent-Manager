@@ -1,3 +1,6 @@
+#include "common/config/build_features.h"
+// These fixtures drive the OpenCode runtime by its real id, so they need OpenCode compiled in.
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 #include "test_harness.h"
 #include "app/opencode_compaction_sync_service.h"
 #include "app/agent_definition_service.h"
@@ -2042,3 +2045,4 @@ UAM_TEST(OpenCodeMetadataPublishedReceiptDoesNotRediscoverOrDelaySecondBatch)
 	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
 	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
 }
+#endif

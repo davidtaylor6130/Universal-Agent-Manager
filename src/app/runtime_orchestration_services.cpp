@@ -5238,7 +5238,9 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	std::vector<std::string> argv = ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat);
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (host.platform != "windows" && host.platform != "Windows") argv = uam::opencode_v2::FileBackedStdoutArgv(std::move(argv));
+#endif
 	if (!client.StartProcess(process_id, uam::paths::PathFromUtf8(chat.workspace_directory), argv, {},
 	                         &result.error) || !client.CloseProcessInput(process_id, &result.error))
 	{

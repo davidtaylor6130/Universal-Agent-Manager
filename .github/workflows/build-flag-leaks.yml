@@ -76,7 +76,7 @@ jobs:
 
   # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
   native-skipped:
-    name: Native flag builds not requested (add the build-flags label to run 18 full builds)
+    name: Native flag builds not requested (add the build-flags label to run 19 full builds)
     if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'build-flags')
     runs-on: ubuntu-latest
     steps:
@@ -116,6 +116,8 @@ jobs:
           - { name: 'only OpenCode', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
           - { name: 'only Copilot', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
           - { name: 'only Antigravity', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF' }
+          # Mixed profile: several providers on with Claude, Codex and OpenCode off, which shared code reaches differently from one-provider builds.
+          - { name: 'Gemini, Copilot and Antigravity only, local features', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_COMPUTER_USE=OFF -DUAM_ENABLE_SSH=OFF -DUAM_ENABLE_MOBILE_COMPANION=OFF' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

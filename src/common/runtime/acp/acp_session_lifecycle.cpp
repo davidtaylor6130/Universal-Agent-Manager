@@ -3431,7 +3431,7 @@ static std::shared_ptr<PendingAcpPromptDelivery> StagePromptAdmission(AppState& 
 	packet->active_goal_id = chat.active_goal_id;
 	packet->goal_revision = chat.goal_command_revision;
 	packet->small_model_mode = chat.small_model_mode;
-	packet->quota_process_authority = chat.execution_host_id != execution_hosts::kLocalHostId && chat.provider_id == "claude-cli" &&
+	packet->quota_process_authority = chat.execution_host_id != execution_hosts::kLocalHostId && chat.provider_id == uam::provider_ids::kClaudeCli &&
 	    !chat.claude_quota_continuation.id.empty() && (chat.claude_quota_continuation.state == "cancelled" ||
 	    session.claude_quota_delivery_id == chat.claude_quota_continuation.id);
 	if (chat.execution_host_id != execution_hosts::kLocalHostId && (chat.small_model_mode || packet->quota_process_authority))

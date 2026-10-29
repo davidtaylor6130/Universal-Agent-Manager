@@ -16445,6 +16445,7 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
@@ -16554,6 +16555,7 @@ UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 		UAM_ASSERT_EQ(saved->acp_dispatched_queued_prompt_count, std::size_t{0});
 	}
 }
+#endif
 
 UAM_TEST(AcpDirectFailureRetiresOnlyItsReceiptAndPreservesOneAuthoredUnsent)
 {
