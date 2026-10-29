@@ -6157,6 +6157,13 @@ UAM_TEST(CopilotNativeEmptyModelListOffersAuto)
 	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "8", {{"models", nlohmann::json::array()}}));
 	UAM_ASSERT_EQ(session.available_models.size(), std::size_t{1});
 	UAM_ASSERT_EQ(session.available_models.front().id, std::string("auto"));
+	// A malformed result, or one whose every model policy disables, is not offered Auto.
+	session.available_models.clear();
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "9", nlohmann::json::object()));
+	UAM_ASSERT(session.available_models.empty());
+	const nlohmann::json disabled = {{"id", "gpt-x"}, {"name", "GPT X"}, {"policy", {{"state", "disabled"}}}};
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "10", {{"models", {disabled}}}));
+	UAM_ASSERT(session.available_models.empty());
 }
 
 UAM_TEST(CopilotNativeUsesModelSpecificReasoningOptions)
