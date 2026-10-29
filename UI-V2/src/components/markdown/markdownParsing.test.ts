@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { inlineChipFor, isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
+import { inlineChipFor, isPotentialTableRow, parseTableSeparator, replaceInlineLatexSymbols, safeHref, splitTableRow } from './markdownParsing'
 
 describe('markdownParsing', () => {
+  describe('replaceInlineLatexSymbols', () => {
+    it('renders symbol-only inline LaTeX as Unicode', () => {
+      expect(replaceInlineLatexSymbols('Parse $\\rightarrow$ render')).toBe('Parse → render')
+      expect(replaceInlineLatexSymbols('Parse $\\rightarrow\\$ render')).toBe('Parse → render')
+      expect(replaceInlineLatexSymbols('$x \\leq y$ and $a \\times b$')).toBe('x ≤ y and a × b')
+      expect(replaceInlineLatexSymbols('It is $25^\\circ$C and $\\alpha \\to \\beta$')).toBe('It is 25°C and α → β')
+    })
+
+    it('leaves money, real formulas and unknown commands exactly as written', () => {
+      for (const text of ['Costs $5 and $10', 'From $5 \\to $10 today', '$\\frac{a}{b}$', '$\\unknown$', '$x^2$', '$ \\to $', 'no math \\rightarrow here']) {
+        expect(replaceInlineLatexSymbols(text)).toBe(text)
+      }
+    })
+  })
+
   describe('inlineChipFor', () => {
     const known = ['release-train', 'origin/base']
 
