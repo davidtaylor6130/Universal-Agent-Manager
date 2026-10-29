@@ -1499,11 +1499,13 @@ if(UAM_BUILD_TESTS)
     src/common/provider/opencode/cli/opencode_native_http.cpp
     src/common/provider/claude/cli/claude_acp_message_handlers.cpp
     src/common/provider/codex/cli/codex_acp_message_handlers.cpp
+    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
     src/common/runtime/acp/claude_quota_continuation.cpp
     src/app/opencode_import_stream.cpp
     src/core/gemini_cli_compat.cpp
   )
-  list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
+  list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_SOURCES} ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
     tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
