@@ -9754,6 +9754,26 @@ namespace
 	}
 }
 
+UAM_TEST(PendingControlSurvivesWorkspaceRepollOfStagedColdLaunch)
+{
+	ManagedClaudeLifecycleFixture fixture(true);
+	JoinedClaudeControlCleanup cleanup{fixture};
+	const auto control = BeginPrivatePendingClaudeControl(fixture);
+	auto* session = uam::FindAcpSessionForChat(fixture.app, control.session_chat_id);
+	UAM_ASSERT(session != nullptr && uam::acp_detail::HasPendingAcpColdLaunch(*session));
+	const auto now = uam::time::SystemEpochMillisecondsNow();
+	// Each launch poll re-runs workspace preparation; a Pending answer must not retire the
+	// staged launch's control reservation, or its durable admission fails and the input is held.
+	const std::string original = session->lifecycle_state;
+	session->lifecycle_state = "waiting_workspace";
+	UAM_ASSERT(uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(fixture.app, control, now, uam::GetAppTimeSeconds()));
+	session->lifecycle_state = uam::acp_detail::kAcpLifecycleError;
+	UAM_ASSERT(!uam::acp_detail::ShouldRetainPendingLocalAcpControlCapability(fixture.app, control, now, uam::GetAppTimeSeconds()));
+	session->lifecycle_state = original;
+	UAM_ASSERT(uam::StopAcpSession(fixture.app, fixture.root_id));
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+}
+
 UAM_TEST(ClaudePendingControlRetainsRecordWithoutCallableAuthority)
 {
 	ManagedClaudeLifecycleFixture fixture(true);
