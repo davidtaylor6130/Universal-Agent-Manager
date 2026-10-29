@@ -1890,7 +1890,9 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 	if (session.worktree_launch_pending)
 	{
 		session.worktree_launch_cancellation = workspace.cancellation;
-		session.lifecycle_state = "waiting_workspace";
+		// A staged launch re-polls preparation, which reports Pending while its own admission save
+		// is outstanding; it stays starting so its UAM control reservation is retained.
+		if (!session.pending_local_launch) session.lifecycle_state = "waiting_workspace";
 		return workspace.state;
 	}
 	session.worktree_launch_cancellation.reset();

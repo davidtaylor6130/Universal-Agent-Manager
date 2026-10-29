@@ -16444,6 +16444,43 @@ UAM_TEST(AcpNongenericLocalRestartFailureRetainsDurableRawFifo)
 	}
 }
 
+UAM_TEST(AcpStagedLaunchStaysStartingWhileItsAdmissionSaveIsPending)
+{
+	TempDir temp("uam-staged-launch-workspace-poll");
+	uam::AppState app;
+	app.data_root = temp.root;
+	if (!uam::execution_hosts::Find(app.settings.execution_hosts, uam::execution_hosts::kLocalHostId))
+	{
+		ExecutionHost local;
+		local.id = uam::execution_hosts::kLocalHostId;
+		local.transport = "local";
+		app.settings.execution_hosts.push_back(local);
+	}
+	ChatSession chat;
+	chat.id = "staged-launch-workspace-poll";
+	chat.provider_id = uam::provider_ids::kDefaultCliProviderId;
+	chat.execution_host_id = uam::execution_hosts::kLocalHostId;
+	chat.workspace_directory = temp.root.string();
+	chat.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+	app.chats.push_back(chat);
+	// A launch's own durable-admission save makes workspace preparation answer Pending on each poll.
+	app.pending_chat_save_at_by_chat_id[chat.id] = 0.0;
+	for (const bool staged : {false, true})
+	{
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.lifecycle_state = uam::acp_detail::kAcpLifecycleStarting;
+		if (staged)
+			UAM_ASSERT(uam::acp_detail::StageAcpColdLaunch(app, session, app.chats.front(),
+			    [](uam::AppState&, uam::AcpSessionState&, ChatSession&) { return true; }));
+		UAM_ASSERT_EQ(uam::acp_detail::PrepareAcpWorkspaceForLaunch(app, session, app.chats.front()), uam::WorktreeLaunchPreparationState::Pending);
+		UAM_ASSERT(session.worktree_launch_pending);
+		// Staying starting keeps the staged launch's UAM control reservation retained.
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string(staged ? uam::acp_detail::kAcpLifecycleStarting : "waiting_workspace"));
+	}
+}
+
 UAM_TEST(AcpNongenericLocalRestartSaveFailureRetainsHeldRawFifo)
 {
 	for (const std::string provider : {"claude-cli", "copilot-cli", "antigravity-cli"})
