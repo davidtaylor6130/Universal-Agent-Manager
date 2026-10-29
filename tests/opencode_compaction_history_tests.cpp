@@ -1,3 +1,6 @@
+#include "common/config/build_features.h"
+// These fixtures drive the OpenCode runtime by its real id, so they need OpenCode compiled in.
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 #include "test_harness.h"
 #include "app/opencode_compaction_sync_service.h"
 #include "app/opencode_compaction_history.h"
@@ -1062,3 +1065,4 @@ UAM_TEST(OpenCodeCompactionHistoryUsesVerifiedCheckpointWithRealNativeSqliteData
 		if (variant == 3) UAM_ASSERT_EQ(after.blocks[1].type, std::string("context_compaction"));
 	}
 }
+#endif

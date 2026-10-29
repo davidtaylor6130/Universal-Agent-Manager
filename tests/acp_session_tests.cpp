@@ -6137,6 +6137,28 @@ UAM_TEST(CopilotAvailableCommandsUpdateIsStoredOutsideATurnAndSerialized)
 	UAM_ASSERT_EQ(available_commands[1].value("description", ""), std::string("Show context window usage"));
 }
 
+UAM_TEST(CopilotNativeEmptyModelListOffersAuto)
+{
+	TempDir temp("uam-copilot-native-empty-models");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-copilot-empty-models";
+	chat.provider_id = uam::provider_ids::kCopilotCli;
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
+	auto& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	// Copilot Free answers models.list with an empty list; Auto is still selectable.
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, app.chats.front(), "models.list", "8", {{"models", nlohmann::json::array()}}));
+	UAM_ASSERT_EQ(session.available_models.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session.available_models.front().id, std::string("auto"));
+}
+
 UAM_TEST(CopilotNativeUsesModelSpecificReasoningOptions)
 {
 	TempDir temp("uam-copilot-native-reasoning");
@@ -16445,6 +16467,7 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 	}
 }
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
@@ -16554,6 +16577,7 @@ UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 		UAM_ASSERT_EQ(saved->acp_dispatched_queued_prompt_count, std::size_t{0});
 	}
 }
+#endif
 
 UAM_TEST(AcpDirectFailureRetiresOnlyItsReceiptAndPreservesOneAuthoredUnsent)
 {

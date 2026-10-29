@@ -1801,6 +1801,14 @@ bool CopilotCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSe
 				entry.max_output_tokens = Count(limits, "max_output_tokens");
 				parsed.push_back(std::move(entry));
 			}
+			// Copilot Free lists no selectable models; its one model is Auto, which the native "auto" id selects.
+			if (parsed.empty())
+			{
+				AcpModelState automatic;
+				automatic.id = "auto";
+				automatic.name = "Auto";
+				parsed.push_back(std::move(automatic));
+			}
 		}
 		if (!parsed.empty())
 		{
@@ -1809,7 +1817,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSe
 			if (session.session_ready) (void)OnAcpReconcileModelOptions(app, session, chat);
 		}
 		else if (app.provider_model_catalog)
-			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Copilot SDK server returned no available models; check authentication and account model access.",
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Copilot SDK server returned an invalid model list; check authentication and account model access.",
 			    uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
 		StopBackgroundModelDiscovery(app, session);
 		return true;
