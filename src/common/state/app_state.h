@@ -883,6 +883,8 @@ namespace uam
 			bool consumed = false;
 		} goal_review_usage;
 		bool ignore_session_updates_until_ready = false;
+		/// <summary>Gemini answers session/load before streaming its history; setup finishes once that replay is quiet.</summary>
+		double load_replay_quiet_until_s = 0.0;
 		bool codex_resume_fallback_attempted = false;
 		bool acp_resume_fallback_attempted = false;
 		std::string stdout_buffer;
