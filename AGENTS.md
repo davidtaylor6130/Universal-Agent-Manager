@@ -87,7 +87,8 @@ npm --prefix UI-V2 ci
 npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
-cmake -S . -B Builds
+# Local build without packaged SSH helpers; see docs/building.md to package them.
+cmake -S . -B Builds -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds --config Release
 ```
 
@@ -95,7 +96,8 @@ Windows must initialize MSVC first:
 
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S . -B Builds
+# Local build without packaged SSH helpers; see docs/building.md to package them.
+cmake -S . -B Builds -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds --config Release
 ```
 
