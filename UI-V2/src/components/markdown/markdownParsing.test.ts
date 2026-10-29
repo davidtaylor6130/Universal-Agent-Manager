@@ -11,9 +11,18 @@ describe('markdownParsing', () => {
     })
 
     it('leaves money, real formulas and unknown commands exactly as written', () => {
-      for (const text of ['Costs $5 and $10', 'From $5 \\to $10 today', '$\\frac{a}{b}$', '$\\unknown$', '$x^2$', '$ \\to $', 'no math \\rightarrow here']) {
+      for (const text of ['Costs $5 and $10', 'From $5 \\to $10 today', '$\\frac{a}{b}$', '$\\unknown$', '$x^2$', '$ \\to $',
+        'no math \\rightarrow here', 'map $src \\to $dst', '$\\sqrt{x+1}$']) {
         expect(replaceInlineLatexSymbols(text)).toBe(text)
       }
+    })
+
+    it('does not let a dollar amount swallow a later symbol span', () => {
+      expect(replaceInlineLatexSymbols('Saves $5 per run $\\rightarrow$ cheaper')).toBe('Saves $5 per run → cheaper')
+    })
+
+    it('maps the Greek variants to their LaTeX glyphs', () => {
+      expect(replaceInlineLatexSymbols('$\\epsilon$ $\\varepsilon$ $\\phi$ $\\varphi$')).toBe('ϵ ε ϕ φ')
     })
   })
 
