@@ -189,7 +189,16 @@ bool ReplayPersistedInteractionResponseIfMatched(
 		return false;
 	try
 	{
-		const nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		nlohmann::json response = nlohmann::json::parse(saved->response_json);
+		// Copilot decisions saved before the SDK decision kinds were adopted would now be rejected.
+		if (response.is_object() && response.value("method", "") == "session.permissions.handlePendingPermissionRequest" &&
+		    response.contains("params") && response["params"].is_object() && response["params"].contains("result") &&
+		    response["params"]["result"].is_object() && response["params"]["result"].contains("kind") && response["params"]["result"]["kind"].is_string())
+		{
+			nlohmann::json& kind = response["params"]["result"]["kind"];
+			if (kind == "approved") kind = "approve-once";
+			else if (kind == "denied-interactively-by-user") kind = "reject";
+		}
 		if (captured_read)
 		{
 			if (!CapturedReadCeilingAllowsSavedPermissionResponse(session, *pending, response))
