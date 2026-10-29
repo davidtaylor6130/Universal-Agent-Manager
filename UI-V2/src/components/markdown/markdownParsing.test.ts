@@ -12,7 +12,7 @@ describe('markdownParsing', () => {
 
     it('leaves money, real formulas and unknown commands exactly as written', () => {
       for (const text of ['Costs $5 and $10', 'From $5 \\to $10 today', '$\\frac{a}{b}$', '$\\unknown$', '$x^2$', '$ \\to $',
-        'no math \\rightarrow here', 'map $src \\to $dst', '$\\sqrt{x+1}$']) {
+        'no math \\rightarrow here', 'map $src \\to $dst', '$\\sqrt{x+1}$', '\\$\\to\\$', '$$\\to$$']) {
         expect(replaceInlineLatexSymbols(text)).toBe(text)
       }
     })
