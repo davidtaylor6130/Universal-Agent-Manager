@@ -331,6 +331,7 @@ namespace uam
 			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
 			{
 				bool markers[5]{};
+				std::filesystem::file_status git_status;
 				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
 				for (std::size_t index = 0; index < 5; ++index)
 				{
@@ -338,14 +339,14 @@ namespace uam
 					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
 					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
 					markers[index] = std::filesystem::exists(status);
+					if (index == 0) git_status = status;
 				}
-				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it into one.
-				std::error_code git_error;
-				if (markers[0] && std::filesystem::is_directory(std::filesystem::symlink_status(directory / ".git", git_error)))
+				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
+				// into one. An unreadable one keeps strict Git validation and its metadata error.
+				if (markers[0] && std::filesystem::is_directory(git_status))
 				{
 					std::error_code error;
-					markers[0] = !std::filesystem::is_empty(directory / ".git", error);
-					if (error) return LocalSnapshotSource::Unknown;
+					markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
 				}
 				// Broken Git markers and bare repositories must retain normal Git validation.
 				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;

@@ -212,6 +212,17 @@ UAM_TEST(ManagedSnapshotIgnoresEmptyAncestorGitDirectory)
 	const uam::GitWorktreeOperationResult created = uam::GitWorktreeService().CreateForChat(app, chat);
 	UAM_ASSERT(created.ok);
 	UAM_ASSERT_EQ(ReadFile(fs::path(chat.workspace_worktree_directory) / "keep.txt"), std::string("original"));
+	// A non-empty but broken .git is still a Git marker and keeps strict validation.
+	fs::create_directories(temp.root / "broken" / ".git");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "broken" / ".git" / "stray", "not a repository"));
+	const fs::path guarded = temp.root / "broken" / "source";
+	fs::create_directories(guarded);
+	UAM_ASSERT(uam::io::WriteTextFile(guarded / "keep.txt", "original"));
+	ChatSession refused = ChatDomainService().CreateNewChat("", "codex-cli");
+	refused.workspace_directory = guarded.string();
+	const uam::GitWorktreeOperationResult blocked = uam::GitWorktreeService().CreateForChat(app, refused);
+	UAM_ASSERT(!blocked.ok);
+	UAM_ASSERT(blocked.message.find("Source Git metadata could not be verified") != std::string::npos);
 }
 
 UAM_TEST(ManagedSnapshotIndependentOptInAndRealGitRemainAvailable)
