@@ -15,7 +15,8 @@ uam_local_build_presentation("${UAM_PRODUCT_VERSION}" "${UAM_LOCAL_BUILD_VERSION
 
 include("${CMAKE_SOURCE_DIR}/cmake/build_features.cmake")
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
-option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
+# Without SSH there are no helpers to package, so a build that turns SSH off need not also turn packaging off.
+option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ${UAM_ENABLE_SSH})
 set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
   "Directory containing linux-arm64, linux-x86_64, and windows-x86_64 runner folders.")
 
