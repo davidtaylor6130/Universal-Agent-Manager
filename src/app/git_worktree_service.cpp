@@ -339,6 +339,14 @@ namespace uam
 					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
 					markers[index] = std::filesystem::exists(status);
 				}
+				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it into one.
+				std::error_code git_error;
+				if (markers[0] && std::filesystem::is_directory(std::filesystem::symlink_status(directory / ".git", git_error)))
+				{
+					std::error_code error;
+					markers[0] = !std::filesystem::is_empty(directory / ".git", error);
+					if (error) return LocalSnapshotSource::Unknown;
+				}
 				// Broken Git markers and bare repositories must retain normal Git validation.
 				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
 				std::error_code error;
