@@ -1192,6 +1192,23 @@ describe('shared stored history content preservation', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
   })
 
+  it('hides recorded permission and question requests with the collapsed work trace', () => {
+    const oldExpanded = useAppStore.getState().expandWorkTraces
+    useAppStore.setState({ expandWorkTraces: false })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      const message = buildMessageFromCpp('fixture', { role: 'assistant', content: 'Final answer',
+        blocks: [{ type: 'permission_request', requestId: 'permission', text: 'Recorded permission text' },
+          { type: 'user_input_request', requestId: 'question', text: 'Recorded question text' },
+          { type: 'assistant_text', text: 'Final answer' }], createdAt: '2026-01-01T00:00:00Z' }, 0)
+      act(() => root.render(<PersistedMessageContent message={message} onSelectTool={vi.fn()} workingMode="verbose" />))
+      expect(host.textContent).toContain('Final answer')
+      expect(host.querySelectorAll('[role="note"]')).toHaveLength(0)
+      expect(host.textContent).not.toContain('Recorded permission text')
+      expect(host.textContent).not.toContain('Recorded question text')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ expandWorkTraces: oldExpanded }) }
+  })
+
   it('keeps separately retained final content when only reasoning is in the block inventory', () => {
     const host = document.createElement('div'); const root = createRoot(host)
     try {

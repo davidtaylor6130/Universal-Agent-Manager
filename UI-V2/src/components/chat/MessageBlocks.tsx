@@ -709,6 +709,8 @@ export function PersistedMessageBlocksContent({
         }
 
         if (block.type === 'permission_request' || block.type === 'user_input_request') {
+          // Recorded (already resolved) requests are work-trace evidence; pending ones render live elsewhere.
+          if (!expanded) return null
           return <div key={`recorded-request-${block.requestId}-${index}`} role="note" className="conversation-trace__text">
             <strong>{block.type === 'permission_request' ? 'Recorded permission request' : 'Recorded question'}</strong>
             <MarkdownContent content={block.text || 'Details are unavailable in this stored history.'} />
