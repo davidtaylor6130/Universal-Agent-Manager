@@ -13720,6 +13720,65 @@ UAM_TEST(AcpCompactionLoadReplayInsertsMissingBoundariesAtNativeTimelinePosition
 	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Live"));
 }
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+UAM_TEST(GeminiLoadReplayAfterResponseNeverEntersNextTurn)
+{
+	TempDir temp("uam-gemini-late-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "gemini-late-replay";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_id = "native-gemini";
+	// The earlier turn timed out: UAM kept a partial answer, Gemini recorded a longer one.
+	chat.messages = {{.role = MessageRole::User, .content = "Earlier question"},
+	    {.role = MessageRole::Assistant, .content = "Part"},
+	    {.role = MessageRole::User, .content = "Next question"}};
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.session_id = "native-gemini";
+	session.session_setup_request_id = 2;
+	session.next_request_id = 3;
+	session.pending_request_methods[2] = "session/load";
+	session.ignore_session_updates_until_ready = true;
+	session.processing = true;
+	session.turn_first_user_message_index = 2;
+	session.turn_user_message_index = 2;
+	uam::acp_detail::RememberLoadHistoryReplayUpdates(session, chat, 2);
+	// Gemini CLI answers session/load first, then streams its history without awaiting it.
+	uam::acp_detail::HandleAcpResponse(app, session, chat, {{"jsonrpc", "2.0"}, {"id", 2}, {"result", nlohmann::json::object()}});
+	UAM_ASSERT(session.ignore_session_updates_until_ready);
+	UAM_ASSERT(!session.session_ready);
+	const double held_until = session.load_replay_quiet_until_s;
+	UAM_ASSERT(held_until > 0.0);
+	// The poll loop must not send session/load again while the held load replays.
+	session.running = true;
+	session.initialized = true;
+	const auto methods_before = session.pending_request_methods;
+	UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_request_methods == methods_before);
+	UAM_ASSERT_EQ(session.load_replay_quiet_until_s, held_until);
+	const auto send = [&](const nlohmann::json& update)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"update", update}}}}.dump()));
+	};
+	send({{"sessionUpdate", "user_message_chunk"}, {"content", {{"type", "text"}, {"text", "Earlier question"}}}});
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Partial answer the provider finished after UAM timed out"}}}});
+	UAM_ASSERT(session.load_replay_quiet_until_s >= held_until);
+	UAM_ASSERT_EQ(chat.messages.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(!uam::acp_detail::SettleAcpLoadReplay(app, session, chat, session.load_replay_quiet_until_s - 0.01));
+	UAM_ASSERT(uam::acp_detail::SettleAcpLoadReplay(app, session, chat, session.load_replay_quiet_until_s));
+	UAM_ASSERT(session.session_ready);
+	UAM_ASSERT(!session.ignore_session_updates_until_ready);
+	UAM_ASSERT_EQ(session.load_replay_quiet_until_s, 0.0);
+	send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Fresh answer"}}}});
+	UAM_ASSERT_EQ(chat.messages.back().role, MessageRole::Assistant);
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Fresh answer"));
+}
+#endif
+
 UAM_TEST(OpenCodeCompactionLoadReplayKeepsQueuedAndLiveMessageAnchors)
 {
 	TempDir temp("uam-compaction-marker-replay");

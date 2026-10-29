@@ -450,6 +450,24 @@ void StopBackgroundModelDiscovery(AppState& app, AcpSessionState& session)
 	session.last_error.clear();
 }
 
+void FinishAcpSessionLoad(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	session.load_replay_quiet_until_s = 0.0;
+	session.session_ready = true;
+	session.ignore_session_updates_until_ready = false;
+	session.lifecycle_state = kAcpLifecycleReady;
+	(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
+	StopBackgroundModelDiscovery(app, session);
+	(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+}
+
+bool SettleAcpLoadReplay(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
+{
+	if (session.load_replay_quiet_until_s <= 0.0 || now_seconds < session.load_replay_quiet_until_s) return false;
+	FinishAcpSessionLoad(app, session, chat);
+	return true;
+}
+
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	const nlohmann::json response_id = JsonRpcIdOrNull(message);
@@ -745,12 +763,16 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		RememberDiscoveredModels(app, session, chat);
 		FinishModelDiscoveryWithoutResults(app, session, chat);
-		session.session_ready = true;
-		session.ignore_session_updates_until_ready = false;
-		session.lifecycle_state = kAcpLifecycleReady;
-		(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
-		StopBackgroundModelDiscovery(app, session);
-		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+		// Gemini CLI replays its own history (including turns UAM saved differently, such as a
+		// timed-out answer) only after this response. Keep ignoring it until the replay is quiet,
+		// so none of it lands in the next turn.
+		if (method == uam::acp_methods::kSessionLoad && session.ignore_session_updates_until_ready &&
+		    provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kGeminiCli)
+		{
+			session.load_replay_quiet_until_s = GetAppTimeSeconds() + kLoadReplayQuietSeconds;
+			return;
+		}
+		FinishAcpSessionLoad(app, session, chat);
 		return;
 	}
 

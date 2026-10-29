@@ -1555,6 +1555,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.goal_review_assistant_text.clear();
 	session.goal_review_repair_attempts = 0;
 	session.ignore_session_updates_until_ready = false;
+	session.load_replay_quiet_until_s = 0.0;
 	session.codex_resume_fallback_attempted = false;
 	session.acp_resume_fallback_attempted = false;
 	session.stdout_buffer.clear();
@@ -2993,7 +2994,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (!AgentRunScheduler::InitialSessionOwned(app, session, chat))
 		return false;
 	if (session.remote_source_exit_reported) return false;
-	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0)
+	// A held Gemini load already has its session; it finishes in SettleAcpLoadReplay.
+	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0 ||
+	    session.load_replay_quiet_until_s > 0.0)
 	{
 		return false;
 	}
@@ -3075,6 +3078,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	session.pending_request_methods[id] = method;
 	session.session_setup_request_id = id;
 	session.ignore_session_updates_until_ready = method == uam::acp_methods::kSessionLoad;
+	session.load_replay_quiet_until_s = 0.0;
 	if (session.ignore_session_updates_until_ready)
 	{
 		const int history_end = uam::AcpSessionHasActiveTurn(session) && session.turn_first_user_message_index >= 0
@@ -3135,6 +3139,7 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	const int retry_id = NextAcpRequestId(session, uam::acp_methods::kSessionNew);
 	session.session_setup_request_id = retry_id;
 	session.ignore_session_updates_until_ready = false;
+	session.load_replay_quiet_until_s = 0.0;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
 	ChatSession retry_chat = chat;

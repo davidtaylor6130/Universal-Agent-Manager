@@ -243,6 +243,11 @@ void AppendPlanTurnEventIfNeeded(AcpSessionState& session);
 // Replay state helpers
 void RememberAssistantReplayPrefixes(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
 void RememberLoadHistoryReplayUpdates(AcpSessionState& session, const ChatSession& chat, int turn_user_message_index);
+// Gemini streams session/load history after answering it; this long without a replayed update ends that replay.
+inline constexpr double kLoadReplayQuietSeconds = 0.4;
+void FinishAcpSessionLoad(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Finishes a held Gemini session/load once its history replay has been quiet; returns true when it did.</summary>
+bool SettleAcpLoadReplay(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 std::string StripKnownAssistantReplayPrefix(const AcpSessionState& session, const std::string& text);
 std::string AssistantDeltaForIncomingText(const AcpSessionState& session, const std::string& current_assistant_text, const std::string& incoming_text);
 bool ReplayUpdateTypesCompatible(const std::string& expected, const std::string& incoming);
