@@ -7611,6 +7611,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			// Adapter-owned option deadlines must retire before control timeout recovery or queued prompt admission.
 			changed = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpPollNativeModelOptions(app, session, chat) || changed;
+			changed = acp_detail::SettleAcpLoadReplay(app, session, chat, now_seconds) || changed;
 			(void)acp_detail::PollLocalSessionReceipt(app, session, chat);
 			if (HoldAcpUnconfirmedCancellationIfTimedOut(app, session, chat, now_seconds))
 			{

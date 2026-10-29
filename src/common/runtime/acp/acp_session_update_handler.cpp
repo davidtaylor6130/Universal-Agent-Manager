@@ -208,6 +208,8 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 	{
 		return;
 	}
+	// A held Gemini load is still replaying history; each update extends the quiet wait.
+	if (session.load_replay_quiet_until_s > 0.0) session.load_replay_quiet_until_s = GetAppTimeSeconds() + kLoadReplayQuietSeconds;
 
 	std::string update_type = JsonDiagnosticStringValue(update, "sessionUpdate");
 	const bool is_thought_update = JsonBooleanValueOr(update, "thought", false);
