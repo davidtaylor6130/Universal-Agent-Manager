@@ -13723,6 +13723,13 @@ UAM_TEST(GeminiLoadReplayAfterResponseNeverEntersNextTurn)
 	UAM_ASSERT(!session.session_ready);
 	const double held_until = session.load_replay_quiet_until_s;
 	UAM_ASSERT(held_until > 0.0);
+	// The poll loop must not send session/load again while the held load replays.
+	session.running = true;
+	session.initialized = true;
+	const auto methods_before = session.pending_request_methods;
+	UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_request_methods == methods_before);
+	UAM_ASSERT_EQ(session.load_replay_quiet_until_s, held_until);
 	const auto send = [&](const nlohmann::json& update)
 	{
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat,

@@ -2994,7 +2994,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (!AgentRunScheduler::InitialSessionOwned(app, session, chat))
 		return false;
 	if (session.remote_source_exit_reported) return false;
-	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0)
+	// A held Gemini load already has its session; it finishes in SettleAcpLoadReplay.
+	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0 ||
+	    session.load_replay_quiet_until_s > 0.0)
 	{
 		return false;
 	}
