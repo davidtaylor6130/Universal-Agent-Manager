@@ -91,5 +91,7 @@ namespace uam
 		static VcsCommitMessageSuggestion ParseWorkerOutputForTests(const std::string& output, std::string_view worker_provider_id = {});
 		/// <summary>Runs the remote (no local filesystem) SVN selection scheduler against an injected `svn args...` runner.</summary>
 		static bool CommitSvnSelectionForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, const std::string& message, const std::vector<std::string>& files, std::string& error);
+		/// <summary>Applies SVN line counts to status rows through an injected `svn args...` runner.</summary>
+		static void ApplySvnLineStatsForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, std::vector<VcsChangedFile>& files);
 	};
 } // namespace uam
