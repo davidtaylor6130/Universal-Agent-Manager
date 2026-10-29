@@ -271,7 +271,10 @@ bool ShouldRetainPendingLocalAcpControlCapability(const AppState& app,
 	const AcpSessionState* session = FindAcpSessionForChat(app, capability.session_chat_id);
 	const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 	const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
-	if (!session || !chat || !root || session->running || session->lifecycle_state != kAcpLifecycleStarting ||
+	// A staged cold launch re-polls workspace preparation, which can briefly report waiting_workspace;
+	// its reservation stays owned because OwnsColdLaunch below still checks the workspace.
+	if (!session || !chat || !root || session->running ||
+	    (session->lifecycle_state != kAcpLifecycleStarting && !(HasPendingAcpColdLaunch(*session) && session->lifecycle_state == "waiting_workspace")) ||
 	    session->model_discovery_only || ((session->recovering_remote_turn || session->recovering_remote_process) && !HasPendingAcpColdLaunch(*session)) ||
 	    session->queue_held || session->managed_cancellation_pending || AcpSessionHasPendingCancel(*session) ||
 	    session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed ||
