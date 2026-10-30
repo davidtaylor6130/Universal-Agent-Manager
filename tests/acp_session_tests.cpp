@@ -16571,6 +16571,41 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 }
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view selected : {"opus", "sonnet"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		// Launched with the alias; Claude's init message reported the resolved name.
+		session.launch_model_options_id = "opus";
+		session.current_model_id = "claude-opus-5-5";
+		chat.model_id = std::string(selected);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const bool drained = uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat);
+		if (selected == "opus")
+		{
+			UAM_ASSERT(drained);
+			UAM_ASSERT(session.last_error.empty());
+			UAM_ASSERT(session.running && session.processing && !session.local_stop_pending && !session.remote_stop_pending);
+			UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+			UAM_ASSERT_EQ(session.turn_serial, 1);
+		}
+		else
+		{
+			// A genuinely different model still stops the stream before the turn.
+			UAM_ASSERT(!fixture.app.acp_process_stop_tasks.empty());
+		}
+	}
+}
+
 UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
