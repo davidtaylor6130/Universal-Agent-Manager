@@ -19,7 +19,7 @@ const ruleLines = (text: string, foldCase = false) => {
 }
 
 /** Rules that keep matching native sessions out of discovery and import; existing chats are not touched. */
-export function NativeImportFilters({ disabled = false }: { disabled?: boolean }) {
+export function NativeImportFilters({ disabled = false, onDirtyChange }: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void }) {
   const savedPrefixes = useAppStore((state) => state.nativeImportExcludedTitlePrefixes)
   const savedDirectories = useAppStore((state) => state.nativeImportExcludedDirectories)
   const setNativeImportFilters = useAppStore((state) => state.setNativeImportFilters)
@@ -28,6 +28,20 @@ export function NativeImportFilters({ disabled = false }: { disabled?: boolean }
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n')
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+  // Follow saved rules changed elsewhere in each list the user has not edited; a save's own rollback keeps the draft.
+  const savingRef = useRef(saving)
+  savingRef.current = saving
+  const lastSaved = useRef({ prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') })
+  useEffect(() => {
+    const previous = lastSaved.current
+    const next = { prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') }
+    lastSaved.current = next
+    if (savingRef.current) return
+    setPrefixes((draft) => ruleLines(draft, true).join('\n') === previous.prefixes ? next.prefixes : draft)
+    setDirectories((draft) => ruleLines(draft).join('\n') === previous.directories ? next.directories : draft)
+  }, [savedPrefixes, savedDirectories])
   const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')); setError('') }
   async function save() {
     setSaving(true); setError('')
@@ -39,11 +53,11 @@ export function NativeImportFilters({ disabled = false }: { disabled?: boolean }
     else setError('The import filters could not be saved. Your changes are kept.')
   }
   return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
-    <SettingsField label="Skip sessions whose first message starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
+    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored. Most providers title a session with its first message.">
       <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
-    <SettingsField label="Skip sessions from these folders" htmlFor="native-import-directories" hint="One folder per line. Its subfolders are skipped too.">
+    <SettingsField label="Skip sessions from these folders" htmlFor="native-import-directories" hint="One folder per line. Its subfolders and worktrees are skipped too, on every host.">
       <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
@@ -75,7 +89,7 @@ export function groupDiscoveryIssues(messages: string[], providerNames: string[]
 }
 
 /** Explicit discovery shares startup staging and its guarded selection/publication path. */
-export function NativeHistorySettings() {
+export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirtyChange?: (dirty: boolean) => void } = {}) {
   const status = useAppStore((state) => state.startupNativeImports)
   const providers = useAppStore((state) => state.providers)
   const providerIds = [...new Set(providers.map((provider) => normalizeCliProviderIdAlias(provider.id)))].filter((id) => SUPPORTED_CLI_PROVIDER_IDS.includes(id))
@@ -177,6 +191,6 @@ export function NativeHistorySettings() {
         </ul>
       </details>
     </SettingRow>
-    <NativeImportFilters disabled={companion} />
+    <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </SettingsSection>
 }

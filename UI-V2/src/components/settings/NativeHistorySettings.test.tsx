@@ -45,6 +45,27 @@ describe('Chat Data import filters', () => {
       expect(filterHost.textContent).not.toContain('could not be saved')
     } finally { act(() => filterRoot.unmount()); filterHost.remove() }
   })
+
+  it('reports unsaved rules and follows saved rules changed elsewhere while not editing', () => {
+    useAppStore.setState({ nativeImportExcludedTitlePrefixes: [], nativeImportExcludedDirectories: [] })
+    const dirty = vi.fn()
+    const filterHost = document.createElement('div'); document.body.append(filterHost)
+    const filterRoot = createRoot(filterHost)
+    try {
+      act(() => filterRoot.render(<NativeImportFilters onDirtyChange={dirty} />))
+      act(() => useAppStore.setState({ nativeImportExcludedDirectories: ['/srv/pushed'] }))
+      const field = filterHost.querySelector<HTMLTextAreaElement>('#native-import-directories')!
+      expect(field.value).toBe('/srv/pushed')
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, '/srv/draft')
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(dirty).toHaveBeenLastCalledWith(true)
+      act(() => useAppStore.setState({ nativeImportExcludedDirectories: ['/srv/other'] }))
+      expect(field.value).toBe('/srv/draft')
+    } finally { act(() => filterRoot.unmount()); filterHost.remove() }
+    expect(dirty).toHaveBeenLastCalledWith(false)
+  })
 })
 
 describe('Chat Data native discovery', () => {
