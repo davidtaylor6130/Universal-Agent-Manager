@@ -99,6 +99,19 @@ namespace uam::settings
 			if (normalized.size() == kMaxFavoriteUamAgents) break;
 		}
 		settings.favorite_uam_agent_ids = std::move(normalized);
+		for (std::vector<std::string>* rules : {&settings.native_import_excluded_title_prefixes, &settings.native_import_excluded_directories})
+		{
+			std::vector<std::string> kept;
+			std::unordered_set<std::string> unique;
+			for (const std::string& raw : *rules)
+			{
+				std::string rule = uam::strings::Trim(raw);
+				if (rule.empty() || rule.size() > 4096 || rule.find('\0') != std::string::npos || !unique.insert(rule).second) continue;
+				kept.push_back(std::move(rule));
+				if (kept.size() == 100) break;
+			}
+			*rules = std::move(kept);
+		}
 		settings.uam_agent_cycle_shortcut = uam::strings::TrimAndLowerAscii(settings.uam_agent_cycle_shortcut);
 		if (!IsUamAgentCycleShortcut(settings.uam_agent_cycle_shortcut))
 		{

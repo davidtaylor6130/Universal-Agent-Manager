@@ -146,6 +146,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     collapsibleWorkSections: storedShellLayout.collapsibleWorkSections,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
+    nativeImportExcludedTitlePrefixes: [] as string[],
+    nativeImportExcludedDirectories: [] as string[],
     gitEnabled: true,
     svnEnabled: true,
     isNewChatModalOpen: false,
@@ -325,6 +327,25 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       set(settings)
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setSidebarSettings', payload: settings, requestId: createRequestId('setSidebarSettings') })
+      if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
+      return response.ok
+    },
+
+    setNativeImportFilters: async (filters: { titlePrefixes: string[]; directories: string[] }) => {
+      const clean = (rules: string[]) => Array.from(new Set(rules.map((rule) => rule.trim()).filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
+      const next = { nativeImportExcludedTitlePrefixes: clean(filters.titlePrefixes), nativeImportExcludedDirectories: clean(filters.directories) }
+      const previous = {
+        nativeImportExcludedTitlePrefixes: get().nativeImportExcludedTitlePrefixes,
+        nativeImportExcludedDirectories: get().nativeImportExcludedDirectories,
+      }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(next))
+      set(next)
+      if (!isCefContext()) return true
+      const response = await sendToCEF({
+        action: 'setNativeImportFilters',
+        payload: { titlePrefixes: next.nativeImportExcludedTitlePrefixes, directories: next.nativeImportExcludedDirectories },
+        requestId: createRequestId('setNativeImportFilters'),
+      })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
     },

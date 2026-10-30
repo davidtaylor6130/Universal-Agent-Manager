@@ -29,6 +29,7 @@ namespace uam
 			result.id = chat.id;
 			result.native_session_id = chat.native_session_id;
 			result.provider_id = chat.provider_id;
+			result.title = chat.title; // Import filters recheck title rules before publication.
 			result.folder_id = chat.folder_id;
 			result.execution_host_id = chat.execution_host_id;
 			result.workspace_directory = chat.workspace_directory;

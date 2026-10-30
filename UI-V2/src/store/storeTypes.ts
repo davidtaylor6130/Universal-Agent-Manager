@@ -153,6 +153,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   releaseExecutionRoutingReservation: (expected: RoutingReservation) => Promise<void>
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
+  /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */
+  nativeImportExcludedTitlePrefixes: string[]
+  /** Native sessions in one of these folders, or below one, are never offered for import. */
+  nativeImportExcludedDirectories: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
   computerUseEnabled?: boolean
   computerUseRevocationPending?: boolean
@@ -257,6 +261,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
   setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
+  setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[] }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
