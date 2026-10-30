@@ -2,6 +2,7 @@
 #include "app/startup_native_import_service.h"
 #include "app/agent_run_ledger.h"
 #include "app/agent_run_scheduler.h"
+#include "common/chat/native_import_filter.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/companion/protocol.h"
 
@@ -704,6 +705,57 @@ UAM_TEST(StartupNativeOwnershipSurvivesAgentCancellationAndResolvedIdRemoval)
 		UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
 		UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
 	}
+}
+
+UAM_TEST(NativeImportFiltersDropMatchingTitlesAndFoldersBeforeOffering)
+{
+	TempDir temp("uam-native-import-filters");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	fs::create_directories(temp.root / "scratch" / "nested");
+	app.folders.push_back({"scratch", "Scratch", (temp.root / "scratch" / "nested").string(), false, "local"});
+	ChatSession kept = StartupHistory(temp.root / "workspace", "kept");
+	kept.title = "Fix the login bug";
+	ChatSession scripted = StartupHistory(temp.root / "workspace", "scripted");
+	scripted.title = "  [Automation] nightly report";
+	ChatSession scratch = StartupHistory(temp.root / "scratch" / "nested", "scratch");
+	app.settings.native_import_excluded_title_prefixes = {"[automation]"};
+	app.settings.native_import_excluded_directories = {(temp.root / "scratch").string() + "/"};
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats = {kept, scripted, scratch};
+	UAM_ASSERT(ChatHistorySyncService().FilterStartupImportCandidates(app, discovery));
+	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(discovery.chats.front().native_session_id, std::string("kept"));
+	// With no filters every candidate is offered again; filters never delete or hide existing chats.
+	app.settings.native_import_excluded_title_prefixes.clear();
+	app.settings.native_import_excluded_directories.clear();
+	discovery.chats = {kept, scripted, scratch};
+	UAM_ASSERT(ChatHistorySyncService().FilterStartupImportCandidates(app, discovery));
+	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{3});
+}
+
+UAM_TEST(NativeImportFolderFilterMatchesWholeFoldersAndWindowsSpelling)
+{
+	AppSettings settings;
+	ChatSession chat;
+	const auto excluded = [&](std::string directory, std::string workspace)
+	{
+		settings.native_import_excluded_directories = {std::move(directory)};
+		chat.workspace_directory = std::move(workspace);
+		return uam::chat_import::NativeImportExcludedBySettings(settings, chat);
+	};
+	UAM_ASSERT(excluded("C:\\work", "C:\\work"));
+	UAM_ASSERT(excluded("C:\\work\\", "c:/WORK/app"));
+	UAM_ASSERT(!excluded("C:\\work", "C:\\workshop"));
+	UAM_ASSERT(excluded("/home/you/tmp", "/home/you/tmp/a/b"));
+	UAM_ASSERT(!excluded("/home/you/tmp", "/home/you/Tmp/a"));
+	UAM_ASSERT(!excluded("/home/you/tmp", ""));
+	settings.native_import_excluded_directories.clear();
+	settings.native_import_excluded_title_prefixes = {"Run the nightly"};
+	chat.title = "run the nightly report";
+	UAM_ASSERT(uam::chat_import::NativeImportExcludedBySettings(settings, chat));
+	chat.title = "Please run the nightly report";
+	UAM_ASSERT(!uam::chat_import::NativeImportExcludedBySettings(settings, chat));
 }
 
 UAM_TEST(StartupNativeHistoryImportAllIncludesEveryPageAndPreservesWorkspaceScope)

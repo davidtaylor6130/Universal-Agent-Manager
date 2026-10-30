@@ -102,6 +102,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderAvailabilityKey = "provider_availability";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
+constexpr std::string_view kNativeImportExcludedTitlePrefixesKey = "native_import_excluded_title_prefixes";
+constexpr std::string_view kNativeImportExcludedDirectoriesKey = "native_import_excluded_directories";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
@@ -735,6 +737,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
 		WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
+		WriteEncodedSetting(lines, kNativeImportExcludedTitlePrefixesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_title_prefixes));
+		WriteEncodedSetting(lines, kNativeImportExcludedDirectoriesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_directories));
 		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
@@ -1186,6 +1190,14 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kFavoriteUamAgentIdsKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.favorite_uam_agent_ids);
+		}
+		else if (key == kNativeImportExcludedTitlePrefixesKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_title_prefixes);
+		}
+		else if (key == kNativeImportExcludedDirectoriesKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_directories);
 		}
 		else if (key == kUamAgentCycleShortcutKey)
 		{

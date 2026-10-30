@@ -175,6 +175,8 @@ namespace uam::settings_frontend_json
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
 		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
+	settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;
+	settings_json["nativeImportExcludedDirectories"] = settings.native_import_excluded_directories;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
 		settings_json["computerUseGloballyEnabled"] = settings.computer_use_globally_enabled;
 		settings_json["computerUseAllowlistEnabled"] = settings.computer_use_allowlist_enabled;

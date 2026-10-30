@@ -1760,6 +1760,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
       }],
       favoriteUamAgentIds: [],
+      nativeImportExcludedTitlePrefixes: [],
+      nativeImportExcludedDirectories: [],
       uamAgentCycleShortcut: 'shift+tab',
       computerUseAllowlistEnabled: false,
       computerUseAllowedApplications: [],
@@ -1817,6 +1819,12 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
+  const importRules = (raw: unknown) => Array.isArray(raw)
+    ? Array.from(new Set(raw.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim())
+        .filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
+    : []
+  const nativeImportExcludedTitlePrefixes = importRules(value.nativeImportExcludedTitlePrefixes)
+  const nativeImportExcludedDirectories = importRules(value.nativeImportExcludedDirectories)
   const executionHosts: NonNullable<CppSettings['executionHosts']> = [{
     id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '',
     runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
@@ -1906,6 +1914,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     executionRouting: sanitizeExecutionRouting(value.executionRouting),
     executionHosts,
     favoriteUamAgentIds,
+    nativeImportExcludedTitlePrefixes,
+    nativeImportExcludedDirectories,
     uamAgentCycleShortcut,
     computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
     computerUseRevocationPending: typeof value.computerUseRevocationPending === 'boolean' ? value.computerUseRevocationPending : undefined,

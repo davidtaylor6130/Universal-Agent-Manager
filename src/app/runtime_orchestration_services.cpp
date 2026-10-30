@@ -14,6 +14,7 @@
 
 #include "common/chat/chat_branching.h"
 #include "common/chat/conversation_handoff.h"
+#include "common/chat/native_import_filter.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/native_chat_identity.h"
@@ -4115,7 +4116,9 @@ bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& 
 		const bool unregistered = include_unregistered_local && uam::paths::IsControllerLocalWorkspace(chat) &&
 		    chat.workspace_directory.size() <= 32768 && chat.workspace_directory.find('\0') == std::string::npos &&
 		    uam::paths::PathFromUtf8(chat.workspace_directory).is_absolute();
-		if ((chat.messages_loaded && !uam::HasImportedConversationContent(chat.messages)) ||
+		// The user's Chat Data import filters apply to every provider, at startup, in a scan and again before import.
+		if (uam::chat_import::NativeImportExcludedBySettings(app.settings, chat) ||
+		    (chat.messages_loaded && !uam::HasImportedConversationContent(chat.messages)) ||
 		    (owner == nullptr && !unregistered) || (!uam::paths::IsControllerLocalWorkspace(chat) && (owner == nullptr || owner->id != chat.folder_id)) ||
 		    uam::strings::IsBlank(chat.native_session_id) || index.tombstoned_native_keys.contains(key) ||
 		    StartupCandidateIsOwned(app, index, chat) || !seen.insert(remote_key.empty() ? key : remote_key).second) return true;
