@@ -160,6 +160,30 @@ UAM_TEST(AccountAllowanceCopilotUsesEntitledBucketsAndReportedResetWithoutInvent
 	UAM_ASSERT_EQ(result.limits.at("secondary").at("usedPercent"), 0);
 }
 
+UAM_TEST(AccountAllowanceCopilotReadsPooledPlanPerUserLimitFromAnyQuotaType)
+{
+	// Pooled business plans: chat and completions are unlimited and the per-user limit is premium_interactions.
+	// The current SDK schema has no hasQuota field.
+	const auto pooled = uam::usage::NormalizeCopilotAccountAllowance({{"quotaSnapshots", {
+	    {"chat", {{"isUnlimitedEntitlement", true}, {"entitlementRequests", -1}, {"remainingPercentage", 100}}},
+	    {"completions", {{"isUnlimitedEntitlement", true}, {"entitlementRequests", -1}, {"remainingPercentage", 100}}},
+	    {"premium_interactions", {{"isUnlimitedEntitlement", false}, {"entitlementRequests", 300}, {"remainingPercentage", 75}, {"resetDate", "2026-11-01T00:00:00Z"}}}
+	}}}, 123);
+	UAM_ASSERT(pooled.error.empty());
+	UAM_ASSERT_EQ(pooled.primary_label, "Premium requests allowance");
+	UAM_ASSERT_EQ(pooled.limits.at("primary").at("usedPercent"), 25);
+	UAM_ASSERT_EQ(pooled.limits.at("primary").at("resetsAt"), 1793491200);
+	UAM_ASSERT(pooled.limits.at("secondary").is_null());
+	// A quota type UAM does not know yet is still shown, with a readable label.
+	const auto other = uam::usage::NormalizeCopilotAccountAllowance({{"quotaSnapshots", {
+	    {"chat", {{"isUnlimitedEntitlement", true}, {"entitlementRequests", -1}, {"remainingPercentage", 100}}},
+	    {"token_pool", {{"isUnlimitedEntitlement", false}, {"entitlementRequests", 1000000}, {"remainingPercentage", 40}}}
+	}}}, 123);
+	UAM_ASSERT(other.error.empty());
+	UAM_ASSERT_EQ(other.primary_label, "Token pool allowance");
+	UAM_ASSERT_EQ(other.limits.at("primary").at("usedPercent"), 60);
+}
+
 UAM_TEST(AccountAllowanceCopilotDoesNotTurnUnavailableOrUnlimitedEntitlementsIntoExhaustion)
 {
 	for (const auto bucket : {

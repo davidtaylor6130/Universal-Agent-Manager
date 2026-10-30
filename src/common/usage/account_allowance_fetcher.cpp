@@ -99,7 +99,9 @@ namespace uam::usage
 
 		Json CopilotWindow(const Json* value)
 		{
-			if (value == nullptr || !True(Field(*value, "hasQuota")) || True(Field(*value, "isUnlimitedEntitlement"))) return nullptr;
+			// hasQuota is not in every SDK schema; only an explicit false means the snapshot has no quota.
+			const Json* has_quota = value == nullptr ? nullptr : Field(*value, "hasQuota");
+			if (value == nullptr || !value->is_object() || (has_quota != nullptr && !True(has_quota)) || True(Field(*value, "isUnlimitedEntitlement"))) return nullptr;
 			const Json* entitlement = Field(*value, "entitlementRequests");
 			if (entitlement != nullptr)
 			{
@@ -266,12 +268,30 @@ namespace uam::usage
 		if (snapshots == nullptr || !snapshots->is_object()) return Failure("Copilot did not return account allowance data.", true);
 		AccountAllowanceFetchResult result;
 		result.limits = EmptyLimits(now_ms);
-		result.limits["primary"] = CopilotWindow(Field(*snapshots, "chat"));
-		result.limits["secondary"] = CopilotWindow(Field(*snapshots, "completions"));
-		if (result.limits["primary"].is_null() && result.limits["secondary"].is_null())
+		// Snapshots are keyed by quota type. Pooled business plans leave chat and completions unlimited and put the
+		// per-user limit in premium_interactions (or another type), so every finite snapshot is a candidate.
+		std::vector<std::string> order = {"premium_interactions", "chat", "completions"};
+		for (const auto& [key, ignored] : snapshots->items())
+			if (std::ranges::find(order, key) == order.end()) order.push_back(key);
+		const auto label = [](const std::string& key)
+		{
+			if (key == "premium_interactions") return std::string("Premium requests allowance");
+			if (key == "chat") return std::string("Chat allowance");
+			if (key == "completions") return std::string("Completions allowance");
+			std::string text = key;
+			std::ranges::replace(text, '_', ' ');
+			if (!text.empty()) text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+			return text + " allowance";
+		};
+		for (const std::string& key : order)
+		{
+			Json window = CopilotWindow(Field(*snapshots, key.c_str()));
+			if (window.is_null()) continue;
+			if (result.limits["primary"].is_null()) { result.limits["primary"] = std::move(window); result.primary_label = label(key); }
+			else { result.limits["secondary"] = std::move(window); result.secondary_label = label(key); break; }
+		}
+		if (result.limits["primary"].is_null())
 			return Failure("Copilot did not return a finite entitled account allowance.", true);
-		result.primary_label = "Chat allowance";
-		result.secondary_label = "Completions allowance";
 		return result;
 	}
 	AccountAllowanceFetchResult FetchCliAccountAllowance(std::string_view provider_id, const std::vector<std::string>& command,
