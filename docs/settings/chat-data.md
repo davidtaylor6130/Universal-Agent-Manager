@@ -10,4 +10,8 @@ Histories with an absolute native workspace outside the registered catalogue rem
 
 All six providers now have source-integrated local readers feeding assignment and selected publication; OpenCode requires its configured CLI. Antigravity reads bounded, settled native CLI SQLite snapshots and authenticated legacy protobuf histories under the [observed storage contract](../reference/antigravity-native-history-decision.md), preserving original identity/workspace and rejecting changing, nested, malformed or unrecognised histories rather than importing a prefix. Its storage-version coverage remains Partial, and runtime, platform and UI acceptance remain unverified; see [open import scope](../documentation-review.md#system-wide-native-import).
 
+## Import filters
+
+Import filters keep matching native sessions out of startup and explicit discovery for every provider. A title rule skips sessions whose first message, after leading spaces, starts with that text, ignoring case. A folder rule skips sessions whose native workspace is that folder or inside it; Windows paths compare case-insensitively with either slash. Each list is one rule per line, trimmed, de-duplicated and capped at 100. Filters are checked again before a selected import publishes, so a rule saved during review applies. They never change, hide or delete chats already in UAM, and remove nothing from provider history. Saving is explicit; a failed save keeps the draft and reports the error.
+
 [Imports](../chat/imports.md) · [Source of truth](../architecture/source-of-truth.md) · [Storage Cleanup](storage.md).

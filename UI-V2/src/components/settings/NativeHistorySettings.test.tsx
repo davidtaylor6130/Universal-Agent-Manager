@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { NativeHistorySettings } from './NativeHistorySettings'
+import { NativeHistorySettings, NativeImportFilters } from './NativeHistorySettings'
 import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { SUPPORTED_CLI_PROVIDER_IDS, fallbackProviderForId } from '../../utils/providerMetadata'
@@ -15,6 +15,37 @@ let root: ReturnType<typeof createRoot>
 let requests: { action: string; payload: Record<string, unknown>; success: (value: string) => void; failure: (code: number, message: string) => void }[]
 const button = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label)!
 const answer = async (index: number, data: StartupNativeImportPage) => { await act(async () => requests[index].success(JSON.stringify(data))) }
+
+describe('Chat Data import filters', () => {
+  it('saves cleaned rules, enables Save only when changed and keeps the draft when saving fails', async () => {
+    const save = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    useAppStore.setState({ nativeImportExcludedTitlePrefixes: ['[automation]'], nativeImportExcludedDirectories: [], setNativeImportFilters: save })
+    const filterHost = document.createElement('div'); document.body.append(filterHost)
+    const filterRoot = createRoot(filterHost)
+    try {
+      act(() => filterRoot.render(<NativeImportFilters />))
+      const saveButton = () => Array.from(filterHost.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === 'Save filters')!
+      const type = (id: string, value: string) => act(() => {
+        const field = filterHost.querySelector<HTMLTextAreaElement>(`#${id}`)!
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, value)
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(filterHost.querySelector<HTMLTextAreaElement>('#native-import-title-prefixes')!.value).toBe('[automation]')
+      expect(saveButton().disabled).toBe(true)
+      type('native-import-title-prefixes', '[automation]\n [AUTOMATION] ')
+      expect(saveButton().disabled).toBe(true)
+      type('native-import-directories', ' C:\\scratch \n\nC:\\scratch\n/home/you/tmp')
+      expect(saveButton().disabled).toBe(false)
+      await act(async () => saveButton().click())
+      expect(save).toHaveBeenLastCalledWith({ titlePrefixes: ['[automation]'], directories: ['C:\\scratch', '/home/you/tmp'] })
+      expect(filterHost.textContent).toContain('could not be saved')
+      expect(filterHost.querySelector<HTMLTextAreaElement>('#native-import-directories')!.value).toContain('/home/you/tmp')
+      await act(async () => saveButton().click())
+      expect(save).toHaveBeenCalledTimes(2)
+      expect(filterHost.textContent).not.toContain('could not be saved')
+    } finally { act(() => filterRoot.unmount()); filterHost.remove() }
+  })
+})
 
 describe('Chat Data native discovery', () => {
   it('clears a cached-results error after a later successful read', async () => {

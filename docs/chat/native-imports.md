@@ -4,6 +4,8 @@ Native import discovers conversations from an included provider and lets the use
 
 [Chat Data](../settings/chat-data.md#native-provider-histories) supplies an explicit fresh controller-local scan through the same staged review and selected-import path, retaining unregistered absolute native workspaces for explicit assignment. Startup keeps its existing registered-workspace policy. Assignment stages only the original native workspace and publication rechecks the selected folder plan alongside existing ownership, input-provenance and deletion guards. A scan cannot replace an active discovery/import, and decisions from a previous scan generation cannot apply to its replacement. Cached review alone does not start another scan. Bounded discovery details must retain an accurate omitted-issue total through staging and review, including when other providers have already filled the detail limit. All six provider readers feed this path; Antigravity retains explicit [storage-format and completeness limits](../reference/antigravity-native-history-decision.md).
 
+The user's [import filters](../settings/chat-data.md#import-filters) exclude matching titles and folders from every discovery and from publication.
+
 [Imports and exports](imports.md) · [Portable bundles](../settings/chat-data.md) · [Source of truth](../architecture/source-of-truth.md).
 
 ## Discovery media lifetime

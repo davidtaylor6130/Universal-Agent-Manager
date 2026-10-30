@@ -594,6 +594,33 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetNativeImportFilters(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto is_string_array = [&payload](const char* key)
+	{
+		const auto field = payload.find(key);
+		return field != payload.end() && field->is_array() && std::ranges::all_of(*field, [](const nlohmann::json& item) { return item.is_string(); });
+	};
+	if (!payload.is_object() || !is_string_array("titlePrefixes") || !is_string_array("directories"))
+	{
+		cb->Failure(400, "Import filters must be lists of text.");
+		return;
+	}
+
+	const AppSettings previous = m_app.settings;
+	m_app.settings.native_import_excluded_title_prefixes = uam::nlohmann_json::TrimmedStringArrayField(payload, "titlePrefixes");
+	m_app.settings.native_import_excluded_directories = uam::nlohmann_json::TrimmedStringArrayField(payload, "directories");
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the import filters."));
+		return;
+	}
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
 void UamQueryHandler::HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> show_provider_icons = uam::nlohmann_json::BoolFieldStrict(payload, "showProviderIconsInSidebar");
