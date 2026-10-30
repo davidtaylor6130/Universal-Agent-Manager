@@ -610,6 +610,7 @@ void UamQueryHandler::HandleSetNativeImportFilters(CefRefPtr<CefBrowser> browser
 	const AppSettings previous = m_app.settings;
 	m_app.settings.native_import_excluded_title_prefixes = uam::nlohmann_json::TrimmedStringArrayField(payload, "titlePrefixes");
 	m_app.settings.native_import_excluded_directories = uam::nlohmann_json::TrimmedStringArrayField(payload, "directories");
+	uam::settings::NormalizeUamAgentPreferences(m_app.settings);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		m_app.settings = previous;

@@ -30,9 +30,9 @@ namespace uam::chat_import
 	}
 
 	/// <summary>
-	/// True when the user's Chat Data import filters exclude this native session: its title (the first user message
-	/// for most providers) starts with an excluded prefix, ignoring case, or its workspace is an excluded folder or
-	/// inside one. Matching is on whole folder names, so "C:/work" does not exclude "C:/workshop".
+	/// True when the user's Chat Data import filters exclude this native session: its provider title starts with an
+	/// excluded prefix, ignoring case, or its workspace or worktree is an excluded folder or inside one, on any host.
+	/// Matching is on whole folder names, so "C:/work" does not exclude "C:/workshop".
 	/// </summary>
 	inline bool NativeImportExcludedBySettings(const AppSettings& settings, const ChatSession& chat)
 	{
@@ -44,13 +44,15 @@ namespace uam::chat_import
 			for (const std::string& prefix : settings.native_import_excluded_title_prefixes)
 				if (!prefix.empty() && trimmed.starts_with(detail::LowerAscii(prefix))) return true;
 		}
-		if (!settings.native_import_excluded_directories.empty() && !chat.workspace_directory.empty())
+		for (const std::string* path : {&chat.workspace_directory, &chat.workspace_worktree_directory})
 		{
-			const std::string workspace = detail::ComparablePath(chat.workspace_directory);
+			if (path->empty()) continue;
+			const std::string workspace = detail::ComparablePath(*path);
 			for (const std::string& directory : settings.native_import_excluded_directories)
 			{
 				const std::string folder = detail::ComparablePath(directory);
-				if (folder.empty()) continue;
+				// A bare root (including "\\" collapsing to "/") would exclude every session; ignore it.
+				if (folder.empty() || folder == "/") continue;
 				if (workspace == folder) return true;
 				const std::string parent = folder.ends_with('/') ? folder : folder + '/';
 				if (workspace.starts_with(parent)) return true;
