@@ -103,6 +103,8 @@ namespace uam::usage
 			const Json* has_quota = value == nullptr ? nullptr : Field(*value, "hasQuota");
 			if (value == nullptr || !value->is_object() || (has_quota != nullptr && !True(has_quota)) || True(Field(*value, "isUnlimitedEntitlement"))) return nullptr;
 			const Json* entitlement = Field(*value, "entitlementRequests");
+			// Without hasQuota, only a stated finite entitlement shows the snapshot is a real limit.
+			if (has_quota == nullptr && entitlement == nullptr) return nullptr;
 			if (entitlement != nullptr)
 			{
 				const auto count = Number(entitlement, 1e18);
@@ -268,9 +270,9 @@ namespace uam::usage
 		if (snapshots == nullptr || !snapshots->is_object()) return Failure("Copilot did not return account allowance data.", true);
 		AccountAllowanceFetchResult result;
 		result.limits = EmptyLimits(now_ms);
-		// Snapshots are keyed by quota type. Pooled business plans leave chat and completions unlimited and put the
-		// per-user limit in premium_interactions (or another type), so every finite snapshot is a candidate.
-		std::vector<std::string> order = {"premium_interactions", "chat", "completions"};
+		// Snapshots are keyed by quota type. Chat and completions keep their place for plans that limit them; pooled
+		// business plans leave both unlimited and put the per-user limit in premium_interactions (or another type).
+		std::vector<std::string> order = {"chat", "completions", "premium_interactions"};
 		for (const auto& [key, ignored] : snapshots->items())
 			if (std::ranges::find(order, key) == order.end()) order.push_back(key);
 		const auto label = [](const std::string& key)
@@ -278,6 +280,7 @@ namespace uam::usage
 			if (key == "premium_interactions") return std::string("Premium requests allowance");
 			if (key == "chat") return std::string("Chat allowance");
 			if (key == "completions") return std::string("Completions allowance");
+			if (key.empty() || key.size() > 40) return std::string("Copilot allowance");
 			std::string text = key;
 			std::ranges::replace(text, '_', ' ');
 			if (!text.empty()) text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
