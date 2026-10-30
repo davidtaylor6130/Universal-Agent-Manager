@@ -182,6 +182,22 @@ UAM_TEST(AccountAllowanceCopilotReadsPooledPlanPerUserLimitFromAnyQuotaType)
 	UAM_ASSERT(other.error.empty());
 	UAM_ASSERT_EQ(other.primary_label, "Token pool allowance");
 	UAM_ASSERT_EQ(other.limits.at("primary").at("usedPercent"), 60);
+	// Plans that limit chat and completions keep those two bars; premium only fills a free slot.
+	const auto three = uam::usage::NormalizeCopilotAccountAllowance({{"quotaSnapshots", {
+	    {"premium_interactions", {{"entitlementRequests", 50}, {"remainingPercentage", 10}}},
+	    {"chat", {{"entitlementRequests", 200}, {"remainingPercentage", 50}}},
+	    {"completions", {{"entitlementRequests", 2000}, {"remainingPercentage", 80}}}
+	}}}, 123);
+	UAM_ASSERT_EQ(three.primary_label, "Chat allowance");
+	UAM_ASSERT_EQ(three.secondary_label, "Completions allowance");
+	const auto chat_and_premium = uam::usage::NormalizeCopilotAccountAllowance({{"quotaSnapshots", {
+	    {"chat", {{"entitlementRequests", 200}, {"remainingPercentage", 50}}},
+	    {"completions", {{"isUnlimitedEntitlement", true}, {"remainingPercentage", 100}}},
+	    {"premium_interactions", {{"entitlementRequests", 50}, {"remainingPercentage", 10}}},
+	    {"zz_unlimited", {{"isUnlimitedEntitlement", true}, {"remainingPercentage", 100}}}
+	}}}, 123);
+	UAM_ASSERT_EQ(chat_and_premium.secondary_label, "Premium requests allowance");
+	UAM_ASSERT_EQ(chat_and_premium.limits.at("secondary").at("usedPercent"), 90);
 }
 
 UAM_TEST(AccountAllowanceCopilotDoesNotTurnUnavailableOrUnlimitedEntitlementsIntoExhaustion)
@@ -190,7 +206,8 @@ UAM_TEST(AccountAllowanceCopilotDoesNotTurnUnavailableOrUnlimitedEntitlementsInt
 	    nlohmann::json{{"remainingPercentage", 0}, {"hasQuota", false}, {"entitlementRequests", 0}},
 	    nlohmann::json{{"remainingPercentage", 0}, {"hasQuota", true}, {"isUnlimitedEntitlement", true}},
 	    nlohmann::json{{"remainingPercentage", -1}, {"hasQuota", true}},
-	    nlohmann::json{{"remainingPercentage", "100"}, {"hasQuota", true}}})
+	    nlohmann::json{{"remainingPercentage", "100"}, {"hasQuota", true}},
+	    nlohmann::json{{"remainingPercentage", 100}}})
 	{
 		const auto result = uam::usage::NormalizeCopilotAccountAllowance({{"quotaSnapshots", {{"chat", bucket}}}}, 123);
 		UAM_ASSERT(result.limits.is_null());
