@@ -1692,6 +1692,78 @@ summary,
 .uam-menu-select__option[aria-disabled="true"] { opacity: .5; cursor: default; }
 .uam-menu-select__option[aria-disabled="true"]:hover { background: transparent; }
 
+/* ── MenuItem (same look as the shared row-menu item in sidebar.css) ── */
+.uam-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  text-align: left;
+  font-size: var(--fs-base);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+.uam-menu-item:hover:not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-menu-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
+.uam-menu-item[aria-disabled="true"] { opacity: .5; cursor: default; }
+.uam-menu-item--danger { color: var(--error); }
+.uam-menu-item--danger:hover:not([aria-disabled="true"]) { background: var(--error-dim); color: var(--error); }
+.uam-menu-item.is-selected { color: var(--text); }
+.uam-menu-item__icon { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--text-2); }
+.uam-menu-item__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-menu-item__detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); text-align: left; }
+.uam-menu-item__detail:empty { display: none; }
+
+/* ── SegmentedControl: one sliding highlight behind the pressed option ── */
+.uam-seg {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-seg > .uam-btn { position: relative; z-index: 1; }
+.uam-seg > .uam-btn[aria-pressed="true"] { color: var(--text); }
+/* Height is the button's, so only transform and width animate. */
+.uam-seg__indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), width var(--dur-base) var(--ease-out-soft);
+}
+[data-motion="off"] .uam-seg__indicator { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-seg__indicator { transition: none; }
+}
+
+/* ── RowButton: reset plus hover and focus; row classes keep their look ── */
+/* :where keeps the reset at zero specificity so a row's own classes still win. */
+:where(.uam-row-button) {
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.uam-row-button:hover { background: var(--sidebar-item-hover); }
+.uam-row-button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 /* ── Tooltip ────────────────────────────────────────────────── */
 .uam-tooltip {
   display: inline-flex;

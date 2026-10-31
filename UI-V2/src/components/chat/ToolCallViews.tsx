@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { Button, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed } from '../ui'
+import { Button, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -44,13 +44,14 @@ export function SubAgentRunningPanel({
   renderHistory?: () => ReactNode
 }) {
   const [open, setOpen] = useSubAgentDisclosure(tool.id)
+  // The native <details> stays open through the exit window so the body can collapse before it unmounts.
+  const { mounted, closing } = usePresence(open)
   const displayTitle = toolDisplayTitle(tool)
   const transcriptAvailable = Boolean(tool.subAgentId)
   return (
     <details
       className="w-full uam-subagent-panel"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
+      open={mounted}
       style={{
         borderRadius: 8,
         border: '1px solid color-mix(in srgb, var(--blue) 35%, var(--border-bright))',
@@ -62,6 +63,7 @@ export function SubAgentRunningPanel({
     >
       <summary
         className="w-full text-left cursor-pointer"
+        onClick={(event) => { event.preventDefault(); setOpen(!open) }}
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) auto',
@@ -101,10 +103,14 @@ export function SubAgentRunningPanel({
         </span>
         <ToolStatusIcon status={tool.status} />
       </summary>
-      {open && (
-        <div className="space-y-3 uam-subagent-disclosure" data-state="open" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
-          {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
-          <Button size="sm" onClick={() => onSelectTool(tool.id)}>Tool details</Button>
+      {mounted && (
+        <div style={{ display: 'grid', gridTemplateRows: closing ? '0fr' : '1fr', transition: `grid-template-rows ${closing ? 'var(--dur-exit)' : 'var(--dur-base)'} var(--ease-out-soft)` }}>
+          <div style={{ minHeight: 0, overflow: 'hidden' }}>
+            <div className="space-y-3 uam-subagent-disclosure" data-state="open" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
+              {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
+              <Button size="sm" onClick={() => onSelectTool(tool.id)}>Tool details</Button>
+            </div>
+          </div>
         </div>
       )}
     </details>

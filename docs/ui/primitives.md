@@ -19,6 +19,9 @@ Import from `components/ui` (index.ts):
 - Switch
 - Overlay
 - ConfirmDialog (optional cancel label, middle secondary action, and `dismissible={false}` for a choice that Escape or the backdrop must not answer)
+- MenuItem (icon, label, detail, shortcut, `selected` for a checkable menuitemradio, danger, disabled with `disabledReason`; menus, context menus and the command palette)
+- SegmentedControl (options with value, label and icon; one sliding highlight that stops under reduced motion or Motion Off)
+- RowButton (full-width list row; reset, hover and focus only, so row classes keep their look)
 
 Icons: lucide-react, 14–16px, stroke default. A Notice may omit dismissal while it represents an unresolved state that the user cannot dismiss into success; its heading remains visible when details are collapsed. Ordinary notices retain their dismissal control.
 

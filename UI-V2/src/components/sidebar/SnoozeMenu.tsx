@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlarmClockOff, Check, CircleX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { Button, usePresence } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
@@ -51,6 +51,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
   const untilByRow = useAppStore(useShallow((state) => bulk ? bulk.map(({ id }) => state.sessions.find((chat) => chat.id === id)?.snoozedUntilMs ?? 0) : [untilMs]))
   const blocked = blockedIds.length === (bulk?.length ?? 1)
   const [customOpen, setCustomOpen] = useState(false)
+  const custom = usePresence(customOpen)
   const [amount, setAmount] = useState('1')
   const [unit, setUnit] = useState<SnoozeUnit>('hours')
   const [saving, setSaving] = useState(false)
@@ -102,7 +103,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
     {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={itemClass} disabled={presetsBlocked}
       onClick={() => { void update(preset.until) }}>{preset.label}<span className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>{new Date(preset.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></button>)}
     <button type="button" role="menuitem" className={itemClass} aria-expanded={customOpen} disabled={saving} onClick={() => setCustomOpen((open) => !open)}>Custom…</button>
-    {customOpen && <form aria-label="Custom snooze" noValidate className="uam-reveal flex items-center gap-1.5 px-3 py-1.5" onSubmit={submitCustom}>
+    {custom.mounted && <form aria-label="Custom snooze" noValidate className="uam-reveal uam-snooze-custom flex items-center gap-1.5 px-3 py-1.5" data-state={custom.closing ? 'closed' : 'open'} onSubmit={submitCustom}>
       <input aria-label="Snooze amount" type="number" min={1} step={1} inputMode="numeric" value={amount} disabled={presetsBlocked}
         onChange={(event) => setAmount(event.target.value)} className="w-16 px-2 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }} />
       <select aria-label="Snooze unit" value={unit} disabled={presetsBlocked} onChange={(event) => setUnit(event.target.value as SnoozeUnit)}

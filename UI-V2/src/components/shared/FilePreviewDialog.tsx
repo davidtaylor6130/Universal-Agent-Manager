@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, RefreshCw, X } from 'lucide-react'
+import { ArrowLeft, FileText, RefreshCw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import type { WorkspaceFilePreview } from '../../types/filePreview'
@@ -11,8 +11,8 @@ import './review.css'
 
 const ROW_HEIGHT = 20
 
-export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, zIndex = 1100 }: {
-  chatId: string; reference: FileReference; onClose: () => void; onShowChanges?: (file: WorkspaceFilePreview | null) => Promise<void>; zIndex?: number
+export function FilePreviewDialog({ chatId, reference, onClose, onBack, onShowChanges, zIndex = 1100 }: {
+  chatId: string; reference: FileReference; onClose: () => void; onBack?: () => void; onShowChanges?: (file: WorkspaceFilePreview | null) => Promise<void>; zIndex?: number
 }) {
   const read = useAppStore((state) => state.getWorkspaceFilePreview)
   const context = useAppStore(useShallow((state) => {
@@ -77,6 +77,7 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
         }}>{changesLoading ? 'Loading changes…' : 'Changes'}</Button>}
         {file && <CopyTextButton text={file.text} label="Copy file" title="Copy file contents" />}
         <IconButton icon={<RefreshCw size={15} />} label="Reload file" onClick={() => setRefresh((value) => value + 1)} />
+        {onBack && <IconButton icon={<ArrowLeft size={16} />} label="Back to changes" onClick={onBack} />}
         <IconButton icon={<X size={16} />} label="Close file inspection" onClick={onClose} />
       </header>
       {file && reference.line !== undefined && reference.line > lines.length && <p role="status" className="px-3 py-1 text-xs" style={{ color: 'var(--text-2)' }}>Line {reference.line} is past the end of this file.</p>}

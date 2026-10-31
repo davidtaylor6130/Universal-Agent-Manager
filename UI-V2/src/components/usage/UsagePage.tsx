@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowLeft, Check, Info, RefreshCw, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageCostBasis, usageWindow, type UsageCostBasis, type UsageProvider, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Tooltip, cx } from '../ui'
+import { Button, IconButton, MenuSelect, SegmentedControl, Tooltip, cx } from '../ui'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
 
@@ -119,28 +119,6 @@ function StatTile({ label, value, sub, title }: { label: string; value: string; 
 }
 
 /** Segmented choice whose active highlight is one element that glides (translateX + width) to the pressed option. */
-function UsageSegment<T extends string | number>({ label, value, options, disabled = false, onChange }: { label: string; value: T; options: { value: T; label: string }[]; disabled?: boolean; onChange: (value: T) => void }) {
-  const groupRef = useRef<HTMLDivElement>(null)
-  const [slot, setSlot] = useState<{ x: number; w: number } | null>(null)
-  useLayoutEffect(() => {
-    const group = groupRef.current
-    if (!group) return
-    const measure = () => {
-      const active = group.querySelector<HTMLElement>('[aria-pressed="true"]')
-      setSlot(active ? { x: active.offsetLeft, w: active.offsetWidth } : null)
-    }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
-    observer.observe(group)
-    return () => observer.disconnect()
-  }, [value, options.length])
-  return <div role="group" aria-label={label} ref={groupRef} className="uam-usage-seg">
-    {slot && <span aria-hidden className="uam-usage-seg__indicator" style={{ transform: `translateX(${slot.x}px)`, width: slot.w }} />}
-    {options.map(option => <Button key={String(option.value)} size="sm" variant="ghost" disabled={disabled} aria-pressed={value === option.value} onClick={() => onChange(option.value)}>{option.label}</Button>)}
-  </div>
-}
-
 const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`
 
 function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; prices: UsagePriceOverride[]; onSave: (prices: UsagePriceOverride[]) => void; onClose: () => void }) {
@@ -289,8 +267,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
         <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
       </Tooltip>}
       <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
-      <UsageSegment label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
-      <UsageSegment label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
+      <SegmentedControl aria-label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
+      <SegmentedControl aria-label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
       {metric !== 'limits' && <IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} />}
       {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
       {metric !== 'limits' && <span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span>}
@@ -375,7 +353,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               {visibleProviders.length === 0 && <p className="text-xs uam-usage-muted">All providers are filtered out.</p>}
             </div>
           </section>
-          <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><div role="group" aria-label="Usage breakdown" className="uam-usage-seg"><Button size="sm" variant={breakdown === 'model' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'model'} onClick={() => setBreakdown('model')}>Models</Button><Button size="sm" variant={breakdown === 'time' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'time'} onClick={() => setBreakdown('time')}>Time</Button></div></div>
+          <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><SegmentedControl aria-label="Usage breakdown" value={breakdown} options={[{ value: 'model', label: 'Models' }, { value: 'time', label: 'Time' }]} onChange={setBreakdown} /></div>
             {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
               <button className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><Tooltip label={model.modelId}><span className="truncate">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>

@@ -90,6 +90,10 @@
   .uam-sb-progress--determinate > span { transition: none; }
 }
 
+/* Snooze custom form: eases out toward its anchor, then unmounts (usePresence). */
+.uam-snooze-custom[data-state="closed"] { animation: uam-snooze-custom-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-snooze-custom-out { to { opacity: 0; transform: translateY(-4px); } }
+
 /* Shared row-menu item (chat context menu and snooze presets). */
 .uam-sb-menu-item {
   display: flex;

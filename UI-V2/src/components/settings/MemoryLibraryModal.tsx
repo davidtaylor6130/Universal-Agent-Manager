@@ -4,7 +4,7 @@ import './stores.css'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -512,6 +512,27 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           </aside>
 
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
+            {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
+            {pendingDelete && (
+              <div role="group" aria-label="Delete memory entry" className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                <p className="text-sm font-semibold">Delete memory entry?</p>
+                <p className="text-sm" style={{ color: 'var(--text-2)' }}>This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.</p>
+                <div className="flex justify-end gap-2">
+                  <Button autoFocus onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
+                  <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id); setPendingDeleteEntryId(null) }}>Delete memory</Button>
+                </div>
+              </div>
+            )}
+            {pendingMassDeleteEntryIds && (
+              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+                <p className="text-sm font-semibold">{hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}</p>
+                <p className="text-sm" style={{ color: 'var(--text-2)' }}>This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.</p>
+                <div className="flex justify-end gap-2">
+                  <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
+                  <Button variant="danger" onClick={() => { void deleteMemoryEntries(pendingMassDeleteEntryIds); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2 mb-4">
               <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
@@ -722,34 +743,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           </div>
         </div>
       </div>}
-
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title="Delete memory entry?"
-        label="Delete memory entry"
-        confirmLabel="Delete memory"
-        onCancel={() => setPendingDeleteEntryId(null)}
-        onConfirm={() => {
-          if (pendingDelete) void deleteMemoryEntry(pendingDelete.id)
-          setPendingDeleteEntryId(null)
-        }}
-      >
-        This permanently deletes "{pendingDelete?.title}" and its file. This cannot be undone.
-      </ConfirmDialog>
-
-      <ConfirmDialog
-        open={pendingMassDeleteEntryIds !== null}
-        title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}
-        label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'}
-        confirmLabel={`Delete ${pendingMassDeleteCount} ${pendingMassDeleteCount === 1 ? 'memory' : 'memories'}`}
-        onCancel={() => setPendingMassDeleteEntryIds(null)}
-        onConfirm={() => {
-          if (pendingMassDeleteEntryIds) void deleteMemoryEntries(pendingMassDeleteEntryIds)
-          setPendingMassDeleteEntryIds(null)
-        }}
-      >
-        This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
-      </ConfirmDialog>
     </div>
   )
 })

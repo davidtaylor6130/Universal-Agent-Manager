@@ -248,9 +248,9 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect((Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
 
     clickButton(document.body, 'Delete Global lesson')
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete memory entry"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="group"][aria-label="Delete memory entry"]')).toBeTruthy()
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete memory entry"]')).toBeNull()
+    expect(document.body.querySelector('[role="group"][aria-label="Delete memory entry"]')).toBeNull()
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))

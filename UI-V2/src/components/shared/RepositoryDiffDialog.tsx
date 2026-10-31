@@ -84,7 +84,7 @@ export function RepositoryDiffDialog({
 
 
   // Inspecting replaces this dialog's content in place; closing the inspection returns to the diff.
-  if (inspecting) return <FilePreviewDialog zIndex={zIndex} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />
+  if (inspecting) return <FilePreviewDialog zIndex={zIndex} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} onBack={() => setInspection(null)} />
 
   return (
     <Overlay open zIndex={zIndex} onBackdropMouseDown={onClose}>

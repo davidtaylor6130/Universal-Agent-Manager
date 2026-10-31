@@ -3,7 +3,7 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, usePresence } from '../ui'
+import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -160,6 +160,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const [view, setView] = useState<'form' | 'json'>('form')
   const [jsonText, setJsonText] = useState('')
   const [open, setOpen] = useState<string | null>(null)
+  // Row shown collapsing out before it is removed from the draft.
+  const [removingId, setRemovingId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [setup, setSetup] = useState<'choose' | 'import' | 'guided' | null>(null)
@@ -176,6 +178,12 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   useEffect(() => onDirtyChange(dirty || setupDirty), [dirty, setupDirty, onDirtyChange])
   useEffect(() => { if (!dirty) { setServers(savedServers); setUamEnabled(savedUam) } }, [savedServers, savedUam])
 
+  const removeServer = (id: string) => {
+    const drop = () => { setServers(list => list.filter(item => item.id !== id)); setMessage(''); setRemovingId(null) }
+    if (!motionAllowed()) { drop(); return }
+    setRemovingId(id)
+    window.setTimeout(drop, scaledMs(EXIT_MS))
+  }
   const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)); setMessage('') }
   const switchView = (next: 'form' | 'json') => {
     if (next === view) return
@@ -213,7 +221,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     const generation = importGeneration.current
     const ownsSave = () => generation === importGeneration.current
     if (validationError) { setMessage(validationError); return }
-    const next = preparedServers, nextUam = preparedUam
+    const next = removingId ? preparedServers.filter(item => item.id !== removingId) : preparedServers, nextUam = preparedUam
     setBusy(true); onBusyChange(true); setMessage('')
     try {
       const store = useAppStore.getState()
@@ -303,18 +311,22 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads this machine's environment.</p>
       </div> : <>
         {servers.length === 0 && <SettingRow title="No servers yet" />}
-        {servers.map(server => {
+        {servers.map((server, index) => {
           const expanded = open === server.id
+          const removing = removingId === server.id
           const refs = server.transport === 'stdio' ? server.environment : server.headers
           const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
           const serverName = server.name || 'server'
           const scope = [server.workspaceDirectory ? 'Selected workspace' : 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
-          return <SettingRow key={server.id} icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
+          // Wrapper replaces the row's sibling separators, so the separator moves onto it.
+          return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
+            style={{ opacity: removing ? 0 : 1, transition: 'opacity var(--dur-exit) var(--ease)', ...(index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 14 } : {}) }}>
+          <div className="uam-prov-collapse__inner"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
             status={scope}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} aria-hidden className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${serverName}` : `Edit ${serverName}`} onClick={() => setOpen(expanded ? null : server.id)} />
-              <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }} />
+              <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy || removing} onClick={() => removeServer(server.id)} />
             </>}>
             <ServerEditorCollapse open={expanded}><div className="uam-prov-enter grid gap-3 pb-1">
               {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
@@ -363,7 +375,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                 </div>
               </details>
             </div></ServerEditorCollapse>
-          </SettingRow>
+          </SettingRow></div></div>
         })}
       </>}
     </SettingsSection>

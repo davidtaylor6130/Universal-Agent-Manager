@@ -25,6 +25,22 @@ it('rejects malformed source responses before they enter the viewer', () => {
 })
 
 describe('Workspace source inspection', () => {
+  it('returns to the caller from the Back control and keeps Close separate', async () => {
+    const original = useAppStore.getState()
+    useAppStore.setState({ sessions: [session], folders: [], getWorkspaceFilePreview: vi.fn().mockResolvedValue(preview('one')) })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    const onBack = vi.fn(); const onClose = vi.fn()
+    try {
+      await act(async () => root.render(<FilePreviewDialog chatId="inspect" reference={{ path: 'src/main.cpp' }} onBack={onBack} onClose={onClose} />))
+      await act(async () => button('Back to changes').click())
+      expect(onBack).toHaveBeenCalledTimes(1)
+      expect(onClose).not.toHaveBeenCalled()
+      await act(async () => button('Close file inspection').click())
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original, true) }
+  })
+
   it('ignores stale reads across workspace changes, supports reload errors, and virtualizes line ranges', async () => {
     const original = useAppStore.getState()
     let oldRead!: (file: WorkspaceFilePreview) => void
