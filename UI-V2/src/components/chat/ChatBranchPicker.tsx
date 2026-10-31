@@ -3,7 +3,7 @@ import { AlertTriangle, Check, GitBranch, GitBranchPlus, LoaderCircle, Plus, Sea
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { chatWorktreeBranches, rankBranches } from '../../utils/branchRecency'
-import { Button, Tooltip, ViewportMenu } from '../ui'
+import { Button, RowButton, Tooltip, ViewportMenu } from '../ui'
 
 export interface ChatBranch {
   name: string
@@ -242,6 +242,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
   const triggerTitle = vcsType === 'svn' ? [`${svnPath || 'SVN'} r${displayedRevision}`, svnContextError].filter(Boolean).join(' · ') : pendingBranch ? `${pendingBranch}, created on first send (from ${branch})` : branch
 
   const trigger = (
+    // ui: raw button kept — inline text-style branch trigger; Button would restyle it
     <button
       ref={triggerRef}
       type="button"
@@ -344,7 +345,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                 {filtered.map((item, index) => {
                   const active = index === highlight
                   return (
-                    <button
+                    <RowButton
                       key={`${item.remote ? 'remote' : 'local'}:${item.name}`}
                       id={`${listboxId}-${index}`}
                       type="button"
@@ -363,7 +364,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                       </span>
                       <span className="min-w-0 flex-1 truncate font-mono text-xs">{item.name}</span>
                       {item.remote && <span className="shrink-0 text-[11px]" style={{ color: 'var(--text-3)' }}>remote</span>}
-                    </button>
+                    </RowButton>
                   )
                 })}
               </div>
@@ -395,10 +396,10 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                     </div>
                   ) : (
                     <>
-                      <button type="button" disabled={busy} onClick={() => setCreating(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50" style={{ color: 'var(--text-2)' }}>
+                      <RowButton type="button" disabled={busy} onClick={() => setCreating(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50" style={{ color: 'var(--text-2)' }}>
                         <Plus size={14} aria-hidden />
                         Create branch from current…
-                      </button>
+                      </RowButton>
                       {pendingBranch && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint}</div>}
                     </>
                   )}

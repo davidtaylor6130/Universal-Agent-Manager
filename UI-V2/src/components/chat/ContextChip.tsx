@@ -2,7 +2,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen, FileText, Folder, GitBranch, Image as ImageIcon, X } from 'lucide-react'
 import { FileInspectionContext } from '../shared/fileInspectionContext'
 import type { FileReference } from '../../utils/fileReferences'
-import { EXIT_MS, IconButton, Tooltip, cx, motionAllowed, scaledMs } from '../ui'
+import { EXIT_MS, IconButton, RowButton, Tooltip, cx, motionAllowed, scaledMs } from '../ui'
 import './ContextChip.css'
 
 export type ContextChipKind = 'file' | 'directory' | 'image' | 'skill' | 'branch' | 'worktree'
@@ -58,7 +58,7 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
     <span className={cx('uam-context-chip animate-fade-in', error && 'is-error', partial && 'is-partial', leaving && 'is-leaving')} data-detail={detail}>
       <Tooltip label={detail && <span style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-line' }}>{detail}</span>}>
         {openable ? (
-          <button type="button" className="uam-context-chip__body" onClick={() => onInspect ? onInspect() : inspect?.(reference ?? { path: path as string })}>{body}</button>
+          <RowButton className="uam-context-chip__body" onClick={() => onInspect ? onInspect() : inspect?.(reference ?? { path: path as string })}>{body}</RowButton>
         ) : (
           <span className="uam-context-chip__body" tabIndex={0}>{body}</span>
         )}

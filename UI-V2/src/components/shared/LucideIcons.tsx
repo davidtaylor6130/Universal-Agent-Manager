@@ -32,6 +32,7 @@ function IconCells({ label, names, selected, onSelect }: { label: string; names:
   return (
     <div role="group" aria-label={label} className="grid gap-1" style={{ gridTemplateColumns: `repeat(${COLUMNS}, 32px)` }}>
       {names.map((name, index) => (
+        // ui: raw button kept — IconButton hover chrome would override the uam-icon-cell hover; ref and roving tabindex are kept here
         <Tooltip key={name} label={name}><button
           ref={(element) => { cells.current[index] = element }}
           type="button"

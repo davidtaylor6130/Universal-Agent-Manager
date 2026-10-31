@@ -41,6 +41,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <Tooltip label={reasonActive ? disabledReason : undefined}>
       <button
         ref={ref}
+        type="button"
         className={cx('uam-btn', `uam-btn--${variant}`, `uam-btn--${size}`, block && 'uam-btn--block', className)}
         disabled={reasonActive ? undefined : blocked}
         aria-disabled={reasonActive || undefined}

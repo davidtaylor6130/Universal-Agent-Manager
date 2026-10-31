@@ -13,7 +13,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import './sidebar.css'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -127,7 +127,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
   action?: ReactNode
 }) {
   const toggle = (
-    <button
+    <RowButton
       type="button"
       aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
       aria-expanded={expanded}
@@ -146,7 +146,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
         {label}
       </span>
       {trailing}
-    </button>
+    </RowButton>
   )
   return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
 }
@@ -926,6 +926,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             expanded={activeExpanded}
             onToggle={() => setActiveCollapsed((collapsed) => !collapsed)}
             action={!isCompanionContext() && (
+              
+              // ui: raw button kept — compact 10px chip styled inline in the section header
               <button
                 type="button"
                 aria-label="Clear all active chats"
@@ -961,7 +963,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
-            <button
+            <RowButton
               type="button"
               data-testid="active-attention-strip"
               className="uam-sb-attention-strip mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md px-2 py-1 text-left text-[11px]"
@@ -971,7 +973,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               {activeStatusCounts.attention === 1
                 ? '1 chat needs attention'
                 : `${activeStatusCounts.attention} chats need attention`}
-            </button>
+            </RowButton>
           )}
         </div>
       )}
@@ -1068,7 +1070,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               setUnsortedMenuPoint({ x: event.clientX, y: event.clientY })
             }}
           >
-            <button
+            <RowButton
               type="button"
               aria-label={`${unsortedExpanded ? 'Collapse' : 'Expand'} Unsorted`}
               aria-expanded={unsortedExpanded}
@@ -1090,9 +1092,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               <span className="rounded px-1 text-[10px]" style={{ background: 'var(--surface-high)', color: 'var(--text-3)' }}>
                 {searchModel.unfolderedSessionIds.length}
               </span>
-            </button>
+            </RowButton>
             {!isCompanionContext() && <Tooltip label="Unsorted actions">
-              <button
+              {/* ui: raw button kept — Tooltip-wrapped trigger with popup state; IconButton would add a second tooltip */}<button
                 ref={unsortedMenuTriggerRef}
                 type="button"
                 aria-label="Actions for Unsorted"
@@ -1123,6 +1125,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               className="rounded-md py-1 animate-fade-in"
               style={{ minWidth: 220, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
             >
+              
+              // ui: raw button kept — inline option look (style prop); MenuItem has no style prop
               <button
                 type="button"
                 role="menuitem"
@@ -1348,11 +1352,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           </div>
         ) : (
           <div className="flex justify-center gap-1">
-            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
+            {/* ui: raw button kept — uam-add-link inline link row, not a Button variant */}<button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
               <Plus size={14} aria-hidden />
               <span>New workspace</span>
             </button>
-            <button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
+            {/* ui: raw button kept — uam-add-link inline link row, not a Button variant */}<button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
               <Plus size={14} aria-hidden />
               <span>New collection</span>
             </button>
@@ -1492,7 +1496,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         }}
       >
         <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
-          <button
+          {/* ui: raw button kept — icon-only chevron inside its own Tooltip; IconButton would add a second tooltip */}<button
             type="button"
             aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
             aria-expanded={!collection.collapsed}
@@ -1519,14 +1523,14 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           />
         ) : (
           <Tooltip label={collection.name}>
-            <button type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+            <RowButton type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
               {collection.name}
-            </button>
+            </RowButton>
           </Tooltip>
         )}
         <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
         {!isCompanionContext() && <Tooltip label="Collection actions">
-          <button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
+          {/* ui: raw button kept — nested inside its own Tooltip; IconButton would add a second tooltip */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
           </button>
         </Tooltip>}
@@ -1562,7 +1566,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             }}
           >
             {children}
-            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}><button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
+            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}>{/* ui: raw button kept — nested inside its own Tooltip; inline icon chip */}<button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
             {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
@@ -1768,15 +1772,13 @@ function WorkspaceFolderRecoveryModal({
 
 function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
   return (
-    <button
-      type="button"
-      role="menuitem"
+    <MenuItem
+      icon={icon}
+      label={label}
+      danger={danger}
       className={`uam-sb-menu-item${danger ? ' uam-sb-menu-item--danger' : ''}`}
-      onClick={onClick}
-    >
-      {icon}
-      {label}
-    </button>
+      onSelect={onClick}
+    />
   )
 }
 
@@ -1998,7 +2000,7 @@ const FolderRow = memo(function FolderRow({
           className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
           {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
-            <button
+            {/* ui: raw button kept — nested inside its own Tooltip; inline 22px trigger */}<button
               ref={menuTriggerRef}
               type="button"
               aria-label="Folder actions"
@@ -2157,6 +2159,7 @@ const FolderRow = memo(function FolderRow({
                 ))
               )}
               {shouldLimitSessions && (
+                // ui: raw button kept — inline text link styling, not a Button variant
                 <button
                   type="button"
                   onClick={() => setShowAllSessions((value) => !value)}

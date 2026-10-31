@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, StatusDot, Switch, type StatusTone } from '../ui'
+import { Button, RowButton, StatusDot, Switch, type StatusTone } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
@@ -24,11 +24,11 @@ function Disclosure({ title, summary, children }: { title: string; summary: stri
   const [open, setOpen] = useState(false)
   const id = useId()
   return <div className="uam-rt-disclosure" data-open={open}>
-    <button type="button" className="uam-rt-disclosure__toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen((current) => !current)}>
+    <RowButton type="button" className="uam-rt-disclosure__toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen((current) => !current)}>
       <ChevronRight size={14} aria-hidden />
       <span>{title}</span>
       <span className="uam-rt-disclosure__summary">{summary}</span>
-    </button>
+    </RowButton>
     <div id={id} className="uam-rt-disclosure__body" {...(open ? {} : { inert: '' })}>
       <div className="uam-rt-disclosure__inner">{children}</div>
     </div>

@@ -234,16 +234,18 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         railRefs.current.get(id)?.focus()
       }}>
       <span aria-hidden className="uam-np-rail__glide" />
-      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => <Tooltip key={entry.id} label={entry.label}><button
-        ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
-        type="button" aria-label={entry.label} aria-pressed={entry.id === selectedProvider}
-        disabled={entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider}
-        tabIndex={entry.id === selectedProvider ? 0 : -1}
-        onClick={() => selectProvider(entry.id)}
-        className="uam-np-rail__button"
-        style={{ opacity: entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider ? 0.4 : 1 }}>
-        {entry.id === 'favorites' ? <Star size={18} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
-      </button></Tooltip>)}
+      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => {
+        const locked = entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider
+        return <IconButton key={entry.id}
+          ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
+          icon={entry.id === 'favorites' ? <Star size={18} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
+          label={entry.label} aria-pressed={entry.id === selectedProvider}
+          disabled={locked} disabledReason={locked ? 'Provider changes are unavailable right now' : undefined}
+          tabIndex={entry.id === selectedProvider ? 0 : -1}
+          onClick={() => selectProvider(entry.id)}
+          className="uam-np-rail__button"
+          style={{ opacity: locked ? 0.4 : 1 }} />
+      })}
     </div>
     <div className="min-w-0 flex-1 p-1">
       <div className="uam-np-search">
@@ -284,6 +286,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
             {sectionStart && <div className="uam-np-group" role="presentation">{providerLabel(option.providerId)}</div>}
             <div className="uam-np-model" data-selected={selected} data-highlight={highlighted} style={{ height: ROW_HEIGHT }}>
               <Tooltip label={optionDisabled ? undefined : <><span className="block">{option.label}{option.id && option.id !== option.label ? ` (${option.id})` : ''}</span><span className="block">{option.detail}</span>{capacityDescription && <span className="block" aria-hidden="true">{capacityDescription}</span>}</>}>
+              {/* ui: raw button kept — model row has a rich multi-part layout, a Tooltip and native title/aria-label for disabled rows per docs; MenuItem cannot host it */}
               <button ref={(element) => { if (element) rowRefs.current.set(index, element); else rowRefs.current.delete(index) }} type="button" role="menuitemradio" aria-checked={selected}
                 disabled={optionDisabled} tabIndex={highlighted ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
                 aria-label={optionDisabled ? fullDescription : undefined} title={optionDisabled ? fullDescription : undefined}

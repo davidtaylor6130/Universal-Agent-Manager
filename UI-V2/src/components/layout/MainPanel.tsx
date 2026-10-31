@@ -198,6 +198,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             : 'Runtime running · click to stop it'}
         side="bottom"
       >
+        {/* ui: raw button kept — runtime pill has its own chrome (uam-runtime-pill); Button would restyle it */}
         <button
           type="button"
           className="uam-runtime-pill"
@@ -302,6 +303,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             background: 'var(--surface-up)',
           }}
         >
+          {/* ui: raw button kept — per-option disabled, icon-only tooltip and aria-label; SegmentedControl options have no per-option disabled or tooltip */}
           <Tooltip label="Chat view" side="bottom">
             <button
               type="button"
@@ -423,6 +425,7 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
     >
       {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
       <div className="flex max-w-xs flex-col items-center gap-4 px-4">
+        {/* ui: raw button kept — large text-link placeholder with custom layout; Button would restyle it */}
         <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
           <MessageSquare size={28} aria-hidden style={{ opacity: 0.35 }} />
           Drag a chat here or select one
@@ -736,18 +739,16 @@ export function MainPanel() {
   const splitButton = (direction: ChatSplitDirection, icon: React.ReactNode) => {
     const label = `Split active pane ${direction === 'horizontal' ? 'into columns' : 'into rows'}`
     return (
-      <Tooltip label={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : label} side="bottom">
-        <button
-          type="button"
-          className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-          aria-label={label}
-          disabled={paneLimitReached}
-          onClick={() => splitActivePane(direction)}
-          style={{ color: 'var(--text-2)', background: 'transparent' }}
-        >
-          {icon}
-        </button>
-      </Tooltip>
+      <IconButton
+        icon={icon}
+        label={label}
+        tooltip={paneLimitReached ? `Maximum ${MAX_CHAT_PANES} panes` : undefined}
+        tooltipSide="bottom"
+        className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+        disabled={paneLimitReached}
+        onClick={() => splitActivePane(direction)}
+        style={{ color: 'var(--text-2)', background: 'transparent' }}
+      />
     )
   }
 
@@ -761,17 +762,14 @@ export function MainPanel() {
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
           {leaves.length > 1 && (
-            <Tooltip label="Close active pane" side="bottom">
-              <button
-                type="button"
-                className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
-                aria-label="Close active pane"
-                onClick={() => activeLeaf && closePane(activeLeaf.id)}
-                style={{ color: 'var(--text-2)', background: 'transparent' }}
-              >
-                <X size={15} aria-hidden />
-              </button>
-            </Tooltip>
+            <IconButton
+              icon={<X size={15} aria-hidden />}
+              label="Close active pane"
+              tooltipSide="bottom"
+              className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+              onClick={() => activeLeaf && closePane(activeLeaf.id)}
+              style={{ color: 'var(--text-2)', background: 'transparent' }}
+            />
           )}
         </div>
         {isCefContext() && <PushStatusDot />}

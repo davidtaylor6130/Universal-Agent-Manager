@@ -111,6 +111,7 @@ export function RepositoryDiffDialog({
           </div>
           <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
           {!file.binary && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
+            {/* ui: raw buttons kept — per-option Tooltip and aria-label ("... diff view") that SegmentedControl options cannot carry */}
             <Tooltip label="Unified diff view"><button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button></Tooltip>
             <Tooltip label="Split diff view"><button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button></Tooltip>
           </div>}

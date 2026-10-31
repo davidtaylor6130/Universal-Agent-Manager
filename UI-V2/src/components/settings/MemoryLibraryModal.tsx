@@ -1,10 +1,11 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { SaveButton, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
+import './settings-shell.css'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, RowButton, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -326,6 +327,24 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     [filteredEntries, folders, memoryLibraryScope, executionHosts],
   )
 
+  // Same glide as the settings sidebar: one indicator measured against the active location.
+  // ponytail: re-measures every commit (bails out when unchanged); add deps if it ever shows in a profile.
+  const locationNavRef = useRef<HTMLElement>(null)
+  const [locationIndicator, setLocationIndicator] = useState<{ top: number; height: number } | null>(null)
+  useLayoutEffect(() => {
+    const nav = locationNavRef.current
+    if (!nav) return
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('[data-active="true"]')
+      const next = active ? { top: active.offsetTop, height: active.offsetHeight } : null
+      setLocationIndicator(previous => previous?.top === next?.top && previous?.height === next?.height ? previous : next)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  })
   if (!memoryLibraryScope) {
     if (!embedded) return null
     return memoryLibraryError
@@ -452,18 +471,20 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             }}
           >
             {groupedEntries.length > 0 && (
-              <nav aria-label="Memory locations" className="grid gap-1 min-w-0">
+              <nav ref={locationNavRef} aria-label="Memory locations" className="uam-settings-nav grid gap-1 min-w-0">
+                {locationIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${locationIndicator.top}px)`, height: locationIndicator.height }} />}
                 <div className="uam-set-section__title px-2" style={{ color: 'var(--text-3)' }}>Locations</div>
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => {
                   const active = location.key === selectedLocation?.key
                   return (
-                    <button
+                    <RowButton
                       key={location.key}
                       type="button"
+                      data-active={active}
                       aria-current={active ? 'page' : undefined}
                       onClick={() => setSelectedLocationKey(location.key)}
-                      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
-                      style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
+                      className="relative z-[1] flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
+                      style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
                     >
                       <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
                       <span className="min-w-0 flex-1">
@@ -471,7 +492,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{location.rootPath}</span>
                       </span>
                       <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
-                    </button>
+                    </RowButton>
                   )
                 })}
                 {isAllMemory && resourceCollections.map((collection) => {
@@ -491,7 +512,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
                         {locations.map((location) => {
                           const active = location.key === selectedLocation?.key
-                          return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                         })}
                       </div>
                     </div>
@@ -502,7 +523,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
-                      return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
+                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                     })}
                   </div>
                 )}

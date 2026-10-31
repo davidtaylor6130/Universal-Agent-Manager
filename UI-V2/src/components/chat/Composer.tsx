@@ -23,7 +23,7 @@ import {
   modelOptionFor,
   reasoningEffortForModel,
 } from './modelOptions'
-import { MenuSelect, Tooltip, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Tooltip, ViewportMenu } from '../ui'
 import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -296,6 +296,11 @@ export function ComposerToolbar({
   const modelDisabled = acpRuntimeBlocksControlChanges(acp) || goalPairLocked
   const architectModelsInOptions = featurePreference === 'uam' && smallModelMode
   const selectorDisabled = architectModelsInOptions || (modelDisabled && !canChangeProvider)
+  const modelBlockReason = architectModelsInOptions ? 'Worker model is managed in Options'
+    : goalPairLocked ? 'Goal mode locks the model pair'
+    : acp?.lifecycleState === 'waitingPermission' ? 'Waiting for a permission answer'
+    : acp?.lifecycleState === 'waitingUserInput' ? 'Waiting for your answer'
+    : 'Finish the current turn to change models'
   const providerName = providerShortName(provider, providerId)
   const providerPlanActive = providerModeId === 'plan'
   const memoryDisabled = false
@@ -379,10 +384,12 @@ export function ComposerToolbar({
       }}
     >
       <div ref={optionsRef} className="relative shrink-0" style={isCompanionContext() ? { display: 'none' } : undefined}>
-        <Tooltip label="Add files, goal, and options"><button
+        <IconButton
           ref={optionsTriggerRef}
-          type="button"
-          aria-label="Options"
+          icon={<Plus size={16} aria-hidden />}
+          label="Options"
+          tooltip="Add files, goal, and options"
+          size="sm"
           aria-haspopup="menu"
           aria-expanded={optionsOpen}
           aria-controls={optionsOpen ? optionsMenuId : undefined}
@@ -393,9 +400,7 @@ export function ComposerToolbar({
             color: optionsOpen ? 'var(--text)' : 'var(--text-2)',
             background: optionsOpen ? 'var(--surface-high)' : iconChipStyle.background,
           }}
-        >
-          <Plus size={16} aria-hidden />
-        </button></Tooltip>
+        />
         {optionsOpen && (
           <ViewportMenu
             ref={optionsMenuRef}
@@ -408,10 +413,12 @@ export function ComposerToolbar({
             className="uam-cmenu"
           >
             {!isCompanionContext() && <>
+              {/* ui: raw button kept — rich menu row (icon plus two-line text) that MenuItem does not express */}
               <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onAttachFile() }}>
                 <Paperclip size={15} aria-hidden className="uam-cmenu__icon" />
                 <span className="uam-cmenu__text"><span>Attach files</span></span>
               </button>
+              {/* ui: raw button kept — rich menu row (icon, two-line text, trailing chevron) that MenuItem does not express */}
               <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
                 <span className="uam-cmenu__icon"><ComposerIcon name="markdown" /></span>
                 <span className="uam-cmenu__text"><span>Skills</span><small>Insert a saved prompt</small></span>
@@ -420,6 +427,7 @@ export function ComposerToolbar({
               <div className="uam-cmenu__divider" />
             </>}
             <div className="uam-cmenu__section">Modes</div>
+            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
             <button
               type="button"
               role="menuitem"
@@ -445,6 +453,7 @@ export function ComposerToolbar({
                 style={{ height: 28 }}
               />
             </label>
+            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
             {COMPUTER_USE_ENABLED && !isCompanionContext() && <button
               type="button"
               role="menuitem"
@@ -457,6 +466,7 @@ export function ComposerToolbar({
               <span className="uam-cmenu__text"><span>Computer use…</span><small>Let the agent see and control an app</small></span>
               <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{computerUseMode ? 'On' : 'Off'}</span>
             </button>}
+            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
             {featurePreference === 'uam' && <button
               type="button"
               role="menuitem"
@@ -593,6 +603,7 @@ export function ComposerToolbar({
           </ViewportMenu>
         )}
       </div>
+      {/* ui: raw button kept — Button wraps children in a label span, which would break the wave and status flex row */}
       {dictationActive ? (
         <Tooltip label={dictationError || dictationLabel}><button
           type="button"
@@ -629,8 +640,11 @@ export function ComposerToolbar({
           onChange={onSelectPermissionMode}
           disabled={!permissionsManagedByUam || permissionControlsDisabled}
         />
-        <Tooltip label="Use memories in this chat"><button
+        <Tooltip label="Use memories in this chat"><Button
           type="button"
+          variant="ghost"
+          size="sm"
+          leadingIcon={<Brain size={12} aria-hidden />}
           data-mode-chip={memoryOn ? 'Memory On' : 'Memory Off'}
           aria-pressed={memoryOn}
           aria-label={memoryOn ? 'Memory on' : 'Memory off'}
@@ -639,9 +653,8 @@ export function ComposerToolbar({
           className="uam-composer-action inline-flex h-[26px] min-w-0 shrink-0 items-center gap-1.5 px-2 text-xs"
           style={{ ...chipStyle, color: memoryOn ? 'var(--text)' : 'var(--text-3)' }}
         >
-          <Brain size={12} aria-hidden />
           <span>{memoryOn ? `Memory On · ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}` : 'Memory Off'}</span>
-        </button></Tooltip>
+        </Button></Tooltip>
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
         {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
@@ -653,9 +666,14 @@ export function ComposerToolbar({
         {draftPending && <Tooltip label="You have unsent text in the composer"><span data-draft-indicator className="text-xs" style={{ color: 'var(--text-3)' }}>Draft</span></Tooltip>}
         <ProviderAllowanceIndicator providerId={providerId} sourceProviderId={acp?.providerId} rateLimits={acp?.providerUsage?.rateLimits} running={Boolean(acp?.running)} />
         <div ref={modelMenuRef} className="relative">
-          <Tooltip label={`${architectModelsInOptions ? 'Worker model is managed in Options' : 'Model'} · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}><button
+          <Tooltip label={selectorDisabled ? undefined : `Model · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}><Button
             ref={modelTriggerRef}
             type="button"
+            variant="ghost"
+            size="sm"
+            leadingIcon={<ProviderLogo providerId={providerId} />}
+            trailingIcon={<span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: runtimeStatusColor }} />}
+            disabledReason={selectorDisabled ? `${modelBlockReason} · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}` : undefined}
             aria-label={architectModelsInOptions ? 'Worker model is managed in Options' : 'Select provider and model'}
             onClick={onToggleModel}
             disabled={selectorDisabled}
@@ -672,10 +690,8 @@ export function ComposerToolbar({
               opacity: selectorDisabled ? 0.55 : 1,
             }}
           >
-            <ProviderLogo providerId={providerId} />
             <span className="truncate" style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
-            <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: runtimeStatusColor }} />
-          </button></Tooltip>
+          </Button></Tooltip>
           {modelOpen && !selectorDisabled && (
             <ViewportMenu
               anchorRef={modelTriggerRef}
@@ -716,29 +732,40 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        {<Tooltip label={isCompanionContext() ? `${dictationLabel} · or use your keyboard microphone` : dictationLabel}><button type="button" aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
-          <Mic size={15} aria-hidden />
-        </button></Tooltip>}
+        <IconButton
+          icon={<Mic size={15} aria-hidden />}
+          label={dictationLabel}
+          tooltip={isCompanionContext() ? `${dictationLabel} · or use your keyboard microphone` : undefined}
+          size="sm"
+          aria-pressed="false"
+          data-dictation-state="idle"
+          onClick={onToggleDictation}
+          disabled={!dictationAvailable}
+          disabledReason={dictationAvailable ? undefined : 'Dictation requires the desktop app'}
+          className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0"
+          style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}
+        />
       </div>
       </>}
         {running && !canSend ? (
-          <button type="button" title="Cancel turn" aria-label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
+          <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
         ) : (
-        <button
+        <IconButton
           type="submit"
           title={running ? 'Queue prompt' : 'Send prompt'}
-          aria-label={running ? 'Queue prompt' : 'Send prompt'}
+          icon={<ComposerIcon name="send" size={15} />}
+          label={running ? 'Queue prompt' : 'Send prompt'}
           disabled={!canSend}
           className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center"
           style={{
+            width: 32,
+            height: 32,
             borderRadius: 8,
             border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
             background: canSend ? 'var(--accent)' : 'var(--surface-up)',
             color: canSend ? 'var(--on-accent)' : 'var(--text-3)',
           }}
-        >
-          <ComposerIcon name="send" size={15} />
-        </button>
+        />
         )}
     </div>
   )

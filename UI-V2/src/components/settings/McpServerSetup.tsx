@@ -3,7 +3,7 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -250,11 +250,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
   const cancelSetup = () => { setSetup(null); setMessage(''); setImportWarnings([]) }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
-  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <button type="button" className="uam-prov-option" aria-label={label} onClick={onClick}>
+  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <RowButton className="uam-prov-option" aria-label={label} onClick={onClick}>
     <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
     <span className="grid min-w-0 text-left"><span className="uam-prov-option__label">{label}</span><span className="uam-prov-option__detail">{detail}</span></span>
     <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
-  </button>
+  </RowButton>
   const setupBody = setup === 'choose' ? <div className="grid gap-2">
     {option(<Download size={16} />, 'Import configuration', OPENCODE_ENABLED ? 'Bring servers over from OpenCode or pasted JSON.' : 'Bring servers over from pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') })}
     {option(<Wand2 size={16} />, 'Step by step', 'Answer two short questions. Best for a single new server.', () => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') })}
@@ -301,6 +301,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       description={view === 'json' ? undefined : SSH_ENABLED ? 'Shared by every provider, locally and over SSH.' : 'Shared by every provider.'}
       actions={<>
         <div role="tablist" aria-label="Editor view" className="uam-prov-seg">
+          {/* ui: raw buttons kept — role=tab in a tablist; SegmentedControl exposes aria-pressed, not tab semantics. */}
           <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'form'} disabled={busy} onClick={() => switchView('form')}>Form</button>
           <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'json'} disabled={busy} onClick={() => switchView('json')}>JSON</button>
         </div>

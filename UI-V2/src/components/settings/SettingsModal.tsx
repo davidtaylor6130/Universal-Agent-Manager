@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
+import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tooltip, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -1456,6 +1456,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <legend>Base</legend>
                       <div role="radiogroup" aria-label="Theme base" className="grid grid-cols-2 gap-1 rounded-md p-1" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
                         {(['dark', 'light'] as const).map((base) => {
+                          // ui: raw button kept — role=radio inside a radiogroup; SegmentedControl exposes aria-pressed, not radio semantics.
                           const selected = themeDraft.base === base
                           return (
                             <button
@@ -1894,6 +1895,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 tiles[(index + step + tiles.length) % tiles.length]?.focus()
               }}>
                 {themeChoices.map((choice) => {
+                  // ui: raw button kept — role=radio theme tile with a swatch preview; no primitive has that shape.
                   const selected = choice.value === theme
                   return (
                     <button
@@ -2736,6 +2738,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div role="radiogroup" aria-label="Default memory level" className="flex flex-wrap gap-1" onKeyDown={selectPolicyWithArrowKeys}>
                   {MEMORY_POLICY_CHOICES.filter((option) => option.id !== 'default').map((option) => {
                     const selected = option.id === memoryLevelDefault
+                    // ui: raw button kept — role=radio pill in a radiogroup; SegmentedControl exposes aria-pressed, not radio semantics.
                     return <button key={option.id} type="button" role="radio" aria-checked={selected} disabled={memoryPolicySaving.app} onClick={() => void saveMemoryPolicy('app', () => setMemorySettings({ memoryLevelDefault: option.id }))} className="uam-segment-button rounded-md px-3 py-2 text-xs" style={{ border: '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
                   })}
                 </div>
@@ -3131,7 +3134,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
                   const active = selectedSection === section.id
                   const SectionIcon = section.icon
-                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}>{section.id.startsWith('provider:') ? <ProviderLogo providerId={section.id.slice('provider:'.length)} size={15}/> : <SectionIcon size={15} className="shrink-0" aria-hidden/>}<span className="text-sm">{section.label}</span></button>
+                  return <RowButton key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}>{section.id.startsWith('provider:') ? <ProviderLogo providerId={section.id.slice('provider:'.length)} size={15}/> : <SectionIcon size={15} className="shrink-0" aria-hidden/>}<span className="text-sm">{section.label}</span></RowButton>
                 })}
               </div>)}
             </nav>

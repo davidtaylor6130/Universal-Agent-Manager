@@ -32,6 +32,7 @@ export function MenuItem({ icon, label, detail, shortcut, selected, danger = fal
     <button
       type="button"
       role={checkable ? 'menuitemradio' : 'menuitem'}
+      aria-label={typeof label === 'string' ? label : undefined}
       aria-checked={checkable ? selected : undefined}
       aria-disabled={disabled || undefined}
       aria-describedby={disabled && disabledReason ? reasonId : undefined}

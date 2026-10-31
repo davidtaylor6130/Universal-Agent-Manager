@@ -6,7 +6,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, RowButton, StatusDot, Switch } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -186,12 +186,12 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     const id = `${groupIdBase}${encodeURIComponent(entry.key)}`
     const next = entries[index + 1]
     return <div key={`group:${entry.key}`} style={{ borderTop: index ? '1px solid var(--border)' : undefined, borderBottom: next && !('entries' in next) ? '1px solid var(--border)' : undefined }}>
-      <button type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
+      <RowButton type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
         className="flex w-full items-center gap-1.5 py-2 text-left" style={{ minHeight: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
         <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-150 motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
         <span className="uam-set-section__title min-w-0 truncate">{entry.path.length ? entry.path[entry.path.length - 1] : 'Ungrouped'}</span>
         <span className="ml-auto text-xs tabular-nums">{entry.count}</span>
-      </button>
+      </RowButton>
       <div className="grid transition-[grid-template-rows,visibility] duration-150 motion-reduce:transition-none" style={{ gridTemplateRows: collapsed ? '0fr' : '1fr', visibility: collapsed ? 'hidden' : 'visible' }}>
         <div style={{ minHeight: 0, overflow: 'hidden' }}>
           <div id={id} role="group" aria-label={label} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>

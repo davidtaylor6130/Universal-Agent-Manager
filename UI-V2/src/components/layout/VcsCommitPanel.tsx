@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Presence } from '../ui'
+import { Button, IconButton, MenuSelect, Presence, RowButton } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
@@ -210,6 +210,7 @@ export function VcsCommitPanel() {
 
       {/* Recorded chat edits are Codex receipts; builds without Codex keep only the workspace scope. */}
       {CODEX_ENABLED && <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        {/* ui: raw button kept — underline tab (uam-rv-tab) look; SegmentedControl would restyle it */}
         <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'workspace'} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
         <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'recorded'} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
       </div>}
@@ -251,6 +252,7 @@ export function VcsCommitPanel() {
         </div>
 
         <div className="mx-3 flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
+          {/* ui: raw button kept — role=checkbox icon toggle; IconButton would add tooltip chrome */}
           <button
             type="button"
             role="checkbox"
@@ -273,6 +275,7 @@ export function VcsCommitPanel() {
             const selected = selectedFileSet.has(file.path)
             return (
               <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
+                {/* ui: raw button kept — role=checkbox icon toggle; IconButton would add tooltip chrome */}
                 <button
                   type="button"
                   role="checkbox"
@@ -283,7 +286,7 @@ export function VcsCommitPanel() {
                 >
                   {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
                 </button>
-                <button
+                <RowButton
                   type="button"
                   aria-label={`Review changes to ${file.path}`}
                   onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
@@ -309,7 +312,7 @@ export function VcsCommitPanel() {
                     )}
                   </span>
                   <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
-                </button>
+                </RowButton>
               </div>
             )
           })}

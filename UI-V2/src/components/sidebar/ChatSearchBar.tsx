@@ -113,7 +113,7 @@ export function ChatSearchBar({
 
           {value && (
             <Tooltip label="Clear search" side="top">
-              <button
+              {/* ui: raw button kept — 18px inline clear chip with JS hover handlers; IconButton sizing and tooltip differ */}<button
                 type="button"
                 aria-label="Clear search"
                 className="flex items-center justify-center rounded transition-colors duration-100"
@@ -143,7 +143,7 @@ export function ChatSearchBar({
         </div>
         <div className="relative" ref={popoverRef}>
           <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
-          <button
+          {/* ui: raw button kept — nested inside its own Tooltip; IconButton would add a second tooltip */}<button
             ref={triggerRef}
             type="button"
             aria-label={activeFilterCount > 0 ? `Filter chats, ${activeFilterCount} active` : 'Filter chats'}
@@ -187,6 +187,8 @@ export function ChatSearchBar({
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-semibold" style={{ color: 'var(--text-2)' }}>Filters</span>
                 {(activeFilterCount > 0) && (
+                  
+                  // ui: raw button kept — small text pill, not a menu row; MenuItem has no pill look
                   <button
                     type="button"
                     role="menuitem"
@@ -202,7 +204,7 @@ export function ChatSearchBar({
                 )}
               </div>
 
-              <button
+              {/* ui: raw button kept — MenuItem renders menuitem/menuitemradio only, not menuitemcheckbox */}<button
                 type="button"
                 role="menuitemcheckbox"
                 aria-checked={deepSearch}
@@ -227,6 +229,8 @@ export function ChatSearchBar({
                 {STATUS_OPTIONS.map((option) => {
                   const active = filters.statusIds.includes(option.id)
                   return (
+                    
+                    // ui: raw button kept — MenuItem renders menuitem/menuitemradio only, not menuitemcheckbox
                     <button
                       key={option.id}
                       type="button"
@@ -254,7 +258,7 @@ export function ChatSearchBar({
                   const active = filters.providerIds.includes(provider.id)
                   return (
                     <Tooltip key={provider.id} label={provider.label} side="bottom">
-                      <button
+                      {/* ui: raw button kept — icon-only checkbox chip; MenuItem renders menuitem/menuitemradio only */}<button
                         type="button"
                         role="menuitemcheckbox"
                         aria-label={provider.label}

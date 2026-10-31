@@ -115,6 +115,7 @@ export function useCustomIconPicker() {
     </div>
     <div role="tablist" aria-label="Icon source" className="mb-3 flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
       {TABS.map((entry, index) => (
+        // ui: raw button kept — role=tab with roving tabindex and arrow-key handling; no tab primitive
         <button key={entry.id} ref={(element) => { tabRefs.current[index] = element }} type="button" role="tab" id={`icon-tab-${entry.id}`} aria-selected={tab === entry.id} aria-controls={`icon-panel-${entry.id}`} tabIndex={tab === entry.id ? 0 : -1} disabled={busy} onClick={() => selectTab(entry.id)} onKeyDown={(event) => onTabKeyDown(event, index)}
           className="flex-1 rounded-md px-2 py-1 text-xs font-medium disabled:opacity-50" style={{ background: tab === entry.id ? 'var(--surface-high)' : 'transparent', color: tab === entry.id ? 'var(--text)' : 'var(--text-2)' }}>{entry.label}</button>
       ))}

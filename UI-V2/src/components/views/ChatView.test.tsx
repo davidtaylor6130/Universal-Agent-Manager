@@ -883,7 +883,7 @@ describe('ChatView', () => {
       const trigger = host.querySelector<HTMLButtonElement>('.uam-provider-model-trigger')!
       // Disabled triggers take no focus, so their Tooltip label is only checked while enabled.
       if (!trigger.disabled) expect(tooltipText(trigger).endsWith(` · ${label}`)).toBe(true)
-      expect((trigger.lastElementChild as HTMLElement).style.background).toBe(color)
+      expect((trigger.querySelector('span[aria-hidden="true"].rounded-full') as HTMLElement).style.background).toBe(color)
     }
     expectStatus('Stopped', 'var(--text-3)')
     for (const processing of [false, true, false]) {
@@ -2675,7 +2675,7 @@ describe('ChatView', () => {
       expect(host.querySelector('[data-message-index="5"]')).not.toBeNull()
       expect(host.textContent?.split(row.content)).toHaveLength(2)
       expect(host.textContent).not.toContain('Message was not sent')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.getAttribute('aria-disabled')).toBe('true')
       act(() => useAppStore.setState({ messages: { 'chat-1': [] } }))
       expect(host.textContent?.split(row.content)).toHaveLength(2)
       expect(host.textContent).toContain('Sending')
@@ -2720,7 +2720,7 @@ describe('ChatView', () => {
       expect(host.querySelector('[data-queue-id]')).toBeNull()
       expect(host.textContent).not.toContain('Queue held')
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(true)
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.getAttribute('aria-disabled')).toBe('true')
       const removeButton = host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
       expect(removeButton.disabled).toBe(false)
       await act(async () => removeButton.click())
@@ -3338,7 +3338,7 @@ describe('ChatView', () => {
     expect(host.querySelector('.conversation-turn[data-streaming="true"]')).not.toBeNull()
     expect(host.querySelector('.uam-runtime-status')).toBeNull()
     // Disabled while the permission wait blocks changes; a disabled trigger cannot take focus to show its tooltip.
-    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
 
     openComposerOptions(host)
     expect(document.body.textContent).toContain('Token budget')
@@ -4424,7 +4424,7 @@ describe('ChatView', () => {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect((host.querySelector('textarea') as HTMLTextAreaElement).placeholder.endsWith('· keyboard mic for dictation')).toBe(true)
       // Companion dictation is disabled here, so its Tooltip is unreachable; the placeholder carries the keyboard-mic hint.
-      expect((host.querySelector('button[data-dictation-state="idle"]') as HTMLButtonElement).disabled).toBe(true)
+      expect((host.querySelector('button[data-dictation-state="idle"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -5700,7 +5700,7 @@ describe('ChatView', () => {
 
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     act(() => useAppStore.setState({ setSessionModel }))
-    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     openComposerOptions(host)
     const worker = document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement
     expect(worker.textContent).toContain('Auto 3')
@@ -5731,7 +5731,7 @@ describe('ChatView', () => {
 
     expect((document.body.querySelector('button[aria-label="Worker model"]') as HTMLButtonElement).disabled).toBe(true)
     expect((document.body.querySelector('button[aria-label="Reviewer model"]') as HTMLButtonElement).disabled).toBe(true)
-    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).disabled).toBe(true)
+    expect((host.querySelector('button[aria-label="Worker model is managed in Options"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
     openComposerGoals(host)
     expect(document.body.textContent).toContain('Worker: Auto 3 · Reviewer: Gemini 3 Flash · locked')
 
@@ -5764,7 +5764,7 @@ describe('ChatView', () => {
 
     const modelButton = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement | null
     expect(modelButton).toBeTruthy()
-    expect(modelButton?.disabled).toBe(true)
+    expect(modelButton?.getAttribute('aria-disabled')).toBe('true')
     openComposerOptions(host)
 	expect((document.body.querySelector('button[aria-label="Next turn agent"]') as HTMLButtonElement | null)?.disabled).toBe(false)
     expect(document.body.querySelector('button[aria-label="Provider mode"]')).toBeNull()
@@ -6326,7 +6326,7 @@ describe('ChatView', () => {
     openComposerGoals(host)
     act(() => (document.body.querySelector('button[aria-label="Goal actions"]') as HTMLButtonElement).click())
     const deleteGoal = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Delete goal') as HTMLButtonElement
-    expect(deleteGoal.disabled).toBe(true)
+    expect(deleteGoal.getAttribute('aria-disabled')).toBe('true')
     act(() => deleteGoal.click())
     expect(removeGoal).not.toHaveBeenCalled()
 
@@ -8551,7 +8551,7 @@ describe('ChatView', () => {
     expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
       .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
-    expect(discard.disabled).toBe(false)
+    expect(discard.getAttribute('aria-disabled')).toBeNull()
 
     act(() => {
       useAppStore.setState({
@@ -8570,7 +8570,7 @@ describe('ChatView', () => {
         },
       })
     })
-    expect(discard.disabled).toBe(true)
+    expect(discard.getAttribute('aria-disabled')).toBe('true')
 
     act(() => root.unmount())
     host.remove()

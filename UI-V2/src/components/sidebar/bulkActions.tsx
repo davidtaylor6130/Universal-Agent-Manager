@@ -19,6 +19,7 @@ export function SingleOnlyMenuItem({ icon, label, noun, className = 'uam-sb-menu
   const reason = singleOnlyReason(noun)
   return <>
     <Tooltip label={reason} side="right">
+      {/* ui: raw button kept — aria-disabled row described by an external reason id; MenuItem swaps the Tooltip for a native title */}
       <button type="button" role="menuitem" aria-disabled="true" aria-describedby={reasonId} className={className} onClick={(event) => event.preventDefault()}>
         {icon}{label}
       </button>
@@ -82,6 +83,7 @@ export function CopyDetailItems({ items }: { items: CopyDetail[] }) {
     finally { setCopying(false) }
   }
   return <>
+    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
     {items.map((item) => <button key={item.label} type="button" role="menuitem" disabled={copying} className="uam-sb-menu-item"
       style={{ cursor: copying ? 'wait' : 'pointer' }} onClick={() => { void copy(item) }}>
       <Copy size={13} aria-hidden />{item.label}

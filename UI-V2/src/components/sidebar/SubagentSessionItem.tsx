@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import { nativeSubagentChildren, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { ManagedSubagentPanel } from '../chat/ManagedSubagentPanel'
+import { RowButton } from '../ui'
 import { SessionItem } from './SessionItem'
 
 const hasManagedChildren = (session: Session) => (session.managedSubagentCount ?? 0) > 0 || (session.managedSubagentRevision ?? 0) > 0
@@ -66,6 +67,7 @@ function OwnerChildren({ owner, grouped = false }: { owner: Session; grouped?: b
   const hasList = children.length > 0 || managed
   const content = <>
     {grouped && <SessionItem sessionId={owner.id} session={owner} familySessionIds={[owner.id]} />}
+    {/* ui: raw button kept — disabled attribute and a bespoke toggle class with chevron; Button would restyle it */}
     {hasList && <button type="button" className="uam-subagent-toggle" aria-expanded={expanded} aria-controls={listId} disabled={searchOpen} onClick={() => setChosen(open => !open)}>
       <ChevronRight size={12} className="uam-subagent-toggle__chevron" aria-hidden />
       <span>Subagents{total > 0 ? ` · ${total}` : ''}</span>
@@ -109,9 +111,9 @@ export function OrphanSubagentItem({ child }: { child: Session }) {
 
 function OrphanSessionRow({ child }: { child: Session }) {
   const active = useAppStore(state => state.activeSessionId === child.id)
-  return <button type="button" className={`uam-sb-row mx-1 flex min-h-[26px] w-[calc(100%-8px)] cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs${active ? ' uam-sb-row--selected' : ''}`} aria-current={active ? 'page' : undefined}
+  return <RowButton className={`uam-sb-row mx-1 flex min-h-[26px] w-[calc(100%-8px)] cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs${active ? ' uam-sb-row--selected' : ''}`} aria-current={active ? 'page' : undefined}
     onClick={() => useAppStore.getState().setActiveSession(child.id)} aria-label={`Open read-only subagent ${child.name}`}>
     <Bot size={16} className="shrink-0" aria-hidden />
     <span className="truncate">{child.name}</span>
-  </button>
+  </RowButton>
 }

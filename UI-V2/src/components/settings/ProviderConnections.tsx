@@ -121,6 +121,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false; setPendingKey('') } }
   }
   /** Configuration switch. Unknown (undefined) renders as a dashed, disabled switch. Only the saving switch is pending; the rest stay steady. */
+  // ui: raw button kept — role=checkbox configuration cell with dashed unknown and pending states; Switch has no mixed state.
   const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => <button type="button" role="checkbox" className="uam-prov-switch" aria-label={checked === undefined ? `${label} (unknown)` : label} aria-checked={checked === undefined ? 'mixed' : checked} data-pending={pendingId !== '' && pendingKey === pendingId || undefined} disabled={(pendingId !== '' && pendingKey === pendingId) || checked === undefined || !onChange} title={checked === undefined ? 'Not known yet' : checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onClick={onChange}/>
   /** Read-only availability glyph: state is shown, not set here. */
   const collapseServers = servers.length > MAX_SERVER_COLUMNS
@@ -154,12 +155,14 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     const known = flags.some(flag => flag !== undefined)
     const label = terminalOnly ? 'Terminal only' : known ? `${on} of ${servers.length} on` : 'Unknown'
     const open = menuId === id
+    // ui: raw button kept — MCP chip with a per-provider state meter and popup trigger; no chip primitive.
     return <button type="button" className="uam-prov-mcp-chip" aria-haspopup="dialog" aria-expanded={open} aria-label={`${providerMetadataForId(id).shortName} MCP servers, ${label}`}
       disabled={terminalOnly || servers.length === 0} onClick={event => openMenu(id, event.currentTarget)}>
       <span className="uam-prov-meter" aria-hidden>{flags.map((flag, index) => <i key={index} data-state={flag === undefined ? 'unknown' : flag ? 'on' : 'off'} />)}</span>
       <span className="tabular-nums">{label}</span>
     </button>
   }
+  // ui: raw button kept — read-only overview tick/cross cell (role=checkbox); the overview cells are not restyled.
   const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
   const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
@@ -213,6 +216,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
             : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
             : computerUseEnabled ? 'Available. Each chat needs an approved target.' : 'Off. Turn Computer Use on in Computer Use settings.'
+          // ui: raw buttons kept — provider name cell and shared-setup tick/cross cell are table cells with bespoke overview styling.
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}>{!terminalOnly && healthLabel === 'Connected' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }}/> : !terminalOnly && healthLabel === 'Failed' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }}/> : <StatusDot tone={healthTone}/>}{terminalOnly ? 'Terminal only' : healthLabel}</span>

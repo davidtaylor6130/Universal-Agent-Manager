@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { FolderTree } from '../sidebar/FolderTree'
 import { ChatSearchBar } from '../sidebar/ChatSearchBar'
-import { Button, Notice } from '../ui'
+import { Button, Notice, RowButton } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearch'
@@ -132,7 +132,7 @@ export function Sidebar() {
         {deepSearchHits.filter((hit) => sessions.some((session) => session.id === hit.chatId)).map((hit) => {
           const session = sessions.find((candidate) => candidate.id === hit.chatId)!
           const source = hit.field === 'thoughts' ? 'Thoughts' : hit.field === 'planSummary' ? 'Plan' : 'Message'
-          return <button key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
+          return <RowButton key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
             className="uam-sb-hit block w-full rounded-md px-2 py-1 text-left text-xs" 
             disabled={searchNavigation?.phase === 'loading'}
             onClick={() => {
@@ -142,7 +142,7 @@ export function Sidebar() {
             }}>
             <span className="block truncate"><span className="font-medium">{session.name}</span><span style={{ color: 'var(--text-3)' }}> · {source} {hit.messageIndex + 1}</span></span>
             <span className="uam-sb-hit__excerpt block line-clamp-2">{hit.excerpt}</span>
-          </button>
+          </RowButton>
         })}
       </div>}
       <div

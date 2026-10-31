@@ -14,7 +14,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
-import { ConfirmDialog, IconButton, Tooltip, ViewportMenu } from '../ui'
+import { ConfirmDialog, IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -658,6 +658,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   )}
                   {!isCompanionContext() && (
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
+                      {/* ui: raw button kept — inline-styled text action with its own colours; Button would restyle it */}
                       <button
                         type="button"
                         aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
@@ -743,6 +744,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         )}
         {!editing && isPinned && (
           <Tooltip label={multiSelected ? 'Unpin selected chats' : 'Unpin chat'} side="top">
+            {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
             <button
               type="button"
               aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
@@ -859,6 +861,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 />
               )}
               <Tooltip label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`} side="top">
+                {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
                 <button
                   type="button"
                   aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`}
@@ -883,6 +886,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </button>
               </Tooltip>
               <Tooltip label="More actions" side="top">
+                {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
                 <button
                   type="button"
                   aria-label="More actions"
@@ -951,6 +955,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               onDelete={() => chatSelection?.deleteSelected()}
             />
           ) : <>
+          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
           <button type="button" role="menuitem" className="uam-sb-menu-item"
             disabled={!canReuseWorktree}
             onClick={() => {
@@ -961,38 +966,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               current.setNewChatModalOpen(true, source.folderId, { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: source.executionHostId || 'local' })
             }}><MessageSquarePlus size={13} aria-hidden />New chat in this worktree</button>
           <MenuDivider />
-          <button
-            role="menuitem"
-            className="uam-sb-menu-item"
-            onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
-          >
-            <Pencil size={13} aria-hidden />
-            Rename
-            <kbd className="uam-menu-kbd">F2</kbd>
-          </button>
+          <MenuItem className="uam-sb-menu-item" icon={<Pencil size={13} aria-hidden />} label="Rename" shortcut="F2"
+            onSelect={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }} />
+          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
           <button type="button" role="menuitem" disabled={generatingTitle}
             className="uam-sb-menu-item"
             onClick={() => { void regenerateTitle() }}>
             <RefreshCw size={13} aria-hidden />{generatingTitle ? 'Generating title…' : 'Regenerate title'}
           </button>
+          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
           {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
             className="uam-sb-menu-item"
             onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
           {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>
             {titleFeedback.error ? <CircleAlert size={12} aria-hidden /> : <Check size={12} aria-hidden />}{titleFeedback.text}
           </p>}
-          <button
-            role="menuitem"
-            className="uam-sb-menu-item"
-            onClick={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }}
-          >
-            <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
-            {isPinned ? 'Unpin chat' : 'Pin chat'}
-          </button>
-          <button type="button" role="menuitem" className="uam-sb-menu-item"
-            onClick={() => { setMenuPos(null); iconPicker.open('chat', sessionId, sessionName) }}>
-            <SmilePlus size={13} aria-hidden />Icon…
-          </button>
+          <MenuItem className="uam-sb-menu-item" icon={<Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />} label={isPinned ? 'Unpin chat' : 'Pin chat'}
+            onSelect={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }} />
+          <MenuItem className="uam-sb-menu-item" icon={<SmilePlus size={13} aria-hidden />} label="Icon…"
+            onSelect={() => { setMenuPos(null); iconPicker.open('chat', sessionId, sessionName) }} />
           <MenuDivider />
           <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
             <CopyDetailItems items={copyItems} />
@@ -1002,15 +994,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </RowSubmenu>
           <CollectionMenuItems showDivider={false} type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <MenuDivider />
-          <button
-            role="menuitem"
-            className="uam-sb-menu-item uam-sb-menu-item--danger"
-            onClick={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }}
-          >
-            <Trash2 size={13} aria-hidden />
-            Delete…
-            <kbd className="uam-menu-kbd">Del</kbd>
-          </button>
+          <MenuItem className="uam-sb-menu-item uam-sb-menu-item--danger" icon={<Trash2 size={13} aria-hidden />} label="Delete…" shortcut="Del"
+            onSelect={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }} />
           </>}
         </ViewportMenu>
       )}
@@ -1072,15 +1057,12 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
     <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree" />
     <MenuDivider />
     <SingleOnlyMenuItem noun="chat" icon={<Pencil size={13} aria-hidden />} label="Rename" />
+    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
     <button type="button" role="menuitem" className="uam-sb-menu-item" disabled={bulkTitleRunning} onClick={regenerateTitles}>
       <RefreshCw size={13} aria-hidden />{bulkTitleRunning ? 'Generating titles…' : `Regenerate ${targets.length} titles`}
     </button>
-    <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={togglePins}>
-      <Pin size={13} fill={pin ? 'none' : 'currentColor'} aria-hidden />{pin ? 'Pin' : 'Unpin'} {targets.length} chats
-    </button>
-    <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={() => { onClose(); onIcon(targets) }}>
-      <SmilePlus size={13} aria-hidden />Icon for {targets.length} chats…
-    </button>
+    <MenuItem className="uam-sb-menu-item" icon={<Pin size={13} fill={pin ? 'none' : 'currentColor'} aria-hidden />} label={`${pin ? 'Pin' : 'Unpin'} ${targets.length} chats`} onSelect={togglePins} />
+    <MenuItem className="uam-sb-menu-item" icon={<SmilePlus size={13} aria-hidden />} label={`Icon for ${targets.length} chats…`} onSelect={() => { onClose(); onIcon(targets) }} />
     <MenuDivider />
     <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
       <CopyDetailItems items={copyItems} />
@@ -1090,9 +1072,6 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
     </RowSubmenu>
     <CollectionMenuItems showDivider={false} type="chat" target={ids[0]} label={targets[0]?.label ?? ''} targets={targets} onAdded={onClose} />
     <MenuDivider />
-    <button type="button" role="menuitem" className="uam-sb-menu-item uam-sb-menu-item--danger" onClick={() => { onClose(); onDelete() }}>
-      <Trash2 size={13} aria-hidden />Delete {targets.length} chats…
-      <kbd className="uam-menu-kbd">Del</kbd>
-    </button>
+    <MenuItem className="uam-sb-menu-item uam-sb-menu-item--danger" icon={<Trash2 size={13} aria-hidden />} label={`Delete ${targets.length} chats…`} shortcut="Del" onSelect={() => { onClose(); onDelete() }} />
   </>
 }

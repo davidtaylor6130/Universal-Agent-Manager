@@ -45,6 +45,11 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
+/** Shared MenuItem rows carry their label as text, not aria-label. */
+function menuItem(label: string) {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((item) => item.textContent === label) ?? null
+}
+
 describe('GoalBanner', () => {
   it('isolates edit Save from an ancestor composer form', async () => {
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
@@ -52,7 +57,7 @@ describe('GoalBanner', () => {
     const save = vi.fn(async () => true)
     act(() => root.render(<form onSubmit={submitComposer}><GoalBanner goal={goal} onComplete={() => {}} onRemove={() => {}} onEdit={save} /></form>))
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"]')!.click())
+    act(() => menuItem('Edit goal')!.click())
     await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
     expect(save).toHaveBeenCalledWith(goal.objective)
     expect(submitComposer).not.toHaveBeenCalled()
@@ -62,7 +67,7 @@ describe('GoalBanner', () => {
   it('traps edit-dialog Tab and owns Escape without closing a parent keyboard handler', () => {
     const { host, root } = renderGoal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-    act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+    act(() => menuItem('Edit goal')!.click())
     const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Edit goal"]')!
     const parentEscape = vi.fn()
     const listener = (event: KeyboardEvent) => { if (event.key === 'Escape') parentEscape() }
@@ -207,7 +212,7 @@ describe('GoalBanner', () => {
     const { host, root, onEdit } = renderGoal()
 
     act(() => { (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    act(() => { (document.body.querySelector('button[aria-label="Edit goal"]') as HTMLButtonElement).click() })
+    act(() => { menuItem('Edit goal')!.click() })
 
     const dialog = document.body.querySelector('[role="dialog"][aria-label="Edit goal"]') as HTMLElement
     expect(dialog).toBeTruthy()
@@ -229,16 +234,16 @@ describe('GoalBanner', () => {
   it('does not offer editing for provider-managed goals', () => {
     const { host, root } = renderGoal({ executionOwner: 'provider' })
     act(() => { (host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
+    expect(menuItem('Edit goal')).toBeNull()
     act(() => root.unmount())
   })
 
   it('keeps completed goals deletable but not editable or resumable', () => {
     const completed = renderGoal({ status: 'complete' })
     act(() => { (completed.host.querySelector('[aria-label="Goal actions"]') as HTMLButtonElement).click() })
-    expect(document.body.querySelector('button[aria-label="Edit goal"]')).toBeNull()
-    expect(document.body.querySelector('button[aria-label="Resume goal"]')).toBeNull()
-    expect(document.body.querySelector('button[aria-label="Delete goal"]')).toBeTruthy()
+    expect(menuItem('Edit goal')).toBeNull()
+    expect(menuItem('Resume goal')).toBeNull()
+    expect(menuItem('Delete goal')).toBeTruthy()
     act(() => completed.root.unmount())
   })
 

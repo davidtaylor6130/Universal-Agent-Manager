@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
 import { reportAppFailure } from '../../utils/appFailure'
 import { RowSubmenu } from './RowSubmenu'
+import { MenuItem } from '../ui'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
@@ -60,18 +61,11 @@ export function CollectionMenuItems({
       {showDivider && <div className="uam-sb-menu-divider" role="separator" />}
       <RowSubmenu label="Move to collection" ariaLabel="Move to collection" icon={<Library size={13} aria-hidden />}>
         {inAnyCollection && (
-          <button
-            type="button"
-            role="menuitem"
-            className="uam-sb-menu-item"
-            onClick={() => move(null)}
-          >
-            <Library size={13} aria-hidden />
-            <span>Remove from collection</span>
-          </button>
+          <MenuItem className="uam-sb-menu-item" icon={<Library size={13} aria-hidden />} label="Remove from collection" onSelect={() => move(null)} />
         )}
         {collections.map((collection) => {
           const current = memberships.every((ids) => ids.has(collection.id))
+          // ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable
           return (
             <button
               key={collection.id}

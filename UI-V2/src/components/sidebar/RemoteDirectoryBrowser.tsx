@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowUp, ChevronRight, Folder, Server, X } from 'lucide-
 import type { ExecutionHost, RemoteDirectoryListing } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { defaultRemoteBrowsePath, isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
-import { Button, Card, IconButton, Notice } from '../ui'
+import { Button, Card, IconButton, Notice, RowButton } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 
 interface RemoteDirectoryBrowserProps {
@@ -149,7 +149,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               <>
                 {validatedDirectory !== directoryKey && <p className="px-3 py-2 text-xs" style={{ color: 'var(--text-2)' }}>Last loaded: {listing.directory}</p>}
                 {listing.parentDirectory && (
-                  <button
+                  <RowButton
                     type="button"
                     className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                     style={{ color: 'var(--text)' }}
@@ -157,10 +157,10 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                   >
                     <ArrowUp size={15} aria-hidden style={{ color: 'var(--text-3)' }} />
                     <span>Parent directory</span>
-                  </button>
+                  </RowButton>
                 )}
                 {listing.directories.map((directory) => (
-                  <button
+                  <RowButton
                     key={directory.path}
                     type="button"
                     className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
@@ -170,7 +170,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                     <Folder size={15} aria-hidden style={{ color: 'var(--accent)' }} />
                     <span className="min-w-0 flex-1 truncate">{directory.name}</span>
                     <ChevronRight size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
-                  </button>
+                  </RowButton>
                 ))}
                 {listing.directories.length === 0 && (
                   <div className="flex min-h-[180px] items-center justify-center px-4 text-center text-sm" style={{ color: 'var(--text-3)' }}>No child directories are visible here.</div>

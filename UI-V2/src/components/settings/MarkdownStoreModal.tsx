@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, useOverlayState } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -467,10 +467,10 @@ function SkillFolders({ entries, selectedPath, onSelect, onPin }: { entries: Mar
         <div className="ml-3 pl-2" style={{ borderLeft: '1px solid var(--border)' }}>{renderFolder(folder)}</div>
       </details>)}
       {node.entries.map((entry) => <div key={entry.filePath} className="uam-skill-row" data-selected={entry.filePath === selectedPath}>
-        <button type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, color: 'var(--text)', padding: 0 }}>
+        <RowButton type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, color: 'var(--text)', padding: 0 }}>
           <div className="flex min-w-0 items-center gap-1.5"><span className="shrink-0 inline-flex" aria-hidden style={{ color: 'var(--text-3)' }}>{entry.sourceProvider ? <ProviderLogo providerId={normalizeCliProviderIdAlias(entry.sourceProvider)} size={13} /> : <FileText size={13} />}</span><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</div>
           <div className="text-xs truncate" style={{ color: 'var(--text-3)' }}>{[entry.maker, entry.review || entry.preview].filter(Boolean).join(' · ')}</div>
-        </button>
+        </RowButton>
         <IconButton size="sm" className="uam-skill-pin" icon={<Pin size={14} fill={entry.favorite ? 'currentColor' : 'none'} />} active={Boolean(entry.favorite)} label={`${entry.favorite ? 'Unpin' : 'Pin'} ${entry.title}`} onClick={() => onPin(entry)} />
       </div>)}
     </>

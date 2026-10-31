@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, RotateCw } from 'lucide-react'
 import type { ChatFileChangeReceipt, ChatFileChangeReceiptsResponse } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Notice, Presence } from '../ui'
+import { Button, Notice, Presence, RowButton } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import '../shared/review.css'
 import { CODEX_CLI_PROVIDER_ID } from '../../utils/providerMetadata'
@@ -107,7 +107,7 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
         const dir = cut > 0 ? receipt.path.slice(0, cut) : ''
         const name = receipt.destinationPath ? `${baseName(receipt.path)} → ${baseName(receipt.destinationPath)}` : baseName(receipt.path)
         return <div key={`${receipt.messageIndex}:${receipt.toolCallId}:${index}`} className="uam-rv-file group" style={{ color: 'var(--text-2)' }}>
-          <button
+          <RowButton
             type="button"
             className="uam-rv-file__open"
             aria-label={`Review recorded edit ${index + 1}: ${receipt.path}`}
@@ -128,7 +128,7 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
             </span>
             <span className="sr-only">Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
             <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
-          </button>
+          </RowButton>
         </div>
       })}</div>
     </>}

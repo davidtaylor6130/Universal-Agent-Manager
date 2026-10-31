@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import type { FormEvent } from 'react'
 import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronRight } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { Button, IconButton, Overlay, Presence, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
+import { Button, IconButton, MenuItem, Overlay, Presence, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import './GoalBanner.css'
 
@@ -69,25 +69,6 @@ function readableDiagnostic(diagnostic: string): string {
 function readablePlanItem(item: string): string {
   const trimmed = item.trim()
   return trimmed.replace(/^T\d+\s*(?:[:.)\]_\-–—]\s*)?/i, '').trim() || trimmed
-}
-
-function MenuItem({ icon, label, onClick, danger, disabled }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      role="menuitem"
-      disabled={disabled}
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors duration-100"
-      style={{ background: 'transparent', color: danger ? 'var(--error)' : 'var(--text-2)', border: 'none', cursor: disabled ? 'default' : 'pointer', fontFamily: 'inherit', opacity: disabled ? 0.6 : 1 }}
-      onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = 'var(--sidebar-item-hover)' }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-      onClick={onClick}
-    >
-      {icon}
-      {label}
-    </button>
-  )
 }
 
 function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean>; returnFocusElement: HTMLButtonElement | null }) {
@@ -324,19 +305,19 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
             className="uam-goal-menu"
           >
             {goal.status === 'active' && (
-              <MenuItem disabled={resumePending} icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />
+              <MenuItem disabled={resumePending} icon={<Check size={14} aria-hidden />} label="Mark complete" onSelect={() => { setMenuOpen(false); onComplete() }} />
             )}
             {goal.status === 'active' && onPause && (
-              <MenuItem disabled={resumePending} icon={<Pause size={14} aria-hidden />} label="Pause goal" onClick={() => { setMenuOpen(false); onPause() }} />
+              <MenuItem disabled={resumePending} icon={<Pause size={14} aria-hidden />} label="Pause goal" onSelect={() => { setMenuOpen(false); onPause() }} />
             )}
             {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
-              <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label={resumePending ? 'Resuming…' : 'Resume goal'} onClick={() => { setMenuOpen(false); onResume() }} />
+              <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label={resumePending ? 'Resuming…' : 'Resume goal'} onSelect={() => { setMenuOpen(false); onResume() }} />
             )}
-            {onRestart && <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label="Restart goal" onClick={() => { setMenuOpen(false); onRestart() }} />}
+            {onRestart && <MenuItem disabled={resumePending} icon={<Play size={14} aria-hidden />} label="Restart goal" onSelect={() => { setMenuOpen(false); onRestart() }} />}
             {!isComplete && goal.executionOwner !== 'provider' && onEdit && (
-              <MenuItem disabled={resumePending} icon={<Pencil size={14} aria-hidden />} label="Edit goal" onClick={() => { setMenuOpen(false); setEditing(true) }} />
+              <MenuItem disabled={resumePending} icon={<Pencil size={14} aria-hidden />} label="Edit goal" onSelect={() => { setMenuOpen(false); setEditing(true) }} />
             )}
-            <MenuItem disabled={resumePending} icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onClick={() => { setMenuOpen(false); onRemove() }} />
+            <MenuItem disabled={resumePending} icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onSelect={() => { setMenuOpen(false); onRemove() }} />
           </ViewportMenu>
         )}
       </div>

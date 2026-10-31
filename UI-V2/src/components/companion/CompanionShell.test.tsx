@@ -26,6 +26,7 @@ vi.mock('../ui', () => ({
   Button: ({ children, variant: _variant, size: _size, leadingIcon: _leadingIcon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; leadingIcon?: React.ReactNode }) => <button {...props}>{children}</button>,
   IconButton: ({ label, onClick, icon, disabled, className, 'aria-current': ariaCurrent }: { label: string; onClick: () => void; icon?: React.ReactNode; disabled?: boolean; className?: string; 'aria-current'?: React.AriaAttributes['aria-current'] }) => <button aria-label={label} onClick={onClick} disabled={disabled} className={className} aria-current={ariaCurrent}>{icon}{label}</button>,
   Presence: ({ open, children }: { open: boolean; children: React.ReactNode }) => open ? <>{children}</> : null,
+  RowButton: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" {...props} />,
   Switch: ({ label, checked, onChange }: { label: string; checked?: boolean; onChange?: React.ChangeEventHandler<HTMLInputElement> }) => <label><input type="checkbox" aria-label={label} checked={checked} onChange={onChange} />{label}</label>,
 }))
 

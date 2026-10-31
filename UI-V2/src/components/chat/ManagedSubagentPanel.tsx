@@ -1,7 +1,7 @@
 import { readChatGridLayout } from '../../utils/chatGridStorage'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Bot, CircleDashed, Square, Users } from 'lucide-react'
-import { Button, Notice, Tooltip, motionAllowed } from '../ui'
+import { Button, IconButton, Notice, RowButton, Tooltip, motionAllowed } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { isCefContext } from '../../ipc/cefBridge'
 import { subagentRouteFor, subscribeSubagentNavigation, subagentNavigationRevision, openSubagentView } from '../../utils/subagentNavigation'
@@ -247,15 +247,15 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
           return <li key={run.runId} className="uam-subagent-line" data-nested={run.parentRunId ? '' : undefined}>
             <span id={statusId} className="sr-only">{statusText}</span>
             <Tooltip label={detail}>
-              <button type="button" data-managed-run={run.runId} aria-current={current ? 'page' : undefined} aria-label={`Open managed conversation for ${name}`} aria-describedby={statusId}
+              <RowButton type="button" data-managed-run={run.runId} aria-current={current ? 'page' : undefined} aria-label={`Open managed conversation for ${name}`} aria-describedby={statusId}
                 className={`uam-sb-row uam-subagent-line__open${current ? ' uam-sb-row--selected' : ''}`} onClick={() => openRun(run)}>
                 <Bot size={16} className="shrink-0" aria-hidden />
                 <span className="truncate">{name}</span>
                 <span className="uam-subagent-line__status" aria-hidden>{activeRun && <CircleDashed size={11} className="uam-working-ring" />}{trailing}</span>
-              </button>
+              </RowButton>
             </Tooltip>
-            {!lastReported && run.canCancel && <Tooltip label={`Stop ${name}`}><button type="button" className="uam-subagent-line__stop" data-managed-stop={run.runId} aria-label={`Stop managed subagent ${name}`}
-              disabled={Boolean(stopping)} onClick={() => void stop(run)}><Square size={11} aria-hidden /></button></Tooltip>}
+            {!lastReported && run.canCancel && <IconButton icon={<Square size={11} />} label={`Stop managed subagent ${name}`} tooltip={`Stop ${name}`} size="sm" variant="ghost" className="uam-subagent-line__stop" data-managed-stop={run.runId}
+              disabled={Boolean(stopping)} onClick={() => void stop(run)} />}
           </li>
         })}
       </ul>

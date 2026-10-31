@@ -226,3 +226,4 @@
 .uam-native-issues__ids code { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
 .uam-native-issues__ids > summary::-webkit-details-marker { display: none; }
 .uam-native-issues__ids > summary { list-style: none; text-decoration: underline; text-underline-offset: 2px; }
+[data-motion="off"] .uam-settings-nav__indicator { transition: none; }

@@ -8,7 +8,7 @@ import { FolderTree } from '../sidebar/FolderTree'
 import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, Presence } from '../ui'
+import { Button, IconButton, Presence, RowButton } from '../ui'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
 import { CompanionPreferences } from './CompanionPreferences'
@@ -126,12 +126,12 @@ export function CompanionShell() {
       : status?.type === 'attention'
         ? attentionIcon
         : <Check size={14} aria-hidden="true" />
-    return <button key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
+    return <RowButton key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
       <ProviderLogo providerId={candidate.providerId} size={24} className="uam-companion-provider" />
       <span className="uam-companion-row-copy"><strong>{candidate.name}</strong></span>
       <span className="uam-companion-row-state"><em className={`session-status session-status--${status?.type === 'processing' ? 'processing' : status?.type === 'attention' ? 'attention' : 'idle'}`} aria-label={statusLabel}>{statusIcon}</em><small className="uam-companion-review-status">{status?.type === 'done' ? 'Ready to review' : statusLabel}</small><small>{timestamp}</small></span>
       <ChevronRight size={18} aria-hidden />
-    </button>
+    </RowButton>
   }
 
 

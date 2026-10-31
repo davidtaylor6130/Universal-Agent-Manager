@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { Button, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed, usePresence } from '../ui'
+import { Button, EXIT_MS, IconButton, Overlay, RowButton, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -145,7 +145,7 @@ export function ToolCallInlineRows({
         return (
           <div key={tool.id} className="uam-tool-timeline__item">
             <Tooltip label="Open tool details">
-              <button
+              <RowButton
                 type="button"
                 data-active={active}
                 onClick={() => onSelectTool(tool.id)}
@@ -155,7 +155,7 @@ export function ToolCallInlineRows({
                 <span className="uam-tool-row__kind">Tool</span>
                 <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
                 <ToolStatusIcon status={tool.status} />
-              </button>
+              </RowButton>
             </Tooltip>
           </div>
         )
@@ -262,6 +262,7 @@ export function PermissionInlineCard({
           </div>
           <div>{waitStaleReason || 'The provider may be waiting on a stale command or tool request.'}</div>
           <div className="flex flex-wrap gap-2 mt-2">
+            {/* ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it */}
             <button
               type="button"
               className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
@@ -276,6 +277,7 @@ export function PermissionInlineCard({
             >
               Cancel turn
             </button>
+            {/* ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it */}
             <button
               type="button"
               className="uam-choice-button px-2.5 h-7 text-[11px]"
@@ -295,6 +297,7 @@ export function PermissionInlineCard({
       )}
       <div className="flex flex-wrap gap-2">
         {normalizedOptions.map((option) => (
+          // ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it
           <button
             key={option.id}
             type="button"
@@ -597,6 +600,7 @@ function ToolCallDetails({
           <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={requestClose} />
         </header>
         <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
+          {/* ui: raw button kept — ARIA tab with roving tabindex and arrow-key handling; no tab primitive */}
           {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}
             aria-controls={`${id}-panel`} aria-selected={activeTab === name} tabIndex={activeTab === name ? 0 : -1}
             onClick={() => setTab(name)} onKeyDown={event => {
@@ -610,11 +614,15 @@ function ToolCallDetails({
         <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}-tab`} tabIndex={0}
           className={`tool-details-panel${activeTab === 'Output' ? ' tool-details-panel--output' : ''}`}>
           {activeTab === 'Output' && <>
+          {/* ui: raw button kept — aria-pressed live toggle with tool-details-follow styling; Button would restyle it */}
           {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
+                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
                 <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
+                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
                 <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
+                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
                 <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
               <span aria-live="polite">
                 {contentPage.totalBytes === 0
@@ -626,6 +634,7 @@ function ToolCallDetails({
           {contentError && (
             <div role="alert" className="mb-2 flex items-center gap-2 text-[11px]" style={{ color: 'var(--error)' }}>
               <span>{contentError}</span>
+              {/* ui: raw button kept — uam-choice-button chip in the output error row; Button would restyle it */}
               <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</button>
             </div>
           )}
@@ -653,6 +662,7 @@ function ToolCallDetails({
           </div>}
           {activeTab === 'Transcript' && <div className="tool-details-transcript">
           {transcriptChatId && !managedTranscript && (
+            // ui: raw button kept — inline-styled transcript action; Button would restyle it
             <button
               type="button"
               onClick={() => void openManagedTranscript()}
@@ -672,6 +682,7 @@ function ToolCallDetails({
                     <span style={{ color: 'var(--text-3)' }}>{managedTranscript.status}</span>
 
                   {managedTranscript.status === 'interrupted' && (
+                    // ui: raw button kept — inline-styled resume action; Button would restyle it
                     <button
                       type="button"
                       onClick={() => void resumeManagedRun()}

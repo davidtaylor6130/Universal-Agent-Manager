@@ -49,6 +49,7 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
     {limits.planType && <span>Plan: {limits.planType}</span>}
   </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
   return <Tooltip label={detail}>
+    {/* ui: raw button kept — inline meter-plus-label trigger, neither icon-only nor a button or row shape any primitive covers */}
     <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
       {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full [transition:width_var(--dur-base)_var(--ease-out-soft)] motion-reduce:transition-none" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone }} /></span>}
       {label !== 'Unavailable' && <span>{label}</span>}

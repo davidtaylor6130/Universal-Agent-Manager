@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronLeft, ChevronRight, MessageSquare, ChevronUp, ChevronDown } from 'lucide-react'
-import { Button, usePresence } from '../ui'
+import { Button, RowButton, usePresence } from '../ui'
 import type { AcpPendingUserInput, AcpUserInputAnswers } from '../../store/useAppStore'
 import './QuestionInput.css'
 
@@ -96,9 +96,9 @@ function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
             {accepted ? <Check size={14} aria-hidden style={{ color: 'var(--success)' }} /> : <MessageSquare size={14} aria-hidden />}
             <h2>{accepted ? 'Answers submitted' : input.questions[step]?.header || 'Answer questions'}</h2>
             <span className="qr-count">{Math.min(step + 1, input.questions.length)} of {input.questions.length}</span>
-            <button ref={triggerRef} type="button" aria-expanded={open && !accepted} onClick={() => { if (open) close(); else setOpen(true) }} disabled={accepted || !pending}>
+            <Button ref={triggerRef} type="button" variant="ghost" size="sm" aria-expanded={open && !accepted} onClick={() => { if (open) close(); else setOpen(true) }} disabled={accepted || !pending}>
                 {accepted ? 'Answers submitted' : open ? <><ChevronUp size={14} aria-hidden />Collapse questions</> : <><ChevronDown size={14} aria-hidden />Answer questions</>}
-            </button>
+            </Button>
         </header>
         <QuestionCollapse open={open && !accepted}><QuestionPanel input={input} drafts={drafts} step={Math.min(step, Math.max(0, input.questions.length - 1))}
             onDraft={(id, draft) => setDrafts(current => ({ ...current, [id]: draft }))} onStep={setStep}
@@ -139,11 +139,11 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
     }, [step])
     return <>
             {input.questions.length > 1 && <nav className="qr-progress" aria-label="Question progress">
-                {input.questions.map((item, index) => <button key={item.id} type="button" disabled={busy} aria-current={index === step ? 'step' : undefined} onClick={() => onStep(index)}>
+                {input.questions.map((item, index) => <RowButton key={item.id} type="button" disabled={busy} aria-current={index === step ? 'step' : undefined} onClick={() => onStep(index)}>
                     {answerFor(item, drafts[item.id]).length > 0 ? <Check size={12} aria-hidden /> : <span>{index + 1}</span>}
                     {item.header || `Question ${index + 1}`}
                     <span className="qr-sr-only">{answerFor(item, drafts[item.id]).length > 0 ? ', answered' : ', unanswered'}</span>
-                </button>)}
+                </RowButton>)}
             </nav>}
             <div className="qr-body" aria-busy={busy}>
                 {waitIsStale && <div data-testid="stale-wait-warning" className="qr-warning">
@@ -186,9 +186,9 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
             <footer className="qr-footer">
                 <span className="qr-status" role="status">{busy ? 'Submitting answers…' : question?.isMultiple ? `${draft.selections?.length ?? 0} selected` : ''}</span>
                 <div className="qr-actions">
-                    {input.questions.length > 1 && <button type="button" disabled={step === 0 || busy} onClick={() => onStep(step - 1)}><ChevronLeft size={14} />Back</button>}
-                    {step < input.questions.length - 1 ? <button type="button" className="qr-primary" disabled={busy || answerFor(question, draft).length === 0} onClick={() => onStep(step + 1)}>Next<ChevronRight size={14} /></button>
-                        : <button type="button" className="qr-primary" disabled={busy || !complete} onClick={onSubmit}>{busy ? 'Submitting…' : error ? 'Retry submission' : 'Submit answers'}</button>}
+                    {input.questions.length > 1 && <Button type="button" variant="ghost" size="sm" leadingIcon={<ChevronLeft size={14} />} disabled={step === 0 || busy} onClick={() => onStep(step - 1)}>Back</Button>}
+                    {step < input.questions.length - 1 ? <Button type="button" variant="primary" className="qr-primary" disabled={busy || answerFor(question, draft).length === 0} onClick={() => onStep(step + 1)} trailingIcon={<ChevronRight size={14} />}>Next</Button>
+                        : <Button type="button" variant="primary" className="qr-primary" disabled={busy || !complete} onClick={onSubmit}>{busy ? 'Submitting…' : error ? 'Retry submission' : 'Submit answers'}</Button>}
                 </div>
             </footer>
     </>

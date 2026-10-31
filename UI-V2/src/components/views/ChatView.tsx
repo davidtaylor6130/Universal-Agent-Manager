@@ -45,7 +45,7 @@ import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCa
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
-import { Notice, ViewportMenu, type NoticeTone } from '../ui'
+import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
@@ -3672,8 +3672,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
                           This directory lives on the remote computer. Use this chat or its CLI view for target-side work.
-                          <button type="button" role="menuitem" className="uam-menu-select__option mt-2 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
-                          <button type="button" role="menuitem" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} className="uam-menu-select__option flex w-full items-center gap-2 px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }}><ComposerIcon name="folder" size={14} /><span>Attach remote directory</span></button>
+                          <MenuItem className="mt-2" icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Attach remote directory" disabled={!recoveryHost || recoveryHost.runnerStatus !== 'ready' || workspaceActionBusy} onSelect={() => { setWorkspaceMenuOpen(false); setRemoteBrowseKey(remoteContextKey) }} />
                           <label className="mt-2 grid gap-1">
                             Move this chat to
                             <select aria-label="Move chat workspace" value={remoteMoveFolderId} disabled={remoteMoveDisabled} onChange={(event) => setRemoteMoveFolderId(event.target.value)} className="px-2 py-1" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }}>
@@ -3681,6 +3681,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                               {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                             </select>
                           </label>
+                          {/* ui: raw button kept — aria-busy is not supported by MenuItem */}
                           <button type="button" role="menuitem" disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" onClick={() => void moveRemoteWorkspace()}>{workspaceActionBusy ? 'Moving chat…' : 'Move chat'}</button>
                           <div className="mt-1">History and goals stay with this chat. A new provider session starts in the selected workspace.</div>
                           {Boolean(acp?.running || cli?.running) && <div className="mt-1">Stop the chat before moving its workspace.</div>}
@@ -3697,16 +3698,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         </div>
                       ) : (
                         <>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspace() }}><ComposerIcon name="folder" size={14} /><span>Open workspace</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }}><ComposerIcon name="editor" size={14} /><span>Open in editor</span></button>
-                          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" onClick={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }}><ComposerIcon name="terminal" size={14} /><span>Open terminal</span></button>
+                          <MenuItem icon={<ComposerIcon name="folder" size={14} />} label="Open workspace" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspace() }} />
+                          <MenuItem icon={<ComposerIcon name="editor" size={14} />} label="Open in editor" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceEditor() }} />
+                          <MenuItem icon={<ComposerIcon name="terminal" size={14} />} label="Open terminal" onSelect={() => { setWorkspaceMenuOpen(false); void openWorkspaceTerminal() }} />
                           <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
                           {!isGitWorktree ? (
-                            <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }}><ComposerIcon name="git-tree" size={14} /><span>Create worktree</span></button>
+                            <MenuItem icon={<ComposerIcon name="git-tree" size={14} />} label="Create worktree" disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('create') }} />
                           ) : (
                             <>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }}><span>Discard &amp; return</span></button>
-                              <button type="button" role="menuitem" disabled={workspaceActionsDisabled} className="uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left" style={{ opacity: workspaceActionsDisabled ? 0.5 : 1 }} onClick={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }}><span>Port back</span></button>
+                              <MenuItem label={'Discard & return'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('discard') }} />
+                              <MenuItem label={'Port back'} disabled={workspaceActionsDisabled} onSelect={() => { setWorkspaceMenuOpen(false); void runWorkspaceAction('port') }} />
                             </>
                           )}
                         </>
@@ -3727,6 +3728,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </span>
               </>
             )}
+            {/* ui: raw button kept — text chip with title and popup ARIA and its own keyboard handling; not an icon-only control or menu row */}
             {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
               aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
               className="conversation-goal-chip" title={displayedGoal.objective}
@@ -3826,6 +3828,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   {slashMatches.map((command, index) => {
                     const active = index === activeSlashIndex
                     return (
+                      // ui: raw button kept — role="option" in a listbox (aria-selected, active descendant); MenuItem is role="menuitem"
                       <button
                         key={command.id}
                         id={`${slashListboxId}-option-${index}`}
@@ -3866,6 +3869,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
                   const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
+                  // ui: raw button kept — onMouseDown/onMouseEnter, aria-haspopup/expanded and an inline row layout that MenuItem does not support
                   return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
                 })}
               </ViewportMenu>

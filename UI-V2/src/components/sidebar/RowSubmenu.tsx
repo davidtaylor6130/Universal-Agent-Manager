@@ -49,6 +49,7 @@ export function RowSubmenu({ label, ariaLabel, icon, children }: { label: string
 
   return (
     <>
+      {/* ui: raw button kept — trigger needs ref, keydown and hover handlers that MenuItem does not forward */}
       <button
         ref={triggerRef}
         type="button"
