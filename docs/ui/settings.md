@@ -1,12 +1,14 @@
 # Settings design language
 
-Settings use the single approved V5 row language, modelled on MCP Servers and Chat Defaults. The shell supplies a title-only page header; short section labels organise related rows without decorative descriptions or nested cards. Each row has one concept, a concise consequence where needed and a right-aligned control. This page owns presentation; [Settings](../settings/settings.md) and its feature pages own behaviour.
+Settings use the single approved V5 row language, modelled on the Appearance page. The shell supplies a title-only page header; short section labels organise related rows without decorative descriptions or nested cards. Each row has one concept, a concise consequence where needed and a right-aligned control. Rows are one line; a second line appears only when content truly needs it. This page owns presentation; [Settings](../settings/settings.md) and its feature pages own behaviour.
+
+The [Appearance](../settings/appearance.md) page is the reference layout; the [About](../settings/about.md) page is the reference simple page. Usage top selectors use the shared sliding selector.
 
 The native iPhone counterpart uses iOS grouped list rows and navigation sheets with large touch targets. Each group retains one heading and each row one concept; values and connection status remain distinct from save success. Phone-only preferences stay local, while controller-owned changes use the shared authenticated protocol and disclose unsupported desktop-only operations.
 
 ## Controls and disclosure
 
-Use [settings primitives](primitives.md#settings-primitives), with `Switch hideLabel` inside a SettingRow to avoid duplicate labels, MenuSelect for choices and small secondary/ghost buttons for actions. Neutral switches are the default; reserve `uam-switch--accent` for safety-important choices. Labels sit above wide text inputs. Primary settings stay visible; disclose genuinely optional advanced details. No hard-coded colours, ad-hoc boxes, repeated headings or wrapper cards that only add a heading.
+Use [settings primitives](primitives.md#settings-primitives), with `Switch hideLabel` inside a SettingRow to avoid duplicate labels, MenuSelect for choices and small secondary/ghost buttons for actions. Neutral switches are the default; reserve `uam-switch--accent` for safety-important choices. Labels sit above wide text inputs. Primary settings stay visible; disclose genuinely optional advanced details. No hard-coded colours, ad-hoc boxes, repeated headings or wrapper cards that only add a heading. No heading-on-heading: a section with a single subject uses that subject as its title, so a code-font setting is titled “Code blocks and diffs in messages”, not a broader “Code” heading with a subtitle. No live-preview or example boxes for settings that apply live to the whole UI; theme, typography and motion choices use live values rather than preview boxes.
 
 ## Copy and lists
 
