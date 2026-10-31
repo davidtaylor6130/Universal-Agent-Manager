@@ -45,7 +45,7 @@ function QuestionCollapse({ open, children }: { open: boolean; children: ReactNo
     if (open) lastChildren.current = children
     if (!mounted) return null
     return <div className="qr-collapse" data-state={closing ? 'closed' : 'open'}>
-        <div className="qr-collapse__inner">{open ? children : lastChildren.current}</div>
+        <div className="qr-collapse__inner" {...(closing ? { inert: '' } : {})}>{open ? children : lastChildren.current}</div>
     </div>
 }
 
@@ -184,7 +184,7 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
                 {error && <p role="alert" className="qr-error">{error}</p>}
             </div>
             <footer className="qr-footer">
-                <span className="qr-status" role="status">{busy ? 'Submitting answers…' : question?.isMultiple ? `${draft.selections?.length ?? 0} selected` : ''}</span>
+                <span className="qr-status" role="status">{busy ? 'Submitting answers…' : question?.isMultiple ? `${draft.selections?.length ?? 0} selected` : `Question ${question ? step + 1 : 0} of ${input.questions.length}`}</span>
                 <div className="qr-actions">
                     {input.questions.length > 1 && <Button type="button" variant="ghost" size="sm" leadingIcon={<ChevronLeft size={14} />} disabled={step === 0 || busy} onClick={() => onStep(step - 1)}>Back</Button>}
                     {step < input.questions.length - 1 ? <Button type="button" variant="primary" className="qr-primary" disabled={busy || answerFor(question, draft).length === 0} onClick={() => onStep(step + 1)} trailingIcon={<ChevronRight size={14} />}>Next</Button>

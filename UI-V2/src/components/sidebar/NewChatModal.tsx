@@ -185,7 +185,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const isRemote = executionHostId !== 'local'
   const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
     : routingMode !== 'automatic' && isRemote && selectedExecutionHost.runnerStatus !== 'ready'
-      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings.` : ''
+      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
 
   // Use the same availability rules for the picker and the Create action.
   const providerAvailability = (provider: Provider | undefined) => {
@@ -425,7 +425,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               tone: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
               disabled: creatingChat || (isSshHost(host) && host.runnerStatus !== 'ready'),
               issues: isSshHost(host) && host.runnerStatus !== 'ready'
-                ? [`Remote runner is ${host.runnerStatus}. Open Settings.`] : [],
+                ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
             }))]}
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />

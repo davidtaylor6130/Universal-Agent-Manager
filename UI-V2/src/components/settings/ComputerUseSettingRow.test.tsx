@@ -126,7 +126,7 @@ it('serializes a captured Off request across navigation between settings surface
   expect(sendToCEF).toHaveBeenCalledExactlyOnceWith({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } })
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(toggle()?.disabled).toBe(true)
-  expect(host.textContent).toContain('Turning off…')
+  expect(host.textContent).toContain('Turning off and clearing UAM grants…')
   await act(async () => toggle()!.click())
   expect(sendToCEF).toHaveBeenCalledTimes(1)
   vi.mocked(sendToCEF).mockResolvedValueOnce(receipt(false, true))

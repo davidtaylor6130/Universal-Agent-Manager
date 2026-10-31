@@ -3,7 +3,7 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -160,8 +160,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const [view, setView] = useState<'form' | 'json'>('form')
   const [jsonText, setJsonText] = useState('')
   const [open, setOpen] = useState<string | null>(null)
-  // Row shown collapsing out before it is removed from the draft.
-  const [removingId, setRemovingId] = useState<string | null>(null)
+  // Rows shown collapsing out before they are removed from the draft.
+  const [removingIds, setRemovingIds] = useState<Set<string>>(() => new Set())
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [setup, setSetup] = useState<'choose' | 'import' | 'guided' | null>(null)
@@ -179,9 +179,9 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   useEffect(() => { if (!dirty) { setServers(savedServers); setUamEnabled(savedUam) } }, [savedServers, savedUam])
 
   const removeServer = (id: string) => {
-    const drop = () => { setServers(list => list.filter(item => item.id !== id)); setMessage(''); setRemovingId(null) }
+    const drop = () => { setServers(list => list.filter(item => item.id !== id)); setMessage(''); setRemovingIds(ids => { const next = new Set(ids); next.delete(id); return next }) }
     if (!motionAllowed()) { drop(); return }
-    setRemovingId(id)
+    setRemovingIds(ids => new Set(ids).add(id))
     window.setTimeout(drop, scaledMs(EXIT_MS))
   }
   const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)); setMessage('') }
@@ -221,7 +221,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     const generation = importGeneration.current
     const ownsSave = () => generation === importGeneration.current
     if (validationError) { setMessage(validationError); return }
-    const next = removingId ? preparedServers.filter(item => item.id !== removingId) : preparedServers, nextUam = preparedUam
+    const next = removingIds.size ? preparedServers.filter(item => !removingIds.has(item.id)) : preparedServers, nextUam = preparedUam
     setBusy(true); onBusyChange(true); setMessage('')
     try {
       const store = useAppStore.getState()
@@ -313,7 +313,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         {servers.length === 0 && <SettingRow title="No servers yet" />}
         {servers.map((server, index) => {
           const expanded = open === server.id
-          const removing = removingId === server.id
+          const removing = removingIds.has(server.id)
           const refs = server.transport === 'stdio' ? server.environment : server.headers
           const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
           const serverName = server.name || 'server'
@@ -332,7 +332,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
               <label className="uam-set-field"><span className="uam-set-field__label">Connection type</span>
                 <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
-                  <option value="stdio">Local program</option>
+                  <option value="stdio">Local program (runs on the same computer as the agent)</option>
                   <option value="http">Remote URL (HTTP)</option>
                   <option value="sse">Remote URL (SSE, older servers)</option>
                 </select>
@@ -383,7 +383,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <div className="flex items-center justify-end gap-2 flex-wrap">
       <span className="uam-set-section__desc mr-auto">{setup !== null ? 'Finish or cancel setup before saving.' : 'Running chats keep their old setup until restarted.'}</span>
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
-      <Tooltip label={setup !== null ? 'Finish or cancel setup before saving.' : undefined}><Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} title={validationError || undefined} onClick={() => void save()}>Save</Button></Tooltip>
+      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : undefined} title={validationError || undefined} onClick={() => void save()}>Save</Button>
     </div>
     {setup === null && (message || validationError) && <p role="status" className="uam-prov-sub">{message || validationError}</p>}
     {setup === null && warningNotice}

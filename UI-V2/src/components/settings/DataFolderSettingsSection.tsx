@@ -124,12 +124,12 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
     <ConfirmDialog open={Boolean(candidate)} title="Save this data-folder choice?" tone="primary" confirmLabel="Save folder choice" busy={busy}
       error={error || undefined} onCancel={() => { if (!busyRef.current) setCandidate('') }} onConfirm={() => { if (!unconfirmed) void change('chooseDataFolder') }}>
       <p className="break-all">{candidate}</p>
-      <p className="mt-2">Your current folder stays in use until you restart.</p>
+      <p className="mt-2">This saves a pending choice. Your current folder remains in use. Restart-to-apply becomes available only when native validation permits the guarded transfer.</p>
     </ConfirmDialog>
     <ConfirmDialog open={restartConfirmation} title="Restart to use this folder?" tone="primary" confirmLabel="Restart and transfer" busy={busy}
       error={error || undefined} onCancel={() => { if (!busyRef.current) setRestartConfirmation(false) }} onConfirm={() => void restart()}>
       <p className="break-all">From: {settings?.currentFolder}</p><p className="mt-2 break-all">To: {settings?.pendingFolder}</p>
-      <p className="mt-2">UAM copies your data to the new folder and keeps the original for recovery.</p>
+      <p className="mt-2">UAM must stop all writers, own both folders and verify the copy before using the destination. The original profile stays retained for recovery. Unconfirmed ownership or publication holds the transition.</p>
     </ConfirmDialog>
   </SettingsSection>
 })

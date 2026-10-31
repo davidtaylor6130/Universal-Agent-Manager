@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tooltip, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
+import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -182,16 +182,23 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     } catch { setError('Could not save voice settings. Try again.') }
     finally { setSaving(false) }
   }
+  const voiceModes = [{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const
+  const unavailableVoiceReasons = voiceModes
+    .filter((option) => capabilities?.[option.id]?.supported !== true)
+    .map((option) => capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.'))
+    .filter((reason): reason is string => Boolean(reason))
   return <>
     <SettingsSection title="Dictation">
       <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
-        <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
-          {([{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const).map((option) =>
-            <Tooltip key={option.id} label={capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.')}>
-              <Button size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
+        <div className="grid justify-items-end gap-1">
+          <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
+            {voiceModes.map((option) =>
+              <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
                 disabled={saving || capabilities?.[option.id]?.supported !== true}
-                onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>
-            </Tooltip>)}
+                onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
+          </div>
+          {/* Visible reasons: a disabled radio cannot show its own tooltip. */}
+          {unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}
         </div>
       } />
       {draft.mode === 'server' && <div className="grid gap-3 p-3">
@@ -3243,14 +3250,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
         confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
-        error={(pendingDelete?.kind === 'theme' ? themeMessage?.text : editorError) || undefined}
+        error={(pendingDelete?.kind === 'theme' ? (themeMessage?.tone === 'error' ? themeMessage.text : undefined) : editorError) || undefined}
         onCancel={() => setPendingDelete(null)}
         onConfirm={async () => {
           if (!pendingDelete) return
           const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
           if (deleted) setPendingDelete(null)
         }}>
-        <p>“{pendingDelete?.name}” will be permanently deleted.</p>
+        <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
       </ConfirmDialog>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>

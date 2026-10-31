@@ -97,7 +97,7 @@ describe('desktop native-phone pairing', () => {
     const host = render()
     await act(async () => host.querySelector('button')!.click())
     expect(host.querySelector('svg[data-pairing]')).not.toBeNull()
-    expect(host.textContent).toContain('existing connections stay')
+    expect(host.textContent).toContain('hiding does not revoke existing connections')
     act(() => vi.advanceTimersByTime(120000))
     expect(host.querySelector('svg[data-pairing]')).toBeNull()
   })

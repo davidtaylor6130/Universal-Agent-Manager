@@ -133,7 +133,7 @@ it('keeps an active missing-capability warning after enable succeeds without a h
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
   expect(enableChat).toHaveBeenCalledWith('one', true, true)
   expect(host.querySelector('[role="status"]')).not.toBeNull()
-  expect(host.textContent).toContain('Applies when this provider session next starts')
+  expect(host.textContent).toContain('UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.')
 })
 
 
@@ -253,7 +253,7 @@ it('retains a genuine failure after enable when the provider still reports faile
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Enable UAM connection')!.click())
   expect(host.querySelector('[role="status"]')).not.toBeNull()
   expect(host.textContent).toContain('Handshake rejected')
-  expect(host.textContent).not.toContain('Applies when this provider session next starts')
+  expect(host.textContent).not.toContain('UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.')
 })
 
 

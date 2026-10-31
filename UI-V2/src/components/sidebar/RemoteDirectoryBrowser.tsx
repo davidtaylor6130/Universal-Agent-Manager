@@ -179,7 +179,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
             ) : null}
           </div>
           {listing?.truncated && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><AlertTriangle size={12} aria-hidden />Showing the first 200 directories. Enter a more specific path to continue.</p>}
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only. Nothing on this computer is changed.</p>
+          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on {host.label}.</p>
         </div>
 
         <footer className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>

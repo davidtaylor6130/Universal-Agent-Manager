@@ -180,7 +180,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
               <SettingRow htmlFor={`routing-capacity-${host.id}`} title="Concurrent sessions" description="How many chats can run here at the same time."
                 control={<input id={`routing-capacity-${host.id}`} className="uam-rv-field" style={{ width: 80, height: 32 }} type="number" min={1} max={1024} aria-label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} onChange={(event) => update(host.id, (item) => ({ ...item, maxActiveTurns: Number(event.target.value) }))} />} />
               {providers.filter((provider) => provider.supportsStructured !== false || provider.supportsCli !== false).map((provider) => (
-                <SettingRow key={provider.id} title={provider.name} description="Signed in on this computer"
+                <SettingRow key={provider.id} title={provider.name} description={`Confirm once you have signed in to ${provider.name} on this computer.`}
                   control={<Switch hideLabel label={`${provider.name} signed in on ${host.label}`} checked={confirmed(policy, host.id, provider.id)} onChange={(event) => update(host.id, (item) => ({ ...item, providers: event.target.checked ? [...item.providers.filter((entry) => entry.providerId !== provider.id), { providerId: provider.id, connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }] : item.providers.filter((entry) => entry.providerId !== provider.id) }))} />} />
               ))}
               <div className="uam-set-row">

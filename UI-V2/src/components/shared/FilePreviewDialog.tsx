@@ -91,7 +91,7 @@ export function FilePreviewDialog({ chatId, reference, onClose, onBack, onShowCh
                 const number = start + offset + 1
                 const selected = reference.line !== undefined && number >= reference.line && number <= (reference.endLine ?? reference.line)
                 return <div key={number} data-source-line={number} className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, background: selected ? 'var(--accent-dim)' : undefined }}>
-                  <span className="uam-rv-gutter" style={{ width: 52 }}>{number}</span><span className="uam-rv-diff-text" style={{ tabSize: 4 }}>{line || ' '}</span>
+                  <span aria-label="Line number" className="uam-rv-gutter" style={{ width: 52 }}>{number}</span><span className="uam-rv-diff-text" style={{ tabSize: 4 }}>{line || ' '}</span>
                 </div>
               })}
             </div>

@@ -87,6 +87,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
   }
   const submitCustom = (event: FormEvent) => {
     event.preventDefault()
+    if (!customOpen) return
     const until = customSnoozeUntil(Number(amount), unit)
     if (until === null) { setFeedback({ error: true, text: 'Enter a whole number of minutes, hours or days.' }); return }
     void update(until)
@@ -103,6 +104,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
       onSelect={() => { void update(preset.until) }} />)}
     <MenuItem className={itemClass} nativeDisabled aria-expanded={customOpen} disabled={saving} label="Custom…" onSelect={() => setCustomOpen((open) => !open)} />
     {custom.mounted && <form aria-label="Custom snooze" noValidate className="uam-reveal uam-snooze-custom flex items-center gap-1.5 px-3 py-1.5" data-state={custom.closing ? 'closed' : 'open'} onSubmit={submitCustom}>
+      <fieldset disabled={custom.closing} className="contents">
       <input aria-label="Snooze amount" type="number" min={1} step={1} inputMode="numeric" value={amount} disabled={presetsBlocked}
         onChange={(event) => setAmount(event.target.value)} className="w-16 px-2 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }} />
       <select aria-label="Snooze unit" value={unit} disabled={presetsBlocked} onChange={(event) => setUnit(event.target.value as SnoozeUnit)}
@@ -112,6 +114,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
         <option value="days">days</option>
       </select>
       <Button type="submit" size="sm" variant="primary" className="ml-auto" disabled={presetsBlocked}>Snooze</Button>
+      </fieldset>
     </form>}
     {feedback && <p role={feedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>
       {feedback.error ? <CircleX size={12} aria-hidden /> : <Check size={12} aria-hidden />}{feedback.text}

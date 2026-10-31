@@ -72,6 +72,7 @@ export function CollectionMenuItems({
               disabled={current}
               className="uam-sb-menu-item"
               icon={<Library size={13} aria-hidden />}
+              aria-label={current ? `${collection.name} (current)` : collection.name}
               label={<span className="truncate">{collection.name}</span>}
               trailing={current ? <Check size={13} aria-hidden className="shrink-0" /> : undefined}
               onSelect={() => move(collection.id)}

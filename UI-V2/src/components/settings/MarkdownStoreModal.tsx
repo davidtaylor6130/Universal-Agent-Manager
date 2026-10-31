@@ -127,7 +127,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   useEffect(() => {
     libraryRef.current?.toggleAttribute('inert', childOpen)
-    if (confirmation) confirmationRef.current?.focus()
+    if (confirmation) confirmationRef.current?.querySelector<HTMLElement>('button')?.focus()
     else if (childOpen) childDialogRef.current?.focus()
     else if (previousChildOpenRef.current) editorTriggerRef.current?.focus()
     previousChildOpenRef.current = childOpen
@@ -406,7 +406,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
             {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />}
           </fieldset>
           {confirmation ? <div ref={confirmationRef} role="group" aria-label={confirmation === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} className="p-3" style={{ border: '1px solid var(--border-bright)' }}>
-            <strong className="text-sm">{confirmation === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}</strong>
+            <strong role="alert" className="text-sm">{confirmation === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}</strong>
             {confirmation === 'overwrite' && <p className="text-xs mt-1">This replaces the saved entry.</p>}
             <div className="mt-3 flex flex-wrap justify-end gap-2">
               <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>

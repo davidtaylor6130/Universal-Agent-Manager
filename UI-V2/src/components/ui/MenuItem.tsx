@@ -54,7 +54,7 @@ export const MenuItem = forwardRef<HTMLButtonElement, MenuItemProps>(function Me
       aria-disabled={!nativeDisabled && disabled || undefined}
       disabled={nativeDisabled ? disabled : undefined}
       aria-describedby={disabled && disabledReason ? reasonId : describedBy}
-      title={disabled ? disabledReason : title}
+      title={disabled && disabledReason ? disabledReason : title}
       className={cx('uam-menu-item', danger && 'uam-menu-item--danger', isChecked && 'is-selected', className)}
       onClick={(event) => {
         if (disabled) return

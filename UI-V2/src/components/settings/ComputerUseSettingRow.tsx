@@ -96,7 +96,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   }
 
   const status = !COMPUTER_USE_ENABLED ? 'Unavailable in this build'
-    : busy === 'disable' ? 'Turning off…'
+    : busy === 'disable' ? 'Turning off and clearing UAM grants…'
     : busy === 'enable' ? 'Turning on…'
     : busy === 'check' ? 'Checking status…'
     : pending && enabled === true ? "On. A chat's controls are still stopping. Turn off for all chats to retry cleanup."

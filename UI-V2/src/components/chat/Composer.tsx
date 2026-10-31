@@ -748,13 +748,14 @@ export function ComposerToolbar({
       </div>
       </>}
         {running && !canSend ? (
-          <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
+          <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
         ) : (
         <IconButton
           type="submit"
           title={running ? 'Queue prompt' : 'Send prompt'}
           icon={<ComposerIcon name="send" size={15} />}
           label={running ? 'Queue prompt' : 'Send prompt'}
+          tooltip={false}
           disabled={!canSend}
           className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center"
           style={{

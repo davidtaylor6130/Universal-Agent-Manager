@@ -23,6 +23,7 @@ function BrowserLaunchGuard() {
     <StrictMode>
       <div className="browser-guard">
         <div className="browser-guard__panel">
+          <div className="browser-guard__eyebrow">Native shell required</div>
           <h1 className="browser-guard__title">This UI is not meant to run inside Chrome.</h1>
           <p className="browser-guard__body">
             Open UAM from the desktop app. Browser mode shows browser tabs and the URL bar.
@@ -31,6 +32,20 @@ function BrowserLaunchGuard() {
             {openedFromFile
               ? 'You opened the packaged UI file directly.'
               : 'You launched the React frontend in browser mode.'}
+          </div>
+          <div className="browser-guard__steps">
+            <div>
+              <span className="browser-guard__step-label">macOS bundle</span>
+              <code>open Builds/universal_agent_manager.app</code>
+            </div>
+            <div>
+              <span className="browser-guard__step-label">Launcher script</span>
+              <code>./run_uam.sh</code>
+            </div>
+            <div>
+              <span className="browser-guard__step-label">Windows binary</span>
+              <code>Builds\\Release\\universal_agent_manager.exe</code>
+            </div>
           </div>
         </div>
       </div>

@@ -14,7 +14,7 @@ export function RuntimeTimeout({ chatId }: { chatId: string }) {
   if (!binding?.running || !binding.idleCountdownStartsAtMs || !binding.idleShutdownAtMs || now < binding.idleCountdownStartsAtMs) return null
   const seconds = Math.max(0, Math.ceil((binding.idleShutdownAtMs - now) / 1000))
   return <Tooltip label="Activity restarts the one-minute grace period">
-    <span className="shrink-0 text-xs tabular-nums">
+    <span role="timer" aria-label="Runtime idle timeout" className="shrink-0 text-xs tabular-nums">
       Stops in {Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}
     </span>
   </Tooltip>

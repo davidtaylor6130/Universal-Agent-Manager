@@ -1303,7 +1303,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             </div>
             {newFolderIsRemote && (
               <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-                Browse needs {newFolderExecutionHost?.label} to be online.
+                The path is interpreted only by {newFolderExecutionHost?.label}. Browse is read-only and requires a ready helper.
               </p>
             )}
             <div className="uam-inline-form__actions">

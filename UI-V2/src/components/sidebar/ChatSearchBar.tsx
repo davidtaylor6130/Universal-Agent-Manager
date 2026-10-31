@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { Search, X, SlidersHorizontal } from 'lucide-react'
+import { Check, Search, X, SlidersHorizontal } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
 import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -215,6 +215,7 @@ export function ChatSearchBar({
                 }}
                 label="Search contents"
                 onClick={onToggleDeepSearch}
+                trailing={deepSearch ? undefined : <X size={13} aria-hidden style={{ color: 'var(--text-3)' }} />}
               />
 
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>

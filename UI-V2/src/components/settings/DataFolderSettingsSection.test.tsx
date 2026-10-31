@@ -46,7 +46,7 @@ describe('Application data-folder Settings', () => {
     const { root } = await mount()
     try {
       await act(async () => button('Choose folder…').click())
-      expect(document.body.textContent).toContain('Your current folder stays in use until you restart.')
+      expect(document.body.textContent).toContain('This saves a pending choice. Your current folder remains in use.')
       await act(async () => button('Save folder choice').click())
       expect(document.body.textContent).toContain('Saved folder choice')
       expect(document.body.textContent).toContain('/disposable/source')

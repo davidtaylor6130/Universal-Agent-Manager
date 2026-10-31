@@ -331,6 +331,14 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   // ponytail: re-measures every commit (bails out when unchanged); add deps if it ever shows in a profile.
   const locationNavRef = useRef<HTMLElement>(null)
   const [locationIndicator, setLocationIndicator] = useState<{ top: number; height: number } | null>(null)
+  const deleteConfirmRef = useRef<HTMLDivElement>(null)
+  const deleteCancelRef = useRef<HTMLButtonElement>(null)
+  // The inline confirm renders at the top of a scrolled pane; bring it into view and focus Cancel.
+  useEffect(() => {
+    if (!pendingDeleteEntryId) return
+    deleteConfirmRef.current?.scrollIntoView?.({ block: 'nearest' })
+    deleteCancelRef.current?.focus()
+  }, [pendingDeleteEntryId])
   useLayoutEffect(() => {
     const nav = locationNavRef.current
     if (!nav) return
@@ -535,11 +543,11 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
             {pendingDelete && (
-              <div role="group" aria-label="Delete memory entry" className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
                 <p className="text-sm font-semibold">Delete memory entry?</p>
                 <p className="text-sm" style={{ color: 'var(--text-2)' }}>This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.</p>
                 <div className="flex justify-end gap-2">
-                  <Button autoFocus onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
+                  <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
                   <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id); setPendingDeleteEntryId(null) }}>Delete memory</Button>
                 </div>
               </div>
@@ -634,8 +642,11 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                                       <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
                                     </div>
                                   </div>
-                                  <div className="uam-memory-card__meta" title={entry.sourceChatId ? `Source chat: ${chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}` : undefined}>
+                                  <div className="uam-memory-card__meta">
                                     <span className="uam-memory-chip" data-confidence={entry.confidence}>{entry.confidence} confidence</span>
+                                    <span>{entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}</span>
+                                    <span>{entry.scope}</span>
+                                    {entry.sourceChatId && <span title={`Source chat: ${entry.sourceChatId}`}>From “{chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}”</span>}
                                     {entry.lastObserved && <span title={entry.lastObserved}>Seen {formatObserved(entry.lastObserved)}</span>}
                                   </div>
                                 </article>

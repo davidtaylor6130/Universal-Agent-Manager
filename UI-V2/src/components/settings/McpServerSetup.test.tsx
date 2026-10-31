@@ -365,7 +365,8 @@ it('clears earlier read warnings only on a new read or Cancel setup', async () =
 
 it('explains why Save is disabled while server setup is incomplete', async () => {
   await click('Add server'); await click('Import configuration')
-  expect(button('Save').disabled).toBe(true)
+  const saveButton = [...document.querySelectorAll('button')].find(item => item.querySelector('.uam-btn__label')?.textContent === 'Save')!
+  expect(saveButton.getAttribute('aria-disabled')).toBe('true') // Button disabledReason: stays focusable so the reason is reachable
   expect(document.body.textContent).toContain('Finish or cancel setup before saving.')
 })
 

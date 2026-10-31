@@ -51,7 +51,7 @@ export function MemoryScanModal() {
         <div className="uam-scan-head">
           <div className="min-w-0">
             <div className="uam-scan-title">Scan current chats</div>
-            <div className="uam-prov-sub">Add memory from the chats you select.</div>
+            <div className="uam-prov-sub">Add durable memory from existing chat history. Only the chats you select are read.</div>
           </div>
           <IconButton
             icon={<X size={16} />}
@@ -101,6 +101,7 @@ export function MemoryScanModal() {
                       {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
                     </span>}
                     description={`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}
+                    status={<span>Provider <span className="uam-prov-detail">{candidate.providerId}</span> · Last scanned {candidate.memoryLastProcessedAt || 'never'}</span>}
                     control={<input
                       id={inputId}
                       type="checkbox"
