@@ -6,6 +6,11 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '41 5 * * 2'
+  # The weekly schedule runs only on the default branch, so the V5 integration branch
+  # would otherwise never run the native rows. Pushes to it always do.
+  push:
+    branches:
+      - uam/v5-improvements
   pull_request:
     # 'labeled' lets adding the build-flags label start the native rows.
     types: [opened, synchronize, reopened, labeled]
