@@ -7,6 +7,7 @@ import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { sanitizeCppChat } from '../../store/cpp/sanitizers'
 import { CopilotAutoRoutingControl } from './CopilotAutoRoutingControl'
 import { ViewportMenu } from '../ui'
+import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 
 vi.mock('../../ipc/cefBridge', async (importOriginal) => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }))
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -113,10 +114,13 @@ describe('Copilot Auto routing native action control', () => {
     const next = projection(); next.ownership!.lifetime = 'replacement-token'; render(next)
     await act(async () => { finish({ ok: false, error: 'Old session failure' }) })
     expect(host.textContent).not.toContain('Old session failure')
+    const failures: string[] = []
+    const onFailure = (event: Event) => failures.push((event as CustomEvent<{ detail: string }>).detail.detail)
+    window.addEventListener(APP_FAILURE_EVENT, onFailure)
     vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Current refusal' })
     choose('Default'); await act(async () => {})
-    expect(host.querySelector('.uam-notice[role="alert"]')?.textContent).toContain('Current refusal')
-    render({ ...next, pending: { present: true, value: null } })
+    window.removeEventListener(APP_FAILURE_EVENT, onFailure)
+    expect(failures).toEqual(['Current refusal'])
     expect(host.textContent).not.toContain('Current refusal')
   })
 

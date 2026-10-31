@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronRight, Users } from 'lucide-react'
+import { Button } from '../ui'
 import { useAppStore, type AcpToolCall } from '../../store/useAppStore'
-import { Button, Notice } from '../ui'
 import { useSubAgentDisclosure } from './ConversationWork'
 import { ToolStatusIcon } from './StatusHelpers'
 import './SubagentGroup.css'
@@ -10,6 +10,7 @@ import { openSubagentView } from '../../utils/subagentNavigation'
 import { boundedSubagentSummary, isManagedSubagentTool, managedResultCard, managedElapsed, managedRunActive, managedRunLabel } from './managedSubagents'
 import { SubagentCard, SubagentOutcomeIcon } from './SubagentCard'
 import { isCefContext } from '../../ipc/cefBridge'
+import { reportAppFailure } from '../../utils/appFailure'
 
 type Child = NonNullable<AcpToolCall['subAgentChildren']>[number]
 type ChildTool = AcpToolCall & { subAgentChildren?: Child[] }
@@ -75,7 +76,6 @@ function SubagentGroupContent({ tools, sourceChatId, renderHistory, onSelectTool
   const [opening, setOpening] = useState('')
   const groupRef = useRef<HTMLDetailsElement | null>(null)
   const openingRef = useRef(false)
-  const [error, setError] = useState('')
   const openSubAgentSession = useAppStore(state => state.openSubAgentSession)
   const knownRunning = active ? rows.filter(row => row.child.id && (isManagedSubagentTool(row.tool) ? managedRunActive(row.child.status || '') : subagentState(row.child.status).active)).length : 0
   const childCount = rows.filter(row => row.child.id).length
@@ -95,16 +95,15 @@ function SubagentGroupContent({ tools, sourceChatId, renderHistory, onSelectTool
       if (!isCefContext()) return
       const parent = useAppStore.getState().sessions.find(session => session.id === sourceChatId)
       if (parent) { useAppStore.getState().setActiveSession(parent.id); openSubagentView(parent, { kind: 'managed', runId: child.id, title: child.title }) }
-      else setError('The parent chat is unavailable. Select it again to open this child.')
+      else reportAppFailure('Subagent conversation unavailable.', 'The parent chat is unavailable. Select it again to open this child.')
       return
     }
     openingRef.current = true
     const selectedBeforeOpen = useAppStore.getState().activeSessionId
     setOpening(key)
-    setError('')
     try {
-      if (!await openSubAgentSession(sourceChatId, child.id, child.title || '', true) && useAppStore.getState().activeSessionId === selectedBeforeOpen) setError('Could not open this subagent conversation. Try again.')
-    } catch { if (useAppStore.getState().activeSessionId === selectedBeforeOpen) setError('Could not open this subagent conversation. Try again.') }
+      if (!await openSubAgentSession(sourceChatId, child.id, child.title || '', true) && useAppStore.getState().activeSessionId === selectedBeforeOpen) reportAppFailure('Subagent conversation unavailable.', 'Could not open this subagent conversation. Try again.')
+    } catch { if (useAppStore.getState().activeSessionId === selectedBeforeOpen) reportAppFailure('Subagent conversation unavailable.', 'Could not open this subagent conversation. Try again.') }
     finally { openingRef.current = false; setOpening('') }
   }
 
@@ -115,7 +114,6 @@ function SubagentGroupContent({ tools, sourceChatId, renderHistory, onSelectTool
       <ChevronRight size={14} className="uam-subagent-group__chevron" aria-hidden />
     </summary>
     <div className="uam-subagent-group__body uam-subagent-disclosure" data-state={open ? 'open' : 'closed'} hidden={!open}>
-      {error && <Notice tone="error" title="Conversation unavailable" dismissLabel="Dismiss conversation error">{error}</Notice>}
       <ul aria-label="Subagents">
         {rows.map(({ key, child, tool, presentation }) => <SubagentRow key={key} child={child} tool={tool} presentation={presentation} sourceChatId={sourceChatId} now={now} opening={opening} rowKey={key} active={active} compactNative={compactNative}
           disclosureKey={`${sourceChatId ?? 'recorded'}:${tools.find(tool => tool.isSubAgent)?.id || ''}:${key}`} openChild={openChild} renderHistory={sourceChatId ? renderHistory : undefined} onSelectTool={onSelectTool} />)}

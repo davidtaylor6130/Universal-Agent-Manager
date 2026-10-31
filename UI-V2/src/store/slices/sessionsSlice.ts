@@ -690,6 +690,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           data.startIndex < 0 || !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined ||
           data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
           hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
+        // ponytail: rail jumps report through the shared notice; the rail itself is the retry.
+        if (queryRequestId.startsWith('message-rail:')) {
+          set({ chatSearchNavigation: null })
+          reportAppFailure("Couldn't jump to that message", 'The chat changed while loading. Try the jump again.')
+          return false
+        }
         set((state) => ({ chatSearchNavigation: null, ...historyReadFailure(state, hit.chatId, response.error || 'Chat history changed. Try opening the message again.') }))
         return false
       }

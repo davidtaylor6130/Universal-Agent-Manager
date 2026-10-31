@@ -4,6 +4,13 @@ import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
 import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
+/** Columns for the provider grid: at most 6 per row, at least 3, rows as even as possible. */
+export function providerGridColumns(count: number): number {
+  if (count <= 0) return 3
+  const rows = Math.ceil(count / 6)
+  return Math.min(6, Math.max(3, Math.ceil(count / rows)))
+}
+
 interface ChatSearchProviderFilterOption {
   id: string
   label: string
@@ -76,8 +83,8 @@ export function ChatSearchBar({
 
   return (
     <div
-      className="flex h-12 flex-shrink-0 items-center px-4"
-      style={{ background: 'var(--sidebar-bg)' }}
+      className="flex flex-shrink-0 items-center px-4"
+      style={{ height: 'var(--pane-header-h)', background: 'var(--sidebar-bg)' }}
     >
       <div className="flex w-full items-center gap-2 rounded-md focus-within:ring-1 focus-within:ring-[var(--accent)]">
         <div
@@ -207,15 +214,9 @@ export function ChatSearchBar({
 
               <MenuItem
                 checked={deepSearch}
-                className="mb-2 flex w-full items-center justify-between rounded px-2 py-1.5"
-                style={{
-                  background: deepSearch ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : 'transparent',
-                  color: deepSearch ? 'var(--text)' : 'var(--text-2)',
-                  border: '1px solid var(--border)',
-                }}
+                className="mb-2 rounded"
                 label="Search contents"
                 onClick={onToggleDeepSearch}
-                trailing={deepSearch ? undefined : <X size={13} aria-hidden style={{ color: 'var(--text-3)' }} />}
               />
 
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
@@ -229,11 +230,7 @@ export function ChatSearchBar({
                     <MenuItem
                       key={option.id}
                       checked={active}
-                      className="flex w-full items-center justify-between rounded px-2 py-1"
-                      style={{
-                        background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
-                        color: active ? 'var(--text)' : 'var(--text-2)',
-                      }}
+                      className="rounded"
                       label={option.label}
                       onClick={() => onToggleStatusFilter(option.id)}
                     />
@@ -244,7 +241,8 @@ export function ChatSearchBar({
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 Provider
               </div>
-              <div className="flex max-h-40 flex-wrap gap-1 overflow-auto p-0.5">
+              {/* Even grid: 3–6 columns chosen so rows fill evenly (6 → 6, 7 → 4+3, 8 → 4+4). */}
+              <div className="grid max-h-40 gap-1 overflow-auto p-0.5" style={{ gridTemplateColumns: `repeat(${providerGridColumns(providerOptions.length)}, minmax(0, 1fr))` }}>
                 {providerOptions.map((provider) => {
                   const active = filters.providerIds.includes(provider.id)
                   return (
@@ -254,7 +252,7 @@ export function ChatSearchBar({
                         role="menuitemcheckbox"
                         aria-label={provider.label}
                         aria-checked={active}
-                        className="flex h-8 w-8 items-center justify-center rounded-md transition-colors duration-fast"
+                        className="flex h-8 w-full items-center justify-center rounded-md transition-colors duration-fast"
                         style={{
                           background: active ? 'var(--accent-dim)' : 'transparent',
                           border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border)'}`,

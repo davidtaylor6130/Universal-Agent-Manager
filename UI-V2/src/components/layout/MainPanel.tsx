@@ -277,7 +277,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       <div
         className="uam-chat-pane__header flex items-center gap-3 flex-shrink-0 px-4"
         style={{
-          height: 44,
+          height: 'var(--pane-header-h)',
           borderBottom: '1px solid var(--border)',
           background: 'var(--surface)',
         }}

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Overlay, Presence, RowButton, useOverlayState } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
+import { reportAppFailure } from '../../utils/appFailure'
 import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
@@ -73,6 +74,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const openAddChoices = () => { editorTriggerRef.current = addTriggerRef.current; resetError(); setImportNotice(''); setAddView('choose') }
   const previousChildOpenRef = useRef(false)
   const visibleError = error || operationError
+  useEffect(() => { if (visibleError) reportAppFailure('Skills action failed', visibleError) }, [visibleError])
 
   function resetError() {
     clearError()
@@ -343,10 +345,6 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
           <IconButton ref={addTriggerRef} className={markdownStoreDirectory && !entries.length ? 'uam-store-add--primary' : undefined} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={openAddChoices} />
         </div>
-        {!childOpen && visibleError && <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}><Notice tone="error" dismissLabel="Dismiss Skills error" onDismiss={resetError}
-          actions={markdownStoreDirectory ? <Button size="sm" variant="ghost" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not load Skills.'); setRefreshing(false) }}>Retry</Button> : undefined}>
-          {visibleError}
-        </Notice></div>}
         {!imports.length && resultsView}
         {!markdownStoreDirectory ? <div className="flex-1 min-h-0 flex flex-col py-4">
           <div className="uam-store-card uam-store-empty flex-1">

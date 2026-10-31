@@ -3,6 +3,7 @@ import { CircleDashed, RefreshCw } from 'lucide-react'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import type { AcpBinding, CopilotAutoRoutingProjection } from '../../store/cpp/types'
 import { Button, MenuSelect, Notice } from '../ui'
+import { reportAppFailure } from '../../utils/appFailure'
 
 type LocalRequest = {
   kind: 'preference' | 'refresh'
@@ -45,7 +46,6 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
   const alive = useRef(true)
   const inFlight = useRef(false)
   const [sending, setSending] = useState<'preference' | 'refresh' | null>(null)
-  const [error, setError] = useState('')
   const [localRequest, setLocalRequest] = useState<LocalRequest | null>(null)
   const [dismissedError, setDismissedError] = useState('')
   const groupRef = useRef<HTMLDivElement>(null)
@@ -65,7 +65,6 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
   const nativeProgress = JSON.stringify([projection.stateStatus, projection.effective, projection.pending, projection.activating,
     projection.requestPending, projection.lastAckStatus, projection.lastError])
   useLayoutEffect(() => {
-    setError('')
     setLocalRequest((issued) => {
       if (!issued) return issued
       const nativeWork = projection.requestPending || projection.pending.present || projection.activating.present
@@ -117,7 +116,6 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
       || (kind === 'preference' ? !canChoose : !canRefresh)) return
     inFlight.current = true
     setSending(kind)
-    setError('')
     setLocalRequest({ kind, value, initialEffective: effectiveKey, initialAck: projection.lastAckStatus,
       accepted: false, sawNativeWork: false, settled: false, failed: false, unchanged: false })
     setDismissedError('')
@@ -128,9 +126,9 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
       }, false)
       if (!alive.current) return
       if (response.ok) setLocalRequest((issued) => issued ? { ...issued, accepted: true } : issued)
-      else setError(typeof response.error === 'string' && response.error ? response.error.slice(0, 2048) : 'Copilot could not accept the request. Try refreshing.')
+      else if (alive.current) reportAppFailure('Auto routing request failed.', typeof response.error === 'string' && response.error ? response.error.slice(0, 2048) : 'Copilot could not accept the request. Try refreshing.')
     } catch {
-      if (alive.current) setError('Could not reach Copilot. Try refreshing.')
+      if (alive.current) reportAppFailure('Auto routing request failed.', 'Could not reach Copilot. Try refreshing.')
     } finally {
       if (alive.current) {
         inFlight.current = false
@@ -145,7 +143,8 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
   const unavailable = !connected ? 'Connect to UAM to change Auto routing.'
     : !projection.available ? projection.disabledReason
     : !live || disabled ? 'Wait for this chat’s current work to finish before changing Auto routing.' : ''
-  const failure = error || (projection.lastError !== unavailable ? projection.lastError : '')
+  // Request failures are reported as system alerts; only the native error persists inline.
+  const failure = projection.lastError !== unavailable ? projection.lastError : ''
   const working = sending !== null || projection.requestPending || projection.activating.present
   // A retained native ACK is only feedback for a request issued in this mount, with exact
   // resolved preference equality. Bridge acceptance never supplies effective state.

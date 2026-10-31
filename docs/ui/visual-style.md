@@ -38,7 +38,9 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 
 ## Quantities
 
-Quantities such as allowances, token usage, spend, progress and counts versus capacity use bars, meters, sparklines or segmented bars where useful, with exact numbers as secondary text. Use semantic thresholds where the value has a real limit (for example over 80% warning and over 95% error); do not invent capacity for unknown values.
+Quantities such as allowances, token usage, spend and counts versus capacity use bars, meters, sparklines or segmented bars where useful, with exact numbers as secondary text. Use semantic thresholds where the value has a real limit (for example over 80% warning and over 95% error); do not invent capacity for unknown values.
+
+Progress on work is never a thin line or bar at the bottom of a rounded box. The row or item doing the work is the progress bar: its background fills left to right in `var(--accent-dim)` by percentage when one is known, or sweeps when none is known. Text stays readable on top and the fill follows the item's border radius. Under reduced motion or Motion Off the sweep stops and a static partial fill (or no fill, when there is no percentage) is shown. Meters for measured quantities (allowances, context fill) are not work progress and keep their own form.
 
 ## Model picker
 
@@ -49,3 +51,5 @@ Fixed-height model picker rows keep the name and identity above compact neutral 
 Usage charts include reported charges and estimates; incomplete pricing must disclose excluded unpriced tokens and label the Known cost. [Allowances](../usage/allowances.md) retain unknown values and provider-reported periods rather than inventing a limit.
 
 [Primitives](primitives.md) · [Accessibility](accessibility.md).
+
+Icon grids (provider filters, icon pickers) split items evenly across rows: between 3 and 6 columns, choosing the count that leaves rows as equal as possible (6 items → one row of 6; 7 → 4 + 3), never a lone icon on its own row when a more even split fits. Menu rows keep their label left-aligned; a check, when present, sits in the leading icon slot.

@@ -17,15 +17,16 @@ Import from `components/ui` (index.ts):
 - SectionHeader (title, description, icon, actions)
 - StatusDot
 - MenuSelect
-- Notice (tone)
+- Notice (tone; one row: tone icon, semibold title with the message inline, optional `actions` and dismiss; `details` is the only collapsible part, a Details disclosure for long logs or output, collapsed by default; no header, divider or chevron otherwise)
 - Switch
+- ProgressFill (wraps the item doing the work: `label`, `value` 0-100 for a determinate fill, or `indeterminate` (implied when no value) for a sweep; sets role progressbar with aria-valuenow/min/max, or aria-busy when indeterminate. Rows that also hold controls cannot be a progressbar, so they take the `uam-progress-fill` class with `data-indeterminate`, `role="group"` and `aria-busy`. Styling lives in `index.css`; see [visual style](visual-style.md#quantities).)
 - Overlay
 - ConfirmDialog (optional cancel label, middle secondary action, and `dismissible={false}` for a choice that Escape or the backdrop must not answer)
 - MenuItem (icon, label, detail with `detailLayout` inline|stacked, `trailing` pill, shortcut, `selected` for a checkable menuitemradio, `checked` for a menuitemcheckbox, danger, disabled with `disabledReason` or `nativeDisabled`; ref and attribute passthrough; menus, context menus and the command palette)
 - SegmentedControl (options with value, label and icon, optional per-option `disabled`, `tooltip`, `ariaLabel` and `iconOnly`; one sliding highlight that stops under reduced motion or Motion Off)
 - RowButton (full-width list row; reset, hover and focus only, so row classes keep their look)
 
-Icons: lucide-react, 14–16px, stroke default. A Notice may omit dismissal while it represents an unresolved state that the user cannot dismiss into success; its heading remains visible when details are collapsed. Ordinary notices retain their dismissal control.
+Icons: lucide-react, 14–16px, stroke default. A Notice may omit dismissal while it represents an unresolved state that the user cannot dismiss into success; its title remains visible on the bar. Ordinary notices retain their dismissal control.
 
 ## Settings primitives
 

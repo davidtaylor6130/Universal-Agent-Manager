@@ -31,6 +31,7 @@ vi.mock('@xterm/addon-fit', () => ({
 
 import { MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { assignChatToPane, chatGridLeaves, defaultChatGridLayout, readChatGridLayout, readChatViewMode, setChatInLeaf, splitChatLeaf, writeChatGridLayout, writeChatViewMode } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -1148,14 +1149,21 @@ describe('MainPanel', () => {
     writeChatGridLayout(paneLayout(side.id))
     const requests: { action: string; payload?: Record<string, unknown> }[] = []
     window.cefQuery = ({ request, onSuccess, onFailure }) => { const parsed = JSON.parse(request); requests.push(parsed); if (parsed.action === 'dismissSideChat') onFailure(500, 'Cleanup could not be saved.'); else onSuccess('{}') }
+    const failures: AppFailure[] = []
+    const listen = (event: Event) => failures.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listen)
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
-    await act(async () => root.render(<MainPanel />))
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')!.click())
-    expect(requests.filter(request => request.action === 'dismissSideChat')).toEqual([expect.objectContaining({ payload: { chatId: side.id } })])
-    expect(host.textContent).toContain('Cleanup could not be saved.')
-    expect(readChatGridLayout().root).toMatchObject({ sessionId: side.id })
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')?.disabled).toBe(false)
-    act(() => root.unmount()); host.remove(); delete window.cefQuery
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')!.click())
+      expect(requests.filter(request => request.action === 'dismissSideChat')).toEqual([expect.objectContaining({ payload: { chatId: side.id } })])
+      expect(failures).toEqual([expect.objectContaining({ detail: 'Cleanup could not be saved.' })])
+      expect(readChatGridLayout().root).toMatchObject({ sessionId: side.id })
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('aria-label') === 'Dismiss side chat')?.disabled).toBe(false)
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, listen)
+      act(() => root.unmount()); host.remove(); delete window.cefQuery
+    }
   })
 
   it('resumes the live side chat locally instead of creating another one', async () => {

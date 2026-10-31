@@ -79,6 +79,7 @@ import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOption
 import './settings-motion.css'
 import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
+import { reportAppFailure } from '../../utils/appFailure'
 
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
@@ -1024,7 +1025,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     })
     setChatDataBusy(null)
     if (!response.ok || !response.data) {
-      setChatDataMessage({ tone: 'error', text: response.error || `Chat ${operation} failed.` })
+      reportAppFailure(response.error || `Chat ${operation} failed.`, 'Check the chat data folder and try again.')
       return
     }
     const result = response.data
@@ -1038,13 +1039,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const text = result.status === 'complete'
         ? `Exported ${result.exportedCount ?? 0} chats to ${result.folder}.`
         : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats. ${detail || 'The bundle is incomplete.'}`
-      setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+      if (result.status === 'complete') setChatDataMessage({ tone: 'success', text })
+      else reportAppFailure(text, 'Check the chat data folder and try again.')
       return
     }
     const text = result.status === 'complete'
       ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}.`
       : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
-    setChatDataMessage({ tone: result.status === 'complete' ? 'success' : result.status === 'degraded' ? 'warning' : 'error', text })
+    if (result.status === 'complete') setChatDataMessage({ tone: 'success', text })
+    else reportAppFailure(text, 'Check the chat data folder and try again.')
   }
 
   const previewRemoteHost = async (existing?: ExecutionHost) => {
@@ -2227,26 +2230,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             {memoryPolicyError[provider.id] && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{memoryPolicyError[provider.id]}</Notice>}
                           </div>
                         </div>
-                        {pendingDefaultYolo?.providerId === provider.id && (
-                          <Notice
-                            tone="warning"
-                            title="Use YOLO by default?"
-                            dismissLabel={`Dismiss ${providerName} default YOLO warning`}
-                            onDismiss={() => setPendingDefaultYolo(null)}
-                            actions={(
-                              <>
-                                <Button size="sm" onClick={() => setPendingDefaultYolo(null)}>Cancel</Button>
-                                <Button size="sm" variant="danger" onClick={() => {
-                                  const pending = pendingDefaultYolo
-                                  setPendingDefaultYolo(null)
-                                  updateProviderDefaults(pending.providerId, pending.defaults)
-                                }}>Use YOLO</Button>
-                              </>
-                            )}
-                          >
-                            New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
-                          </Notice>
-                        )}
                         <details className="uam-skill-folder">
                           <summary className="uam-skill-folder__summary" style={{ fontSize: 'var(--fs-sm)' }}><ChevronRight size={13} aria-hidden className="uam-skill-folder__chevron" />Advanced</summary>
                           <div className="grid gap-3">
@@ -2582,8 +2565,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               setPendingCliInstall({providerId:manager.providerId,providerName,version})
             }
             return (
-              <div key={manager.providerId} className="grid gap-3">
-                {manager.running && <div role="progressbar" aria-label={`${providerName} CLI task running`} className="uam-settings-progress" />}
+              <div key={manager.providerId} className={manager.running ? 'grid gap-3 uam-progress-fill' : 'grid gap-3'} role={manager.running ? 'group' : undefined} aria-label={manager.running ? `${providerName} CLI task running` : undefined} aria-busy={manager.running || undefined} data-indeterminate={manager.running || undefined}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
                   <div className="flex items-center gap-1">
@@ -2717,8 +2699,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 )}
               >
-                <div className="grid gap-3">
-                  {isRemoteHostBusy(host.id) && <div role="progressbar" aria-label={`Remote host task running on ${host.label}`} className="uam-settings-progress" />}
+                <div className={isRemoteHostBusy(host.id) ? 'grid gap-3 uam-progress-fill' : 'grid gap-3'} role={isRemoteHostBusy(host.id) ? 'group' : undefined} aria-label={isRemoteHostBusy(host.id) ? `Remote host task running on ${host.label}` : undefined} aria-busy={isRemoteHostBusy(host.id) || undefined} data-indeterminate={isRemoteHostBusy(host.id) || undefined}>
                   <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
                   <details>
                     <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--text)' }}>Host options</summary>
@@ -3263,6 +3244,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         }}>
         <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
       </ConfirmDialog>
+      {pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
+        onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>
+        New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
+      </ConfirmDialog>}
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.

@@ -1,7 +1,7 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
-import { reportAppNotice } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -101,6 +101,8 @@ function sameManualCompactionTarget(left: ManualCompactionAvailability, right: M
 type ComposerNoticeTone = NoticeTone
 type SlashNotice = { message: string; tone: NoticeTone }
 const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
+// Last chat-history failure alerted; module-level so remounting ChatView does not re-alert the same stored error.
+let reportedHistoryFailure = ''
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
 
 function normalizePermissionChangeResult(result: boolean | PermissionChangeResult): PermissionChangeResult {
@@ -375,6 +377,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [dictationState, setDictationState] = useState<DictationState>('idle')
   const [dictationElapsedSeconds, setDictationElapsedSeconds] = useState(0)
   const [dictationError, setDictationError] = useState('')
+  const reportedDictationError = useRef('')
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
@@ -1289,6 +1292,43 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     reportAppNotice(workspaceFeedback.message, 'success')
     setWorkspaceFeedback(null)
   }, [workspaceFeedback])
+  // Failures and completed actions reach the shared alert path instead of inline banners; error state is cleared once reported.
+  useEffect(() => {
+    if (!workspaceFeedback || workspaceFeedback.tone === 'success') return
+    reportAppFailure('Workspace action failed', workspaceFeedback.message)
+    setWorkspaceFeedback(null)
+  }, [workspaceFeedback])
+  useEffect(() => {
+    if (!goalError) return
+    reportAppFailure('Goal update failed', goalError)
+    setGoalError('')
+  }, [goalError])
+  useEffect(() => {
+    if (!messageBranchError) return
+    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed', messageBranchError)
+    setMessageBranchError('')
+  }, [messageBranchError])
+  useEffect(() => {
+    if (!attachmentError) return
+    reportAppFailure('Attachment failed', attachmentError)
+    setAttachmentError('')
+  }, [attachmentError])
+  // Toggling showComposer re-runs this effect; the reported ref keeps one alert per distinct dictation error.
+  useEffect(() => {
+    if (!dictationError) reportedDictationError.current = ''
+    if (!dictationError || showComposer || reportedDictationError.current === dictationError) return
+    reportedDictationError.current = dictationError
+    reportAppFailure('Dictation failed', dictationError)
+  }, [dictationError, showComposer])
+  // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
+  useEffect(() => {
+    if (!chatHistoryError) { reportedHistoryFailure = ''; return }
+    const title = historyRefreshFailed ? 'Chat history did not refresh' : 'Chat history did not load'
+    const key = `${session.id}\u0000${title}\u0000${chatHistoryError}`
+    if (key === reportedHistoryFailure) return
+    reportedHistoryFailure = key
+    reportAppFailure(title, `${chatHistoryError} Use Retry at the top of the transcript to try again.`)
+  }, [chatHistoryError, historyRefreshFailed, session.id])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
 
@@ -1928,6 +1968,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
   const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
+  useEffect(() => {
+    if (!slashNotice) return
+    if (slashNotice.tone === 'error' || slashNotice.tone === 'warning') reportAppFailure(slashNoticeTitle, slashNotice.message)
+    else reportAppNotice(slashNotice.message, slashNotice.tone === 'info' ? 'info' : 'success')
+  }, [slashNotice])
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not available in this app. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
@@ -3263,19 +3308,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
               {chatHistoryError && (
-                <Notice
-                  key={`chat-history:${session.id}:${historyRefreshFailed ? 'refresh' : 'load'}:${chatHistoryError}`}
-                  tone="error"
-                  title={historyRefreshFailed ? 'History refresh failed' : 'Chat history unavailable'}
-                  dismissLabel="Dismiss chat history error"
-                  actions={(
-                    <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
-                      {historyRefreshFailed ? 'Reload history' : 'Retry'}
-                    </Button>
-                  )}
-                >
-                  {chatHistoryError}
-                </Notice>
+                <div className="mb-2 flex justify-end px-4">
+                  <Button size="sm" variant="secondary" loading={chatHistoryRetryingIds.has(session.id)} onClick={() => void retryChatHistory(session.id)}>
+                    {historyRefreshFailed ? 'Reload history' : 'Retry'}
+                  </Button>
+                </div>
               )}
               <InlineSubagentProvider key={session.id} sourceChatId={session.id} onOpenManagedRun={runId => {
                 const parent = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
@@ -3490,56 +3527,30 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           className={showComposer ? "flex-shrink-0" : "contents"}
         >
             <div className={showComposer ? "uam-chat-content uam-composer-region flex flex-col p-3" : "uam-chat-content flex shrink-0 flex-col"}>
-            {confirmYolo && (
-              <Notice
-                tone="warning"
-                title="Enable YOLO?"
-                dismissLabel="Dismiss YOLO warning"
-                onDismiss={() => setConfirmYolo(false)}
-                actions={(
-                  <>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => setConfirmYolo(false)}>Cancel</Button>
-                    <Button type="button" size="sm" variant="danger" onClick={() => {
-                      setConfirmYolo(false)
-                      void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
-                    }}>Enable YOLO</Button>
-                  </>
-                )}
-              >
-                {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
-              </Notice>
-            )}
-            {rollbackConfirmation && (
-              <Notice
-                tone="warning"
-                title="Roll back workspace?"
-                dismissLabel="Dismiss workspace rollback warning"
-                onDismiss={() => setRollbackConfirmation(null)}
-                actions={(
-                  <>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => setRollbackConfirmation(null)}>Cancel</Button>
-                    <Button type="button" size="sm" variant="danger" loading={workspaceActionBusy} onClick={() => void confirmLatestTurnRollback()}>Roll back turn</Button>
-                  </>
-                )}
-              >
-                This returns the isolated workspace to before the selected turn. {rollbackConfirmation.diff}
-              </Notice>
-            )}
-            {messageBranchError && (
-              <Notice key={`branch:${messageBranchError}`} tone="error" title={editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed'} dismissLabel={editingMessageSource.kind === 'unsent' ? 'Dismiss message edit error' : 'Dismiss message branch error'} onDismiss={() => setMessageBranchError('')}>
-                {messageBranchError}
-              </Notice>
-            )}
-            {goalError && (
-              <Notice key={`goal:${goalError}`} tone="error" title="Goal update failed" dismissLabel="Dismiss goal error" onDismiss={() => setGoalError('')}>
-                {goalError}
-              </Notice>
-            )}
-            {workspaceFeedback && (
-              <Notice key={`workspace:${workspaceFeedback.tone}:${workspaceFeedback.message}`} tone={workspaceFeedback.tone} title="Workspace" dismissLabel="Dismiss workspace action message" onDismiss={() => setWorkspaceFeedback(null)}>
-                {workspaceFeedback.message}
-              </Notice>
-            )}
+            <ConfirmDialog
+              open={confirmYolo}
+              title="Enable YOLO?"
+              confirmLabel="Enable YOLO"
+              tone="danger"
+              onCancel={() => setConfirmYolo(false)}
+              onConfirm={() => {
+                setConfirmYolo(false)
+                void applyPermissionMode('yolo').then((result) => showPermissionResult(result, 'Failed to change permission mode to YOLO.'))
+              }}
+            >
+              {COMPUTER_USE_ENABLED ? 'YOLO automatically approves every permission in this chat, including computer use, commands, and file changes.' : 'YOLO automatically approves every permission in this chat, including commands and file changes.'}
+            </ConfirmDialog>
+            <ConfirmDialog
+              open={rollbackConfirmation !== null}
+              title="Roll back workspace?"
+              confirmLabel="Roll back turn"
+              tone="danger"
+              busy={workspaceActionBusy}
+              onCancel={() => setRollbackConfirmation(null)}
+              onConfirm={() => void confirmLatestTurnRollback()}
+            >
+              This returns the isolated workspace to before the selected turn. {rollbackConfirmation?.diff}
+            </ConfirmDialog>
             {!providerSupported && (
               <Notice key={`unsupported:${currentProviderId}`} tone="warning" title="Provider unavailable" dismissLabel="Dismiss unsupported provider warning">
                 {unsupportedProviderMessage}
@@ -3561,56 +3572,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
-            {CLAUDE_ENABLED && claudePlanPrompt !== null && (
-              <Notice
-                tone="warning"
-                title="Claude Plan mode"
-                dismissLabel="Dismiss Claude Plan mode warning"
-                onDismiss={() => setClaudePlanPrompt(null)}
-                actions={(
-                  <>
-                  <Button type="button"
-                    size="sm"
-                    variant="primary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('acceptEdits')}
-                  >
-                    Accept edits and proceed
-                  </Button>
-                  <Button type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('default')}
-                  >
-                    Review each edit
-                  </Button>
-                  <Button type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={submitting}
-                    onClick={() => void resolveClaudePlanPrompt('plan')}
-                  >
-                    Keep planning
-                  </Button>
-                  </>
-                )}
-              >
-                Claude Plan mode is read-only. Choose how to proceed with this prompt.
-                {claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
-              </Notice>
-            )}
-            {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashNotice(null)}>
-                {slashMessage}
-              </Notice>
-            )}
-            {attachmentError && (
-              <Notice key={`attachment:${attachmentError}`} tone="error" title="Attachment failed" dismissLabel="Dismiss attachment error" onDismiss={() => setAttachmentError('')}>
-                {attachmentError}
-              </Notice>
-            )}
-            {!showComposer && dictationError && <Notice tone="error" title="Dictation failed" dismissLabel="Dismiss dictation error" onDismiss={dismissDictationError}>{dictationError}</Notice>}
+            <ConfirmDialog
+              open={CLAUDE_ENABLED && claudePlanPrompt !== null}
+              title="Claude Plan mode"
+              confirmLabel="Accept edits and proceed"
+              tone="primary"
+              busy={submitting}
+              cancelLabel="Keep planning"
+              secondaryAction={{ label: 'Review each edit', onClick: () => void resolveClaudePlanPrompt('default') }}
+              onCancel={() => void resolveClaudePlanPrompt('plan')}
+              onConfirm={() => void resolveClaudePlanPrompt('acceptEdits')}
+            >
+              Claude Plan mode is read-only. Choose how to proceed with this prompt.
+              {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
+            </ConfirmDialog>
             <InlinePromptQueue key={session.id}
               held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}

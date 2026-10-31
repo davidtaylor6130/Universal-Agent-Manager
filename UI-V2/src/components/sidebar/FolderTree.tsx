@@ -13,7 +13,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import './sidebar.css'
-import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, RowButton, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -1611,18 +1611,14 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
 // Determinate only when the backend reports per-item progress; otherwise the indeterminate sweep (no fake percentage).
 function DeletionProgressBar({ label, className }: { label: string; className?: string }) {
   const progress = useAppStore((s) => s.deletionProgress)
+  const row = `flex h-6 min-w-0 items-center justify-between gap-2 rounded-md px-2 text-xs${className ? ` ${className}` : ''}`
   if (!progress || progress.total <= 0) {
-    return <div role="progressbar" aria-label={label} className={`uam-sb-progress${className ? ` ${className}` : ''}`}><span /></div>
+    return <ProgressFill label={label} indeterminate className={row} />
   }
-  return <div className={className}>
-    <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed} className="uam-sb-progress uam-sb-progress--determinate">
-      <span style={{ transform: `scaleX(${progress.completed / progress.total})` }} />
-    </div>
-    <div className="mt-1 flex min-w-0 items-baseline justify-between gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-      <span className="shrink-0 tabular-nums">{progress.completed} of {progress.total} removed</span>
-      {progress.currentLabel && <span className="truncate" style={{ color: 'var(--text-3)' }}>{progress.currentLabel}</span>}
-    </div>
-  </div>
+  return <ProgressFill label={label} value={progress.completed} max={progress.total} className={row}>
+    <span className="shrink-0 tabular-nums">{progress.completed} of {progress.total} removed</span>
+    {progress.currentLabel && <span className="truncate" style={{ color: 'var(--text-3)' }}>{progress.currentLabel}</span>}
+  </ProgressFill>
 }
 
 interface WorkspaceFolderRecoveryModalProps {

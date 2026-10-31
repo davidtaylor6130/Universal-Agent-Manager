@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Search, TriangleAlert } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, Notice } from '../ui'
+import { Button } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
@@ -26,7 +27,6 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
   const [prefixes, setPrefixes] = useState(savedPrefixes.join('\n'))
   const [directories, setDirectories] = useState(savedDirectories.join('\n'))
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n')
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
@@ -42,15 +42,15 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     setPrefixes((draft) => ruleLines(draft, true).join('\n') === previous.prefixes ? next.prefixes : draft)
     setDirectories((draft) => ruleLines(draft).join('\n') === previous.directories ? next.directories : draft)
   }, [savedPrefixes, savedDirectories])
-  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')); setError('') }
+  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')) }
   async function save() {
-    setSaving(true); setError('')
+    setSaving(true)
     const titlePrefixes = ruleLines(prefixes, true)
     const excludedDirectories = ruleLines(directories)
     const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories })
     setSaving(false)
     if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')) }
-    else setError('The import filters could not be saved. Your changes are kept.')
+    else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
   return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
     <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
@@ -61,7 +61,6 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
       <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
-    {error && <Notice tone="error" title="Import filters" dismissible={false} dismissLabel="Dismiss import filter error">{error}</Notice>}
     <div className="flex justify-end gap-2">
       <Button size="sm" variant="ghost" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
       <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
@@ -97,7 +96,6 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
   const providerScope = providerNames.length > 1 ? `${providerNames.slice(0, -1).join(', ')} and ${providerNames[providerNames.length - 1]}` : providerNames[0]
   const [page, setPage] = useState<StartupNativeImportPage | null>(null)
   const [requesting, setRequesting] = useState(false)
-  const [error, setError] = useState('')
   const pending = useRef(false)
   const mounted = useRef(false)
   const cacheRequest = useRef(0)
@@ -115,23 +113,23 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
       if (!current || !mounted.current || request !== cacheRequest.current) return
       const data = response.ok ? parseStartupNativeImportPage(response.data) : null
       if (!data || data.generation !== status.generation) {
-        setError(response.error || 'Discovery results could not be read. Reopen Chat Data to retry.')
+        reportAppFailure('Native history discovery results could not be read.', response.error || 'Reopen Chat Data to retry.')
         return
       }
-      setPage(data); setError('')
+      setPage(data)
     })()
     return () => { current = false }
   }, [companion, status.generation, status.phase, status.totalCount, status.importedCount])
 
   async function discover() {
     if (pending.current || companion) return
-    pending.current = true; setRequesting(true); setError('')
+    pending.current = true; setRequesting(true)
     const before = useAppStore.getState().startupNativeImports
     try {
       const response = await sendToCEF<unknown>({ action: 'discoverSystemNativeImports', payload: {} })
       if (!mounted.current) return
       const data = response.ok ? parseStartupNativeImportPage(response.data) : null
-      if (!data) { setError(response.error || 'Native history discovery could not start.'); return }
+      if (!data) { reportAppFailure('Native history discovery could not start.', response.error || 'Use Discover histories to try again.'); return }
       // A state push may already have advanced this scan before its acknowledgement arrives.
       if (useAppStore.getState().startupNativeImports === before) {
         useAppStore.setState({ startupNativeImports: sanitizeStartupNativeImportStatus(data) })
@@ -168,7 +166,6 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           </li>
         })}
       </ul>
-      {error && <Notice tone="error" title="Native history discovery" dismissible={false} dismissLabel="Dismiss discovery error">{error}</Notice>}
       {issueCount > 0 && <details className="uam-native-disclosure uam-native-disclosure--warning">
         <summary><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}<ChevronRight size={14} className="uam-native-disclosure__chevron" aria-hidden /></summary>
         <ul className="uam-native-issues">{issues.map((group) => {

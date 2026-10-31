@@ -8,8 +8,12 @@ import { useAppStore } from '../../store/useAppStore'
 import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { version as packageVersion } from '../../../package.json'
 import { BUILT_IN_THEME_COLORS } from '../../utils/themeStorage'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+const failures: AppFailure[] = []
+window.addEventListener(APP_FAILURE_EVENT, (event) => { failures.push((event as CustomEvent<AppFailure>).detail) })
+beforeEach(() => { failures.length = 0 })
 
 describe('SettingsModal memory settings', () => {
   const originalSaveActions = { setVoiceInputSettings: useAppStore.getState().setVoiceInputSettings, setProviderAvailability: useAppStore.getState().setProviderAvailability }
@@ -209,7 +213,8 @@ describe('SettingsModal memory settings', () => {
         'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Memory worker selections',
         'Permission reviewer provider', 'Permission reviewer model',
       ])
-      expect(Array.from(notice.querySelectorAll('button'), (button) => button.textContent)).toEqual(['Unconfirmed settings changes'])
+      // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
+      expect(Array.from(notice.querySelectorAll('button'), (button) => button.textContent)).toEqual([])
       expect(notice.querySelector('[aria-label="Unconfirmed settings changes cannot be dismissed"]')).toBeNull()
       expect(useAppStore.getState().setMemorySettings).not.toHaveBeenCalled()
     } finally { act(() => root.unmount()); host.remove() }
@@ -1031,8 +1036,8 @@ describe('SettingsModal memory settings', () => {
       await act(async () => { saveA().click() })
       expect(requests.find(r => r.action === 'saveRemoteHostOptions')?.payload.id).toBe('host-a')
       // Only Host A shows progress and is disabled; Host B's controls stay usable.
-      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"]')).toBeTruthy()
-      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
+      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
+      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host B"]')).toBeNull()
       expect(saveA().disabled).toBe(true)
       const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
       expect(reinstallB.disabled).toBe(false)
@@ -2222,7 +2227,7 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect((host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement | null)?.value).toBe('/tmp/rejected-store')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That directory cannot be used.')
+    expect(failures.at(-1)?.detail).toContain('That directory cannot be used.')
 
     act(() => root.unmount())
     host.remove()
@@ -2255,7 +2260,7 @@ describe('SettingsModal memory settings', () => {
 
     await act(async () => { browseButton.click(); await Promise.resolve() })
     expect(input.value).toBe('/tmp/typed-store')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Folder picker failed.')
+    expect(failures.at(-1)?.detail).toContain('Folder picker failed.')
 
     await act(async () => { browseButton.click(); await Promise.resolve() })
     expect(input.value).toBe('/tmp/typed-store')
@@ -2466,7 +2471,7 @@ describe('SettingsModal memory settings', () => {
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(requests[1]).toMatchObject({ action: 'importLocalChats', payload: { currentValue: '/tmp/uam-export' } })
-    expect(host.textContent).toContain('Imported 1 of 2 chats; 1 received new local IDs. One chat could not be saved.')
+    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 received new local IDs. One chat could not be saved.')
 
     act(() => root.unmount())
     host.remove()

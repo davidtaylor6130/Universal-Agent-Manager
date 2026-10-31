@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, EyeOff, FolderPlus, Loader2, RefreshCw, X } from 'lucide-react'
+import { Check, Download, EyeOff, FolderPlus, Loader2, RefreshCw, X, XCircle } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
+import { Button, IconButton, Notice, Overlay, ProgressFill, Tooltip, cx } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import '../shared/review.css'
 
@@ -49,6 +49,9 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   const [workspaceName, setWorkspaceName] = useState('')
   // Set when a started import finishes short of its expected count.
   const [outcome, setOutcome] = useState<{ failed: number; total: number } | null>(null)
+  // Per-chat state: the store only reports counts, so chats are matched to the batch in selection order (importAll: page order).
+  const batchIds = useRef<string[]>([])
+  const [chatFailure, setChatFailure] = useState<{ ids: ReadonlySet<string>; reason: string } | null>(null)
   const requestSequence = useRef(0)
   const loadedFolderId = useRef(folderId)
   const busyRef = useRef(false)
@@ -98,7 +101,9 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     if (failed >= total) return { message: `None of the selected chats could be imported.${gone ? ' They are no longer available.' : ''}`, failed, total }
     return { message: `${failed} ${failed === 1 ? 'chat' : 'chats'} couldn't be imported. ${gone ? 'They are no longer available.' : 'They stay in the list so you can retry.'}`, failed, total }
   }
-  function reportFailure(failure: ReturnType<typeof publicationFailure>) {
+  function reportFailure(failure: ReturnType<typeof publicationFailure>, data: StartupNativeImportPage) {
+    const listed = new Set(data.candidates.map((candidate) => candidate.candidateId))
+    setChatFailure(failure ? { ids: new Set(batchIds.current.filter((id) => listed.has(id))), reason: failure.message } : null)
     setOutcome(failure ? { failed: failure.failed, total: failure.total } : null)
     setError(failure?.message ?? '')
   }
@@ -122,7 +127,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (afterPublication && data.phase !== 'importing') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
-        reportFailure(failure)
+        reportFailure(failure, data)
         publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (!failure && data.phase === 'complete' && data.totalCount === 0) closeRef.current()
       }
@@ -165,7 +170,11 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     const request = ++requestSequence.current
     const ids = selected.slice(0, 200)
     let resolutionMayHaveStarted = false
-    if (importSelected) publication.current = { start: status, refreshed: null, importedCount: status.importedCount, expectedCount: importAll ? page!.totalCount : ids.length }
+    if (importSelected) {
+      publication.current = { start: status, refreshed: null, importedCount: status.importedCount, expectedCount: importAll ? page!.totalCount : ids.length }
+      batchIds.current = importAll ? (page?.candidates ?? []).map((candidate) => candidate.candidateId) : ids
+      setChatFailure(null)
+    }
     busyRef.current = true; setBusy(true); setBusyAction('resolve'); setError(''); setOutcome(null)
     try {
       const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected && !importAll ? ids : [], declinedIds: importSelected ? [] : ids, folderId, ...(importAll ? { importAll: true } : {}) } })
@@ -183,7 +192,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (importSelected && data.phase === 'complete') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
-        reportFailure(failure)
+        reportFailure(failure, data)
         publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (data.phase === 'complete' && data.totalCount === 0 && !failure) closeRef.current()
       }
@@ -266,25 +275,39 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
             const formId = `native-assignment-${candidate.candidateId}`
             const newWorkspaceNote = `New workspace: ${candidate.workspaceTitle}. Saved with import.`
             return <div key={candidate.candidateId}>
-              <div className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
-                <label className="uam-rv-row__main">
-                  <input className="uam-rv-check" type="checkbox" data-native-candidate-id={candidate.candidateId} aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
-                  <Tooltip label={providerLabel}>
-                    <span role="img" aria-label={providerLabel} className="uam-rv-row__provider"><ProviderLogo providerId={candidate.providerId} size={14} /></span>
-                  </Tooltip>
-                  <Tooltip label={candidate.workspaceDirectory}>
-                    <span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{lastDirectoryName(candidate.workspaceDirectory)}</span>
-                  </Tooltip>
-                  <Tooltip label={candidate.title}>
-                    <span className="uam-rv-row__title">{candidate.title}</span>
-                  </Tooltip>
-                </label>
-                {candidate.newWorkspace && <Tooltip label={newWorkspaceNote}><span className="uam-rv-row__note">{newWorkspaceNote}</span></Tooltip>}
-                {!candidate.folderId && <>
-                  <span className="uam-rv-row__note">Workspace required</span>
-                  <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} aria-expanded={assigning} aria-controls={assigning ? formId : undefined} disabled={busy || importing || assigning} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
-                </>}
-              </div>
+              {(() => {
+                const chatIndex = batchIds.current.indexOf(candidate.candidateId)
+                const chatState = !importing ? (chatFailure?.ids.has(candidate.candidateId) ? 'failed' : null)
+                  : chatIndex < 0 ? null : chatIndex < batchDone ? 'done' : chatIndex === batchDone ? 'importing' : null
+                const body = <>
+                  <label className="uam-rv-row__main">
+                    <input className="uam-rv-check" type="checkbox" data-native-candidate-id={candidate.candidateId} aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
+                    <Tooltip label={providerLabel}>
+                      <span role="img" aria-label={providerLabel} className="uam-rv-row__provider"><ProviderLogo providerId={candidate.providerId} size={14} /></span>
+                    </Tooltip>
+                    <Tooltip label={candidate.workspaceDirectory}>
+                      <span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{lastDirectoryName(candidate.workspaceDirectory)}</span>
+                    </Tooltip>
+                    <Tooltip label={candidate.title}>
+                      <span className="uam-rv-row__title">{candidate.title}</span>
+                    </Tooltip>
+                  </label>
+                  {candidate.newWorkspace && <Tooltip label={newWorkspaceNote}><span className="uam-rv-row__note">{newWorkspaceNote}</span></Tooltip>}
+                  {!candidate.folderId && <>
+                    <span className="uam-rv-row__note">Workspace required</span>
+                    <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} aria-expanded={assigning} aria-controls={assigning ? formId : undefined} disabled={busy || importing || assigning} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
+                  </>}
+                  {chatState === 'done' && <Check size={14} aria-hidden className="shrink-0" style={{ color: 'var(--success)' }} />}
+                  {chatState === 'importing' && <Loader2 size={14} aria-hidden className="uam-rv-spin shrink-0" style={{ color: 'var(--accent)' }} />}
+                  {chatState === 'failed' && chatFailure && <Tooltip label={chatFailure.reason}>
+                    <span role="img" tabIndex={0} aria-label={`Not imported: ${chatFailure.reason}`} className="grid shrink-0 place-items-center" style={{ color: 'var(--error)' }}><XCircle size={14} aria-hidden /></span>
+                  </Tooltip>}
+                </>
+                const rowClass = cx('uam-rv-row', chatState === 'failed' && 'uam-rv-row--failed')
+                return chatState === 'importing' || chatState === 'done'
+                  ? <ProgressFill label={chatState === 'done' ? `${candidate.title} imported` : `Importing ${candidate.title}`} indeterminate={chatState === 'importing'} value={chatState === 'done' ? 100 : undefined} className={cx(rowClass, chatState === 'done' && 'uam-rv-row--done')}>{body}</ProgressFill>
+                  : <div className={rowClass} data-selected={selected.includes(candidate.candidateId)}>{body}</div>
+              })()}
               {!candidate.folderId && assigning && <div className="grid gap-2 px-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
                 <form id={formId} className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void assignWorkspace(candidate.candidateId) }}>
                   <p className="uam-rv-muted">Saved when the chat is imported.</p>
@@ -306,14 +329,9 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
           {!busy && !importing && page && candidates.length === 0 && <p style={{ color: 'var(--text-2)' }}>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
           {needsAssignment > 0 && <p role="status" className="uam-rv-muted">Assign workspaces for {needsAssignment} selected {needsAssignment === 1 ? 'history' : 'histories'} before importing.</p>}
           {busy && !importing && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'assign' ? 'Saving workspace…' : busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
-          {importing && <div className="flex flex-col gap-1">
-            <div className="uam-rv-importing">
-              <Loader2 size={14} className="uam-rv-spin" aria-hidden style={{ color: 'var(--text-2)' }} />
-              <p role="status" className="m-0" style={{ color: 'var(--text-2)' }}>{batch.expectedCount > 0 ? `Importing ${batchDone} of ${batch.expectedCount}…` : 'Importing selected chats…'}</p>
-            </div>
-            <div role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuemax={batch.expectedCount || undefined} aria-valuenow={batch.expectedCount ? batchDone : undefined} className={batch.expectedCount > 0 ? 'uam-rv-progress' : 'uam-rv-progress uam-rv-progress--indeterminate'}>
-              <span style={batch.expectedCount > 0 ? { transform: `scaleX(${batchDone / batch.expectedCount})` } : undefined} />
-            </div>
+          {importing && <div className="uam-rv-importing">
+            <Loader2 size={14} className="uam-rv-spin" aria-hidden style={{ color: 'var(--text-2)' }} />
+            <p role="status" className="m-0" style={{ color: 'var(--text-2)' }}>{batch.expectedCount > 0 ? `Importing ${batchDone} of ${batch.expectedCount}…` : 'Importing selected chats…'}</p>
           </div>}
           {error && <Notice key={error} tone={partial ? 'warning' : 'error'} dismissLabel="Dismiss">
             {error}

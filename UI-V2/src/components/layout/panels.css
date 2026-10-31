@@ -48,13 +48,11 @@
 }
 .uam-np-row__title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-np-row__dismiss {
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease);
-}
-.uam-np-row:hover .uam-np-row__dismiss,
-.uam-np-row:focus-within .uam-np-row__dismiss { opacity: 1; }
-@media (hover: none) { .uam-np-row__dismiss { opacity: 1; } }
+/* Rows and update cards collapse + fade out before removal (useRowLeave). Wrapper is the grid track; the child is the row. */
+.uam-np-collapse { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-exit) var(--ease); }
+.uam-np-collapse > * { min-height: 0; overflow: hidden; transition: opacity var(--dur-exit) var(--ease); }
+.uam-np-collapse[data-state="closed"] { grid-template-rows: 0fr; }
+.uam-np-collapse[data-state="closed"] > * { opacity: 0; }
 
 /* Empty states */
 .uam-np-empty {
@@ -274,8 +272,14 @@
   .uam-np-model,
   .uam-np-model__fav,
   .uam-np-rail__button,
-  .uam-np-row__dismiss { transition: none; }
+  .uam-np-collapse,
+  .uam-np-collapse > * { transition: none; }
 }
+
+/* Update rows: the row is the progress track (ProgressFill). Failed and succeeded rows tint the whole row. */
+.uam-update-row { background: var(--surface-up); border: 1px solid var(--border); }
+.uam-update-row--error { background: var(--error-dim); }
+.uam-update-row--success.uam-progress-fill::before { background: var(--success-dim); }
 
 /* Shared transient alert: slides in from the right and back out the way it came. */
 .uam-transient-alert { animation: uam-transient-alert-in var(--dur-base) var(--ease-out-soft) backwards; }

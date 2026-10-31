@@ -8,7 +8,7 @@ import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, ArrowUpRight, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -41,15 +41,16 @@ import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, Notice, Presence, Tooltip, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, Presence, Tooltip, usePresence } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
-import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
+import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
-import { notificationTimeGroup, relativeNotificationTime } from '../../utils/notificationTime'
+import { notificationTimeGroup } from '../../utils/notificationTime'
+import { useRowLeave } from './useRowLeave'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 
@@ -341,6 +342,16 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
   )
 }
 
+/** Short form for the bell rows: now, 3m, 2h, 5d. The full date stays in the tooltip and accessible label. */
+function shortNotificationTime(time: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - time) / 60_000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
 function NotificationsPanel({
   closing = false,
   dismissedNotificationIds,
@@ -373,8 +384,8 @@ function NotificationsPanel({
   const deleteFolder = useAppStore((s) => s.deleteFolder)
   const [busyAction, setBusyAction] = useState('')
   const [confirmingFolderId, setConfirmingFolderId] = useState('')
-  const [folderActionError, setFolderActionError] = useState('')
   const headingRef = useRef<HTMLDivElement>(null)
+  const rows = useRowLeave()
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
   type Notification = { id: string; title: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[] }
@@ -418,9 +429,8 @@ function NotificationsPanel({
           run: async () => {
             const directory = await browseFolderDirectory(folder.directory)
             if (!directory) return
-            setFolderActionError('')
             if (!await renameFolder(folder.id, folder.name, directory)) {
-              setFolderActionError('The workspace could not be relinked. Finish active work and try again.')
+              reportAppFailure('The workspace could not be relinked.', 'Finish active work and try again.')
             }
           },
         },
@@ -464,7 +474,7 @@ function NotificationsPanel({
       className="uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', '--panel-w': '360px' } as React.CSSProperties}
     >
-      <header className="flex items-center gap-1 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      <header className="flex items-center gap-1 px-4" style={{ height: 'var(--pane-header-h)', borderBottom: '1px solid var(--border)' }}>
         <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
           <Bell size={16} aria-hidden /> Notifications
           {notifications.length > 0 && (
@@ -476,7 +486,7 @@ function NotificationsPanel({
             icon={<CheckCheck size={16} />}
             label="Mark all notifications as read"
             onClick={() => {
-              notifications.forEach((notification) => onDismiss(notification.id))
+              rows.leave(notifications.map((notification) => notification.id), () => notifications.forEach((notification) => onDismiss(notification.id)))
               headingRef.current?.focus()
             }}
           />
@@ -492,41 +502,26 @@ function NotificationsPanel({
           </div>
         ) : (
           <div className="grid gap-1">
-            {folderActionError && (
-              <Notice
-                tone="warning"
-                title="Workspace action failed"
-                dismissLabel="Dismiss workspace action error"
-                onDismiss={() => setFolderActionError('')}
-              >
-                {folderActionError}
-              </Notice>
-            )}
-            {confirmingFolder && (
-              <Notice
-                tone="warning"
-                title="Remove workspace folder?"
-                dismissLabel="Dismiss workspace removal warning"
-                onDismiss={() => setConfirmingFolderId('')}
-                actions={(
-                  <>
-                    <Button size="sm" onClick={() => setConfirmingFolderId('')}>Cancel</Button>
-                    <Button size="sm" variant="danger" loading={busyAction === 'remove-folder'} onClick={() => {
-                      setBusyAction('remove-folder')
-                      setFolderActionError('')
-                      void deleteFolder(confirmingFolder.id).then((deleted) => {
-                        if (deleted) setConfirmingFolderId('')
-                        else setFolderActionError('The workspace could not be removed. Finish active work and try again.')
-                      }).catch(() => {
-                        setFolderActionError('The workspace could not be removed. Finish active work and try again.')
-                      }).finally(() => setBusyAction(''))
-                    }}>Confirm removal</Button>
-                  </>
-                )}
-              >
-                Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
-              </Notice>
-            )}
+            <ConfirmDialog
+              open={Boolean(confirmingFolder)}
+              title="Remove workspace folder?"
+              confirmLabel="Confirm removal"
+              busy={busyAction === 'remove-folder'}
+              onCancel={() => setConfirmingFolderId('')}
+              onConfirm={() => {
+                if (!confirmingFolder) return
+                setBusyAction('remove-folder')
+                void deleteFolder(confirmingFolder.id).then((deleted) => {
+                  if (deleted) setConfirmingFolderId('')
+                  else { setConfirmingFolderId(''); reportAppFailure('The workspace could not be removed.', 'Finish active work and try again.') }
+                }).catch(() => {
+                  setConfirmingFolderId('')
+                  reportAppFailure('The workspace could not be removed.', 'Finish active work and try again.')
+                }).finally(() => setBusyAction(''))
+              }}
+            >
+              {confirmingFolder ? <>Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.</> : null}
+            </ConfirmDialog>
             {groups.flatMap((group) => [
                 <div key={`group-${group.label}`} className="uam-np-group">{group.label}</div>,
                 ...group.items.map((notification) => {
@@ -535,9 +530,10 @@ function NotificationsPanel({
                   const time = new Date(notification.time)
                   const exactTime = time.toLocaleString()
                   const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')
-                  const relativeTime = relativeNotificationTime(notification.time, now)
+                  const relativeTime = shortNotificationTime(notification.time, now)
                   return (
-                    <div key={notification.id} className="uam-np-row">
+                    <div key={notification.id} className="uam-np-collapse" data-state={rows.leaving.has(notification.id) ? 'closed' : 'open'}>
+                    <div className="uam-np-row">
                       <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
                       <Tooltip label={fullDetail}>
                         <div className="uam-np-row__title">
@@ -552,29 +548,29 @@ function NotificationsPanel({
                         {notification.actions?.map((action) => {
                           const actionId = `${notification.id}-${action.label}`
                           return (
-                            <Button
+                            <IconButton
                               key={action.label}
                               size="sm"
-                              variant={action.variant === 'danger' ? 'danger' : 'secondary'}
-                              loading={busyAction === actionId}
+                              variant={action.variant === 'danger' ? 'danger' : 'ghost'}
+                              icon={<ArrowUpRight size={14} />}
+                              label={action.label}
                               disabled={Boolean(busyAction)}
+                              aria-busy={busyAction === actionId || undefined}
                               onClick={() => { void runAction(notification.id, action) }}
-                            >
-                              {action.label}
-                            </Button>
+                            />
                           )
                         })}
                       </div>
                       <IconButton
                         size="sm"
-                        className="uam-np-row__dismiss"
                         icon={<X size={14} />}
                         label={`Dismiss ${notification.title}`}
                         onClick={() => {
-                          onDismiss(notification.id)
+                          rows.leave([notification.id], () => onDismiss(notification.id))
                           headingRef.current?.focus()
                         }}
                       />
+                    </div>
                     </div>
                   )
                 }),

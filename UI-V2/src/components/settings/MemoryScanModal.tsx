@@ -2,7 +2,8 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, Notice, Overlay, useOverlayState } from '../ui'
+import { Button, IconButton, Overlay, useOverlayState } from '../ui'
+import { reportAppFailure } from '../../utils/appFailure'
 import { SettingRow, SettingsLoading } from './SettingsPrimitives'
 import './provider-settings.css'
 
@@ -19,6 +20,11 @@ export function MemoryScanModal() {
   const selectAllMemoryScanChats = useAppStore((s) => s.selectAllMemoryScanChats)
   const selectNoMemoryScanChats = useAppStore((s) => s.selectNoMemoryScanChats)
   const startMemoryScan = useAppStore((s) => s.startMemoryScan)
+
+  // The scan stays open after a failure, so the alert is the report and Start scan is the retry.
+  useEffect(() => {
+    if (memoryScanError) reportAppFailure('Memory scan did not run.', memoryScanError)
+  }, [memoryScanError])
 
   useEffect(() => {
     if (!isMemoryScanModalOpen) {
@@ -76,10 +82,6 @@ export function MemoryScanModal() {
               </Button>
             </div>
           </div>
-
-          {memoryScanError && (
-            <Notice tone="error" dismissLabel="Dismiss scan error">{memoryScanError}</Notice>
-          )}
 
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />

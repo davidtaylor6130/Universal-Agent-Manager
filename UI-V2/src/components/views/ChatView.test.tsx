@@ -23,8 +23,11 @@ const realSendAcpPrompt = useAppStore.getState().sendAcpPrompt
 beforeEach(() => resetOutgoingPresentation())
 // Success messages go to the shared notifications path (reportAppNotice); collect them here.
 const appNotices: string[] = []
-const onAppNotice = (event: Event) => { appNotices.push((event as CustomEvent<AppFailure>).detail.message) }
-beforeEach(() => { appNotices.length = 0; window.addEventListener(APP_FAILURE_EVENT, onAppNotice) })
+const appFailures: AppFailure[] = []
+const onAppNotice = (event: Event) => { const detail = (event as CustomEvent<AppFailure>).detail; appNotices.push(detail.message); appFailures.push(detail) }
+// Failures and completed feedback now reach the shared alert path, so their text is read from the reported events.
+const reportedText = () => appFailures.map((failure) => `${failure.message} ${failure.detail}`).join('\n')
+beforeEach(() => { appNotices.length = 0; appFailures.length = 0; window.addEventListener(APP_FAILURE_EVENT, onAppNotice) })
 afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, onAppNotice))
 
 // Legacy ChatView fixtures have no managed-run server. The explicit integration case
@@ -103,12 +106,10 @@ describe('ChatView', () => {
     const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      const notice = host.querySelector<HTMLElement>('.uam-notice')!
-      expect(notice.getAttribute('role')).toBe('alert')
-      expect(notice.textContent).toContain(refresh ? 'History refresh failed' : 'Chat history unavailable')
-      expect(notice.textContent).toContain(guidance)
+      expect(reportedText()).toContain(refresh ? 'Chat history did not refresh' : 'Chat history did not load')
+      expect(reportedText()).toContain(guidance)
       const actionLabel = refresh ? 'Reload history' : 'Retry'
-      const action = Array.from(notice.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
+      const action = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === actionLabel)!
       expect(action).toBeTruthy()
       expect(host.textContent).toContain('Retained authored history')
       await act(async () => action.click())
@@ -149,7 +150,7 @@ describe('ChatView', () => {
       expect(host.textContent).toContain('What would you like to work on?')
       expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('false')
       act(() => useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Could not read the saved transcript.' } }))
-      expect(host.textContent).toContain('Chat history unavailable')
+      expect(reportedText()).toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
       await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')!.click())
       expect(loadSessionMessages).toHaveBeenCalledWith('chat-1', true)
@@ -178,7 +179,7 @@ describe('ChatView', () => {
       expect(host.querySelectorAll('[data-unsent-receipt-id="retained-input"]')).toHaveLength(1)
       expect(host.querySelector('[data-unsent-receipt-id="retained-input"] article')?.getAttribute('data-delivery')).toBe('unconfirmed')
       expect(host.textContent).not.toContain('What would you like to work on?')
-      expect(host.textContent?.includes('Chat history unavailable')).toBe(!pending)
+      expect(reportedText().includes('Chat history did not load')).toBe(!pending)
       expect(load).not.toHaveBeenCalled()
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ loadSessionMessages: originalLoad, chatHistoryReadBySessionId: {} }) }
   })
@@ -223,7 +224,7 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect(host.querySelector('.conversation-skeleton')).toBeNull()
-      expect(host.textContent).toContain('Chat history unavailable')
+      expect(reportedText()).toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatHistoryReadBySessionId: {} }) }
   })
@@ -247,7 +248,7 @@ describe('ChatView', () => {
       act(() => { select('chat-1'); root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
       expect(finishSelection).toBeTypeOf('function')
       expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(0)
-      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(reportedText()).not.toContain('Chat history did not load')
       expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('true')
       await act(async () => { finishSelection!(); await Promise.resolve() })
       expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
@@ -262,7 +263,7 @@ describe('ChatView', () => {
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      expect(host.textContent).not.toContain('Chat history unavailable')
+      expect(reportedText()).not.toContain('Chat history did not load')
       expect(host.textContent).not.toContain('What would you like to work on?')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ chatSearchNavigation: null }) }
   })
@@ -788,12 +789,25 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Remote transcript could not be read.')
+    expect(reportedText()).toContain('Remote transcript could not be read.')
     act(() => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry') as HTMLButtonElement).click())
     expect(retry).toHaveBeenCalledWith('chat-1', true)
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('alerts a stored chat-history failure once across ChatView remounts', () => {
+    useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Remount history error.' } })
+    for (let mount = 0; mount < 2; mount++) {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => root.unmount())
+      host.remove()
+    }
+    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -1460,7 +1474,7 @@ describe('ChatView', () => {
     })))
     await act(async () => root.render(<ChatView session={useAppStore.getState().sessions.find(session => session.id === 'chat-1')!} />))
     // No read was started by this fixture: missing rows must not pretend to be work.
-    expect(host.textContent).toContain('Chat history unavailable')
+    expect(reportedText()).toContain('Chat history did not load')
     expect(host.querySelector('.conversation-skeleton')).toBeNull()
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': loadedMessages } })))
@@ -2967,7 +2981,7 @@ describe('ChatView', () => {
       await act(async () => save().click())
       expect(branch).toHaveBeenLastCalledWith('chat-1', 0, '', ['second'])
       expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeTruthy()
-      expect(host.textContent).toContain('Source image no longer exists.')
+      expect(reportedText()).toContain('Source image no longer exists.')
       expect(useAppStore.getState().messages['chat-1'][0].attachments).toEqual(attachments)
       await act(async () => save().click())
       expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
@@ -3040,12 +3054,12 @@ describe('ChatView', () => {
       Object.defineProperty(file, 'path', { value: '/tmp/new.png' })
       Object.defineProperty(input, 'files', { value: [file], configurable: true })
       await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
-      expect(host.textContent).toContain('New image could not be staged.')
+      expect(reportedText()).toContain('New image could not be staged.')
       await act(async () => {
         useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], promptActionError: { id: 'attempt', message: 'Provider rejected the old image.' } } } }))
         settle(false)
       })
-      expect(host.textContent).toContain('New image could not be staged.')
+      expect(reportedText()).toContain('New image could not be staged.')
       expect(host.textContent).toContain('Provider rejected the old image.')
       expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
       expect(host.textContent).toContain('old.png')
@@ -4087,8 +4101,8 @@ describe('ChatView', () => {
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     expect(host.querySelector('select')).toBeNull()
@@ -4168,8 +4182,8 @@ describe('ChatView', () => {
       setDraft('/permission yolo')
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
     expect(host.textContent).not.toContain('Permission mode changed')
 
@@ -4178,10 +4192,10 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
-    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Unsupported permission mode "unrestricted"'))).toBe(true)
-    const dismissFeedback = host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement
-    act(() => dismissFeedback.click())
-    expect(host.textContent).not.toContain('Unsupported permission mode "unrestricted"')
+    expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
+    // Feedback now goes to the shared alert once; the inline dismiss control is gone.
+    expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
+    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -4190,7 +4204,7 @@ describe('ChatView', () => {
     })
     const middleYolo = Array.from(document.body.querySelectorAll('[aria-label="Permission modes"] [role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { middleYolo.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(textarea.value).toBe('keep  tail')
     expect(setSessionCommandSafetyTier).toHaveBeenLastCalledWith('chat-1', 'yolo')
 
@@ -4221,7 +4235,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     }
     const acceptYolo = async () => {
-      const button = Array.from(host.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Enable YOLO') as HTMLButtonElement
+      const button = Array.from(document.body.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Enable YOLO') as HTMLButtonElement
       expect(button).toBeTruthy()
       button.click()
       await Promise.resolve()
@@ -4229,9 +4243,9 @@ describe('ChatView', () => {
 
     await act(requestYolo)
     await act(acceptYolo)
-    expect(host.textContent).toContain('Native permission update was rejected.')
-    act(() => (host.querySelector('button[aria-label="Dismiss command feedback"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Native permission update was rejected.')
+    expect(reportedText()).toContain('Native permission update was rejected.')
+    expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -4626,8 +4640,8 @@ describe('ChatView', () => {
     expect(readChatComposerDraft('chat-1').attachments).toHaveLength(1)
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
-    if (operation === 'failure') expect(host.textContent).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
+    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -4896,7 +4910,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Reasoning changed to Extra High.')
+    expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
       setDraft('/speed flex')
@@ -4904,7 +4918,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Speed changed to Flex.')
+    expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
 
     act(() => root.unmount())
     host.remove()
@@ -5004,7 +5018,7 @@ describe('ChatView', () => {
     })
 
     expect(setSessionCodexOptions).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Codex is still working.')
+    expect(reportedText()).toContain('Codex is still working.')
 
     act(() => root.unmount())
     host.remove()
@@ -5943,8 +5957,8 @@ describe('ChatView', () => {
     act(() => permissionButton.click())
     const yoloOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('YOLO')) as HTMLButtonElement
     await act(async () => { yoloOption.click(); await Promise.resolve() })
-    expect(host.textContent).toContain('Enable YOLO?')
-    await act(async () => { (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
+    expect(document.body.textContent).toContain('Enable YOLO?')
+    await act(async () => { (Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Enable YOLO') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'yolo')
 
     act(() => {
@@ -6142,9 +6156,9 @@ describe('ChatView', () => {
     })
 
     expect(sendAcpPrompt).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('Claude Plan mode is read-only')
+    expect(document.body.textContent).toContain('Claude Plan mode is read-only')
 
-    const acceptAndProceed = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Accept edits and proceed') as HTMLButtonElement | undefined
+    const acceptAndProceed = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Accept edits and proceed') as HTMLButtonElement | undefined
     expect(acceptAndProceed).toBeTruthy()
     await act(async () => {
       acceptAndProceed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -6180,7 +6194,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => { (host.querySelector('form') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
-    expect(host.textContent).toContain('Claude Plan mode is read-only')
+    expect(document.body.textContent).toContain('Claude Plan mode is read-only')
 
     const changed = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli', approvalMode: 'default' }
     act(() => root.render(<ChatView session={changed} />))
@@ -6398,7 +6412,7 @@ describe('ChatView', () => {
 	  })
 
 	  expect(setGoal).toHaveBeenCalledTimes(1)
-	  expect(host.textContent).toContain('Failed to create goal.')
+	  expect(reportedText()).toContain('Failed to create goal.')
 	  expect(textarea.value).toBe('/ralph Keep this draft')
 	  expect(textarea.disabled).toBe(false)
 	  act(() => root.unmount())
@@ -6516,7 +6530,7 @@ describe('ChatView', () => {
       finishResume?.({ ok: false })
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('Failed to resume goal.')
+    expect(reportedText()).toContain('Failed to resume goal.')
 
     act(() => {
       menuItem('Delete goal')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -7567,9 +7581,9 @@ describe('ChatView', () => {
     expect(error.textContent).toContain('Provider failed to launch.')
     expect(error.getAttribute('style')).toContain('var(--error) 42%')
     expect(error.getAttribute('style')).toContain('var(--error) 9%')
-    // Notice adds its own disclosure toggle; the recovery actions stay absent.
-    expect(error.querySelectorAll('button')).toHaveLength(3)
-    expect(error.querySelectorAll('[aria-expanded]')).toHaveLength(1)
+    // Notice is one bar: copy action + dismiss only, no disclosure toggle; the recovery actions stay absent.
+    expect(error.querySelectorAll('button')).toHaveLength(2)
+    expect(error.querySelectorAll('[aria-expanded]')).toHaveLength(0)
     expect(host.querySelector('[aria-label="Check provider CLI"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open CLI settings"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open fallback terminal"]')).toBeNull()
@@ -8367,7 +8381,7 @@ describe('ChatView', () => {
     expect(workspaceTab.lastElementChild?.querySelector('svg')).toBeNull()
 
     openWorkspaceActions(host)
-    const openButton = document.body.querySelector('button[role="menuitem"]') as HTMLButtonElement | null
+    const openButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open workspace')) ?? null
     expect(openButton).toBeTruthy()
     expect(openButton?.textContent).toContain('Open workspace')
 
@@ -8429,7 +8443,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(confirmed ? appNotices.join('\n') : host.textContent).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -8505,11 +8519,11 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Failed to open terminal.'))).toBe(true)
+    expect(reportedText()).toContain('Failed to open terminal.')
     act(() => vi.advanceTimersByTime(6000))
-    expect(host.textContent).toContain('Failed to open terminal.')
-    act(() => (host.querySelector('button[aria-label="Dismiss workspace action message"]') as HTMLButtonElement).click())
-    expect(host.textContent).not.toContain('Failed to open terminal.')
+    // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
+    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -8622,7 +8636,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    const rollback = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+    const rollback = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Roll back turn')
     expect(rollback).toBeTruthy()
     await act(async () => {
@@ -8632,9 +8646,9 @@ describe('ChatView', () => {
     })
 
     expect(previewChatTurnRollback).toHaveBeenCalledWith('chat-1', 1)
-    expect(host.textContent).toContain('app.txt | 2 +-')
+    expect(document.body.textContent).toContain('app.txt | 2 +-')
     expect(rollbackChatTurn).not.toHaveBeenCalled()
-    const confirmRollback = Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button'))
+    const confirmRollback = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'))
       .find((button) => button.textContent === 'Roll back turn')
     await act(async () => {
       confirmRollback?.click()
@@ -9516,9 +9530,9 @@ describe('ChatView', () => {
         openComposerOptions(host)
         act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Permissions"]')!.click())
         await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('YOLO'))!.click())
-        expect(host.textContent).toContain('Enable YOLO?')
-        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button')).find((button) => button.textContent === 'Cancel')!.click())
-        expect(host.textContent).not.toContain('Enable YOLO?')
+        expect(document.body.textContent).toContain('Enable YOLO?')
+        await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Cancel')!.click())
+        expect(document.body.textContent).not.toContain('Enable YOLO?')
       } else {
         await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Return to main chat')!.click())
         expect(select).toHaveBeenCalledWith('main-chat')
@@ -9569,7 +9583,7 @@ describe('ChatView', () => {
       expect(send).not.toHaveBeenCalled()
       expect((host.querySelector('.uam-composer-textarea') as HTMLTextAreaElement).value).toBe('Unsent composer draft')
       expect(readChatComposerDraft('chat-1')?.text).toBe('Unsent composer draft')
-      expect(host.textContent).toContain('could not be resumed')
+      expect(reportedText()).toContain('could not be resumed')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ resumeQueuedAcpPrompts: original, sendAcpPrompt: originalSend, editQueuedAcpPrompt: originalEdit }) }
   })
 
@@ -9960,7 +9974,7 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.sends()).toHaveLength(0)
           const label = route === 'claude-plan' ? 'Keep planning' : route === 'claude-proceed' ? 'Accept edits and proceed' : 'Review each edit'
-          const choice = [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
+          const choice = [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)
           expect(choice).toBeTruthy()
           await act(async () => choice!.click())
           if (route !== 'claude-plan') {
@@ -10026,7 +10040,7 @@ describe('ChatView', () => {
       })
       try {
         await f.send()
-        if (route !== 'goal') await act(async () => Array.from(f.host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        if (route !== 'goal') await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Accept edits and proceed')!.click())
         expect(finish).toBeTypeOf('function')
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id !== 'chat-1' ? session : { ...session,
           ...(change === 'birth' ? { createdAt: new Date(session.createdAt.getTime() + 1000) } : {}),
@@ -10042,12 +10056,11 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
-              notice.textContent?.includes("so this prompt wasn't sent. Review the selected references, then send again."))
+            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
             expect(refusal).toBeTruthy()
-            expect(refusal!.textContent).toContain('Message not sent')
+            expect(refusal!.message).toContain('Message not sent')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
+            expect(refusal!.tone ?? 'failure').toBe('failure')
           }
         }
       } finally {
@@ -10066,10 +10079,9 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
-        const notice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((item) => item.textContent?.includes('Check the earlier input before sending again.'))
-        expect(notice).toBeTruthy()
-        expect(notice!.textContent).toContain('Check earlier message')
-        expect(notice!.textContent).not.toContain('Message not sent')
+        expect(reportedText()).toContain('Check the earlier input before sending again.')
+        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
+        expect(reportedText()).not.toContain('Message not sent')
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -10088,9 +10100,8 @@ describe('ChatView', () => {
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
-        const replacementNotice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) => notice.textContent?.includes('Check the earlier input before sending again.'))
-        expect(replacementNotice).toBeTruthy()
-        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
+        expect(reportedText()).toContain('Check the earlier input before sending again.')
+        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -10134,7 +10145,7 @@ describe('ChatView', () => {
       })
       try {
         await f.send()
-        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
+        if (route !== 'goal') await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Accept edits and proceed')!.click())
         const finishOriginal = finish
         expect(finishOriginal).toBeTypeOf('function')
         act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-1'
@@ -10158,7 +10169,7 @@ describe('ChatView', () => {
         act(() => writeChatComposerDraft('chat-1', { text: freshDraft, attachments: [], references: [fresh] }))
         createGoal.mockResolvedValueOnce({ ok: true, goalId: 'new-birth-goal' })
         await f.send()
-        if (route !== 'goal') await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
+        if (route !== 'goal') await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click())
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(freshPrompt + '\n\n' + formatContextReferences([fresh]))
         expect(send().disabled).toBe(true)
@@ -10190,14 +10201,13 @@ describe('ChatView', () => {
       })))
       try {
         await f.send()
-        await act(async () => [...f.host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
+        await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === choice)!.click())
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
-          notice.textContent?.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
+        expect(recovery!.tone ?? 'failure').toBe('failure')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -11100,7 +11110,7 @@ describe('ChatView committed unsent editing', () => {
       expect(f.host.querySelector('[aria-label="Remove drop.txt from edited message"]')).toBeNull()
       expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
       expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('The edited input could not be saved.')
+      expect(reportedText()).toContain('The edited input could not be saved.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       await f.enter()
@@ -11119,7 +11129,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(reportedText()).toContain('unsent message changed')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
@@ -11137,7 +11147,7 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().sessions[0].messagesDigest).toBe('aaaaaaaaaaaaaaaa')
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(false)
-      expect(f.host.querySelector('[role="alert"]')?.textContent).toContain('unsent message changed')
+      expect(reportedText()).toContain('unsent message changed')
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
     } finally { f.cleanup() }
@@ -11435,7 +11445,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')).toBe(editor)
       expect(editor!.value).toBe('Revised delivered request')
       expect(editor!.disabled).toBe(false)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not create the message branch.')
+      expect(reportedText()).toContain('Could not create the message branch.')
       for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
       expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
     } finally {
@@ -11499,7 +11509,7 @@ describe('managed initial composer acknowledgement R83', () => {
       }, true)
       await act(async () => root.render(<ChatView key={chat.id} session={session} />))
       await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
-      if (isPlan) await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep planning')!.click())
+      if (isPlan) await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep planning')!.click())
       expect(sends).toBe(1)
       if (scenario === 'newer-draft') enter('My newer draft')
       if (scenario === 'unmount-before-ack' || scenario === 'remount-before-ack' || scenario === 'remount-with-newer-draft' || isGoal || isPlan) { act(() => root.unmount()); mounted = false }

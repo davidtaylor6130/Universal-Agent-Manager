@@ -432,8 +432,8 @@ describe('AppShell', () => {
       act(() => useAppStore.setState({ cliTranscriptBySessionId: { other: { terminalId: 'other', content: String(index) } } }))
     }
     expect(onRender).not.toHaveBeenCalled()
-    const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Relink')
-    const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Remove')
+    const relink = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.getAttribute('aria-label') === 'Relink')
+    const remove = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.getAttribute('aria-label') === 'Remove')
     expect(relink).toBeTruthy()
     expect(remove).toBeTruthy()
 
@@ -443,12 +443,12 @@ describe('AppShell', () => {
 
     renameFolder.mockResolvedValueOnce(false)
     await act(async () => relink?.click())
-    expect(panel?.textContent).toContain('workspace could not be relinked')
+    expect(panel?.textContent).toContain('The workspace could not be relinked.')
 
     await act(async () => remove?.click())
-    expect(panel?.textContent).toContain('delete 2 chats')
+    expect(document.body.textContent).toContain('delete 2 chats')
     expect(deleteFolder).not.toHaveBeenCalled()
-    const confirmRemoval = Array.from(panel?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Confirm removal')
+    const confirmRemoval = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm removal')
     await act(async () => confirmRemoval?.click())
     expect(deleteFolder).toHaveBeenCalledWith('missing')
 
@@ -507,8 +507,8 @@ describe('AppShell', () => {
       const panel = () => host.querySelector('[data-testid="notifications-panel"]')!
       const time = () => panel().querySelector('time')!
       expect(time().dateTime).toBe(firstObserved.toISOString())
-      expect(time().textContent).toBe('2 minutes ago')
-      expect(time().getAttribute('aria-label')).toBe('2 minutes ago')
+      expect(time().textContent).toBe('2m')
+      expect(time().getAttribute('aria-label')).toBe('2m')
 
       act(() => useAppStore.setState({ sidebarCollapsed: true }))
       expect(time().dateTime).toBe(firstObserved.toISOString())
@@ -518,7 +518,7 @@ describe('AppShell', () => {
       vi.setSystemTime(new Date(2026, 9, 23, 10))
       act(() => (host.querySelector('[aria-label="1 alert"]') as HTMLButtonElement).click())
       expect(time().dateTime).toBe(firstObserved.toISOString())
-      expect(time().textContent).toBe('1 hour ago')
+      expect(time().textContent).toBe('1h')
 
       act(() => (panel().querySelector('[aria-label="Mark all notifications as read"]') as HTMLButtonElement).click())
       act(() => vi.advanceTimersByTime(60_000))
@@ -533,7 +533,7 @@ describe('AppShell', () => {
       act(() => useAppStore.setState({ statusLine: 'Settings saved.' }))
       expect(host.querySelector('[aria-label="1 alert"]')).toBeTruthy()
       expect(time().dateTime).toBe(returnedAt.toISOString())
-      expect(time().textContent).toBe('Just now')
+      expect(time().textContent).toBe('now')
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -564,7 +564,7 @@ describe('AppShell', () => {
       expect(times.map((time) => time.dateTime)).toEqual([
         new Date(2026, 9, 23, 23, 59).toISOString(), new Date(2026, 9, 23, 23, 58).toISOString(), new Date(2026, 9, 22, 23, 59).toISOString(),
       ])
-      expect(times[0].textContent).toBe('Just now')
+      expect(times[0].textContent).toBe('now')
       const announcer = host.querySelector('[data-testid="transient-alert-announcer"]')!
       const announcement = announcer.innerHTML
       const transcriptRenders = mainPanelRenderCount.value
@@ -572,7 +572,7 @@ describe('AppShell', () => {
       act(() => focusedDismiss.focus())
       act(() => vi.advanceTimersByTime(60_000))
       expect(groups()).toEqual(['Earlier'])
-      expect(panel.querySelector('time')?.textContent).toBe('1 minute ago')
+      expect(panel.querySelector('time')?.textContent).toBe('1m')
       expect(announcer.innerHTML).toBe(announcement)
       expect(mainPanelRenderCount.value).toBe(transcriptRenders)
       expect(document.activeElement).toBe(focusedDismiss)
@@ -603,13 +603,13 @@ describe('AppShell', () => {
       const tooltip = document.body.querySelector('[role="tooltip"]')!
       expect(tooltip.textContent).toBe(observedAt.toLocaleString())
       expect(time.getAttribute('aria-describedby')).toBe(tooltip.id)
-      expect(time.getAttribute('aria-label')).toBe('Just now')
+      expect(time.getAttribute('aria-label')).toBe('now')
       const spokenTime = () => `${time.getAttribute('aria-label')} ${tooltip.textContent}`
       expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
       await act(async () => { vi.advanceTimersByTime(60_000); await Promise.resolve() })
-      expect(time.textContent).toBe('1 minute ago')
+      expect(time.textContent).toBe('1m')
       expect(time.dateTime).toBe(observedAt.toISOString())
-      expect(time.getAttribute('aria-label')).toBe('1 minute ago')
+      expect(time.getAttribute('aria-label')).toBe('1m')
       expect(spokenTime().split(observedAt.toLocaleString())).toHaveLength(2)
       expect(tooltip.textContent).toBe(observedAt.toLocaleString())
       expect(document.activeElement).toBe(time)
@@ -646,7 +646,7 @@ describe('AppShell', () => {
       expect(panel.textContent).toContain('1 update available')
       expect(panel.textContent).toContain('Codex update completed')
       expect(Array.from(panel.querySelectorAll('time'), (time) => [time.dateTime, time.textContent])).toEqual([
-        [observedAt.toISOString(), '2 minutes ago'], [observedAt.toISOString(), '2 minutes ago'],
+        [observedAt.toISOString(), '2m'], [observedAt.toISOString(), '2m'],
       ])
       act(() => useAppStore.setState((state) => ({ cliVersionManager: {
         providers: state.cliVersionManager.providers.map((provider) => ({ ...provider, lastOutput: 'Unrelated diagnostic detail' })),

@@ -1,11 +1,19 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UpdatesPanel } from './UpdatesPanel'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { availableUpdates } from '../../services/updateCatalog'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+// Check and install failures reach the shared alert path (reportAppFailure); collect them here.
+const appFailures: AppFailure[] = []
+const onAppFailure = (event: Event) => appFailures.push((event as CustomEvent<AppFailure>).detail)
+const reportedText = () => appFailures.map((failure) => `${failure.message} ${failure.detail}`).join('\n')
+beforeEach(() => { appFailures.length = 0; window.addEventListener(APP_FAILURE_EVENT, onAppFailure) })
+afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, onAppFailure))
 
 function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
   return {
@@ -140,7 +148,7 @@ describe('UpdatesPanel', () => {
     const providerState = { providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'installing' as const, message: '', running: true, lastCommand: '', lastOutput: '' }
     await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerStates: [{ ...providerState, executionHostId: 'alpha' }], providerTaskRunning: true }} onClose={vi.fn()} />))
     expect(host.querySelector('button[aria-label="Update Codex · alpha to 0.130.0"]')).toBeNull()
-    expect(host.querySelector('article[aria-busy="true"]')?.textContent).toContain('Codex · alpha')
+    expect(host.querySelector('[role="progressbar"][aria-busy="true"]')?.textContent).toContain('Codex · alpha')
     expect(host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]')).not.toBeNull()
     expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')).not.toBeNull()
     act(() => root.unmount())
@@ -187,11 +195,11 @@ describe('UpdatesPanel', () => {
     expect(request).toHaveBeenCalledTimes(1)
     expect(state.installProviderUpdates).not.toHaveBeenCalled()
     expect(host.querySelector('[aria-label="Update Codex CLI to 0.130.0"]')).toBeNull()
-    expect(host.querySelector('article[aria-busy="true"]')).not.toBeNull()
+    expect(host.querySelector('[role="progressbar"][aria-busy="true"]')).not.toBeNull()
     expect(host.querySelector<HTMLButtonElement>('[aria-label="Update everything"]')!.disabled).toBe(true)
     await act(async () => { if (throws) reject(new Error('Connection lost')); else resolve({ ok: false, error: 'Not admitted' }) })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('update could not be started')
-    expect(host.querySelector('[aria-label="Codex CLI update failed"]')).not.toBeNull()
+    expect(host.querySelector('.uam-update-row--error')).not.toBeNull()
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Codex CLI update failed')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Retry Codex CLI update to 0.130.0"]')!.click())
     expect(request).toHaveBeenCalledTimes(2)
     await act(async () => resolve({ ok: true }))
@@ -208,13 +216,12 @@ describe('UpdatesPanel', () => {
       ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()
     })
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('The CLI installation method could not be identified.')
-    expect(host.textContent).not.toContain('Finish active provider work')
-    act(() => (host.querySelector('button[aria-label="Dismiss update error"]') as HTMLButtonElement).click())
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Codex CLI update failed')
+    expect(host.querySelector('button[aria-label="Copy Codex CLI update logs"]')).not.toBeNull()
     expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.textContent).not.toContain('Finish active provider work')
     await act(async () => (host.querySelector('button[aria-label="Retry Codex CLI update to 0.130.0"]') as HTMLButtonElement).click())
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Codex CLI update failed')
     act(() => root.unmount())
   })
 
@@ -248,8 +255,8 @@ describe('UpdatesPanel', () => {
       await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
       const label = mode === 'all' ? 'Update everything' : 'Update Homelab SSH helper to 4.9.0-alpha-19'
       await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Homelab SSH helper')
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain(mode === 'all' ? 'Check its update status' : 'Check its SSH connection')
+      expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Homelab SSH helper update failed')
+      expect(host.querySelector('button[aria-label="Copy Homelab SSH helper update logs"]')).not.toBeNull()
     } finally {
       act(() => root.unmount())
     }
@@ -304,10 +311,21 @@ describe('UpdatesPanel', () => {
 
     await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], hasCatalog: false, error: 'Offline' })} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Could not confirm update status')
-    act(() => (host.querySelector('button[aria-label="Dismiss update check error"]') as HTMLButtonElement).click())
-    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(appFailures.map((failure) => failure.message)).toEqual(['Update check failed'])
+    expect(reportedText()).toContain('Offline')
     expect(host.textContent).not.toContain('Everything is up to date')
     act(() => root.unmount())
+  })
+
+  it('alerts once per distinct monitor error across panel remounts', async () => {
+    const error = 'Remount check offline'
+    for (let mount = 0; mount < 2; mount++) {
+      const host = document.createElement('div')
+      const root = createRoot(host)
+      await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], hasCatalog: false, error })} onClose={vi.fn()} />))
+      act(() => root.unmount())
+    }
+    expect(appFailures.filter((failure) => failure.detail === error)).toHaveLength(1)
   })
 
   it('animates only the provider being updated', async () => {
@@ -346,22 +364,22 @@ describe('UpdatesPanel', () => {
     })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
-    const [codex, opencode] = host.querySelectorAll<HTMLElement>('article[data-update-available]')
+    const [codex, opencode] = [...host.querySelectorAll<HTMLElement>('.uam-np-collapse > *')]
     expect(codex.getAttribute('aria-busy')).toBe('true')
-    expect(codex.getAttribute('data-installing')).toBe('true')
-    expect(codex.querySelector('.uam-update-row__fill')).not.toBeNull()
+    expect(codex.getAttribute('data-indeterminate')).toBe('true')
+    expect(codex.classList.contains('uam-progress-fill')).toBe(true)
     expect(opencode.getAttribute('aria-busy')).toBeNull()
-    expect(opencode.querySelector('.uam-update-row__fill')).toBeNull()
+    expect(opencode.classList.contains('uam-progress-fill')).toBe(false)
     const install = opencode.querySelector<HTMLButtonElement>('button[aria-label="Update OpenCode to 1.18.0"]')!
     expect(install.disabled).toBe(false)
     act(() => root.unmount())
   })
 
-  it('dismisses a failed provider install after its update row disappears', async () => {
+  it('dismisses a failed provider install from its update row', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const state = monitor({
-      updates: [],
+      updates: [{ ...monitor().updates[0], id: 'opencode-cli', providerId: 'opencode-cli', name: 'OpenCode', currentVersion: '1.17.15', latestVersion: '1.18.0' }],
       providerUpdateResults: [{
         providerId: 'opencode-cli',
         name: 'OpenCode',
@@ -371,17 +389,15 @@ describe('UpdatesPanel', () => {
         installedVersion: '1.17.15',
       }],
     })
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerUpdateResults: [] }} onClose={vi.fn()} />))
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('OpenCode update failed')
-    expect(host.textContent).toContain('EEXIST: /opt/homebrew/bin/opencode')
-    const panel = host.querySelector('[data-testid="updates-panel"]') as HTMLElement
-    const output = host.querySelector('pre') as HTMLElement
-    expect(panel.className).toContain('max-w-full')
-    expect(output.className).toContain('max-w-full')
-    expect(output.className).toContain('break-all')
-    act(() => (host.querySelector('button[aria-label="Dismiss OpenCode update error"]') as HTMLButtonElement).click())
     expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('OpenCode update failed')
+    expect(host.textContent).not.toContain('EEXIST: /opt/homebrew/bin/opencode')
+    expect(host.querySelector('button[aria-label="Copy OpenCode update logs"]')).not.toBeNull()
+    act(() => (host.querySelector('button[aria-label="Dismiss OpenCode 1.18.0"]') as HTMLButtonElement).click())
+    expect(state.dismiss).toHaveBeenCalledWith('opencode-cli', '1.18.0')
     act(() => root.unmount())
   })
 
@@ -398,9 +414,9 @@ describe('UpdatesPanel', () => {
     expect(state.refreshCliProviderVersion).toHaveBeenCalledExactlyOnceWith('codex-cli', 'alpha')
     vi.mocked(state.refreshCliProviderVersion).mockResolvedValueOnce(false)
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Retry Codex · Alpha version check"]')!.click())
-    expect(host.textContent).toContain('Codex · Alpha check could not be started.')
+    expect(reportedText()).toContain('Codex · Alpha check could not be started.')
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Retry Codex · Alpha version check"]')!.click())
-    expect(host.textContent).not.toContain('Codex · Alpha check could not be started.')
+    expect(appFailures.filter((failure) => failure.detail.includes('check could not be started.'))).toHaveLength(1)
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss Codex · Alpha version check error"]')!.click())
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.textContent).not.toContain('Everything is up to date')
@@ -411,12 +427,14 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
-  it('contains long unbroken installer output at the 360px panel boundary', async () => {
+  it('keeps the 360px panel boundary when a failed install is shown on its row', async () => {
     const host = document.createElement('div')
     host.style.width = '360px'
     const root = createRoot(host)
+    const empty = monitor({ updates: [{ ...monitor().updates[0], name: 'Codex CLI' }] })
+    await act(async () => root.render(<UpdatesPanel monitor={empty} onClose={vi.fn()} />))
     await act(async () => root.render(<UpdatesPanel monitor={monitor({
-      updates: [],
+      updates: [{ ...monitor().updates[0], name: 'Codex CLI' }],
       providerUpdateResults: [{
         providerId: 'codex-cli', name: 'Codex CLI', status: 'failed', message: 'Failed',
         output: 'x'.repeat(2000), installedVersion: '0.124.0',
@@ -424,8 +442,45 @@ describe('UpdatesPanel', () => {
     })} onClose={vi.fn()} />))
 
     expect(host.querySelector('[data-testid="updates-panel"]')?.className).toContain('max-w-full')
-    expect(host.querySelector('details')?.className).toContain('min-w-0')
-    expect(host.querySelector('pre')?.className).toContain('break-all')
+    expect(host.querySelector('details')).toBeNull()
+    expect(host.querySelector('pre')).toBeNull()
+    expect(host.querySelector('.uam-update-row--error')).not.toBeNull()
+    act(() => root.unmount())
+  })
+
+  it('keeps a failed result with no matching row visible until dismissed', async () => {
+    vi.useFakeTimers()
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const failed = { providerId: 'gemini-cli', name: 'Gemini CLI', status: 'failed' as const, message: 'Install refused.', output: 'EACCES: /usr/local/bin' }
+    const state = monitor({ updates: [] })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+    await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerUpdateResults: [failed] }} onClose={vi.fn()} />))
+
+    const row = host.querySelector('.uam-update-row--error')
+    expect(row?.textContent).toContain('Gemini CLI update failed')
+    expect(host.querySelector('button[aria-label="Copy Gemini CLI update logs"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label^="Retry Gemini CLI"]')).toBeNull()
+    expect(host.textContent).not.toContain('Everything is up to date')
+    await act(async () => vi.advanceTimersByTime(20_000))
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Gemini CLI update failed')
+    act(() => (host.querySelector('button[aria-label="Dismiss Gemini CLI update failure"]') as HTMLButtonElement).click())
+    expect(host.querySelector('.uam-update-row--error')).toBeNull()
+    act(() => root.unmount())
+    vi.useRealTimers()
+  })
+
+  it('shows failures from before mount as rows but keeps earlier successes hidden', async () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const results = [
+      { providerId: 'gemini-cli', name: 'Gemini CLI', status: 'failed' as const, message: 'Install refused.', output: 'EACCES' },
+      { providerId: 'opencode-cli', name: 'OpenCode', status: 'succeeded' as const, message: 'Installed 1.18.0.', installedVersion: '1.18.0' },
+    ]
+    await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], providerUpdateResults: results })} onClose={vi.fn()} />))
+
+    expect(host.querySelector('.uam-update-row--error')?.textContent).toContain('Gemini CLI update failed')
+    expect(host.textContent).not.toContain('OpenCode')
     act(() => root.unmount())
   })
 })
@@ -437,10 +492,11 @@ it('keeps a running session intact when cancelled and requests scoped shutdown o
   await act(async () => root.render(<UpdatesPanel monitor={state} onClose={() => {}} />))
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Update Codex CLI to 0.130.0"]')!.click())
   expect(state.requestCliProviderUpdate).not.toHaveBeenCalled()
-  await act(async () => [...host.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click())
+  // ConfirmDialog portals to document.body, so its buttons are looked up there.
+  await act(async () => [...document.body.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click())
   expect(state.stopSessionsAndUpdate).not.toHaveBeenCalled()
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Update Codex CLI to 0.130.0"]')!.click())
-  await act(async () => [...host.querySelectorAll('button')].find((button) => button.textContent === 'Stop session and install update')!.click())
+  await act(async () => [...document.body.querySelectorAll('button')].find((button) => button.textContent === 'Stop session and install update')!.click())
   expect(state.stopSessionsAndUpdate).toHaveBeenCalledWith('codex-cli', '0.130.0', undefined)
   await act(async () => root.unmount())
 })

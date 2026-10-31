@@ -1778,7 +1778,7 @@ describe('FolderTree', () => {
     const bar = document.body.querySelector<HTMLElement>('[role="alertdialog"] [role="progressbar"]')!
     expect(bar.getAttribute('aria-valuenow')).toBe('3')
     expect(bar.getAttribute('aria-valuemax')).toBe('12')
-    expect(bar.querySelector<HTMLElement>('span')!.style.transform).toBe('scaleX(0.25)')
+    expect(bar.style.getPropertyValue('--progress')).toBe('0.25')
     expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('3 of 12 removed')
     expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('alpha')
     await act(async () => finish(true))
