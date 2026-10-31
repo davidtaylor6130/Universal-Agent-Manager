@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
+import { Search, X, SlidersHorizontal } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
-import { Tooltip, ViewportMenu } from '../ui'
+import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
 interface ChatSearchProviderFilterOption {
@@ -113,7 +113,7 @@ export function ChatSearchBar({
 
           {value && (
             <Tooltip label="Clear search" side="top">
-              {/* ui: raw button kept — 18px inline clear chip with JS hover handlers; IconButton sizing and tooltip differ */}<button
+              {/* ui: raw button kept — 18px inline clear chip with JS hover handlers; IconButton has no 18px size */}<button
                 type="button"
                 aria-label="Clear search"
                 className="flex items-center justify-center rounded transition-colors duration-100"
@@ -143,10 +143,14 @@ export function ChatSearchBar({
         </div>
         <div className="relative" ref={popoverRef}>
           <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
-          {/* ui: raw button kept — nested inside its own Tooltip; IconButton would add a second tooltip */}<button
+          <IconButton
             ref={triggerRef}
-            type="button"
-            aria-label={activeFilterCount > 0 ? `Filter chats, ${activeFilterCount} active` : 'Filter chats'}
+            tooltip={false}
+            label={activeFilterCount > 0 ? `Filter chats, ${activeFilterCount} active` : 'Filter chats'}
+            icon={<>
+              <SlidersHorizontal size={15} aria-hidden />
+              {activeFilterCount > 0 && <span aria-hidden="true" className="font-semibold">{activeFilterCount}</span>}
+            </>}
             aria-haspopup="menu"
             aria-expanded={filtersOpen}
             aria-controls={filtersOpen ? menuId : undefined}
@@ -162,10 +166,7 @@ export function ChatSearchBar({
               fontVariantNumeric: 'tabular-nums',
             }}
             onClick={() => setFiltersOpen((open) => !open)}
-          >
-            <SlidersHorizontal size={15} aria-hidden />
-            {activeFilterCount > 0 && <span aria-hidden="true" className="font-semibold">{activeFilterCount}</span>}
-          </button>
+          />
           </Tooltip>
 
           {filtersOpen && (
@@ -188,7 +189,7 @@ export function ChatSearchBar({
                 <span className="font-semibold" style={{ color: 'var(--text-2)' }}>Filters</span>
                 {(activeFilterCount > 0) && (
                   
-                  // ui: raw button kept — small text pill, not a menu row; MenuItem has no pill look
+                  // ui: raw button kept — small bordered text pill with menuitem role; Chip is a choice button, not a menu item
                   <button
                     type="button"
                     role="menuitem"
@@ -204,23 +205,17 @@ export function ChatSearchBar({
                 )}
               </div>
 
-              {/* ui: raw button kept — MenuItem renders menuitem/menuitemradio only, not menuitemcheckbox */}<button
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={deepSearch}
+              <MenuItem
+                checked={deepSearch}
                 className="mb-2 flex w-full items-center justify-between rounded px-2 py-1.5"
                 style={{
                   background: deepSearch ? 'color-mix(in srgb, var(--accent) 16%, var(--surface))' : 'transparent',
                   color: deepSearch ? 'var(--text)' : 'var(--text-2)',
                   border: '1px solid var(--border)',
                 }}
+                label="Search contents"
                 onClick={onToggleDeepSearch}
-              >
-                <span>Search contents</span>
-                {deepSearch
-                  ? <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />
-                  : <X size={13} style={{ color: 'var(--text-3)' }} aria-hidden />}
-              </button>
+              />
 
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 State
@@ -230,22 +225,17 @@ export function ChatSearchBar({
                   const active = filters.statusIds.includes(option.id)
                   return (
                     
-                    // ui: raw button kept — MenuItem renders menuitem/menuitemradio only, not menuitemcheckbox
-                    <button
+                    <MenuItem
                       key={option.id}
-                      type="button"
-                      role="menuitemcheckbox"
-                      aria-checked={active}
+                      checked={active}
                       className="flex w-full items-center justify-between rounded px-2 py-1"
                       style={{
                         background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
                         color: active ? 'var(--text)' : 'var(--text-2)',
                       }}
+                      label={option.label}
                       onClick={() => onToggleStatusFilter(option.id)}
-                    >
-                      <span>{option.label}</span>
-                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
-                    </button>
+                    />
                   )
                 })}
               </div>
@@ -258,7 +248,7 @@ export function ChatSearchBar({
                   const active = filters.providerIds.includes(provider.id)
                   return (
                     <Tooltip key={provider.id} label={provider.label} side="bottom">
-                      {/* ui: raw button kept — icon-only checkbox chip; MenuItem renders menuitem/menuitemradio only */}<button
+                      {/* ui: raw button kept — icon-only checkbox chip; MenuItem always renders a text label row */}<button
                         type="button"
                         role="menuitemcheckbox"
                         aria-label={provider.label}

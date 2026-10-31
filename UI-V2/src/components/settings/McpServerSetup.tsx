@@ -3,7 +3,7 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -300,11 +300,10 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
       description={view === 'json' ? undefined : SSH_ENABLED ? 'Shared by every provider, locally and over SSH.' : 'Shared by every provider.'}
       actions={<>
-        <div role="tablist" aria-label="Editor view" className="uam-prov-seg">
-          {/* ui: raw buttons kept — role=tab in a tablist; SegmentedControl exposes aria-pressed, not tab semantics. */}
-          <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'form'} disabled={busy} onClick={() => switchView('form')}>Form</button>
-          <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'json'} disabled={busy} onClick={() => switchView('json')}>JSON</button>
-        </div>
+        <Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
+          <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
+          <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
+        </Tabs>
         {view === 'form' && <Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => { setSetup('choose'); setMessage('') }}>Add server</Button>}
       </>}>
       {view === 'json' ? <div className="grid gap-2 py-3">

@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { Button, EXIT_MS, IconButton, Overlay, RowButton, Tooltip, motionAllowed, usePresence } from '../ui'
+import { Button, Chip, EXIT_MS, IconButton, Overlay, RowButton, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -262,10 +262,8 @@ export function PermissionInlineCard({
           </div>
           <div>{waitStaleReason || 'The provider may be waiting on a stale command or tool request.'}</div>
           <div className="flex flex-wrap gap-2 mt-2">
-            {/* ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it */}
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px] font-medium"
+            <Chip
+              className="px-2.5 h-7 text-[11px] font-medium"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border-bright)',
@@ -276,11 +274,9 @@ export function PermissionInlineCard({
               disabled={Boolean(submittingOptionId)}
             >
               Cancel turn
-            </button>
-            {/* ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it */}
-            <button
-              type="button"
-              className="uam-choice-button px-2.5 h-7 text-[11px]"
+            </Chip>
+            <Chip
+              className="px-2.5 h-7 text-[11px]"
               style={{
                 borderRadius: 6,
                 border: '1px solid var(--border)',
@@ -291,17 +287,15 @@ export function PermissionInlineCard({
               disabled={Boolean(submittingOptionId)}
             >
               Stop
-            </button>
+            </Chip>
           </div>
         </div>
       )}
       <div className="flex flex-wrap gap-2">
         {normalizedOptions.map((option) => (
-          // ui: raw button kept — uam-choice-button chip with per-state inline styles; Button would restyle it
-          <button
+          <Chip
             key={option.id}
-            type="button"
-            className="uam-choice-button px-3 h-7 text-[11px] font-medium"
+            className="px-3 h-7 text-[11px] font-medium"
             style={{
               borderRadius: 6,
               border: '1px solid var(--border-bright)',
@@ -313,7 +307,7 @@ export function PermissionInlineCard({
             onClick={() => void resolve(option.id)}
           >
             {submittingOptionId === option.id ? 'Submitting…' : option.displayName}
-          </button>
+          </Chip>
         ))}
       </div>
       {submitError && <div role="alert" className="mt-2 text-[11px]" style={{ color: 'var(--error)' }}>{submitError}</div>}
@@ -600,7 +594,7 @@ function ToolCallDetails({
           <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={requestClose} />
         </header>
         <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
-          {/* ui: raw button kept — ARIA tab with roving tabindex and arrow-key handling; no tab primitive */}
+          {/* ui: raw button kept — tool-details tabs keep their own metrics and ::after indicator (ToolDetails.css); Tabs would add a second indicator and restyle them */}
           {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}
             aria-controls={`${id}-panel`} aria-selected={activeTab === name} tabIndex={activeTab === name ? 0 : -1}
             onClick={() => setTab(name)} onKeyDown={event => {
@@ -614,16 +608,13 @@ function ToolCallDetails({
         <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}-tab`} tabIndex={0}
           className={`tool-details-panel${activeTab === 'Output' ? ' tool-details-panel--output' : ''}`}>
           {activeTab === 'Output' && <>
-          {/* ui: raw button kept — aria-pressed live toggle with tool-details-follow styling; Button would restyle it */}
+          {/* ui: raw button kept — pill live toggle with tool-details-follow styling (ToolDetails.css); Chip would add the chip look */}
           {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
-                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
-                <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</button>
-                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
-                <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</button>
-                {/* ui: raw button kept — uam-choice-button chip used by the output pager; Button would restyle it */}
-                <button type="button" className="uam-choice-button h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</button>
+                <Chip className="h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</Chip>
+                <Chip className="h-7 px-2" disabled={contentLoading || !contentPage.hasMore} onClick={() => { setFollowLive(false); void loadContent(contentPage.nextOffset) }}>Load later</Chip>
+                <Chip className="h-7 px-2" aria-pressed={isLive ? followLive : undefined} disabled={contentLoading} onClick={() => { if (isLive && followLive) setFollowLive(false); else { setFollowLive(isLive); void loadContent(Number.MAX_SAFE_INTEGER, isLive) } }}>{isLive ? 'Follow live' : 'Load latest'}</Chip>
               <span aria-live="polite">
                 {contentPage.totalBytes === 0
                   ? '0 bytes'
@@ -634,8 +625,7 @@ function ToolCallDetails({
           {contentError && (
             <div role="alert" className="mb-2 flex items-center gap-2 text-[11px]" style={{ color: 'var(--error)' }}>
               <span>{contentError}</span>
-              {/* ui: raw button kept — uam-choice-button chip in the output error row; Button would restyle it */}
-              <button type="button" className="uam-choice-button h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</button>
+              <Chip className="h-7 px-2" disabled={contentLoading} onClick={() => void loadContent(retryOffset)}>Retry</Chip>
             </div>
           )}
           <pre

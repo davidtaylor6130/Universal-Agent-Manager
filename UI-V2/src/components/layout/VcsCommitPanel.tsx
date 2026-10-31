@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Presence, RowButton } from '../ui'
+import { Button, IconButton, MenuSelect, Presence, RowButton, Tab, Tabs } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
@@ -209,10 +209,11 @@ export function VcsCommitPanel() {
       </div>
 
       {/* Recorded chat edits are Codex receipts; builds without Codex keep only the workspace scope. */}
-      {CODEX_ENABLED && <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        {/* ui: raw button kept — underline tab (uam-rv-tab) look; SegmentedControl would restyle it */}
-        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'workspace'} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
-        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'recorded'} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
+      {CODEX_ENABLED && <div className="shrink-0 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <Tabs aria-label="Change review scope" variant="underline" value={reviewScope} onChange={(scope) => { setReviewScope(scope); setDiffSelection(null) }}>
+          <Tab value="workspace">Workspace</Tab>
+          <Tab value="recorded">Recorded chat edits</Tab>
+        </Tabs>
       </div>}
       {CODEX_ENABLED && reviewScope === 'recorded' ? (
         activeSessionId && session ? (
@@ -252,7 +253,7 @@ export function VcsCommitPanel() {
         </div>
 
         <div className="mx-3 flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
-          {/* ui: raw button kept — role=checkbox icon toggle; IconButton would add tooltip chrome */}
+          {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
           <button
             type="button"
             role="checkbox"
@@ -275,7 +276,7 @@ export function VcsCommitPanel() {
             const selected = selectedFileSet.has(file.path)
             return (
               <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
-                {/* ui: raw button kept — role=checkbox icon toggle; IconButton would add tooltip chrome */}
+                {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
                 <button
                   type="button"
                   role="checkbox"

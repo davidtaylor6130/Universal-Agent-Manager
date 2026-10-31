@@ -413,12 +413,12 @@ export function ComposerToolbar({
             className="uam-cmenu"
           >
             {!isCompanionContext() && <>
-              {/* ui: raw button kept — rich menu row (icon plus two-line text) that MenuItem does not express */}
+              {/* ui: raw button kept — uam-cmenu__item row look and classes; MenuItem would swap them for uam-menu-item */}
               <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onAttachFile() }}>
                 <Paperclip size={15} aria-hidden className="uam-cmenu__icon" />
                 <span className="uam-cmenu__text"><span>Attach files</span></span>
               </button>
-              {/* ui: raw button kept — rich menu row (icon, two-line text, trailing chevron) that MenuItem does not express */}
+              {/* ui: raw button kept — uam-cmenu__item row look and classes; MenuItem would swap them for uam-menu-item */}
               <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
                 <span className="uam-cmenu__icon"><ComposerIcon name="markdown" /></span>
                 <span className="uam-cmenu__text"><span>Skills</span><small>Insert a saved prompt</small></span>
@@ -427,7 +427,7 @@ export function ComposerToolbar({
               <div className="uam-cmenu__divider" />
             </>}
             <div className="uam-cmenu__section">Modes</div>
-            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
+            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
             <button
               type="button"
               role="menuitem"
@@ -453,7 +453,7 @@ export function ComposerToolbar({
                 style={{ height: 28 }}
               />
             </label>
-            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
+            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
             {COMPUTER_USE_ENABLED && !isCompanionContext() && <button
               type="button"
               role="menuitem"
@@ -466,7 +466,7 @@ export function ComposerToolbar({
               <span className="uam-cmenu__text"><span>Computer use…</span><small>Let the agent see and control an app</small></span>
               <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{computerUseMode ? 'On' : 'Off'}</span>
             </button>}
-            {/* ui: raw button kept — rich menu row (icon, two-line text, On/Off pill) that MenuItem does not express */}
+            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
             {featurePreference === 'uam' && <button
               type="button"
               role="menuitem"

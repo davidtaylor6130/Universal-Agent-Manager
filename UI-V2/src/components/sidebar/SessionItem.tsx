@@ -955,29 +955,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               onDelete={() => chatSelection?.deleteSelected()}
             />
           ) : <>
-          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-          <button type="button" role="menuitem" className="uam-sb-menu-item"
-            disabled={!canReuseWorktree}
-            onClick={() => {
+          <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={!canReuseWorktree} icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree"
+            onSelect={() => {
               const current = useAppStore.getState()
               const source = current.sessions.find((candidate) => candidate.id === sessionId)
               if (!source || source.importedReadOnly || source.workspaceIsolationKind !== 'gitWorktree' || !source.workspaceWorktreeDirectory || !source.folderId || (source.executionHostId || 'local') !== 'local') return
               setMenuPos(null)
               current.setNewChatModalOpen(true, source.folderId, { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: source.executionHostId || 'local' })
-            }}><MessageSquarePlus size={13} aria-hidden />New chat in this worktree</button>
+            }} />
           <MenuDivider />
           <MenuItem className="uam-sb-menu-item" icon={<Pencil size={13} aria-hidden />} label="Rename" shortcut="F2"
             onSelect={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }} />
-          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-          <button type="button" role="menuitem" disabled={generatingTitle}
-            className="uam-sb-menu-item"
-            onClick={() => { void regenerateTitle() }}>
-            <RefreshCw size={13} aria-hidden />{generatingTitle ? 'Generating title…' : 'Regenerate title'}
-          </button>
-          {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-          {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
-            className="uam-sb-menu-item"
-            onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
+          <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={generatingTitle} icon={<RefreshCw size={13} aria-hidden />}
+            label={generatingTitle ? 'Generating title…' : 'Regenerate title'} onSelect={() => { void regenerateTitle() }} />
+          {generatingTitle && <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={cancellingTitle}
+            label={cancellingTitle ? 'Cancelling…' : 'Cancel title generation'} onSelect={() => { void cancelTitle() }} />}
           {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>
             {titleFeedback.error ? <CircleAlert size={12} aria-hidden /> : <Check size={12} aria-hidden />}{titleFeedback.text}
           </p>}
@@ -1057,10 +1049,8 @@ function ChatSelectionMenuItems({ ids, onClose, onIcon, onDelete }: { ids: strin
     <SingleOnlyMenuItem noun="chat" icon={<MessageSquarePlus size={13} aria-hidden />} label="New chat in this worktree" />
     <MenuDivider />
     <SingleOnlyMenuItem noun="chat" icon={<Pencil size={13} aria-hidden />} label="Rename" />
-    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-    <button type="button" role="menuitem" className="uam-sb-menu-item" disabled={bulkTitleRunning} onClick={regenerateTitles}>
-      <RefreshCw size={13} aria-hidden />{bulkTitleRunning ? 'Generating titles…' : `Regenerate ${targets.length} titles`}
-    </button>
+    <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={bulkTitleRunning} icon={<RefreshCw size={13} aria-hidden />}
+      label={bulkTitleRunning ? 'Generating titles…' : `Regenerate ${targets.length} titles`} onClick={regenerateTitles} />
     <MenuItem className="uam-sb-menu-item" icon={<Pin size={13} fill={pin ? 'none' : 'currentColor'} aria-hidden />} label={`${pin ? 'Pin' : 'Unpin'} ${targets.length} chats`} onSelect={togglePins} />
     <MenuItem className="uam-sb-menu-item" icon={<SmilePlus size={13} aria-hidden />} label={`Icon for ${targets.length} chats…`} onSelect={() => { onClose(); onIcon(targets) }} />
     <MenuDivider />

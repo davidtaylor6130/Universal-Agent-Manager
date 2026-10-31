@@ -263,7 +263,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
-      {/* ui: raw button kept — it is the trigger of this Tooltip; IconButton would nest a second tooltip. */}
+      {/* ui: raw button kept — trigger of this Tooltip with the bespoke status icon and attention look; IconButton would restyle it. */}
       {statusLines.length > 0 && <Tooltip side="bottom" align="start" label={<span className="uam-usage-status-tip">{statusLines.map((line, index) => <span key={index} className="block">{line}</span>)}</span>}>
         <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
       </Tooltip>}
@@ -284,7 +284,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           {coverage.length > 0 && <ul aria-label="Usage machine coverage" className="sr-only">{coverage.map((line, index) => <li key={index}>{line}</li>)}</ul>}
           <div role="group" aria-label="Providers" className="uam-usage-chips">{data.providers.map(provider => {
             const off = hiddenProviders.has(provider.providerId)
-            // ui: raw button kept — bespoke provider chip with a colour dot and aria-pressed toggle; no chip primitive.
+            // ui: raw button kept — usage provider chip with colour dot, logo and value tooltip; Chip would apply the choice-button look.
             return <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!off} className={cx('uam-usage-chip', off && 'is-off')} style={{ '--c': providerColor[provider.providerId] } as CSSProperties} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}>
               <span className="uam-usage-chip-dot" aria-hidden />
               <ProviderLogo providerId={provider.providerId} size={14} />

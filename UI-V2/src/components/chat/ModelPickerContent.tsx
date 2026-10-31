@@ -286,7 +286,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
             {sectionStart && <div className="uam-np-group" role="presentation">{providerLabel(option.providerId)}</div>}
             <div className="uam-np-model" data-selected={selected} data-highlight={highlighted} style={{ height: ROW_HEIGHT }}>
               <Tooltip label={optionDisabled ? undefined : <><span className="block">{option.label}{option.id && option.id !== option.label ? ` (${option.id})` : ''}</span><span className="block">{option.detail}</span>{capacityDescription && <span className="block" aria-hidden="true">{capacityDescription}</span>}</>}>
-              {/* ui: raw button kept — model row has a rich multi-part layout, a Tooltip and native title/aria-label for disabled rows per docs; MenuItem cannot host it */}
+              {/* ui: raw button kept — uam-np-model__button row look and multi-part layout inside a Tooltip; MenuItem would restyle it */}
               <button ref={(element) => { if (element) rowRefs.current.set(index, element); else rowRefs.current.delete(index) }} type="button" role="menuitemradio" aria-checked={selected}
                 disabled={optionDisabled} tabIndex={highlighted ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
                 aria-label={optionDisabled ? fullDescription : undefined} title={optionDisabled ? fullDescription : undefined}

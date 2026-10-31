@@ -3681,8 +3681,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                               {workspaceFolders.filter((folder) => folder.executionHostId === session.executionHostId && folder.id !== session.folderId).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                             </select>
                           </label>
-                          {/* ui: raw button kept — aria-busy is not supported by MenuItem */}
-                          <button type="button" role="menuitem" disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" onClick={() => void moveRemoteWorkspace()}>{workspaceActionBusy ? 'Moving chat…' : 'Move chat'}</button>
+                          <MenuItem nativeDisabled disabled={remoteMoveDisabled || !remoteMoveFolderId} aria-busy={workspaceActionBusy || undefined} className="uam-menu-select__option mt-1 w-full px-2 py-2 text-left" label={workspaceActionBusy ? 'Moving chat…' : 'Move chat'} onClick={() => void moveRemoteWorkspace()} />
                           <div className="mt-1">History and goals stay with this chat. A new provider session starts in the selected workspace.</div>
                           {Boolean(acp?.running || cli?.running) && <div className="mt-1">Stop the chat before moving its workspace.</div>}
                           <label className="mt-2 flex items-center gap-2">
@@ -3728,7 +3727,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </span>
               </>
             )}
-            {/* ui: raw button kept — text chip with title and popup ARIA and its own keyboard handling; not an icon-only control or menu row */}
+            {/* ui: raw button kept — conversation-goal-chip look (its own status and title layout); Chip would add the uam-chip look */}
             {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
               aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
               className="conversation-goal-chip" title={displayedGoal.objective}
@@ -3869,8 +3868,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {group.groupEntries.map((command, index) => {
                   const childPath = command.id.startsWith('md-group:') ? command.id.slice('md-group:'.length) : path
                   const active = group === activeSlashGroup && index === Math.min(slashGroupIndex, group.groupEntries!.length - 1)
-                  // ui: raw button kept — onMouseDown/onMouseEnter, aria-haspopup/expanded and an inline row layout that MenuItem does not support
-                  return <button key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} type="button" role="menuitem" aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full flex items-start gap-2 px-2 py-2 text-left${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }}>{command.groupEntries ? <BookOpen size={15} className="mt-0.5 shrink-0" aria-hidden /> : <FileText size={15} className="mt-0.5 shrink-0" aria-hidden />}<span className="min-w-0 flex-1"><span className="block font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span><span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{command.hint}</span></span></button>
+                  return <MenuItem key={command.id} id={`${slashListboxId}-group-${groupIndex}-option-${index}`} aria-haspopup={command.groupEntries ? 'menu' : undefined} aria-expanded={command.groupEntries ? slashGroup === childPath : undefined} onMouseEnter={() => { setSlashGroupIndex(command.groupEntries ? 0 : index); setSlashGroup(childPath) }} onMouseDown={(event) => { event.preventDefault(); runSlashCommand(command) }} className={`uam-menu-select__option w-full${active ? ' is-selected' : ''}`} style={{ borderRadius: 6, color: active ? 'var(--text)' : 'var(--text-2)' }} icon={command.groupEntries ? <BookOpen size={15} aria-hidden /> : <FileText size={15} aria-hidden />} detailLayout="stacked" label={<span className="font-mono text-sm" style={{ color: active ? 'var(--accent)' : 'var(--text)' }}>{command.label}{command.groupEntries && <span ref={(element) => { slashGroupButtonRefs.current[childPath] = element }}><ChevronRight className="ml-1 inline" size={14} aria-hidden /></span>}</span>} detail={command.hint} />
                 })}
               </ViewportMenu>
             })}

@@ -65,23 +65,17 @@ export function CollectionMenuItems({
         )}
         {collections.map((collection) => {
           const current = memberships.every((ids) => ids.has(collection.id))
-          // ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable
           return (
-            <button
+            <MenuItem
               key={collection.id}
-              type="button"
-              role="menuitem"
+              nativeDisabled
               disabled={current}
               className="uam-sb-menu-item"
-              onClick={() => {
-                if (current) return
-                move(collection.id)
-              }}
-            >
-              <Library size={13} aria-hidden />
-              <span className="truncate">{collection.name}</span>
-              {current && <Check size={13} aria-hidden className="ml-auto shrink-0" />}
-            </button>
+              icon={<Library size={13} aria-hidden />}
+              label={<span className="truncate">{collection.name}</span>}
+              trailing={current ? <Check size={13} aria-hidden className="shrink-0" /> : undefined}
+              onSelect={() => move(collection.id)}
+            />
           )
         })}
       </RowSubmenu>

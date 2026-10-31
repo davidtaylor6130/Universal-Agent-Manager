@@ -10,7 +10,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Button, IconButton, SegmentedControl, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
@@ -303,49 +303,29 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             background: 'var(--surface-up)',
           }}
         >
-          {/* ui: raw button kept — per-option disabled, icon-only tooltip and aria-label; SegmentedControl options have no per-option disabled or tooltip */}
-          <Tooltip label="Chat view" side="bottom">
-            <button
-              type="button"
-              onClick={() => {
+          <SegmentedControl
+            aria-label="Session view"
+            value={view}
+            onChange={(next) => {
+              if (next === 'chat') {
                 if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
-              }}
-              aria-label="Chat view"
-              aria-pressed={view === 'chat'}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'chat' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'chat' ? 'var(--surface-high)' : 'transparent',
-              }}
-            >
-              <MessageSquare size={14} aria-hidden />
-            </button>
-          </Tooltip>
-          <Tooltip label={session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback'} side="bottom">
-            <button
-              type="button"
-              disabled={session.importedReadOnly || (cliSwitchLocked && view !== 'cli')}
-              aria-label="Terminal fallback"
-              aria-pressed={view === 'cli'}
-              onClick={() => {
-                if (!session.importedReadOnly && !cliSwitchLocked) {
-                  setView('cli')
-                }
-              }}
-              className="uam-segment-button flex h-7 w-7 items-center justify-center"
-              style={{
-                borderRadius: 5,
-                color: view === 'cli' ? 'var(--text)' : 'var(--text-2)',
-                background: view === 'cli' ? 'var(--surface-high)' : 'transparent',
-                opacity: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 0.5 : 1,
-                cursor: session.importedReadOnly || cliSwitchLocked && view !== 'cli' ? 'not-allowed' : 'default',
-              }}
-            >
-              <SquareTerminal size={14} aria-hidden />
-            </button>
-          </Tooltip>
+              } else if (!session.importedReadOnly && !cliSwitchLocked) {
+                setView('cli')
+              }
+            }}
+            options={[
+              { value: 'chat', label: 'Chat view', icon: <MessageSquare size={14} aria-hidden />, iconOnly: true },
+              {
+                value: 'cli',
+                label: 'Terminal fallback',
+                icon: <SquareTerminal size={14} aria-hidden />,
+                iconOnly: true,
+                disabled: session.importedReadOnly || (cliSwitchLocked && view !== 'cli'),
+                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
+              },
+            ]}
+          />
         </div>
         {view === 'cli' && <RuntimeTimeout chatId={session.id} />}
         {runtimePill}

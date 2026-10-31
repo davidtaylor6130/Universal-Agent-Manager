@@ -1,6 +1,6 @@
 import { createContext, useId, useState, type ReactNode } from 'react'
 import { Check, Copy, X } from 'lucide-react'
-import { Tooltip } from '../ui'
+import { MenuItem, Tooltip } from '../ui'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { useAppStore } from '../../store/useAppStore'
@@ -19,10 +19,7 @@ export function SingleOnlyMenuItem({ icon, label, noun, className = 'uam-sb-menu
   const reason = singleOnlyReason(noun)
   return <>
     <Tooltip label={reason} side="right">
-      {/* ui: raw button kept — aria-disabled row described by an external reason id; MenuItem swaps the Tooltip for a native title */}
-      <button type="button" role="menuitem" aria-disabled="true" aria-describedby={reasonId} className={className} onClick={(event) => event.preventDefault()}>
-        {icon}{label}
-      </button>
+      <MenuItem disabled aria-describedby={reasonId} className={className} icon={icon} label={label} />
     </Tooltip>
     <span id={reasonId} hidden>{reason}</span>
   </>
@@ -83,11 +80,8 @@ export function CopyDetailItems({ items }: { items: CopyDetail[] }) {
     finally { setCopying(false) }
   }
   return <>
-    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-    {items.map((item) => <button key={item.label} type="button" role="menuitem" disabled={copying} className="uam-sb-menu-item"
-      style={{ cursor: copying ? 'wait' : 'pointer' }} onClick={() => { void copy(item) }}>
-      <Copy size={13} aria-hidden />{item.label}
-    </button>)}
+    {items.map((item) => <MenuItem key={item.label} nativeDisabled disabled={copying} className="uam-sb-menu-item"
+      style={{ cursor: copying ? 'wait' : 'pointer' }} icon={<Copy size={13} aria-hidden />} label={item.label} onSelect={() => { void copy(item) }} />)}
     {result && <p role={result.ok ? 'status' : 'alert'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
       {result.ok ? <Check size={13} className="shrink-0" style={{ color: 'var(--success)' }} aria-hidden /> : <X size={13} className="shrink-0" aria-hidden />}
       {result.ok ? `${result.label} copied.` : 'Could not copy. Try again.'}

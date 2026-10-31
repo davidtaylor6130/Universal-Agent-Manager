@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlarmClockOff, Check, CircleX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, usePresence } from '../ui'
+import { Button, MenuItem, usePresence } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
@@ -94,18 +94,14 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
   const itemClass = 'uam-sb-menu-item'
   const presetsBlocked = saving || blocked
   return <>
-    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-    {snoozed && <button type="button" role="menuitem" className={itemClass} disabled={saving} onClick={() => { void update(0) }}>
-      <AlarmClockOff size={13} aria-hidden />Wake now
-    </button>}
+    {snoozed && <MenuItem className={itemClass} nativeDisabled disabled={saving} icon={<AlarmClockOff size={13} aria-hidden />} label="Wake now" onSelect={() => { void update(0) }} />}
     {snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{bulk ? `${snoozedCount} of ${bulk.length} chats snoozed` : `Snoozed until ${new Date(untilMs).toLocaleString()}`}</p>}
     {blocked && !snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{BLOCKED_TEXT}</p>}
     {bulk && !blocked && blockedIds.length > 0 && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{blockedIds.length} of {bulk.length} need a response; they stay awake.</p>}
-    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable */}
-    {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={itemClass} disabled={presetsBlocked}
-      onClick={() => { void update(preset.until) }}>{preset.label}<span className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>{new Date(preset.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></button>)}
-    {/* ui: raw button kept — disabled attribute; MenuItem uses aria-disabled and stays focusable, and aria-expanded for the custom disclosure */}
-    <button type="button" role="menuitem" className={itemClass} aria-expanded={customOpen} disabled={saving} onClick={() => setCustomOpen((open) => !open)}>Custom…</button>
+    {snoozePresets().map((preset) => <MenuItem key={preset.label} className={itemClass} nativeDisabled disabled={presetsBlocked} label={preset.label}
+      trailing={<span className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>{new Date(preset.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span>}
+      onSelect={() => { void update(preset.until) }} />)}
+    <MenuItem className={itemClass} nativeDisabled aria-expanded={customOpen} disabled={saving} label="Custom…" onSelect={() => setCustomOpen((open) => !open)} />
     {custom.mounted && <form aria-label="Custom snooze" noValidate className="uam-reveal uam-snooze-custom flex items-center gap-1.5 px-3 py-1.5" data-state={custom.closing ? 'closed' : 'open'} onSubmit={submitCustom}>
       <input aria-label="Snooze amount" type="number" min={1} step={1} inputMode="numeric" value={amount} disabled={presetsBlocked}
         onChange={(event) => setAmount(event.target.value)} className="w-16 px-2 py-1 text-xs" style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }} />

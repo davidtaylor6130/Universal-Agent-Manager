@@ -1094,7 +1094,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               </span>
             </RowButton>
             {!isCompanionContext() && <Tooltip label="Unsorted actions">
-              {/* ui: raw button kept — Tooltip-wrapped trigger with popup state; IconButton would add a second tooltip */}<button
+              {/* ui: raw button kept — 22px inline trigger; IconButton sizes are 26px and 30px */}<button
                 ref={unsortedMenuTriggerRef}
                 type="button"
                 aria-label="Actions for Unsorted"
@@ -1126,17 +1126,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               style={{ minWidth: 220, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
             >
               
-              // ui: raw button kept — inline option look (style prop); MenuItem has no style prop
-              <button
-                type="button"
-                role="menuitem"
+              <MenuItem
                 className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                 style={{ color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+                icon={<FolderSync size={14} aria-hidden />}
+                label="Rebuild workspace folders…"
                 onClick={openWorkspaceRecovery}
-              >
-                <FolderSync size={14} aria-hidden />
-                Rebuild workspace folders…
-              </button>
+              />
             </ViewportMenu>
           )}
           <div
@@ -1352,14 +1348,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           </div>
         ) : (
           <div className="flex justify-center gap-1">
-            {/* ui: raw button kept — uam-add-link inline link row, not a Button variant */}<button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingFolder(true) }}>
-              <Plus size={14} aria-hidden />
-              <span>New workspace</span>
-            </button>
-            {/* ui: raw button kept — uam-add-link inline link row, not a Button variant */}<button type="button" className="uam-add-link" onClick={() => { setActionError(''); setAddingCollection(true) }}>
-              <Plus size={14} aria-hidden />
-              <span>New collection</span>
-            </button>
+            <Button asLink leadingIcon={<Plus size={14} aria-hidden />} onClick={() => { setActionError(''); setAddingFolder(true) }}>New workspace</Button>
+            <Button asLink leadingIcon={<Plus size={14} aria-hidden />} onClick={() => { setActionError(''); setAddingCollection(true) }}>New collection</Button>
           </div>
         )}
       </div>
@@ -1496,7 +1486,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         }}
       >
         <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
-          {/* ui: raw button kept — icon-only chevron inside its own Tooltip; IconButton would add a second tooltip */}<button
+          {/* ui: raw button kept — unsized inline chevron that must keep its layout; IconButton imposes 26px */}<button
             type="button"
             aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
             aria-expanded={!collection.collapsed}
@@ -1530,7 +1520,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         )}
         <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
         {!isCompanionContext() && <Tooltip label="Collection actions">
-          {/* ui: raw button kept — nested inside its own Tooltip; IconButton would add a second tooltip */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
+          {/* ui: raw button kept — unsized inline trigger that must keep its layout; IconButton imposes 26px */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
           </button>
         </Tooltip>}
@@ -2000,7 +1990,7 @@ const FolderRow = memo(function FolderRow({
           className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
           {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
-            {/* ui: raw button kept — nested inside its own Tooltip; inline 22px trigger */}<button
+            {/* ui: raw button kept — inline 22px trigger; IconButton sizes are 26px and 30px */}<button
               ref={menuTriggerRef}
               type="button"
               aria-label="Folder actions"
@@ -2159,7 +2149,7 @@ const FolderRow = memo(function FolderRow({
                 ))
               )}
               {shouldLimitSessions && (
-                // ui: raw button kept — inline text link styling, not a Button variant
+                // ui: raw button kept — inline text link with its own text-xs size and JS hover colour; Button asLink is a 26px pill
                 <button
                   type="button"
                   onClick={() => setShowAllSessions((value) => !value)}

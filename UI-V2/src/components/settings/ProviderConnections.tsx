@@ -155,7 +155,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     const known = flags.some(flag => flag !== undefined)
     const label = terminalOnly ? 'Terminal only' : known ? `${on} of ${servers.length} on` : 'Unknown'
     const open = menuId === id
-    // ui: raw button kept — MCP chip with a per-provider state meter and popup trigger; no chip primitive.
+    // ui: raw button kept — MCP popup trigger with a per-provider state meter; Chip would apply the choice-button look.
     return <button type="button" className="uam-prov-mcp-chip" aria-haspopup="dialog" aria-expanded={open} aria-label={`${providerMetadataForId(id).shortName} MCP servers, ${label}`}
       disabled={terminalOnly || servers.length === 0} onClick={event => openMenu(id, event.currentTarget)}>
       <span className="uam-prov-meter" aria-hidden>{flags.map((flag, index) => <i key={index} data-state={flag === undefined ? 'unknown' : flag ? 'on' : 'off'} />)}</span>

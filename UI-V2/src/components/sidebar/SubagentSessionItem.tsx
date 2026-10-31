@@ -67,7 +67,7 @@ function OwnerChildren({ owner, grouped = false }: { owner: Session; grouped?: b
   const hasList = children.length > 0 || managed
   const content = <>
     {grouped && <SessionItem sessionId={owner.id} session={owner} familySessionIds={[owner.id]} />}
-    {/* ui: raw button kept — disabled attribute and a bespoke toggle class with chevron; Button would restyle it */}
+    {/* ui: raw button kept — bespoke toggle class with its own chevron; Button would restyle it */}
     {hasList && <button type="button" className="uam-subagent-toggle" aria-expanded={expanded} aria-controls={listId} disabled={searchOpen} onClick={() => setChosen(open => !open)}>
       <ChevronRight size={12} className="uam-subagent-toggle__chevron" aria-hidden />
       <span>Subagents{total > 0 ? ` · ${total}` : ''}</span>

@@ -44,7 +44,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
         lastIndex = match.index + token.length
         continue
       }
-      // ui: raw button kept — inline text link inside code/markdown text; Button would add chrome
+      // ui: raw button kept — Button asLink is inline-flex with pill height and padding, which breaks text flow inside code
       nodes.push(<code key={key}>{reference ? <Tooltip label="Inspect file"><button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)}>{value}</button></Tooltip> : value}</code>)
     } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{replaceInlineLatexSymbols(token.slice(2, -2))}</strong>)
@@ -58,7 +58,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
             {replaceInlineLatexSymbols(link?.[1] ?? '')}
           </a>
         ) : file ? (
-          // ui: raw button kept — inline text link inside markdown text; Button would add chrome
+          // ui: raw button kept — Button asLink is inline-flex with pill height and padding, which breaks text flow inside prose
           <Tooltip key={key} label="Inspect file"><button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)}>{replaceInlineLatexSymbols(link?.[1] ?? '')}</button></Tooltip>
         ) : (
           <span key={key}>{link ? replaceInlineLatexSymbols(link[1]) : token}</span>
