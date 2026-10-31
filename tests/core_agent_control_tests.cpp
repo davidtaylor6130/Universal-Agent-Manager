@@ -3225,3 +3225,46 @@ UAM_TEST(AgentRunSchedulerEnforcesWallClockDeadlineAndReturnsOneDurableBoundedRe
 	UAM_ASSERT_EQ(durable.output, first.output);
 	UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(app, 3000));
 }
+
+UAM_TEST(AgentRunSchedulerFailsManagedRunWhenStagedLaunchLosesOwnership)
+{
+	TempDir temp("uam-agent-launch-ownership-lost");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review.";
+	run.effective_workspace_access = "read";
+	run.status = "running";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+
+	// State left by PollColdLaunch's ownership-loss branch: held input, never attempted, no process.
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = transcript.id;
+	session->managed_agent_run_id = run.id;
+	session->queue_held = true;
+	session->managed_launch_lost = true;
+	session->last_error = "Provider launch lost its owned full-save receipt. Retry the held input.";
+	app.acp_sessions.push_back(std::move(session));
+
+	(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("failed"));
+	UAM_ASSERT_EQ(app.agent_runs.front().diagnostic_code, std::string("launch_ownership_lost"));
+	UAM_ASSERT(uam::strings::Contains(app.agent_runs.front().diagnostic, "lost its owned full-save receipt"));
+}

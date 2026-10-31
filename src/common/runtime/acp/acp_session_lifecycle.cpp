@@ -444,6 +444,7 @@ namespace
 			session.reconnect_pending = false;
 			session.queue_held = true;
 			session.last_error = "Provider launch lost its owned full-save receipt. Retry the held input.";
+			session.managed_launch_lost = !session.managed_agent_run_id.empty(); // Managed runs never relaunch, so end the run instead of holding it.
 			if (task->root == app.data_root && task->incarnation == chat.metadata_incarnation)
 			{
 				chat.acp_queue_held = true;

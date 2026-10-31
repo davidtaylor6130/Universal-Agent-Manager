@@ -44,6 +44,8 @@ An open current managed conversation offers its own Stop child action in the exi
 
 A managed run reaching its elapsed-time limit requests a scoped Stop and retains its transcript and nonterminal record until termination is confirmed. An expired limit takes precedence over subsequently observed completion, while an already pending explicit cancellation keeps its own disposition. UAM must not publish the terminal deadline result or remove the runtime context while stopping or its required saved state remains unconfirmed; a failed final save retains the context and recorded output for retry. Stored stopping metadata does not authorize launching or reconnecting work.
 
+A managed child whose staged provider launch loses ownership before it starts fails its run with `launch_ownership_lost` and the recorded reason, so `agent_wait` returns that failure instead of running indefinitely; it is never relaunched automatically. Ordinary chats keep the held-input retry. This has focused scheduler test coverage; live provider verification and acceptance remain pending.
+
 ## Active-turn result wait
 
 A supported `agent_wait` read lets a still-active parent wait for one owned managed child instead of repeatedly asking for status. It returns the exact child status and result; a child still queued or running at the bounded wait slice returns `timedOut: true`, so the parent may explicitly wait again on that same run without delegating replacement work. Cancelling or losing the wait retires only that read, preserves the child, and does not start a parent turn. This cooperative route does not provide unsolicited wake after the parent turn has ended.

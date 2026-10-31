@@ -3606,6 +3606,13 @@ namespace uam
 				continue;
 			}
 
+			if (session != nullptr && session->managed_launch_lost && !session->running)
+			{
+				FinishRun(app, run, "failed", "launch_ownership_lost",
+				          uam::strings::NonEmptyOrFallback(session->last_error, "The managed provider launch lost ownership before it started."));
+				changed = true;
+				continue;
+			}
 			if (session != nullptr && session->managed_launch_attempted &&
 			    !session->managed_cancellation_pending && !session->running &&
 			    !session->processing && !session->reconnect_pending)

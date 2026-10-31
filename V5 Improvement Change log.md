@@ -1033,6 +1033,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Chat and subagents | Bugfix | Lost Launch Fails Run | A managed child whose staged launch loses ownership now fails its run with `launch_ownership_lost` and the recorded reason so `agent_wait` returns the failure instead of hanging the parent; focused scheduler test coverage is in place, live provider verification and acceptance remain pending. | Implemented; Focused Native Test PASS; Claude Review; Un-Reviewed; Not User Tested | Unassigned |
 | Build and evidence | Performance | Hosted Parallel Core Tests | A hosted macOS and Windows CI run must confirm two-process native core tests pass with the serial list and the ten-file core test split compiles under MSVC, and record the core test step time. | Not Started; Awaiting Publication; Un-Reviewed; Not User Tested | Unassigned |
 | Native verification | Bugfix | Local Base Native Failures | Twenty-seven native core cases outside the CI quarantine list, including ManualCompactionRejectionDrainsQueuedUserFollowup and the ClaudeSavedOwnedRetry and ClaudeQuota groups, fail alone on macOS on base 2dfa97a2 and the split candidate alike, while the older base CI run passed them; regression or local environment is undetermined. | Not Started; Reproduced Identically On Base And Candidate Binaries; Un-Reviewed; Not User Tested | Unassigned |
 | Providers | Bugfix | Permanent Session Error Loop | When Gemini CLI rejects session/new with a permanent account error ("This client is no longer supported for Gemini Code Assist for individuals"), UAM relaunches gemini every three seconds and the turn stays on Sending instead of showing the error. | Not Started; Observed 2026-10-29 On Windows Restricted Build; Un-Reviewed; Not User Tested | Unassigned |
@@ -4157,3 +4158,9 @@ Focused shared/application tests and a 45-child paging/Stop-padding component fi
 |---|---|---|---|---|
 | Providers | Bugfix | Copilot First Prompt Delivery | A new Copilot chat whose first launch waits for worktree preparation now starts with its queued prompt's agent, so the first prompt is delivered instead of failing with "Failed to deliver queued prompt." after a restart. Verified with the real Copilot CLI through a headless app run. | Un-Reviewed; Not User Tested |
 | Providers | Bugfix | Copilot Without PowerShell 7 | On Windows, UAM checks and starts GitHub Copilot through built-in Windows PowerShell and cmd.exe and no longer reports Copilot unavailable when PowerShell 7 (pwsh) is missing; terminal windows keep the Editors PowerShell choice. Copilot itself may still ask for PowerShell 7 for its own shell commands, which then appears as Copilot's error. | Un-Reviewed; Not User Tested |
+
+## Managed launch ownership loss (#666) — 2026-10-31
+
+| Group | Type | Change | Summary | Status |
+|---|---|---|---|---|
+| Subagents | Bugfix | Lost Launch Fails Run | A managed child whose staged launch loses ownership now fails its agent run with `launch_ownership_lost` and the recorded reason, so `agent_wait` returns the failure instead of hanging the parent; ordinary chats keep the held-input retry. | Un-Reviewed; Not User Tested |

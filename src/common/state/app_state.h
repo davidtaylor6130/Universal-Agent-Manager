@@ -811,6 +811,7 @@ namespace uam
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
+		bool managed_launch_lost = false; // Staged launch lost ownership; the scheduler fails the run with last_error.
 		bool managed_cancellation_pending = false;
 		bool remote_stop_pending = false;
 		bool remote_stop_unconfirmed = false;
