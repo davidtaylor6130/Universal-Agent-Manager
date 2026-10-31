@@ -53,3 +53,5 @@ Usage charts include reported charges and estimates; incomplete pricing must dis
 [Primitives](primitives.md) · [Accessibility](accessibility.md).
 
 Icon grids (provider filters, icon pickers) split items evenly across rows: between 3 and 6 columns, choosing the count that leaves rows as equal as possible (6 items → one row of 6; 7 → 4 + 3), never a lone icon on its own row when a more even split fits. Menu rows keep their label left-aligned; a check, when present, sits in the leading icon slot.
+
+Countdowns (for example the transient alert timer) follow the same rule: the item's own background drains, never a separate line or bar.
