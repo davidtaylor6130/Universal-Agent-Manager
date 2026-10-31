@@ -109,6 +109,8 @@ David explicitly replied “Approve all four changes” in T3 thread `01a13aa1-f
 
 ## Changes
 
+| Chat and runtime | Bugfix | Global Goal Token Budget | Goal token budget is stored as a global setting and exposed in Goal Loops settings for new goals. | Partial implementation; native and frontend verification pending; Un-Reviewed; Claude Review; Not User Tested |
+
 Initial statuses are deliberately unsigned: no entry has been marked Complete based on build or automated test results, and earlier user comments are not treated as blanket approval of these cumulative changes.
 
 
@@ -1029,6 +1031,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 ## Incomplete Work
 
+| Chat and runtime | Bugfix | Global Goal Token Budget | Native wiring, frontend projection and acceptance verification remain incomplete. | In Progress; Un-Reviewed; Claude Review; Not User Tested | thread:delegated-task:command%3Amcp%3A3bfcd3bd-2562-41ff-af60-e595debd2711%3Adelegate-task%3Ae4059f86-8f9a-4bf2-b3a3-783f111dface |
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|

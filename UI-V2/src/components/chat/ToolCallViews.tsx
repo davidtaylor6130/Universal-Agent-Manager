@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 // Tool call inline rows, permission cards, user-input cards, tool modal, and
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
@@ -14,8 +15,9 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { Button, Chip, EXIT_MS, IconButton, Overlay, RowButton, Tooltip, motionAllowed, usePresence } from '../ui'
+import { Button, Chip, EXIT_MS, IconButton, Overlay, RowButton, Tab, Tabs, Tooltip, motionAllowed, usePresence } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
+import { formatReadableToolOutput } from './toolOutputFormat'
 import {
   CopyTextButton,
   roleAccent,
@@ -426,6 +428,8 @@ function ToolCallDetails({
     ? [...contentPages].sort((left, right) => left.offset - right.offset).map(page => page.content).join('')
     : shouldLoadContent ? '' : tool.content)
   const [tab, setTab] = useState('Output')
+  const [showRawOutput, setShowRawOutput] = useState(false)
+  const readableOutput = formatReadableToolOutput(output)
   const [closing, setClosing] = useState(false)
   const closeTimerRef = useRef(0)
   const closedRef = useRef(false)
@@ -577,39 +581,28 @@ function ToolCallDetails({
       : response.error || 'Failed to resume the interrupted run.')
   }
 
-  return (
-    <Overlay open={!closing} dim={false} zIndex={1000} className="tool-details-backdrop" style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
-      onBackdropMouseDown={requestClose}>
+  // ui: own portal kept — the tool details window sizes itself (820px wide, fixed height); the shared Overlay's flex wrapper shrinks it.
+  return createPortal(
+    <div className="tool-details-backdrop" data-state={closing ? 'closed' : 'open'} style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
+      onMouseDown={event => { if (event.target === event.currentTarget) requestClose() }}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} className="uam-tool-modal tool-details-dialog">
         <header className="tool-details-header">
           <span className="tool-details-icon"><ToolStatusIcon status={tool.status} /></span>
-          <div className="tool-details-heading">
+          <Tooltip label={[toolDisplayTitle(tool), tool.isSubAgent && tool.subAgentTitle ? `Sub-agent: ${tool.subAgentTitle}` : ''].filter(Boolean).join(' · ')}>
             <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
-            <div className="tool-details-subtitle">
-              {toolDisplayKind(tool) && <span className="tool-details-chip">{toolDisplayKind(tool)}</span>}
-              {tool.isSubAgent && <span>{tool.subAgentTitle || 'Sub-agent'}</span>}
-            </div>
-          </div>
+          </Tooltip>
           <CopyTextButton text={toolCopyText} label="Copy loaded output" title="Copy loaded output" />
           <IconButton size="sm" icon={<X size={17} aria-hidden />} label="Close tool details" onClick={requestClose} />
         </header>
-        <div role="tablist" aria-label="Tool information" className="tool-details-tabs">
-          {/* ui: raw button kept — tool-details tabs keep their own metrics and ::after indicator (ToolDetails.css); Tabs would add a second indicator and restyle them */}
-          {tabs.map((name, index) => <button key={name} type="button" role="tab" id={`${id}-${name}-tab`}
-            aria-controls={`${id}-panel`} aria-selected={activeTab === name} tabIndex={activeTab === name ? 0 : -1}
-            onClick={() => setTab(name)} onKeyDown={event => {
-              const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1
-              if (next < 0) return
-              event.preventDefault()
-              setTab(tabs[next])
-              document.getElementById(`${id}-${tabs[next]}-tab`)?.focus()
-            }}>{name}</button>)}
-        </div>
+        <Tabs value={activeTab} onChange={setTab} aria-label="Tool information" className="tool-details-tabs">
+          {tabs.map(name => <Tab key={name} value={name} id={`${id}-${name}-tab`} aria-controls={`${id}-panel`}>{name}</Tab>)}
+        </Tabs>
         <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}-tab`} tabIndex={0}
           className={`tool-details-panel${activeTab === 'Output' ? ' tool-details-panel--output' : ''}`}>
           {activeTab === 'Output' && <>
           {/* ui: raw button kept — pill live toggle with tool-details-follow styling (ToolDetails.css); Chip would add the chip look */}
           {isLive && !shouldLoadContent && <button type="button" className="tool-details-follow" aria-pressed={followLive} onClick={() => setFollowLive(value => !value)}>Follow live</button>}
+          {readableOutput !== null && <Chip className="h-7 self-end px-2" aria-pressed={showRawOutput} onClick={() => setShowRawOutput(value => !value)}>Raw</Chip>}
           {shouldLoadContent && contentPage && (
             <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-3)' }}>
                 <Chip className="h-7 px-2" disabled={contentLoading || !contentPage.hasPrevious} onClick={() => { setFollowLive(false); void loadContent(contentPage.previousOffset) }}>Load earlier</Chip>
@@ -637,7 +630,7 @@ function ToolCallDetails({
             tabIndex={0}
             className="whitespace-pre-wrap text-xs uam-tool-modal__output"
           >
-            {output}
+            {showRawOutput || readableOutput === null ? output : readableOutput}
           </pre>
           </>}
           {activeTab === 'Details' && <div className="tool-details-meta">
@@ -698,7 +691,9 @@ function ToolCallDetails({
           </div>}
         </div>
       </section>
-    </Overlay>
+    </div>,
+    document.body,
+  
   )
 }
 

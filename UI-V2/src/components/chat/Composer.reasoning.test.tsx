@@ -24,7 +24,7 @@ describe('Composer unavailable Gemini thinking', () => {
       workspaceDirectory: '/private/fixture', executionHostId: 'local', onToggleModel: noop, onSelectProviderModel: noop, onSelectModel: noop,
       onSelectReviewerModel: noop, onSelectReasoning, onSelectSpeed: noop, onSelectConfigOption: noop, onSelectProviderMode: noop,
       onSelectUamAgent: noop, onSelectPermissionMode: noop, onToggleComputerUseMode: noop, onSelectMemoryLevel: noop, onToggleSmallModelMode: noop,
-      goalArmed: false, goalActive: false, goalPaused: false, defaultGoalTokenBudget: 0, onToggleGoal: noop, onSetDefaultGoalTokenBudget: noop,
+      goalArmed: false, goalActive: false, goalPaused: false, onToggleGoal: noop,
       onCancelTurn: noop, onAttachFile: noop, onOpenMarkdownStore: noop, dictationState: 'idle', dictationElapsedSeconds: 0,
       dictationAvailable: false, onToggleDictation: noop,
     }

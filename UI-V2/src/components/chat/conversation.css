@@ -84,7 +84,7 @@
 .conversation-work__tool { display: flex; width: 100%; align-items: baseline; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
 .conversation-work__event-icon { position: absolute; left: -8px; top: 5px; color: var(--text-3); background: var(--bg); }
 .conversation-work__tool-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-work__status { flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-3); }
+.conversation-work__status { display: inline-flex; align-items: center; flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-3); }
 .conversation-work__status[data-failed="true"] { color: var(--red); }
 .conversation-work__tool:hover .conversation-work__tool-title { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .conversation-work__reasoning, .conversation-work .conversation-work__reasoning .prose-msg { color: var(--text-3); font-size: var(--fs-sm); line-height: 1.55; }

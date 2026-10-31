@@ -1,29 +1,34 @@
-.uam-update-notes {
-    min-width: 0;
-    font-size: var(--fs-sm);
-    color: var(--text-2);
-    overflow-wrap: anywhere;
+/* Installing row: the whole row is the progress track. No percentage is reported, so the fill sweeps (indeterminate). */
+.uam-update-row {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
 }
 
-.uam-update-notes > summary {
-    cursor: pointer;
-    padding: var(--sp-1);
-    margin: calc(-1 * var(--sp-1));
-    border-radius: var(--r-sm);
+.uam-update-row__fill {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    pointer-events: none;
 }
 
-.uam-update-notes > summary:hover {
-    color: var(--text);
-    background: var(--surface-high);
+.uam-update-row__fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 28%, transparent), transparent);
+    animation: uam-update-row-sweep 1.4s ease-in-out infinite;
 }
 
-.uam-update-notes > summary:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
+@keyframes uam-update-row-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(260%); }
 }
 
-.uam-update-notes > p {
-    margin-top: var(--sp-2);
-    line-height: 1.5;
-    white-space: pre-wrap;
+@media (prefers-reduced-motion: reduce) {
+    .uam-update-row__fill::after { animation: none; width: 100%; opacity: 0.5; }
 }
+
+:root[data-motion="off"] .uam-update-row__fill::after { animation: none; width: 100%; opacity: 0.5; }

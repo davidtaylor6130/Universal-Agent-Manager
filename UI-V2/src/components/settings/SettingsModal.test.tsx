@@ -1429,6 +1429,21 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('saves the global goal token budget from the goal loops page', () => {
+    const { host, root } = renderModal()
+
+    openGoalLoopsSection(host)
+    const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goal token budget"]')
+    expect(trigger).toBeTruthy()
+    act(() => trigger?.click())
+    const fiftyK = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.includes('50,000'))
+    act(() => fiftyK?.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalTokenBudget: 50000 })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('updates the default memory selectivity level', async () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)

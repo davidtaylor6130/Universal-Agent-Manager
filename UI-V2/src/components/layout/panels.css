@@ -16,8 +16,8 @@
 .uam-np-row {
   position: relative;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  align-items: start;
+  grid-template-columns: 24px minmax(0, 1fr) auto auto auto;
+  align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2);
   border-radius: var(--r-md);
@@ -47,14 +47,7 @@
   color: var(--text);
 }
 .uam-np-row__title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.uam-np-row__detail {
-  margin-top: 2px;
-  font-size: var(--fs-xs);
-  line-height: 1.45;
-  color: var(--text-3);
-  overflow-wrap: anywhere;
-}
-.uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .uam-np-row__dismiss {
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);

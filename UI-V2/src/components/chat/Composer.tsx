@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight, Check, X } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -23,7 +23,7 @@ import {
   modelOptionFor,
   reasoningEffortForModel,
 } from './modelOptions'
-import { Button, IconButton, MenuSelect, Tooltip, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Switch, Tooltip, ViewportMenu } from '../ui'
 import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -99,6 +99,22 @@ export function permissionModeIcon(id: string, size = 14) {
 function ComposerChoice({ icon, chipLabel, ...props }: Parameters<typeof MenuSelect>[0] & { icon: ReactNode; chipLabel?: string }) {
   return <div className="uam-composer-choice" data-mode-chip={chipLabel}>
     <MenuSelect {...props} onChange={(value) => { if (!props.disabled) props.onChange(value) }} options={props.options.map((option) => ({ ...option, icon: option.icon ?? icon }))} />
+  </div>
+}
+
+/** Menu on/off row: the label and icon toggle the shared Switch; the Switch input is the menu item (role menuitemcheckbox) and its accessible name. */
+function ComposerToggleRow({ id, icon, label, title, checked, disabled, onChange }: {
+  id: string
+  icon: ReactNode
+  label: string
+  title?: string
+  checked: boolean
+  disabled?: boolean
+  onChange: () => void
+}) {
+  return <div className="uam-cmenu__item uam-cmenu__toggle" title={title}>
+    <label htmlFor={id} className="uam-cmenu__toggle-label">{icon}<span className="uam-cmenu__text"><span>{label}</span></span></label>
+    <Switch id={id} hideLabel label={label} role="menuitemcheckbox" checked={checked} disabled={disabled} onChange={onChange} />
   </div>
 }
 
@@ -199,9 +215,7 @@ export function ComposerToolbar({
   goalArmed,
   goalActive,
   goalPaused,
-  defaultGoalTokenBudget,
   onToggleGoal,
-  onSetDefaultGoalTokenBudget,
   onCancelTurn,
   onAttachFile,
   onOpenMarkdownStore,
@@ -262,9 +276,7 @@ export function ComposerToolbar({
   goalArmed: boolean
   goalActive: boolean
   goalPaused: boolean
-  defaultGoalTokenBudget: number
   onToggleGoal: () => void
-  onSetDefaultGoalTokenBudget: (value: number) => void
   onCancelTurn: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
@@ -336,6 +348,9 @@ export function ComposerToolbar({
   const modelTriggerRef = useRef<HTMLButtonElement>(null)
   const modelWasOpenRef = useRef(false)
   const modelListId = useId()
+  const goalToggleId = useId()
+  const computerUseToggleId = useId()
+  const architectToggleId = useId()
 
   useEffect(() => {
     if (!modelOpen && modelWasOpenRef.current) modelTriggerRef.current?.focus()
@@ -421,66 +436,36 @@ export function ComposerToolbar({
               {/* ui: raw button kept — uam-cmenu__item row look and classes; MenuItem would swap them for uam-menu-item */}
               <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
                 <span className="uam-cmenu__icon"><ComposerIcon name="markdown" /></span>
-                <span className="uam-cmenu__text"><span>Skills</span><small>Insert a saved prompt</small></span>
+                <span className="uam-cmenu__text"><span>Skills</span></span>
                 <ChevronRight size={14} aria-hidden className="uam-cmenu__trail" />
               </button>
               <div className="uam-cmenu__divider" />
             </>}
             <div className="uam-cmenu__section">Modes</div>
-            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
-            <button
-              type="button"
-              role="menuitem"
-              className="uam-cmenu__item"
-              data-on={goalActive || goalArmed}
-              aria-pressed={goalActive || goalArmed}
+            <ComposerToggleRow
+              id={goalToggleId}
+              icon={<Target size={15} aria-hidden className="uam-cmenu__icon" style={{ color: goalActive || goalArmed ? 'var(--purple)' : undefined }} />}
+              label={goalArmed ? 'Goal: next message' : 'Goal'}
+              checked={goalActive || goalArmed}
               disabled={modelDisabled}
-              onClick={() => { setOptionsOpen(false); onToggleGoal() }}
-            >
-              <Target size={15} aria-hidden className="uam-cmenu__icon" style={{ color: goalActive || goalArmed ? 'var(--purple)' : undefined }} />
-              <span className="uam-cmenu__text"><span>{goalArmed ? 'Goal: next message' : 'Goal'}</span><small>{goalActive ? 'Running · click to pause' : goalPaused ? 'Paused · click to resume' : 'Keep working until a goal is met'}</small></span>
-              <span className="uam-cmenu__pill" data-on={goalActive || goalArmed}>{goalActive || goalArmed ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{goalActive || goalArmed ? 'On' : 'Off'}</span>
-            </button>
-            <label className="uam-cmenu__setting uam-cmenu__setting--nested" aria-label="Goal token budget">
-              <span>Token budget</span>
-              <input
-                type="number"
-                min={0}
-                value={defaultGoalTokenBudget || ''}
-                placeholder="Unlimited"
-                onChange={(event) => onSetDefaultGoalTokenBudget(parseInt(event.target.value || '0', 10))}
-                className="uam-field w-full text-right"
-                style={{ height: 28 }}
-              />
-            </label>
-            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
-            {COMPUTER_USE_ENABLED && !isCompanionContext() && <button
-              type="button"
-              role="menuitem"
-              className="uam-cmenu__item"
-              data-on={computerUseMode}
-              aria-pressed={computerUseMode}
-              onClick={() => { setOptionsOpen(false); onToggleComputerUseMode() }}
-            >
-              <MousePointer2 size={15} aria-hidden className="uam-cmenu__icon" style={{ color: computerUseMode ? 'var(--accent)' : undefined }} />
-              <span className="uam-cmenu__text"><span>Computer use…</span><small>Let the agent see and control an app</small></span>
-              <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{computerUseMode ? 'On' : 'Off'}</span>
-            </button>}
-            {/* ui: raw button kept — uam-cmenu__item toggle keeps role=menuitem with aria-pressed; MenuItem maps toggles to menuitemcheckbox */}
-            {featurePreference === 'uam' && <button
-              type="button"
-              role="menuitem"
-              className="uam-cmenu__item"
-              data-on={smallModelMode}
+              onChange={() => { setOptionsOpen(false); onToggleGoal() }}
+            />
+            {COMPUTER_USE_ENABLED && !isCompanionContext() && <ComposerToggleRow
+              id={computerUseToggleId}
+              icon={<MousePointer2 size={15} aria-hidden className="uam-cmenu__icon" style={{ color: computerUseMode ? 'var(--accent)' : undefined }} />}
+              label="Computer use…"
+              checked={computerUseMode}
+              onChange={() => { setOptionsOpen(false); onToggleComputerUseMode() }}
+            />}
+            {featurePreference === 'uam' && <ComposerToggleRow
+              id={architectToggleId}
               title="Plan first, then run and review one verified step at a time"
-              aria-pressed={smallModelMode}
-              onClick={onToggleSmallModelMode}
+              icon={<Cpu size={15} aria-hidden className="uam-cmenu__icon" style={{ color: smallModelMode ? 'var(--accent)' : undefined }} />}
+              label="Architect + worker"
+              checked={smallModelMode}
               disabled={modelDisabled}
-            >
-              <Cpu size={15} aria-hidden className="uam-cmenu__icon" style={{ color: smallModelMode ? 'var(--accent)' : undefined }} />
-              <span className="uam-cmenu__text"><span>Architect + worker</span><small>Plan, then run and review step by step</small></span>
-              <span className="uam-cmenu__pill" data-on={smallModelMode}>{smallModelMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{smallModelMode ? 'On' : 'Off'}</span>
-            </button>}
+              onChange={onToggleSmallModelMode}
+            />}
             {featurePreference === 'uam' && smallModelMode && <>
               <div className="uam-cmenu__setting uam-cmenu__setting--nested">
                 <span>{goalPairLocked ? 'Worker · locked' : 'Worker model'}</span>
@@ -504,7 +489,7 @@ export function ComposerToolbar({
               </div>
             </>}
             <div className="uam-cmenu__divider" />
-            <div className="uam-cmenu__section">This chat</div>
+            <div className="uam-cmenu__section">Chat settings</div>
             {hasReasoningEffort && (
               <div className="uam-cmenu__setting">
                 <span>Reasoning</span>

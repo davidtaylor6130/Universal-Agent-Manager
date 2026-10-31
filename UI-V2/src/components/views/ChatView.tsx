@@ -932,8 +932,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const updateGoalObjective = useAppStore((s) => s.updateGoalObjective)
   const removeGoal = useAppStore((s) => s.removeGoal)
   const resumeGoal = useAppStore((s) => s.resumeGoal)
-  const defaultGoalTokenBudget = useAppStore((s) => s.defaultGoalTokenBudgetByChatId[session.id] ?? 0)
-  const setDefaultGoalTokenBudget = useAppStore((s) => s.setDefaultGoalTokenBudget)
+  const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const transcriptContentRef = useRef<HTMLDivElement>(null)
@@ -1525,7 +1524,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!goalMatch) return false
     const objective = goalMatch[1].trim()
     if (!objective) { setGoalError('Goal objective is required.'); return true }
-    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : defaultGoalTokenBudget
+    const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : goalTokenBudget
     const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
     const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
     await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
@@ -1638,13 +1637,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
       const objective = prompt.slice(nativeGoalCommand.length).trim()
       if (!objective) { setGoalError('Goal objective is required.'); return }
-      await createGoalAndSend({ objective, tokenBudget: defaultGoalTokenBudget, executionOwner: 'provider',
+      await createGoalAndSend({ objective, tokenBudget: goalTokenBudget, executionOwner: 'provider',
         prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
       return
     }
     if (goalArmNextMessage) {
       const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
-      await createGoalAndSend({ objective: prompt, tokenBudget: defaultGoalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
+      await createGoalAndSend({ objective: prompt, tokenBudget: goalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
         prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
         sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow: steerNow || undefined, disarm: true })
       return
@@ -4034,9 +4033,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}
               goalPaused={Boolean(goalPaused)}
-              defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
-              onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
               onCancelTurn={cancelLiveTurn}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}

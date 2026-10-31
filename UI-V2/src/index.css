@@ -2568,3 +2568,10 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer 1.2s ease-in-out infinite; }
 @keyframes uam-icon-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-icon-skeleton { animation: none; } .uam-icon-cell { transition: none; } }
+
+/* Close/dismiss/remove: every X button is neutral at rest and turns red on hover or keyboard focus. */
+button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):hover,
+button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visible {
+  background: var(--error-dim);
+  color: color-mix(in srgb, var(--error) 72%, var(--text));
+}

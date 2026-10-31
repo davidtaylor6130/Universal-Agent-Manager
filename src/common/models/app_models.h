@@ -1057,6 +1057,7 @@ struct AppSettings
 	int memory_idle_delay_seconds = 60;
 	int memory_recall_budget_bytes = 2048;
 	int goal_max_loop_iterations = 200;
+	int goal_token_budget = 0;
 	int acp_setup_inactivity_timeout_seconds = 600;
 	int acp_turn_output_limit_mib = 1024;
 	bool update_checks_enabled = true;

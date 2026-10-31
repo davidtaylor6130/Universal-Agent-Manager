@@ -534,40 +534,36 @@ function NotificationsPanel({
                   const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
                   const time = new Date(notification.time)
                   const exactTime = time.toLocaleString()
+                  const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')
                   const relativeTime = relativeNotificationTime(notification.time, now)
                   return (
                     <div key={notification.id} className="uam-np-row">
                       <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
-                      <div className="min-w-0">
+                      <Tooltip label={fullDetail}>
                         <div className="uam-np-row__title">
                           <span>{notification.title}</span>
+                          {fullDetail && <span className="sr-only">{fullDetail}</span>}
                         </div>
-                        <div className="uam-np-row__meta">
-                          <Tooltip label={exactTime}>
-                            <time tabIndex={0} className="rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
-                          </Tooltip>
-                        </div>
-                        {notification.failure && <div className="uam-np-row__detail" style={{ color: 'var(--text-2)' }}>{notification.failure.message}</div>}
-                        <div className="uam-np-row__detail" style={{ overflowWrap: 'anywhere' }}>{notification.detail}</div>
-                        {notification.actions && (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {notification.actions.map((action) => {
-                              const actionId = `${notification.id}-${action.label}`
-                              return (
-                                <Button
-                                  key={action.label}
-                                  size="sm"
-                                  variant={action.variant}
-                                  loading={busyAction === actionId}
-                                  disabled={Boolean(busyAction)}
-                                  onClick={() => { void runAction(notification.id, action) }}
-                                >
-                                  {action.label}
-                                </Button>
-                              )
-                            })}
-                          </div>
-                        )}
+                      </Tooltip>
+                      <Tooltip label={exactTime}>
+                        <time tabIndex={0} className="uam-np-row__meta rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
+                      </Tooltip>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {notification.actions?.map((action) => {
+                          const actionId = `${notification.id}-${action.label}`
+                          return (
+                            <Button
+                              key={action.label}
+                              size="sm"
+                              variant={action.variant === 'danger' ? 'danger' : 'secondary'}
+                              loading={busyAction === actionId}
+                              disabled={Boolean(busyAction)}
+                              onClick={() => { void runAction(notification.id, action) }}
+                            >
+                              {action.label}
+                            </Button>
+                          )
+                        })}
                       </div>
                       <IconButton
                         size="sm"

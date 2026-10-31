@@ -66,21 +66,14 @@ describe('UpdatesPanel', () => {
 
     const rows = [...host.querySelectorAll('article[data-update-available]')]
     expect(rows).toHaveLength(3)
-    for (const [index, excerpt] of ['Application fixes.', 'npm release fixes.', 'Homebrew release fixes.'].entries()) {
-      const disclosure = rows[index].querySelector('details')!
-      expect(disclosure.open).toBe(false)
-      expect(disclosure.querySelector('p')?.textContent).toBe(excerpt)
-      expect(disclosure.querySelector('summary')?.getAttribute('aria-label')).toBe(`Release notes excerpt for ${updates[index].name} ${updates[index].latestVersion}`)
-      await act(async () => disclosure.querySelector('summary')!.click())
-      expect(disclosure.open).toBe(true)
-      await act(async () => disclosure.querySelector('summary')!.click())
-      expect(disclosure.open).toBe(false)
-    }
+    // Excerpts no longer render as a disclosure; they are only offered as the release-notes tooltip.
+    expect(host.querySelector('details')).toBeNull()
+    expect(rows).toHaveLength(3)
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     try {
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="View Universal Agent Manager 5.0.0 release"]')!.click())
+      await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="Release notes for ${updates[0].name} ${updates[0].latestVersion}"]`)!.click())
       expect(open).toHaveBeenLastCalledWith('https://example.test/uam', '_blank', 'noopener')
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Open codex-cli · Lab update instructions"]')!.click())
+      await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="Release notes for ${updates[2].name} ${updates[2].latestVersion}"]`)!.click())
       expect(open).toHaveBeenLastCalledWith('https://example.test/homebrew', '_blank', 'noopener')
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Update codex-cli · Lab to 1.9.0"]')!.click())
       expect(state.requestCliProviderUpdate).toHaveBeenCalledExactlyOnceWith('codex-cli', '1.9.0', 'lab')
@@ -96,14 +89,14 @@ describe('UpdatesPanel', () => {
     const excerpt = '<script>unsafe()</script><img src=x onerror=unsafe()> [link](javascript:unsafe())'
     const base = monitor().updates[0]
     await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [{ ...base, releaseNotesExcerpt: excerpt }] })} onClose={vi.fn()} />))
-    const disclosure = host.querySelector('details')!
-    await act(async () => disclosure.querySelector('summary')!.click())
-    expect(disclosure.querySelector('p')?.textContent).toBe(excerpt)
-    expect(disclosure.querySelector('script, img, a')).toBeNull()
+    // The excerpt is never rendered as markup; it only reaches the release-notes tooltip as text.
+    expect(host.querySelector('details')).toBeNull()
+    expect(host.querySelector('script, img[src="x"], article a')).toBeNull()
+    expect(host.textContent).not.toContain('unsafe()')
     act(() => root.unmount())
   })
 
-  it('omits unavailable excerpts and resets disclosure when the available release changes', async () => {
+  it('drops the excerpt when the available release changes and keeps the actions for the newest release', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
     const base = monitor().updates[0]
@@ -111,16 +104,14 @@ describe('UpdatesPanel', () => {
       <UpdatesPanel monitor={monitor({ updates: [{ ...base, latestVersion, releaseNotesExcerpt }] })} onClose={vi.fn()} />,
     ))
     await render('Older fixes.')
-    await act(async () => host.querySelector('summary')!.click())
-    expect(host.querySelector('details')?.open).toBe(true)
+    expect(host.querySelector('details')).toBeNull()
     await render('Newer fixes.', '0.131.0')
-    expect(host.querySelector('details')?.open).toBe(false)
-    expect(host.querySelector('details p')?.textContent).toBe('Newer fixes.')
+    expect(host.querySelector('[aria-label="Release notes for Codex CLI 0.131.0"]')).not.toBeNull()
     expect(host.textContent).not.toContain('Older fixes.')
     for (const excerpt of [undefined, '', '   ']) {
       await render(excerpt)
       expect(host.querySelector('details')).toBeNull()
-      expect(host.querySelector('[aria-label="Open Codex CLI update instructions"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Release notes for Codex CLI 0.130.0"]')).not.toBeNull()
       expect(host.querySelector('[aria-label="Update Codex CLI to 0.130.0"]')).not.toBeNull()
     }
     act(() => root.unmount())
@@ -148,9 +139,10 @@ describe('UpdatesPanel', () => {
     expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('alpha')
     const providerState = { providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'installing' as const, message: '', running: true, lastCommand: '', lastOutput: '' }
     await act(async () => root.render(<UpdatesPanel monitor={{ ...state, providerStates: [{ ...providerState, executionHostId: 'alpha' }], providerTaskRunning: true }} onClose={vi.fn()} />))
-    expect(host.querySelector('button[aria-label="Update Codex · alpha to 0.130.0"]')?.textContent).toContain('Updating')
-    expect(host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]')?.textContent).toContain('Install update')
-    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')?.textContent).toContain('Install update')
+    expect(host.querySelector('button[aria-label="Update Codex · alpha to 0.130.0"]')).toBeNull()
+    expect(host.querySelector('article[aria-busy="true"]')?.textContent).toContain('Codex · alpha')
+    expect(host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')).not.toBeNull()
     act(() => root.unmount())
   })
 
@@ -161,14 +153,14 @@ describe('UpdatesPanel', () => {
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
     expect(host.textContent).toContain('Codex CLI')
-    expect(host.textContent).toContain('1 update available')
-    expect(host.textContent).toContain('Current')
-    expect(host.textContent).toContain('Available')
+    expect(host.textContent).not.toContain('1 update available')
+    expect(host.textContent).not.toContain('Current')
+    expect(host.textContent).not.toContain('Available')
     expect(host.textContent).toContain('0.124.0')
     expect(host.textContent).toContain('0.130.0')
     expect(host.querySelector('[data-update-available="true"]')).toBeTruthy()
-    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')?.textContent).toContain('Install update')
-    expect(host.querySelector('button[aria-label="Open Codex CLI update instructions"]')?.textContent).toContain('Release notes')
+    expect(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label="Release notes for Codex CLI 0.130.0"]')).not.toBeNull()
 
     await act(async () => {
       ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()
@@ -194,12 +186,13 @@ describe('UpdatesPanel', () => {
     act(() => { install.click(); install.click(); host.querySelector<HTMLButtonElement>('[aria-label="Update everything"]')!.click() })
     expect(request).toHaveBeenCalledTimes(1)
     expect(state.installProviderUpdates).not.toHaveBeenCalled()
-    expect(install.disabled).toBe(true)
+    expect(host.querySelector('[aria-label="Update Codex CLI to 0.130.0"]')).toBeNull()
+    expect(host.querySelector('article[aria-busy="true"]')).not.toBeNull()
     expect(host.querySelector<HTMLButtonElement>('[aria-label="Update everything"]')!.disabled).toBe(true)
     await act(async () => { if (throws) reject(new Error('Connection lost')); else resolve({ ok: false, error: 'Not admitted' }) })
-    expect(install.disabled).toBe(false)
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('update could not be started')
-    act(() => install.click())
+    expect(host.querySelector('[aria-label="Codex CLI update failed"]')).not.toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Retry Codex CLI update to 0.130.0"]')!.click())
     expect(request).toHaveBeenCalledTimes(2)
     await act(async () => resolve({ ok: true }))
     act(() => root.unmount())
@@ -220,7 +213,7 @@ describe('UpdatesPanel', () => {
     expect(host.textContent).not.toContain('Finish active provider work')
     act(() => (host.querySelector('button[aria-label="Dismiss update error"]') as HTMLButtonElement).click())
     expect(host.querySelector('[role="alert"]')).toBeNull()
-    await act(async () => (host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click())
+    await act(async () => (host.querySelector('button[aria-label="Retry Codex CLI update to 0.130.0"]') as HTMLButtonElement).click())
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
     act(() => root.unmount())
   })
@@ -237,7 +230,7 @@ describe('UpdatesPanel', () => {
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
     const update = host.querySelector('button[aria-label="Update Homelab SSH helper to 4.8.0-alpha-2"]') as HTMLButtonElement
-    expect(update.textContent).toContain('Update helper')
+    expect(update.querySelector('svg')).not.toBeNull()
     await act(async () => update.click())
     expect(state.applyRemoteHelperUpdate).toHaveBeenCalledWith('lab')
     expect(host.textContent).not.toContain('View release')
@@ -289,14 +282,14 @@ describe('UpdatesPanel', () => {
     const state = monitor({ updates: [] })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
     expect(host.textContent).toContain('Everything is up to date')
-    expect(host.querySelector('header button[aria-label="Check for updates"]')).toBeTruthy()
-    expect(host.querySelector('footer button[aria-label="Check for updates"]')).toBeNull()
+    expect(host.querySelector('header button[aria-label="Check again"]')).toBeTruthy()
+    expect(host.querySelector('footer')).toBeNull()
     await act(async () => {
-      ;(host.querySelector('button[aria-label="Check for updates"]') as HTMLButtonElement).click()
+      ;(host.querySelector('button[aria-label="Check again"]') as HTMLButtonElement).click()
     })
     expect(state.checkNow).toHaveBeenCalledOnce()
     await act(async () => root.render(<UpdatesPanel monitor={monitor({ updates: [], checking: true })} onClose={vi.fn()} />))
-    const checking = host.querySelector('button[aria-label="Checking for updates"]') as HTMLButtonElement
+    const checking = host.querySelector('button[aria-label="Check again"]') as HTMLButtonElement
     expect(checking.disabled).toBe(true)
     expect(checking.getAttribute('aria-busy')).toBe('true')
     act(() => root.unmount())
@@ -353,13 +346,14 @@ describe('UpdatesPanel', () => {
     })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
-    const codex = host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement
-    const opencode = host.querySelector('button[aria-label="Update OpenCode to 1.18.0"]') as HTMLButtonElement
+    const [codex, opencode] = host.querySelectorAll<HTMLElement>('article[data-update-available]')
     expect(codex.getAttribute('aria-busy')).toBe('true')
-    expect(codex.textContent).toContain('Updating…')
+    expect(codex.getAttribute('data-installing')).toBe('true')
+    expect(codex.querySelector('.uam-update-row__fill')).not.toBeNull()
     expect(opencode.getAttribute('aria-busy')).toBeNull()
-    expect(opencode.textContent).toContain('Install update')
-    expect(opencode.disabled).toBe(false)
+    expect(opencode.querySelector('.uam-update-row__fill')).toBeNull()
+    const install = opencode.querySelector<HTMLButtonElement>('button[aria-label="Update OpenCode to 1.18.0"]')!
+    expect(install.disabled).toBe(false)
     act(() => root.unmount())
   })
 

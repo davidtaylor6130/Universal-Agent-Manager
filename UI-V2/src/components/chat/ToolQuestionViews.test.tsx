@@ -56,6 +56,9 @@ describe('production tool details', () => {
             onSuccess('{}')
         }
         await render(<ToolCallModal tool={{ ...tool, content, contentDeferred: false }} chatId="chat-1" onClose={vi.fn()} />)
+        // Intended design change: JSON output is shown readable by default; the Raw chip shows the exact text.
+        expect(document.querySelector('pre')?.textContent).toContain('path: C:\\new\\notes')
+        await click('Raw')
         expect(document.querySelector('pre')?.textContent).toBe(content)
         await click('Copy loaded output')
         expect(copied).toEqual([content])

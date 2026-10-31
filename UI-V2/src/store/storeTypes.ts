@@ -105,7 +105,6 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
-  defaultGoalTokenBudgetByChatId: Record<string, number>
 
   // Providers
   providers: Provider[]
@@ -119,6 +118,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   memoryIdleDelaySeconds: number
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
+  goalTokenBudget: number
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
   appVersion: string
@@ -253,7 +253,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
   /** Internal display observation/overlay; never publication or native mutation authority. */
   reconcileMemorySettingsProjection: (projection: Partial<AppState>, suppliedNativeSettings?: Partial<CppSettings>) => Partial<AppState>
-  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
+  setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'goalTokenBudget' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
   setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
@@ -309,7 +309,6 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   removeGoal: (chatId: string, goalId: string) => Promise<MutationResult>
   resumeGoal: (chatId: string, goalId: string, restart?: boolean) => Promise<MutationResult>
   setGoalMode: (chatId: string, active: boolean) => void
-  setDefaultGoalTokenBudget: (chatId: string, tokenBudget: number) => void
   clearActiveGoal: (chatId: string) => Promise<MutationResult>
 
   // Folder actions

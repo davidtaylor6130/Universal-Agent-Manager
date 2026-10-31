@@ -133,3 +133,12 @@
 .uam-model-picker-favorite { opacity: 0.85; }
 .uam-model-picker-favorite:hover { opacity: 1; }
 .uam-model-picker .uam-menu-select__option { border-radius: 6px; }
+
+/* Options menu: on/off rows use the shared Switch; label and icon are the click target. */
+.uam-cmenu__toggle { cursor: default; }
+.uam-cmenu__toggle-label { display: flex; flex: 1; min-width: 0; align-items: center; gap: 10px; cursor: pointer; }
+
+/* Chat settings rows: label left, the control hugs its value on the right. */
+.uam-cmenu__setting:not(.uam-cmenu__setting--nested) { grid-template-columns: minmax(0, 1fr) auto; }
+.uam-cmenu__setting:not(.uam-cmenu__setting--nested) > .relative { justify-self: end; }
+.uam-cmenu__setting:not(.uam-cmenu__setting--nested) .uam-menu-select__trigger { width: auto; }

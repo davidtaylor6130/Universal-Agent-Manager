@@ -40,3 +40,5 @@ Import from `components/settings/SettingsPrimitives`:
 - Legacy `SectionCard` already uses the shared language; prefer the row and field primitives when extending it.
 
 [Settings layout](settings.md) owns how these are assembled. [Source](../../UI-V2/src/components/settings/SettingsPrimitives.tsx).
+
+Close, dismiss and remove controls use the lucide `X` icon directly inside the button. They are neutral at rest and turn red (`--error-dim` background, error-tinted icon) on hover and keyboard focus; one shared rule in `index.css` applies this to every such button, so features never colour close buttons themselves.

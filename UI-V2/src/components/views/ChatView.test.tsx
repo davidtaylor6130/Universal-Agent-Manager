@@ -52,8 +52,8 @@ function tooltipText(trigger: HTMLElement): string {
   act(() => { trigger.blur() })
   return text
 }
-function goalMenuItem(): HTMLButtonElement | null {
-  return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.startsWith('Goal')) ?? null
+function goalMenuItem(): HTMLInputElement | null {
+  return Array.from(document.body.querySelectorAll<HTMLInputElement>('input[role="menuitemcheckbox"]')).find((input) => input.getAttribute('aria-label')?.startsWith('Goal')) ?? null
 }
 
 function openComposerGoals(host: HTMLElement) {
@@ -578,7 +578,6 @@ describe('ChatView', () => {
       historyStartIndexBySessionId: {},
       goalsByChatId: {},
       activeGoalIdByChatId: {},
-      defaultGoalTokenBudgetByChatId: {},
       favoriteUamAgentIds: [],
       providerChatDefaults: {},
       uamAgentCycleShortcut: 'shift+tab',
@@ -3341,7 +3340,7 @@ describe('ChatView', () => {
     expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).getAttribute('aria-disabled')).toBe('true')
 
     openComposerOptions(host)
-    expect(document.body.textContent).toContain('Token budget')
+    expect(document.body.textContent).not.toContain('Token budget')
     expect(host.textContent).not.toContain('Unavailable')
 
     const toolButton = Array.from(host.querySelectorAll('button')).find((button) =>
@@ -4263,7 +4262,7 @@ describe('ChatView', () => {
     expect(document.body.querySelector('[role="dialog"][aria-label="Computer use"]')).toBeNull()
 
     openComposerOptions(host)
-    const computerOption = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes('Computer use')) as HTMLButtonElement
+    const computerOption = document.body.querySelector<HTMLInputElement>('input[role="menuitemcheckbox"][aria-label^="Computer use"]')!
     expect(computerOption).toBeTruthy()
     await act(async () => { computerOption.click(); await Promise.resolve() })
     expect(setSessionComputerUseEnabled).toHaveBeenCalledWith('chat-1', true)
@@ -6199,7 +6198,7 @@ describe('ChatView', () => {
     useAppStore.setState((state) => ({
       setGoal,
       sendAcpPrompt,
-      defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 1234 },
+      goalTokenBudget: 1234,
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -6342,7 +6341,7 @@ describe('ChatView', () => {
 		setGoal,
 		sendAcpPrompt,
 		providerChatDefaults: { ...state.providerChatDefaults, 'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, featurePreference: 'provider' } },
-		defaultGoalTokenBudgetByChatId: { ...state.defaultGoalTokenBudgetByChatId, 'chat-1': 0 },
+		goalTokenBudget: 0,
 		providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
 		sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'codex-cli' } : session),
 	  }))

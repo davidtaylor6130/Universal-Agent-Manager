@@ -773,6 +773,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
+  const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
@@ -789,6 +790,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const showWorktreePathInSidebar = useAppStore((s) => s.showWorktreePathInSidebar)
   const setSidebarSettings = useAppStore((s) => s.setSidebarSettings)
   const updateChecksEnabled = useAppStore((s) => s.updateChecksEnabled)
+  const automaticProviderUpdates = useAppStore((s) => s.automaticProviderUpdates)
   const setUpdateSettings = useAppStore((s) => s.setUpdateSettings)
   const customThemes = useAppStore(useShallow((s) => s.customThemes))
   const saveCustomTheme = useAppStore((s) => s.saveCustomTheme)
@@ -2639,6 +2641,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>
             )
           })}
+          {!scopedProviderId && <SettingRow title="Install provider updates automatically" description="Active sessions delay installation." control={<Switch hideLabel label="Install provider updates automatically" checked={automaticProviderUpdates} onChange={(event) => { void setUpdateSettings({ automaticProviderUpdates: event.target.checked }) }} />} />}
         </div>
       )
     }
@@ -2885,6 +2888,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'goal-loops') {
       return (
         <SettingsSection title="Goal loop safety">
+          <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[10000, 25000, 50000, 100000, 200000, 500000].map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
           <SettingRow
             title="Maximum iterations"
             description="Loops a goal may run before it stops (1–200)."

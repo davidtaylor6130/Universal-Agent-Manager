@@ -332,6 +332,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         <IconButton
           icon={<X size={14} aria-hidden />}
           label={`Close ${session.name}`}
+          variant="danger"
           tooltip="Close chat"
           tooltipSide="bottom"
           size="sm"
@@ -403,7 +404,7 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
       onFocusCapture={() => { if (!active) onActivate(leafId) }}
       style={{ color: 'var(--text-3)', '--pane-color': paneColor } as React.CSSProperties}
     >
-      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
+      {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" variant="danger" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
       <div className="flex max-w-xs flex-col items-center gap-4 px-4">
         {/* ui: raw button kept — large text-link placeholder with custom layout; Button would restyle it */}
         <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
@@ -746,9 +747,9 @@ export function MainPanel() {
               icon={<X size={15} aria-hidden />}
               label="Close active pane"
               tooltipSide="bottom"
-              className="uam-layout-button flex h-7 w-8 items-center justify-center rounded"
+              variant="danger"
+              className="flex h-7 w-8 items-center justify-center rounded"
               onClick={() => activeLeaf && closePane(activeLeaf.id)}
-              style={{ color: 'var(--text-2)', background: 'transparent' }}
             />
           )}
         </div>
