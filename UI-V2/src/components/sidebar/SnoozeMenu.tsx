@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlarmClockOff } from 'lucide-react'
+import { AlarmClockOff, Check, CircleX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
@@ -98,7 +98,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
     </button>}
     {snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{bulk ? `${snoozedCount} of ${bulk.length} chats snoozed` : `Snoozed until ${new Date(untilMs).toLocaleString()}`}</p>}
     {blocked && !snoozed && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{BLOCKED_TEXT}</p>}
-    {bulk && !blocked && blockedIds.length > 0 && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{blockedIds.length} of {bulk.length} chats need a response first and stay awake.</p>}
+    {bulk && !blocked && blockedIds.length > 0 && <p className="px-3 pb-1 text-xs" style={{ color: 'var(--text-3)' }}>{blockedIds.length} of {bulk.length} need a response; they stay awake.</p>}
     {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={itemClass} disabled={presetsBlocked}
       onClick={() => { void update(preset.until) }}>{preset.label}<span className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>{new Date(preset.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span></button>)}
     <button type="button" role="menuitem" className={itemClass} aria-expanded={customOpen} disabled={saving} onClick={() => setCustomOpen((open) => !open)}>Custom…</button>
@@ -113,6 +113,8 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
       </select>
       <Button type="submit" size="sm" variant="primary" className="ml-auto" disabled={presetsBlocked}>Snooze</Button>
     </form>}
-    {feedback && <p role={feedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>{feedback.text}</p>}
+    {feedback && <p role={feedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>
+      {feedback.error ? <CircleX size={12} aria-hidden /> : <Check size={12} aria-hidden />}{feedback.text}
+    </p>}
   </>
 }

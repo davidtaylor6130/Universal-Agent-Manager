@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, MessageSquare, ChevronUp, ChevronDown } from 'lucide-react'
+import { Button } from '../ui'
 import type { AcpPendingUserInput, AcpUserInputAnswers } from '../../store/useAppStore'
 import './QuestionInput.css'
 
@@ -81,7 +82,7 @@ function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
         }
     }}>
         <header className="qr-header">
-            <MessageSquare size={14} aria-hidden />
+            {accepted ? <Check size={14} aria-hidden style={{ color: 'var(--success)' }} /> : <MessageSquare size={14} aria-hidden />}
             <h2>{accepted ? 'Answers submitted' : input.questions[step]?.header || 'Answer questions'}</h2>
             <span className="qr-count">{Math.min(step + 1, input.questions.length)} of {input.questions.length}</span>
             <button ref={triggerRef} type="button" aria-expanded={open && !accepted} onClick={() => { if (open) close(); else setOpen(true) }} disabled={accepted || !pending}>
@@ -135,10 +136,10 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
             </nav>}
             <div className="qr-body" aria-busy={busy}>
                 {waitIsStale && <div data-testid="stale-wait-warning" className="qr-warning">
-                    <p>This input request has had no runtime activity for {Math.max(120, waitSeconds ?? 0)}s.</p>
+                    <p>No response for {Math.max(120, waitSeconds ?? 0)}s.</p>
                     {waitStaleReason && <p>{waitStaleReason}</p>}
-                    {onCancelTurn && <button type="button" disabled={busy} onClick={onCancelTurn}>Cancel turn</button>}
-                    {onStopRuntime && <button type="button" disabled={busy} onClick={onStopRuntime}>Stop runtime</button>}
+                    {onCancelTurn && <Button size="sm" disabled={busy} onClick={onCancelTurn}>Cancel turn</Button>}
+                    {onStopRuntime && <Button size="sm" disabled={busy} onClick={onStopRuntime}>Stop runtime</Button>}
                 </div>}
                 {question ? <fieldset key={question.id} className={`qr-question${question.isMultiple ? ' qr-multiple' : ''}`} disabled={busy} onKeyDown={event => {
                     if (event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return
@@ -172,7 +173,7 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
                 {error && <p role="alert" className="qr-error">{error}</p>}
             </div>
             <footer className="qr-footer">
-                <span className="qr-status" role="status">{busy ? 'Submitting answers…' : question?.isMultiple ? `${draft.selections?.length ?? 0} selected` : `Question ${question ? step + 1 : 0} of ${input.questions.length}`}</span>
+                <span className="qr-status" role="status">{busy ? 'Submitting answers…' : question?.isMultiple ? `${draft.selections?.length ?? 0} selected` : ''}</span>
                 <div className="qr-actions">
                     {input.questions.length > 1 && <button type="button" disabled={step === 0 || busy} onClick={() => onStep(step - 1)}><ChevronLeft size={14} />Back</button>}
                     {step < input.questions.length - 1 ? <button type="button" className="qr-primary" disabled={busy || answerFor(question, draft).length === 0} onClick={() => onStep(step + 1)}>Next<ChevronRight size={14} /></button>

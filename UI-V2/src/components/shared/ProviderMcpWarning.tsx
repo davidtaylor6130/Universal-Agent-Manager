@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import { Check } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { Button, Notice } from '../ui'
 import '../settings/provider-settings.css'
 
 type Connection = { providerId: string; status: string; detail: string }
@@ -62,9 +63,10 @@ export function ProviderMcpWarning() {
   }, [notice, key, session?.viewMode, runtime?.running, isDismissed])
 
   if (session?.viewMode === 'cli' || !notice || notice.key !== key || isDismissed) return null
-  return <div role="alert" className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
-    <strong className="uam-prov-warning__title">UAM tools are unavailable in this chat</strong>
-    <p className="mt-1 uam-prov-sub">{result?.key === key && !(result.success && notice.connection.status === 'failed') ? result.text : notice.connection.detail}</p>
+  const showResult = result?.key === key && !(result.success && notice.connection.status === 'failed')
+  return <div className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
+    <Notice tone="warning" title="UAM tools are unavailable in this chat" dismissLabel="Dismiss" dismissible={false}>
+    <p className="uam-prov-sub flex items-center gap-1.5">{showResult && result?.success && <Check size={14} aria-hidden style={{ color: 'var(--success)' }} />}{showResult ? result?.text : notice.connection.detail}</p>
     <div className="mt-2 flex flex-wrap gap-2">
       <Button size="sm" variant="primary" loading={busy} onClick={() => {
         if (!session) return
@@ -78,7 +80,7 @@ export function ProviderMcpWarning() {
             const current = useAppStore.getState().sessions.find(item => item.id === selected.id)
             if (!current || current.providerId !== selected.providerId || current.executionHostId !== selected.executionHostId || current.workspaceDirectory !== selected.workspaceDirectory) throw Error('This chat changed while saving. Check its current provider settings.')
             if (!await store.setSessionUamControlEnabled(selected.id, true, true)) throw Error('Could not enable UAM tools for this chat. Open provider settings for details.')
-            setResult({ key: submittedKey, success: true, text: 'UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.' })
+            setResult({ key: submittedKey, success: true, text: 'Enabled. Applies when this provider session next starts.' })
           } catch (error) { setResult({ key: submittedKey, text: error instanceof Error ? error.message : 'Could not enable UAM MCP setup.' }) }
           finally { setBusy(false) }
         })()
@@ -86,5 +88,6 @@ export function ProviderMcpWarning() {
       <Button size="sm" onClick={() => useAppStore.getState().setSettingsOpen(true)}>View settings</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
     </div>
+    </Notice>
   </div>
 }

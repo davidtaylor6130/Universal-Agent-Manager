@@ -39,7 +39,7 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   const tone = usedPercent === null ? 'var(--text-3)' : usedPercent >= 95 ? 'var(--error)' : usedPercent >= 80 ? 'var(--warning)' : 'var(--success)'
   const detail = limits ? <div className="flex flex-col gap-1">
     <span>{providerShortName(undefined, providerId)} session-reported account allowance</span>
-    <span>{running ? 'Current session snapshot' : 'Last session snapshot'}</span>
+    <span>{running ? 'Live' : 'Last checked'}</span>
     <span>{timestampValid ? ageMinutes ? `Updated ${ageMinutes} min ago${ageMinutes >= 5 ? ' (stale)' : ''}` : 'Updated just now' : 'Update time unavailable'}</span>
     {resetPassed && <span>Reset time passed; awaiting a new snapshot</span>}
     {windows.map(([name, window]) => window && <span key={name}>{name}: {validPercent(window.usedPercent) ? `${Math.floor(100 - window.usedPercent)}% remaining` : 'Usage unavailable'}. {resetLabel(window.resetsAt)}</span>)}
@@ -50,7 +50,7 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
   return <Tooltip label={detail}>
     <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-      {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone, transition: 'width var(--dur-base) var(--ease-out-soft)' }} /></span>}
+      {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full [transition:width_var(--dur-base)_var(--ease-out-soft)] motion-reduce:transition-none" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone }} /></span>}
       {label !== 'Unavailable' && <span>{label}</span>}
     </button>
   </Tooltip>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { DynamicIcon, iconNames } from 'lucide-react/dynamic'
 import { SUGGESTED_LUCIDE_ICONS, readRecentLucideIcons } from '../../utils/lucideIconLibrary'
+import { Tooltip } from '../ui'
 
 // ponytail: this module is loaded lazily (CustomIcon / picker), so the ~2000-name list and
 // per-icon chunk loaders never reach the main bundle. Tags are not shipped by lucide-react; search is by name.
@@ -31,13 +32,11 @@ function IconCells({ label, names, selected, onSelect }: { label: string; names:
   return (
     <div role="group" aria-label={label} className="grid gap-1" style={{ gridTemplateColumns: `repeat(${COLUMNS}, 32px)` }}>
       {names.map((name, index) => (
-        <button
-          key={name}
+        <Tooltip key={name} label={name}><button
           ref={(element) => { cells.current[index] = element }}
           type="button"
           aria-label={name}
           aria-pressed={name === selected}
-          title={name}
           tabIndex={index === active ? 0 : -1}
           onFocus={() => setActive(index)}
           onClick={() => onSelect(name)}
@@ -50,7 +49,7 @@ function IconCells({ label, names, selected, onSelect }: { label: string; names:
           }}
         >
           <LucideGlyph name={name} fallback={null} />
-        </button>
+        </button></Tooltip>
       ))}
     </div>
   )
@@ -100,7 +99,7 @@ export function LucideIconLibrary({ selected, onSelect }: { selected: string | n
           results.length > 0 ? (
             <>
               <IconCells label={`Results for ${query.trim()}`} names={results} selected={selected} onSelect={onSelect} />
-              {matches.length > results.length && <p className="" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>Showing {results.length} of {matches.length}. Refine the search to see more.</p>}
+              {matches.length > results.length && <p className="" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>Showing {results.length} of {matches.length}. Refine to see more.</p>}
             </>
           ) : (
             <p role="status" className="py-4 text-center text-xs" style={{ color: 'var(--text-3)' }}>No icons match “{query.trim()}”.</p>

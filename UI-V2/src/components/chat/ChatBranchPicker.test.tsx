@@ -12,6 +12,7 @@ vi.mock('../../ipc/cefBridge', async (importOriginal) => ({
   createRequestId: () => 'rid',
 }))
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 const send = vi.mocked(sendToCEF)
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -498,7 +499,7 @@ it('shows a pending branch and withdraws it when the checked-out branch is chose
   expect(trigger(host).getAttribute('aria-label')).toBe('Switch branch, empty/new pending, created from main on first message')
   await open(host)
   const dialog = document.body.querySelector('[role="dialog"]')!
-  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('empty/new will be created from main when you send your first message. Select main above to cancel.')
+  expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toBe('Created from main on first send. Select main to cancel.')
   await act(async () => { options()[0].click() })
   await flush()
   expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: { chatId: 'chat-1', branch: 'main' } }))

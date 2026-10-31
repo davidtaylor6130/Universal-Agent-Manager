@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -227,14 +227,14 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
         </>}>
         {instructionEditor?.path === path && <div className="uam-central-editor grid gap-3">
           {instructionEditor.loading ? <SettingsLoading label="Opening instruction file" rows={3} /> : <>
-            {instructionEditor.error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{instructionEditor.error}</p>}
+            {instructionEditor.error && <Notice key={instructionEditor.error} tone="error" dismissLabel="Dismiss">{instructionEditor.error}</Notice>}
             {!instructionEditor.readFailed && <SettingsField label={fileName(path)}>
               <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={instructionEditor.content} onChange={event => setInstructionEditor({ ...instructionEditor, content: event.currentTarget.value })} />
             </SettingsField>}
             <div className="flex justify-end gap-2">
               <Button size="sm" disabled={busy} onClick={() => setInstructionEditor(null)}>{instructionDirty ? 'Discard file changes' : 'Close file'}</Button>
               {instructionEditor.readFailed && <Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button>}
-              <Button size="sm" variant="primary" aria-label="Save instruction file" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
+              <Button size="sm" variant="primary" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
             </div>
           </>}
         </div>}
@@ -264,7 +264,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
     <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
-      {agentErrors.map(error => <SettingRow key={error} title="Some agents could not be read" description={<span style={{ color: 'var(--error)' }}>{error}</span>} />)}
+      {agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}
       {agents.length === 0 && <SettingRow title="No agents yet" description="Add one to give every provider a helper." />}
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)

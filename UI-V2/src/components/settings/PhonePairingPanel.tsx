@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { QrCode } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button } from '../ui'
+import { Button, Notice, usePresence } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
 
 interface PhonePairingPanelProps {
@@ -16,6 +16,10 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const generation = useRef(0)
+  /** Keeps the last code during the exit fade, after payload clears. */
+  const shownPayload = useRef('')
+  if (payload) shownPayload.current = payload
+  const qrPresence = usePresence(!!payload)
   const nativePhoneUrl = (() => {
     try {
       const parsed = new URL(url)
@@ -82,10 +86,10 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
       {busy ? 'Loading…' : payload ? 'Hide pairing code' : 'Show pairing code'}
     </Button>}
   >
-    {payload && <div className="flex flex-col items-start gap-2 py-2">
-      <QRCodeSVG value={payload} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
-      <p className="text-xs" style={{ color: 'var(--text-2)' }}>This code grants access to Universal Agent Manager. It hides after two minutes; hiding does not revoke existing connections.</p>
+    {qrPresence.mounted && <div className="flex flex-col items-start gap-2 py-2 uam-settings-presence" data-state={qrPresence.closing ? 'closed' : 'open'}>
+      <QRCodeSVG value={shownPayload.current} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
+      <p className="text-xs" style={{ color: 'var(--text-2)' }}>Grants access to Universal Agent Manager. Hides after two minutes; existing connections stay.</p>
     </div>}
-    {message && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{message}</p>}
+    {message && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{message}</Notice>}
   </SettingRow>
 }

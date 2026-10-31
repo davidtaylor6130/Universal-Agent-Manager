@@ -662,7 +662,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                         type="button"
                         aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-                        style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
+                        style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-xs)', lineHeight: 1.4 }}
                         onClick={(e) => {
                           e.stopPropagation()
                           const ids = selectionIds()
@@ -742,21 +742,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </span>
         )}
         {!editing && isPinned && (
-          <button
-            type="button"
-            aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
-            title={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
-            draggable={false}
-            className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
-            style={{ color: 'var(--accent)' }}
-            onPointerDown={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-            onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
-            onDoubleClick={(event) => event.stopPropagation()}
-            onClick={(event) => { event.stopPropagation(); setPinnedFromRow(false) }}
-          >
-            <Pin size={12} fill="currentColor" aria-hidden />
-          </button>
+          <Tooltip label={multiSelected ? 'Unpin selected chats' : 'Unpin chat'} side="top">
+            <button
+              type="button"
+              aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
+              draggable={false}
+              className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+              style={{ color: 'var(--accent)' }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); setPinnedFromRow(false) }}
+            >
+              <Pin size={12} fill="currentColor" aria-hidden />
+            </button>
+          </Tooltip>
         )}
 
         {/* Name or edit input */}
@@ -816,7 +817,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </span>
               )}
               {!activityLayout && lifecycleStatus?.type === 'processing' && (
-                <span className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
+                <span role="img" className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
                   <span />
                 </span>
               )}
@@ -826,8 +827,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </span>
               )}
               {!activityLayout && lifecycleStatus?.type === 'done' && (
-                <span className="session-status session-status--idle" aria-label="Done" title="Done">
-                  <span />
+                <span role="img" className="session-status session-status--idle" aria-label="Done" title="Done">
+                  <CircleCheck size={12} aria-hidden style={{ color: 'var(--success)' }} />
                 </span>
               )}
             </div>}
@@ -977,7 +978,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
             className="uam-sb-menu-item"
             onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
-          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>{titleFeedback.text}</p>}
+          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>
+            {titleFeedback.error ? <CircleAlert size={12} aria-hidden /> : <Check size={12} aria-hidden />}{titleFeedback.text}
+          </p>}
           <button
             role="menuitem"
             className="uam-sb-menu-item"

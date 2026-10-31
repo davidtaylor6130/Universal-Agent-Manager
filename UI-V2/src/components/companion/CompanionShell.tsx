@@ -87,14 +87,6 @@ export function CompanionShell() {
     } catch { setPinError('Could not update pin. Try again.') }
     finally { setPinning(false) }
   }
-  const workspaceLabel = (candidate: typeof sessions[number]) => {
-    const directory = candidate.workspaceDirectory?.trim() || ''
-    return directory.split(/[\\/]/).filter(Boolean).pop() || 'Local workspace'
-  }
-  const projectLabel = (candidate: typeof sessions[number]) => {
-    const folder = folders.find((item) => item.id === candidate.folderId)
-    return folder?.name || 'Unsorted'
-  }
   const projectKey = (candidate: typeof sessions[number]) => folders.some((folder) => folder.id === candidate.folderId) ? candidate.folderId : 'unsorted'
   const visibleSessions = sessions.filter((candidate) => projectFilter === 'all' || projectKey(candidate) === projectFilter)
   const activityGroups = Array.from(visibleSessions.reduce((families, candidate) => {
@@ -136,7 +128,7 @@ export function CompanionShell() {
         : <Check size={14} aria-hidden="true" />
     return <button key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
       <ProviderLogo providerId={candidate.providerId} size={24} className="uam-companion-provider" />
-      <span className="uam-companion-row-copy"><strong>{candidate.name}</strong><small>{projectLabel(candidate)} · {workspaceLabel(candidate)}</small></span>
+      <span className="uam-companion-row-copy"><strong>{candidate.name}</strong></span>
       <span className="uam-companion-row-state"><em className={`session-status session-status--${status?.type === 'processing' ? 'processing' : status?.type === 'attention' ? 'attention' : 'idle'}`} aria-label={statusLabel}>{statusIcon}</em><small className="uam-companion-review-status">{status?.type === 'done' ? 'Ready to review' : statusLabel}</small><small>{timestamp}</small></span>
       <ChevronRight size={18} aria-hidden />
     </button>
@@ -372,7 +364,7 @@ export function CompanionShell() {
                   {sessions.some((candidate) => !candidate.folderId || !folders.some((folder) => folder.id === candidate.folderId)) && <option value="unsorted">Unsorted</option>}
                 </select>
                 <span className="uam-companion-refresh-stack">
-                  <button type="button" className="uam-companion-refresh" aria-label="Refresh activity" disabled={refreshing} onClick={() => void refreshManually()}><RefreshCw size={16} aria-hidden="true" /></button>
+                  <IconButton className="uam-companion-refresh" label="Refresh activity" icon={<RefreshCw size={16} aria-hidden="true" />} disabled={refreshing} onClick={() => void refreshManually()} />
                   <small role="status">{lastRefreshedAt ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Not refreshed yet'}</small>
                 </span>
               </div>
@@ -392,9 +384,9 @@ export function CompanionShell() {
       <Presence open={storeNewChatModalOpen}><Suspense fallback={null}><NewChatModal companion onCreated={() => { setConversationOpen(true); void refreshNow.current?.(true, true) }} /></Suspense></Presence>
     </> : <p className="p-4" role="status">{error ? 'Retrying connection…' : 'Loading chats…'}</p>}
     {token && <nav className="uam-companion-nav" aria-label="Companion navigation">
-      <button type="button" aria-label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }}><Activity size={21} /></button>
-      <button type="button" className="uam-companion-new-chat" aria-label="New chat" onClick={() => setStoreNewChatModalOpen(true)}><Plus size={30} strokeWidth={2.5} /></button>
-      <button type="button" aria-label="Chats" aria-current={tab === 'chats' && !conversationOpen ? 'page' : undefined} onClick={() => { manualTabChoice.current = true; setTab('chats'); setConversationOpen(false); setPinError('') }}><MessageSquare size={21} /></button>
+      <IconButton label="Activity" aria-current={tab === 'activity' && !conversationOpen ? 'page' : undefined} icon={<Activity size={21} />} onClick={() => { manualTabChoice.current = true; setTab('activity'); setConversationOpen(false); setPinError('') }} />
+      <IconButton className="uam-companion-new-chat" label="New chat" icon={<Plus size={30} strokeWidth={2.5} />} onClick={() => setStoreNewChatModalOpen(true)} />
+      <IconButton label="Chats" aria-current={tab === 'chats' && !conversationOpen ? 'page' : undefined} icon={<MessageSquare size={21} />} onClick={() => { manualTabChoice.current = true; setTab('chats'); setConversationOpen(false); setPinError('') }} />
       {tab !== 'settings' && <span className={`uam-companion-nav-indicator uam-companion-nav-indicator--${tab === 'chats' ? 'chats' : 'activity'}`} aria-hidden="true" />}
     </nav>}
   </div>

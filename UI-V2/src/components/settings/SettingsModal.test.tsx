@@ -327,7 +327,7 @@ describe('SettingsModal memory settings', () => {
     try {
       act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
       await act(async () => {})
-      expect(host.querySelector('[role="alert"]')?.textContent).toBe('Temporary phone settings failure.')
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Temporary phone settings failure.')
       await act(async () => vi.advanceTimersByTimeAsync(1500))
       expect(host.textContent).not.toContain('Temporary phone settings failure.')
       const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry phone access')!
@@ -336,13 +336,12 @@ describe('SettingsModal memory settings', () => {
       expect(retry.disabled).toBe(true)
       await act(async () => rejectRetry!())
       const error = host.querySelector('[role="alert"]')!
-      expect(error.textContent).toBe('Phone access retry failed.')
+      expect(error.textContent).toContain('Phone access retry failed.')
       expect(error.closest('.uam-set-row')?.textContent).toContain('Retry phone access')
-      expect((error as HTMLElement).style.color).toBe('var(--error)')
       await act(async () => vi.advanceTimersByTimeAsync(1500))
       expect(loads).toBe(3)
-      expect(host.querySelector('[role="alert"]')?.textContent).toBe('Phone access retry failed.')
-      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat Defaults"]')!.click())
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Phone access retry failed.')
+      act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat defaults"]')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
       await act(async () => {})
       expect(host.textContent).not.toContain('Phone access retry failed.')
@@ -557,8 +556,8 @@ describe('SettingsModal memory settings', () => {
   it('keeps shared agent setup under Agent preferences and per-provider controls out of General', () => {
     const { host, root } = renderModal()
     const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Agent preferences')?.parentElement
-    for (const label of ['Central Setup', 'Agents', 'Skills', 'Memory Settings', 'Memory Store', 'Shell Actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    for (const label of ['Central setup', 'Agents', 'Skills', 'Memory settings', 'Memory store', 'Shell actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
     expect(host.querySelector('[aria-label="Chats"]')).toBeTruthy()
     expect(host.textContent).toContain('Reviewer provider')
     expect(host.querySelector('[aria-label="Show Codex chat defaults"]')).toBeNull()
@@ -566,12 +565,12 @@ describe('SettingsModal memory settings', () => {
   })
 
 
-  it('lists SSH Routing under Connections and opens its settings page', () => {
+  it('lists SSH routing under Connections and opens its settings page', () => {
     const { host, root } = renderModal()
     const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Connections')?.parentElement
-    expect(group?.querySelector('[aria-label="SSH Routing"]')).toBeTruthy()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="SSH Routing"]')?.click())
-    expect(host.querySelector('h2.uam-settings-page-header__title')?.textContent).toBe('SSH Routing')
+    expect(group?.querySelector('[aria-label="SSH routing"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="SSH routing"]')?.click())
+    expect(host.querySelector('h2.uam-settings-page-header__title')?.textContent).toBe('SSH routing')
     expect(host.querySelector('[aria-label="Automatic routing"]')).toBeTruthy()
     act(() => root.unmount()); host.remove()
   })
@@ -667,7 +666,7 @@ describe('SettingsModal memory settings', () => {
 
   function openRemoteHostsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Remote Hosts')
+      (candidate) => candidate.textContent?.includes('Remote hosts')
     )
     expect(button).toBeTruthy()
     act(() => button?.click())
@@ -703,8 +702,8 @@ describe('SettingsModal memory settings', () => {
 
     expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
     expect(document.body.textContent).toContain('Install helper on AI desktop?')
-    expect(document.body.textContent).toContain('detects Ubuntu/Linux or Windows')
-    expect(document.body.textContent).toContain('Unsupported systems stop before anything is copied')
+    expect(document.body.textContent).toContain('Uses your existing SSH login')
+    expect(document.body.textContent).toContain('Unsupported systems stop before copying')
     expect(document.body.textContent).toContain('Check remote platform')
     const install = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
     await act(async () => { install?.click() })
@@ -740,6 +739,7 @@ describe('SettingsModal memory settings', () => {
       Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
 
+    await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
     expect(document.body.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
 
@@ -1045,7 +1045,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Settings')
+      (button) => button.textContent?.includes('Memory settings')
     )
     expect(memorySectionButton).toBeTruthy()
 
@@ -1056,7 +1056,7 @@ describe('SettingsModal memory settings', () => {
 
   function openChatDataSection(host: HTMLElement) {
     const sectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Data')
+      (button) => button.textContent?.includes('Chat data')
     )
     expect(sectionButton).toBeTruthy()
     act(() => sectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -1217,7 +1217,7 @@ describe('SettingsModal memory settings', () => {
 
   function openMemoryStoreSection(host: HTMLElement) {
     const memoryStoreSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Memory Store')
+      (button) => button.textContent?.includes('Memory store')
     )
     expect(memoryStoreSectionButton).toBeTruthy()
 
@@ -1228,7 +1228,7 @@ describe('SettingsModal memory settings', () => {
 
   function openGoalLoopsSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.includes('Goal Loops')
+      (candidate) => candidate.textContent?.includes('Goal loops')
     )
     expect(button).toBeTruthy()
     act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -1317,8 +1317,8 @@ describe('SettingsModal memory settings', () => {
     expect(Array.from(host.querySelectorAll('select')).filter(select => !select.id.startsWith('typography-'))).toHaveLength(0)
     expect(host.textContent).toContain('Appearance')
     expect(host.textContent).toContain('Overview')
-    expect(host.textContent).toContain('Memory Settings')
-    expect(host.textContent).toContain('Memory Store')
+    expect(host.textContent).toContain('Memory settings')
+    expect(host.textContent).toContain('Memory store')
     expect(host.textContent).toContain('About')
     expect(host.textContent).toContain('Theme')
     expect(host.textContent).not.toContain('Gemini chats')
@@ -1433,18 +1433,18 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
     const group = host.querySelector('[role="radiogroup"][aria-label="Default memory level"]') as HTMLElement
-    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced Creation') as HTMLButtonElement
-    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict Creation')
+    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced creation') as HTMLButtonElement
+    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict creation')
 
-    expect(Array.from(group.querySelectorAll('button[role="radio"]')).map((button) => button.textContent)).toEqual(['Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
+    expect(Array.from(group.querySelectorAll('button[role="radio"]')).map((button) => button.textContent)).toEqual(['Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
     await act(async () => { balanced.click() })
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
-    const readOnly = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Read Only')!
+    const readOnly = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Read only')!
     await act(async () => { readOnly.click() })
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'readOnly' })
     const chatPolicy = host.querySelector<HTMLButtonElement>('button[aria-label="Current chat memory policy"]')!
     act(() => chatPolicy.click())
-    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
     act(() => root.unmount())
     host.remove()
   })
@@ -1510,7 +1510,7 @@ describe('SettingsModal memory settings', () => {
       ], currentModelId: '', modelsLoading: false, modelRefreshError: '' }],
     })
     const { host, root } = renderModal()
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults'))?.click())
     openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
@@ -1540,7 +1540,7 @@ describe('SettingsModal memory settings', () => {
       }],
     })
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
     openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
@@ -1557,7 +1557,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )
     expect(defaultsSectionButton).toBeTruthy()
 
@@ -1565,7 +1565,7 @@ describe('SettingsModal memory settings', () => {
       defaultsSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.textContent).toContain('Chat Defaults')
+    expect(host.textContent).toContain('Chat defaults')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeNull()
@@ -1583,7 +1583,7 @@ describe('SettingsModal memory settings', () => {
     expect(memoryLevel).toBeTruthy()
 
     act(() => memoryLevel.click())
-    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
     const openMemory = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Save every valid')) as HTMLButtonElement
     expect(openMemory).toBeTruthy()
     await act(async () => openMemory.click())
@@ -1616,7 +1616,7 @@ describe('SettingsModal memory settings', () => {
 
   it('keeps model refresh outside collapse and advanced preferences available', () => {
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
     openProviderSection(host, 'Codex')
     const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex models"]')!
     expect(refresh).toBeTruthy()
@@ -1637,7 +1637,7 @@ describe('SettingsModal memory settings', () => {
   it('changes provider chat defaults with the keyboard', async () => {
     const { host, root } = renderModal()
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )
     act(() => defaultsSectionButton?.click())
     openProviderSection(host, 'Codex')
@@ -1714,7 +1714,7 @@ describe('SettingsModal memory settings', () => {
 
     const { host, root } = renderModal()
     act(() => Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Chat Defaults')
+      (button) => button.textContent?.includes('Chat defaults')
     )?.click())
 
     openProviderSection(host, 'Codex')
@@ -1751,7 +1751,7 @@ describe('SettingsModal memory settings', () => {
       discoverProviderModels,
     }))
     const { host, root } = renderModal()
-    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
+    const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults')) as HTMLButtonElement
     act(() => defaults.click())
     openProviderSection(host, 'Codex')
     act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
@@ -1777,7 +1777,7 @@ describe('SettingsModal memory settings', () => {
 	  const discoverProviderModels = vi.fn(() => Promise.resolve(true))
 	  useAppStore.setState({ sessions: [], acpBindingBySessionId: {}, discoverProviderModels })
 	  const { host, root } = renderModal()
-	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
+	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat defaults')) as HTMLButtonElement
 	  act(() => defaults.click())
 	  openProviderSection(host, 'Codex')
 	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
@@ -2120,11 +2120,11 @@ describe('SettingsModal memory settings', () => {
       })),
     }))
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
     openProviderSection(host, 'Gemini')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
     for (const label of ['AI permission reviewer model', 'Gemini default model', 'Gemini goal reviewer model']) {
-      if (label === 'AI permission reviewer model') act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+      if (label === 'AI permission reviewer model') act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
       else { openProviderSection(host, 'Gemini'); act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click()) }
       act(() => host.querySelector<HTMLButtonElement>(`button[title="${label}"]`)?.click())
       const listbox = document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)
@@ -2257,7 +2257,7 @@ describe('SettingsModal memory settings', () => {
 
   it('describes the only supported native system dictation path', () => {
     const { host, root } = renderModal()
-    const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice Input'))
+    const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice input'))
     act(() => voiceSection?.click())
     expect(host.textContent).toContain('Start dictation with the microphone button in the message box.')
     expect(host.querySelector<HTMLButtonElement>('button[role="radio"][aria-checked="true"]')?.textContent).toBe('System')
@@ -2519,7 +2519,7 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
-  it.each(['Computer Use', 'MCP Servers'])('retries global cleanup from %s without changing OS permissions or target ownership', async page => {
+  it.each(['Computer use', 'MCP servers'])('retries global cleanup from %s without changing OS permissions or target ownership', async page => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     window.cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request)
@@ -2572,7 +2572,7 @@ describe('SettingsModal memory settings', () => {
       sessions: useAppStore.getState().sessions.map((session) => ({ ...session, providerId: 'gemini-cli' })),
     })
     const { host, root } = renderModal()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer Use"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer use"]')!.click())
     expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
@@ -2641,7 +2641,7 @@ describe('SettingsModal memory settings', () => {
     useAppStore.setState({ setVoiceInputSettings: save })
     const { host, root } = renderModal()
     try {
-      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice Input"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
       const mode = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === label)!
       expect(mode('Server').disabled).toBe(true)
       expect(mode('Local AI').disabled).toBe(true)
@@ -2666,9 +2666,9 @@ describe('SettingsModal memory settings', () => {
     useAppStore.setState({ voiceInputCapabilities: capabilities, setVoiceInputSettings: save })
     const { host, root } = renderModal()
     try {
-      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice Input"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')!.click())
-      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory Settings"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
       const dialog = host.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
       expect(dialog).toBeTruthy()
       act(() => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
@@ -2677,7 +2677,7 @@ describe('SettingsModal memory settings', () => {
       expect(useAppStore.getState().voiceInputCapabilities).toBe(capabilities)
       expect(host.querySelector<HTMLInputElement>('input[type="password"]')).toBeNull()
       expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.disabled).toBe(true)
-      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory Settings"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
       expect(host.querySelector('[aria-label="Unsaved voice settings"]')).toBeNull()
       expect(host.querySelector('[aria-label="Default memory level"]')).toBeTruthy()
     } finally { act(() => root.unmount()); host.remove() }
@@ -2717,7 +2717,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     try {
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
       openProviderSection(host, 'Gemini')
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
       const trigger = host.querySelector<HTMLButtonElement>('[aria-label="Gemini default reasoning"]')

@@ -6,7 +6,7 @@ import type { WorkspaceFilePreview } from '../../types/filePreview'
 import type { FileReference } from '../../utils/fileReferences'
 import { getTopmostModal } from '../../utils/modalFocus'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { Button, IconButton, Overlay } from '../ui'
+import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
 import './review.css'
 
 const ROW_HEIGHT = 20
@@ -70,8 +70,7 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
       className="uam-rv-dialog flex h-[85vh] w-full max-w-5xl" onMouseDown={(event) => event.stopPropagation()}>
       <header className="uam-rv-dialog__header">
         <FileText size={16} aria-hidden style={{ color: 'var(--accent)' }} />
-        <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold" title={reference.path} style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div>
-          {file && <div className="truncate text-xs" title={`${file.executionHostId}: ${file.workspace}`} style={{ color: 'var(--text-3)' }}>{file.executionHostId} · {file.workspace}</div>}</div>
+        <div className="min-w-0 flex-1"><Tooltip label={file ? `${file.executionHostId} · ${file.workspace}` : reference.path}><div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div></Tooltip></div>
         {onShowChanges && <Button type="button" size="sm" variant="ghost" disabled={changesLoading} onClick={() => {
           setChangesLoading(true); setChangesError('')
           void onShowChanges(file).catch((reason) => setChangesError(reason instanceof Error ? reason.message : 'Could not load changes.')).finally(() => setChangesLoading(false))
@@ -81,8 +80,8 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
         <IconButton icon={<X size={16} />} label="Close file inspection" onClick={onClose} />
       </header>
       {file && reference.line !== undefined && reference.line > lines.length && <p role="status" className="px-3 py-1 text-xs" style={{ color: 'var(--text-2)' }}>Line {reference.line} is past the end of this file.</p>}
-      {changesError && <p role="alert" className="uam-rv-alert mx-3 my-2" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{changesError}</p>}
-      {error ? <div role="alert" className="uam-rv-alert m-4" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
+      {changesError && <div className="mx-3 my-2"><Notice tone="error" dismissLabel="Dismiss">{changesError}</Notice></div>}
+      {error ? <div className="m-4"><Notice tone="error" dismissLabel="Dismiss">{error}</Notice></div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
         <div ref={viewportRef} role="region" aria-label={`Source of ${file.path}`} tabIndex={0} className="uam-rv-diff min-h-0 flex-1 overflow-auto"
           onScroll={(event) => setViewport({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
           <div style={{ height: lines.length * ROW_HEIGHT, minWidth: `calc(${width}ch + 70px)`, position: 'relative' }}>
@@ -91,7 +90,7 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
                 const number = start + offset + 1
                 const selected = reference.line !== undefined && number >= reference.line && number <= (reference.endLine ?? reference.line)
                 return <div key={number} data-source-line={number} className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, background: selected ? 'var(--accent-dim)' : undefined }}>
-                  <span aria-label="Line number" className="uam-rv-gutter" style={{ width: 52 }}>{number}</span><span className="uam-rv-diff-text" style={{ tabSize: 4 }}>{line || ' '}</span>
+                  <span className="uam-rv-gutter" style={{ width: 52 }}>{number}</span><span className="uam-rv-diff-text" style={{ tabSize: 4 }}>{line || ' '}</span>
                 </div>
               })}
             </div>

@@ -37,12 +37,31 @@
 }
 
 .uam-usage-seg {
+  position: relative;
   display: flex;
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
+}
+.uam-usage-seg > .uam-btn { position: relative; z-index: 1; }
+.uam-usage-seg > .uam-btn[aria-pressed="true"] { color: var(--text); }
+/* One highlight per group: it sits behind the buttons and glides to the pressed one. Height is the button's, so only transform and width animate. */
+.uam-usage-seg__indicator {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), width var(--dur-base) var(--ease-out-soft);
+}
+[data-motion="off"] .uam-usage-seg__indicator { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-usage-seg__indicator { transition: none; }
 }
 
 .uam-usage-empty {
@@ -391,7 +410,7 @@
 .uam-pace-key i { display: inline-block; width: 2px; height: 10px; background: var(--text-2); }
 .uam-pace-key b { display: inline-block; width: 10px; height: 6px; border-radius: var(--r-full); background: var(--text-3); }
 .uam-limits-host-title { margin: 0; font-size: var(--fs-md); font-weight: 600; }
-.uam-limits-group { margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.uam-limits-group { margin: 0; font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
 .uam-limits-lede { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text-2); }
 .uam-limits-lede b { font-weight: 600; color: var(--text); }
 .uam-limits-notice { margin: 0; font-size: var(--fs-sm); color: var(--warning); }

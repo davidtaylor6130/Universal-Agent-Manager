@@ -1,4 +1,4 @@
-import { ArrowUpCircle, CheckCircle2, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
+import { ArrowUpCircle, CheckCircle2, Download, ExternalLink, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
@@ -170,7 +170,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
           </div>
         ) : checkFailure || monitor.hasProviderCheckErrors ? (
           <div className="uam-np-empty">
-            <span className="uam-np-empty__icon" style={{ color: 'var(--warning)', background: 'var(--warning-dim)' }}><ArrowUpCircle size={16} aria-hidden /></span>
+            <span className="uam-np-empty__icon" style={{ color: 'var(--warning)', background: 'var(--warning-dim)' }}><TriangleAlert size={16} aria-hidden /></span>
             <div className="uam-np-empty__title">Could not confirm update status</div>
             <div className="uam-np-empty__text">Try the check again when the update services are reachable.</div>
           </div>
@@ -178,7 +178,6 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
           <div className="uam-np-empty">
             <span className="uam-np-empty__icon"><CheckCircle2 size={16} aria-hidden /></span>
             <div className="uam-np-empty__title">Everything is up to date</div>
-            <div className="uam-np-empty__text">UAM and detected provider CLIs have no newer known release.</div>
           </div>
         ) : (
           <div className="uam-np-empty">
@@ -193,9 +192,6 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               <div>
                 <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
                   {monitor.updates.length} update{monitor.updates.length === 1 ? '' : 's'} available
-                </div>
-                <div className="text-[11px]" style={{ color: 'var(--text-2)' }}>
-                  Review and install each update when convenient.
                 </div>
               </div>
             </div>

@@ -104,7 +104,7 @@ describe('Chat Data native discovery', () => {
     mount()
     expect(requests).toHaveLength(0)
     expect(scope()).toContain('Antigravity native history stores')
-    expect(host.textContent).toContain('Changing, nested or unrecognised native records remain unimported')
+    expect(host.textContent).toContain('Chats that changed, are nested or are unrecognised are skipped')
     expect(host.textContent).toContain('unregistered local workspaces')
     act(() => { button('Discover histories').click(); button('Discover histories').click() })
     expect(requests).toHaveLength(1)

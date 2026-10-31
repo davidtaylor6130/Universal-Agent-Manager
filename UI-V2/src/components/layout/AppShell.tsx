@@ -173,7 +173,7 @@ function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChang
   const lastAlert = useRef(alert)
   if (alert) lastAlert.current = alert
   const current = lastAlert.current
-  const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications. Use the Notifications button to read it.</span>}</span>
+  const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications.</span>}</span>
   if (!mounted || !current) return liveRegion
   // A focused control is about to unmount; hand focus to the bell rather than dropping it to the document.
   const finish = (run: () => void) => {
@@ -278,7 +278,7 @@ function remoteConnectionIssues(
     connectionKey: `host-${host.id}`,
     hostLabel: host.label,
     title: `${host.label} connection ${host.runnerStatus}`,
-    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH helper.' : 'The SSH helper needs attention in Remote Hosts.',
+    detail: host.runnerStatus === 'offline' ? 'UAM cannot currently reach this SSH host.' : 'The SSH host needs attention in Remote Hosts.',
     warning: true,
   }] : [])
   for (const session of sessions) {
@@ -295,7 +295,7 @@ function remoteConnectionIssues(
       connectionKey: `session-${session.id}`,
       hostLabel,
       title: `${hostLabel} connection issue`,
-      detail: `${session.name}: ${error}`,
+      detail: `${session.name}: connection lost`,
       warning: true,
     })
   }
@@ -536,7 +536,6 @@ function NotificationsPanel({
                       <div className="min-w-0">
                         <div className="uam-np-row__title">
                           <span>{notification.title}</span>
-                          <span className="uam-np-dot" aria-hidden />
                         </div>
                         <div className="uam-np-row__meta">
                           <Tooltip label={exactTime}>

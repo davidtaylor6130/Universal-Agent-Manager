@@ -1,5 +1,5 @@
 import { createContext, useId, useState, type ReactNode } from 'react'
-import { Copy } from 'lucide-react'
+import { Check, Copy, X } from 'lucide-react'
 import { Tooltip } from '../ui'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
@@ -11,7 +11,7 @@ export const ChatSelectionContext = createContext<ChatSelection | null>(null)
 
 export type SelectionNoun = 'chat' | 'workspace' | 'collection'
 
-export const singleOnlyReason = (noun: SelectionNoun) => `Not available for multiple selection — select a single ${noun}`
+export const singleOnlyReason = (noun: SelectionNoun) => `Select one ${noun} to use this`
 
 /** A single-target action kept visible but unavailable while several rows are selected. */
 export function SingleOnlyMenuItem({ icon, label, noun, className = 'uam-sb-menu-item' }: { icon: ReactNode; label: string; noun: SelectionNoun; className?: string }) {
@@ -86,7 +86,8 @@ export function CopyDetailItems({ items }: { items: CopyDetail[] }) {
       style={{ cursor: copying ? 'wait' : 'pointer' }} onClick={() => { void copy(item) }}>
       <Copy size={13} aria-hidden />{item.label}
     </button>)}
-    {result && <p role={result.ok ? 'status' : 'alert'} className="px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
+    {result && <p role={result.ok ? 'status' : 'alert'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
+      {result.ok ? <Check size={13} className="shrink-0" style={{ color: 'var(--success)' }} aria-hidden /> : <X size={13} className="shrink-0" aria-hidden />}
       {result.ok ? `${result.label} copied.` : 'Could not copy. Try again.'}
     </p>}
   </>

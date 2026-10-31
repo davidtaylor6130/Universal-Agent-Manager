@@ -110,7 +110,7 @@ function renderModal({
 }
 
 function clickButton(host: HTMLElement, text: string) {
-  const button = Array.from(host.querySelectorAll('button')).find((candidate) =>
+  const button = Array.from(document.body.querySelectorAll('button')).find((candidate) =>
     candidate.textContent?.includes(text) || candidate.getAttribute('aria-label')?.includes(text)
   ) as HTMLButtonElement
   expect(button).toBeTruthy()
@@ -141,16 +141,16 @@ describe('MemoryLibraryModal all memory scope', () => {
   it('separates memory locations into a navigation rail', () => {
     const { host, root } = renderModal()
 
-    expect(host.textContent).toContain('All Memory')
-    const locations = host.querySelector('nav[aria-label="Memory locations"]') as HTMLElement
+    expect(host.textContent).toContain('All memory')
+    const locations = document.body.querySelector('nav[aria-label="Memory locations"]') as HTMLElement
     expect(locations).toBeTruthy()
-    expect(host.textContent).toContain('Global memory')
-    expect(host.textContent).toContain('General')
-    expect(host.textContent).toContain('Global lesson')
-    expect(host.textContent).toContain('AI lessons')
-    expect(host.textContent).not.toContain('Local lesson')
+    expect(document.body.textContent).toContain('Global memory')
+    expect(document.body.textContent).toContain('General')
+    expect(document.body.textContent).toContain('Global lesson')
+    expect(document.body.textContent).toContain('AI lessons')
+    expect(document.body.textContent).not.toContain('Local lesson')
     expect(locations.querySelector('button[aria-current="page"]')?.textContent).toContain('Global memory')
-    expect(host.textContent).not.toContain('Open memory root')
+    expect(document.body.textContent).not.toContain('Open memory root')
 
     act(() => {
       root.unmount()
@@ -167,9 +167,9 @@ describe('MemoryLibraryModal all memory scope', () => {
         folders: [local, { ...local, id: 'remote-project', name: 'Remote project', directory: '/srv/project', executionHostId: 'ssh-one' }],
       })
     })
-    expect(host.querySelector('nav[aria-label="Memory locations"]')?.textContent).toContain('Remote project · Build host')
-    clickButton(host, 'Add memory')
-    const target = Array.from(host.querySelectorAll('button')).find((button) => button.getAttribute('aria-haspopup') === 'listbox' && button.textContent?.includes('Global memory'))
+    expect(document.body.querySelector('nav[aria-label="Memory locations"]')?.textContent).toContain('Remote project · Build host')
+    clickButton(document.body, 'Add memory')
+    const target = Array.from(document.body.querySelectorAll('button')).find((button) => button.getAttribute('aria-haspopup') === 'listbox' && button.textContent?.includes('Global memory'))
     act(() => { target?.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     expect(Array.from(document.body.querySelectorAll('[role="option"]')).some((option) => option.textContent?.includes('Remote project · Build host'))).toBe(true)
     act(() => { root.unmount() })
@@ -180,13 +180,13 @@ describe('MemoryLibraryModal all memory scope', () => {
     const createMemoryEntry = vi.fn().mockResolvedValue(true)
     const { host, root } = renderModal({ createMemoryEntry })
 
-    clickButton(host, 'Add memory')
+    clickButton(document.body, 'Add memory')
 
-    const sourceChatInput = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.includes('Source chat'))?.querySelector('input')
+    const sourceChatInput = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.includes('Source chat'))?.querySelector('input')
     expect(sourceChatInput?.parentElement?.parentElement?.className).not.toContain('grid-cols-2')
 
-    expect(host.querySelector('select')).toBeNull()
-    const targetButton = Array.from(host.querySelectorAll('button')).find(
+    expect(document.body.querySelector('select')).toBeNull()
+    const targetButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.getAttribute('aria-haspopup') === 'listbox' && button.textContent?.includes('Global memory')
     ) as HTMLButtonElement | undefined
     expect(targetButton).toBeTruthy()
@@ -209,15 +209,15 @@ describe('MemoryLibraryModal all memory scope', () => {
     const finishes: Array<(ok: boolean) => void> = []
     const createMemoryEntry = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
     const { host, root } = renderModal({ createMemoryEntry })
-    clickButton(host, 'Add memory')
-    const title = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
-    const memory = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Memory'))?.querySelector('textarea') as HTMLTextAreaElement
+    clickButton(document.body, 'Add memory')
+    const title = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
+    const memory = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Memory'))?.querySelector('textarea') as HTMLTextAreaElement
     changeInput(title, 'Remember once')
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(memory, 'Only one persisted entry')
       memory.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const save = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save memory') as HTMLButtonElement
+    const save = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Save memory') as HTMLButtonElement
 
     act(() => {
       save.click()
@@ -237,25 +237,25 @@ describe('MemoryLibraryModal all memory scope', () => {
     const { host, root } = renderModal()
     const closeMemoryLibrary = useAppStore.getState().closeMemoryLibrary as ReturnType<typeof vi.fn>
 
-    clickButton(host, 'Add memory')
-    const title = Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
+    clickButton(document.body, 'Add memory')
+    const title = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
     changeInput(title, 'Keep this draft')
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
-    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
-    clickButton(host, 'Go back')
-    expect((Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
+    expect(document.body.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(document.body, 'Go back')
+    expect((Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
 
-    clickButton(host, 'Delete Global lesson')
-    expect(host.querySelector('[role="dialog"][aria-label="Delete memory entry"]')).toBeTruthy()
+    clickButton(document.body, 'Delete Global lesson')
+    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete memory entry"]')).toBeTruthy()
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.querySelector('[role="dialog"][aria-label="Delete memory entry"]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"][aria-label="Delete memory entry"]')).toBeNull()
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(host.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
-    clickButton(host, 'Discard')
+    expect(document.body.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
+    clickButton(document.body, 'Discard')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).toHaveBeenCalledTimes(1)
 
@@ -266,13 +266,13 @@ describe('MemoryLibraryModal all memory scope', () => {
   it('shows the selected memory location in the content pane', () => {
     const { host, root } = renderModal()
 
-    clickButton(host, 'General')
+    clickButton(document.body, 'General')
 
-    expect(host.textContent).toContain('General')
-    expect(host.textContent).toContain('Local lesson')
-    expect(host.textContent).toContain('Local failure')
+    expect(document.body.textContent).toContain('General')
+    expect(document.body.textContent).toContain('Local lesson')
+    expect(document.body.textContent).toContain('Local failure')
     expect(host.textContent).not.toContain('Global lesson')
-    expect(host.querySelector('nav[aria-label="Memory locations"] button[aria-current="page"]')?.textContent).toContain('General')
+    expect(document.body.querySelector('nav[aria-label="Memory locations"] button[aria-current="page"]')?.textContent).toContain('General')
 
     act(() => {
       root.unmount()
@@ -283,17 +283,17 @@ describe('MemoryLibraryModal all memory scope', () => {
   it('filters entries before building location and category groups', () => {
     const { host, root } = renderModal()
 
-    const searchInput = host.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
+    const searchInput = document.body.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
     expect(searchInput).toBeTruthy()
     changeInput(searchInput, 'global')
 
-    expect(host.textContent).toContain('Global memory')
-    expect(host.textContent).toContain('Global lesson')
-    expect(host.textContent).toContain('AI lessons')
-    expect(host.textContent).toContain('Unassigned workspaces')
-    expect(host.textContent).toContain('General')
-    expect(host.textContent).not.toContain('Local lesson')
-    expect(host.textContent).not.toContain('AI failures')
+    expect(document.body.textContent).toContain('Global memory')
+    expect(document.body.textContent).toContain('Global lesson')
+    expect(document.body.textContent).toContain('AI lessons')
+    expect(document.body.textContent).toContain('Unassigned workspaces')
+    expect(document.body.textContent).toContain('General')
+    expect(document.body.textContent).not.toContain('Local lesson')
+    expect(document.body.textContent).not.toContain('AI failures')
 
     act(() => {
       root.unmount()
@@ -303,13 +303,13 @@ describe('MemoryLibraryModal all memory scope', () => {
 
   it('explains when a memory search has no matches', () => {
     const { host, root } = renderModal()
-    const searchInput = host.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
+    const searchInput = document.body.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
 
     changeInput(searchInput, 'nothing-matches-this')
 
-    expect(host.textContent).toContain('No memory matches this search')
-    expect(host.textContent).toContain('Try another term or clear the search.')
-    expect(host.textContent).not.toContain('No memory saved here yet')
+    expect(document.body.textContent).toContain('No memory matches this search')
+    expect(document.body.textContent).toContain('Try another term or clear the search.')
+    expect(document.body.textContent).not.toContain('No memory saved here yet')
 
     act(() => root.unmount())
     host.remove()
@@ -323,19 +323,19 @@ describe('MemoryLibraryModal all memory scope', () => {
     })
     act(() => useAppStore.setState({ deleteMemoryEntry }))
     const attemptDelete = () => {
-      clickButton(host, 'Delete Global lesson')
-      const dialog = host.querySelector('[aria-label="Delete memory entry"]') as HTMLElement
+      clickButton(document.body, 'Delete Global lesson')
+      const dialog = document.body.querySelector('[aria-label="Delete memory entry"]') as HTMLElement
       clickButton(dialog, 'Delete memory')
     }
     attemptDelete()
-    expect(host.textContent).toContain('Permission denied')
-    clickButton(host, 'Dismiss memory error')
-    expect(host.textContent).not.toContain('Permission denied')
+    expect(document.body.textContent).toContain('Permission denied')
+    clickButton(document.body, 'Dismiss memory error')
+    expect(document.body.textContent).not.toContain('Permission denied')
     expect(useAppStore.getState().memoryLibraryError).toBe('')
 
     attemptDelete()
     expect(deleteMemoryEntry).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('Permission denied')
+    expect(document.body.textContent).toContain('Permission denied')
     act(() => root.unmount())
     host.remove()
   })
@@ -344,17 +344,17 @@ describe('MemoryLibraryModal all memory scope', () => {
     const deleteMemoryEntries = vi.fn().mockResolvedValue(true)
     const { host, root } = renderModal({ deleteMemoryEntries })
 
-    const searchInput = host.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
+    const searchInput = document.body.querySelector('input[placeholder^="Search memory"]') as HTMLInputElement
     expect(searchInput).toBeTruthy()
     changeInput(searchInput, 'local')
 
-    clickButton(host, 'Delete matches')
+    clickButton(document.body, 'Delete matches')
 
-    expect(host.textContent).toContain('Delete matching memories?')
-    expect(host.textContent).toContain('This permanently deletes 2 matching memory entries')
+    expect(document.body.textContent).toContain('Delete matching memories?')
+    expect(document.body.textContent).toContain('This permanently deletes 2 memory entries')
     expect(deleteMemoryEntries).not.toHaveBeenCalled()
 
-    clickButton(host, 'Delete 2 memories')
+    clickButton(document.body, 'Delete 2 memories')
 
     expect(deleteMemoryEntries).toHaveBeenCalledWith([
       'all/726f6f74/Lessons/User_Lessons/local.md',
@@ -370,9 +370,9 @@ describe('MemoryLibraryModal all memory scope', () => {
     const createMemoryEntry = vi.fn().mockResolvedValue(true)
     const { host, root } = renderModal({ createMemoryEntry })
     try {
-      clickButton(host, 'Add memory')
-      const title = host.querySelector<HTMLInputElement>('[aria-label="Title"]')!
-      const memory = Array.from(host.querySelectorAll('label')).find(label => label.textContent?.startsWith('Memory'))!.querySelector('textarea')!
+      clickButton(document.body, 'Add memory')
+      const title = document.body.querySelector<HTMLInputElement>('[aria-label="Title"]')!
+      const memory = Array.from(document.body.querySelectorAll('label')).find(label => label.textContent?.startsWith('Memory'))!.querySelector('textarea')!
       const setMemory = (value: string) => act(() => {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(memory, value)
         memory.dispatchEvent(new Event('input', { bubbles: true }))
@@ -381,20 +381,20 @@ describe('MemoryLibraryModal all memory scope', () => {
       setMemory('Useful memory')
       if (missing === 'title') changeInput(title, '  ')
       else setMemory('  ')
-      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save memory')!.disabled).toBe(true)
+      expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save memory')!.disabled).toBe(true)
       act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-      const leaveSave = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!
+      const leaveSave = () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!
       expect(leaveSave().disabled).toBe(true)
-      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.disabled).toBe(false)
-      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Discard')!.disabled).toBe(false)
-      clickButton(host, 'Save and leave')
+      expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.disabled).toBe(false)
+      expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Discard')!.disabled).toBe(false)
+      clickButton(document.body, 'Save and leave')
       expect(createMemoryEntry).not.toHaveBeenCalled()
-      clickButton(host, 'Go back')
+      clickButton(document.body, 'Go back')
       if (missing === 'title') changeInput(title, 'Remember this')
       else setMemory('Useful memory')
       act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
       expect(leaveSave().disabled).toBe(false)
-      await act(async () => clickButton(host, 'Save and leave'))
+      await act(async () => clickButton(document.body, 'Save and leave'))
       expect(createMemoryEntry).toHaveBeenCalledOnce()
       expect(createMemoryEntry).toHaveBeenCalledWith(expect.objectContaining({ title: 'Remember this', memory: 'Useful memory' }))
     } finally { act(() => root.unmount()); host.remove() }

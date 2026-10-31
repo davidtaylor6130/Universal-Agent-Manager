@@ -39,6 +39,16 @@ function openComposerOptions(host: HTMLElement) {
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
 }
+// Composer tooltips replace native title=; read the label by focusing the trigger (Radix opens on focus).
+function tooltipText(trigger: HTMLElement): string {
+  act(() => { trigger.focus() })
+  const text = document.querySelector('[role="tooltip"]')?.textContent ?? ''
+  act(() => { trigger.blur() })
+  return text
+}
+function goalMenuItem(): HTMLButtonElement | null {
+  return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.startsWith('Goal')) ?? null
+}
 
 function openComposerGoals(host: HTMLElement) {
   const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goals"]')
@@ -447,7 +457,7 @@ describe('ChatView', () => {
     const submit = () => act(() => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
     try {
       act(() => root.render(<ChatView session={first} />))
-      if (kind === 'armed') { openComposerOptions(host); act(() => document.querySelector<HTMLButtonElement>('button[title="Use the next message as a goal"]')!.click()) }
+      if (kind === 'armed') { openComposerOptions(host); act(() => goalMenuItem()!.click()) }
       enter(kind === 'slash' ? '/goal Old objective' : kind === 'native' ? '/ralph Old objective' : 'Old objective')
       submit()
       expect(create).toHaveBeenCalledTimes(1)
@@ -865,7 +875,8 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     const expectStatus = (label: string, color: string) => {
       const trigger = host.querySelector<HTMLButtonElement>('.uam-provider-model-trigger')!
-      expect(trigger.title.endsWith(` · ${label}`)).toBe(true)
+      // Disabled triggers take no focus, so their Tooltip label is only checked while enabled.
+      if (!trigger.disabled) expect(tooltipText(trigger).endsWith(` · ${label}`)).toBe(true)
       expect((trigger.lastElementChild as HTMLElement).style.background).toBe(color)
     }
     expectStatus('Stopped', 'var(--text-3)')
@@ -3320,7 +3331,8 @@ describe('ChatView', () => {
     expect(host.querySelector('.uam-tool-row__kind')?.textContent).toBe('Tool')
     expect(host.querySelector('.conversation-turn[data-streaming="true"]')).not.toBeNull()
     expect(host.querySelector('.uam-runtime-status')).toBeNull()
-    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).title).toContain('Permission')
+    // Disabled while the permission wait blocks changes; a disabled trigger cannot take focus to show its tooltip.
+    expect((host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).disabled).toBe(true)
 
     openComposerOptions(host)
     expect(document.body.textContent).toContain('Token budget')
@@ -3504,11 +3516,11 @@ describe('ChatView', () => {
     })
 
     expect(host.querySelector('[data-testid="stale-wait-warning"]')).toBeTruthy()
-    expect(host.textContent).toContain('This approval has not had runtime activity for 143s.')
+    expect(host.textContent).toContain('This approval has had no activity for 143s.')
     expect(host.textContent).toContain('No runtime activity while waiting for command or tool approval.')
 
     const cancelButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Cancel turn')
-    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Stop runtime')
+    const stopButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Stop')
     expect(cancelButton).toBeTruthy()
     expect(stopButton).toBeTruthy()
 
@@ -4405,7 +4417,8 @@ describe('ChatView', () => {
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect((host.querySelector('textarea') as HTMLTextAreaElement).placeholder.endsWith('· keyboard mic for dictation')).toBe(true)
-      expect(host.querySelector('button[data-dictation-state="idle"]')?.getAttribute('title')).toContain('or use your keyboard microphone')
+      // Companion dictation is disabled here, so its Tooltip is unreachable; the placeholder carries the keyboard-mic hint.
+      expect((host.querySelector('button[data-dictation-state="idle"]') as HTMLButtonElement).disabled).toBe(true)
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -6203,7 +6216,7 @@ describe('ChatView', () => {
     })
 
     openComposerOptions(host)
-    const goalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    const goalButton = goalMenuItem()
     expect(goalButton).toBeTruthy()
     act(() => {
       goalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -6540,7 +6553,7 @@ describe('ChatView', () => {
     expect(removeGoal).toHaveBeenLastCalledWith('chat-1', 'goal-1')
 
     openComposerOptions(host)
-    const newGoalButton = document.body.querySelector('button[title="Use the next message as a goal"]') as HTMLButtonElement | null
+    const newGoalButton = goalMenuItem()
     expect(newGoalButton).toBeTruthy()
     act(() => {
       newGoalButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -7225,9 +7238,9 @@ describe('ChatView', () => {
     expect(host.textContent).toContain('Update Codex support.')
     expect((host.textContent?.match(/Update Codex support\./g) ?? [])).toHaveLength(1)
     expect(host.textContent).toContain('Inspect protocol events')
-    expect(host.textContent).toContain('completed')
+    expect(host.querySelector('[role="img"][aria-label="completed"]')).not.toBeNull()
     expect(host.textContent).toContain('Patch rendering')
-    expect(host.textContent).toContain('pending')
+    expect(host.querySelector('[role="img"][aria-label="pending"]')).not.toBeNull()
     expect(host.querySelectorAll('[data-testid="plan-block"]')).toHaveLength(1)
 
     const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve')
@@ -7426,7 +7439,7 @@ describe('ChatView', () => {
 
     expect(host.textContent).toContain('Active plan.')
     expect(host.textContent).toContain('Working step')
-    expect(host.textContent).toContain('in progress')
+    expect(host.querySelector('[role="img"][aria-label="in progress"]')).not.toBeNull()
     const approveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Approve') as HTMLButtonElement | undefined
     const denyButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Deny') as HTMLButtonElement | undefined
     expect(approveButton).toBeTruthy()
@@ -7547,10 +7560,11 @@ describe('ChatView', () => {
 
     const error = host.querySelector('[aria-label="Dismiss composer error"]')!.closest('[role="alert"]') as HTMLElement
     expect(error.textContent).toContain('Provider failed to launch.')
-    expect(error.getAttribute('style')).toContain('var(--red) 42%')
-    expect(error.getAttribute('style')).toContain('var(--red) 9%')
-    expect(error.querySelectorAll('button')).toHaveLength(2)
-    expect(error.querySelector('[aria-expanded]')).toBeNull()
+    expect(error.getAttribute('style')).toContain('var(--error) 42%')
+    expect(error.getAttribute('style')).toContain('var(--error) 9%')
+    // Notice adds its own disclosure toggle; the recovery actions stay absent.
+    expect(error.querySelectorAll('button')).toHaveLength(3)
+    expect(error.querySelectorAll('[aria-expanded]')).toHaveLength(1)
     expect(host.querySelector('[aria-label="Check provider CLI"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open CLI settings"]')).toBeNull()
     expect(host.querySelector('[aria-label="Open fallback terminal"]')).toBeNull()
@@ -9709,7 +9723,7 @@ describe('ChatView', () => {
       expect(canonicalMarkup('native')).toBe(canonicalMarkup('main'))
       for (const surface of ['managed', 'native']) {
         const tool = [...body(surface).querySelectorAll<HTMLButtonElement>('button')].find(control =>
-          control.getAttribute('aria-label') === 'Inspect fixture, completed' || control.title === 'Open tool details')!
+          control.getAttribute('aria-label') === 'Inspect fixture, completed' || control.classList.contains('uam-tool-row'))!
         expect(tool).toBeTruthy()
         await act(async () => tool.click())
         expect(document.body.textContent).toContain('EMBEDDED CHILD OUTPUT')
@@ -9828,7 +9842,7 @@ describe('ChatView', () => {
         // Compact and verbose share the recorded tool action but expose its name differently.
         const detailsControls = [...list(name).querySelectorAll<HTMLButtonElement>('button')].filter(button =>
           button.getAttribute('aria-label') === 'Recorded inspection, completed' ||
-          (button.title === 'Open tool details' && button.textContent?.includes('Recorded inspection')))
+          (button.classList.contains('uam-tool-row') && button.textContent?.includes('Recorded inspection')))
         expect(detailsControls).toHaveLength(1)
         expect(detailsControls[0].disabled).toBe(false)
         await act(async () => detailsControls[0].click())
@@ -10029,7 +10043,7 @@ describe('ChatView', () => {
             expect(refusal).toBeTruthy()
             expect(refusal!.textContent).toContain('Message not sent')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+            expect(refusal!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
           }
         }
       } finally {
@@ -10072,7 +10086,7 @@ describe('ChatView', () => {
         f.renderCurrentSession()
         const replacementNotice = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) => notice.textContent?.includes('Check the earlier input before sending again.'))
         expect(replacementNotice).toBeTruthy()
-        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(replacementNotice!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -10179,7 +10193,7 @@ describe('ChatView', () => {
         const recovery = [...f.host.querySelectorAll<HTMLElement>('.uam-notice')].find((notice) =>
           notice.textContent?.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--yellow)')
+        expect(recovery!.querySelector<SVGElement>('svg')!.style.color).toBe('var(--warning)')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -10781,8 +10795,8 @@ describe('ChatView', () => {
       expect(capture(managed.host.querySelector('.uam-message-list')!).assistant).toBe(capture(main.host.querySelector('.uam-message-list')!).assistant)
       // Opening a child tool shows embedded content with no parent/native mutation, preview or resume IPC.
       const before = requests.length
-      await act(async () => passive.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
-      await act(async () => managed.host.querySelector<HTMLButtonElement>('button[title="Open tool details"]')?.click())
+      await act(async () => passive.host.querySelector<HTMLButtonElement>('button.uam-tool-row')?.click())
+      await act(async () => managed.host.querySelector<HTMLButtonElement>('button.uam-tool-row')?.click())
       expect(requests.slice(before)).toEqual([])
       expect(native).not.toHaveBeenCalled()
       expect(passive.host.querySelector('[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()

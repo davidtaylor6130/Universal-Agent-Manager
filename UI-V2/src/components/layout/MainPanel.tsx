@@ -4,13 +4,13 @@ import { SubagentRouteStage, subagentStageKey } from './SubagentRouteStage'
 import { activateSubagentLeaf, canExecuteNativeSubagent, hasNativeSubagentLineage, clearSubagentView, subagentRouteFor, type SubagentRoute, subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, StatusDot, Tooltip } from '../ui'
+import { Button, IconButton, Notice, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
@@ -45,19 +45,21 @@ const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
   const pushChannelError = useAppStore((s) => s.pushChannelError)
   const lastPushAtMs = useAppStore((s) => s.lastPushAtMs)
-  const uiBuildId = useAppStore((s) => s.uiBuildId)
 
   const tooltip =
     pushChannelStatus === 'connected'
-      ? `Push connected • last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'} • UI ${uiBuildId}`
+      ? `Connected. Last update ${lastPushAtMs ? new Date(lastPushAtMs).toLocaleTimeString() : '—'}.`
       : pushChannelStatus === 'no-push-yet'
-        ? `Waiting for backend push channel • UI ${uiBuildId}`
+        ? 'Waiting for the backend.'
         : `Push error: ${pushChannelError}`
+  const state = pushChannelStatus === 'connected' ? 'connected' : pushChannelStatus === 'no-push-yet' ? 'waiting' : 'error'
+  const StateIcon = pushChannelStatus === 'connected' ? CheckCircle2 : pushChannelStatus === 'no-push-yet' ? AlertTriangle : XCircle
+  const tone = pushChannelStatus === 'connected' ? 'var(--success)' : pushChannelStatus === 'no-push-yet' ? 'var(--warning)' : 'var(--error)'
 
   return (
     <Tooltip label={tooltip} side="bottom">
-      <span className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${pushChannelStatus}`}>
-        <StatusDot tone={pushChannelStatus === 'connected' ? 'success' : pushChannelStatus === 'no-push-yet' ? 'warning' : 'error'} pulse={pushChannelStatus === 'connected'} size={7} />
+      <span role="status" className="mr-3 inline-flex h-7 items-center px-2" aria-label={`Backend connection: ${state}`} style={{ color: tone }}>
+        <StateIcon size={14} aria-hidden />
       </span>
     </Tooltip>
   )
@@ -156,7 +158,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const workspaceLabel = workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() ?? workspaceDirectory
   const executionHost = executionHosts.find((candidate) => candidate.id === session.executionHostId)
-  const executionHostLabel = session.executionHostId && session.executionHostId !== 'local'
+  const executionHostIsRemote = Boolean(session.executionHostId && session.executionHostId !== 'local')
+  const executionHostLabel = executionHostIsRemote
     ? `Remote · ${executionHost?.label?.trim() || executionHost?.sshAlias?.trim() || session.executionHostId}`
     : 'Local'
 
@@ -276,7 +279,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
             {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>
+            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
           </span>
         </div>
 
@@ -425,7 +428,7 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
         <Button variant="primary" size="sm" onClick={() => {
           onActivate(leafId)
           useAppStore.getState().setNewChatModalOpen(true)
-        }}>New Chat</Button>
+        }}>New chat</Button>
       </div>
     </div>
   )
@@ -752,7 +755,7 @@ export function MainPanel() {
         className="uam-layout-toolbar flex h-9 flex-shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}
       >
-        <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
+        <div role="group" className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>
           {splitButton('horizontal', <Columns2 size={15} aria-hidden />)}
           {splitButton('vertical', <Rows2 size={15} aria-hidden />)}
           {leaves.length > 1 && (

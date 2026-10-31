@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
+import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -96,11 +96,31 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
 const MEMORY_POLICY_CHOICES: Array<{ id: MemoryLevel; label: string; detail: string }> = [
   { id: 'default', label: 'Default', detail: 'Inherit the current default.' },
   { id: 'off', label: 'Off', detail: 'Do not recall or create memories.' },
-  { id: 'readOnly', label: 'Read Only', detail: 'Recall existing memories without creating new ones.' },
-  { id: 'strict', label: 'Strict Creation', detail: 'Save only critical, high-confidence memories.' },
-  { id: 'balanced', label: 'Balanced Creation', detail: 'Save useful medium- and high-confidence memories.' },
-  { id: 'open', label: 'Remember Everything', detail: 'Save every valid, non-sensitive memory candidate.' },
+  { id: 'readOnly', label: 'Read only', detail: 'Recall existing memories without creating new ones.' },
+  { id: 'strict', label: 'Strict creation', detail: 'Save only critical, high-confidence memories.' },
+  { id: 'balanced', label: 'Balanced creation', detail: 'Save useful medium- and high-confidence memories.' },
+  { id: 'open', label: 'Remember everything', detail: 'Save every valid, non-sensitive memory candidate.' },
 ]
+
+interface StatusMessage { tone: 'success' | 'error' | 'info'; text: string }
+
+/** Status text whose tone is stored with the message, shown with a tick or cross for success and failure. */
+function StatusMessage({ message, className = 'text-xs' }: { message: StatusMessage | null; className?: string }) {
+  if (!message) return null
+  const color = message.tone === 'error' ? 'var(--error)' : message.tone === 'success' ? 'var(--success)' : 'var(--text-2)'
+  return <div role="status" className={cx('inline-flex items-center gap-1', className)} style={{ color }}>
+    {message.tone === 'success' && <Check size={13} aria-hidden />}
+    {message.tone === 'error' && <X size={13} aria-hidden />}
+    {message.text}
+  </div>
+}
+
+/** Keeps a disclosure panel mounted for its exit animation. */
+function PresencePanel({ open, id, className, children }: { open: boolean; id?: string; className?: string; children: ReactNode }) {
+  const presence = usePresence(open)
+  if (!presence.mounted) return null
+  return <div id={id} className={cx('uam-settings-presence', className)} data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
+}
 
 function selectPolicyWithArrowKeys(event: ReactKeyboardEvent<HTMLDivElement>) {
   if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
@@ -167,9 +187,11 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
       <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
         <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
           {([{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const).map((option) =>
-            <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
-              disabled={saving || capabilities?.[option.id]?.supported !== true} title={capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.')}
-              onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
+            <Tooltip key={option.id} label={capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.')}>
+              <Button size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
+                disabled={saving || capabilities?.[option.id]?.supported !== true}
+                onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>
+            </Tooltip>)}
         </div>
       } />
       {draft.mode === 'server' && <div className="grid gap-3 p-3">
@@ -178,7 +200,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
             <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
           </SettingsField>)}
       </div>}
-      {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
+      {(error || validationError) && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error || validationError}</Notice></div>}
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
@@ -227,7 +249,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
         control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
           options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
-      {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+      {error && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice></div>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
     {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
@@ -304,10 +326,10 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       {applied === 'enabled' && <span>Starts automatically</span>}
       {applied === 'disabled' && <span>Doesn't start automatically</span>}
       {applied === 'pending' && <span>Applying…</span>}
-      {applied === 'failed' && <span style={{ color: 'var(--error)' }}>{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
+      {applied === 'failed' && <span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={12} aria-hidden />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
       {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
     </span>
-  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses login or systemd user session`
+  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · starts with your login session`
   const textHint = inlineText === null
     ? 'Not set. The instruction file below is read on this host.'
     : inlineText === ''
@@ -421,24 +443,24 @@ interface SettingsSection {
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
+  { id: 'defaults', label: 'Chat defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
   ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
-  ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote Hosts', icon: Server }, { id: 'routing', label: 'SSH Routing', icon: Route }] as SettingsSection[] : []),
+  ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote hosts', icon: Server }, { id: 'routing', label: 'SSH routing', icon: Route }] as SettingsSection[] : []),
   ...(MOBILE_COMPANION_ENABLED ? [{ id: 'phone', label: 'Phone', icon: Smartphone }] as SettingsSection[] : []),
-  { id: 'voice-input', label: 'Voice Input', icon: Mic },
-  { id: 'memory-settings', label: 'Memory Settings', icon: Brain },
-  { id: 'memory-store', label: 'Memory Store', icon: MemoryStick },
+  { id: 'voice-input', label: 'Voice input', icon: Mic },
+  { id: 'memory-settings', label: 'Memory settings', icon: Brain },
+  { id: 'memory-store', label: 'Memory store', icon: MemoryStick },
   { id: 'markdown-store', label: 'Skills', icon: BookOpen },
-  { id: 'goal-loops', label: 'Goal Loops', icon: Target },
-  { id: 'central-configuration', label: 'Central Setup', icon: Server },
-  { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
-  ...(COMPUTER_USE_ENABLED ? [{ id: 'computer-use', label: 'Computer Use', icon: MousePointerClick }] as SettingsSection[] : []),
-  { id: 'vcs', label: 'Version Control', icon: FolderOpen },
+  { id: 'goal-loops', label: 'Goal loops', icon: Target },
+  { id: 'central-configuration', label: 'Central setup', icon: Server },
+  { id: 'mcp-servers', label: 'MCP servers', icon: TerminalSquare },
+  ...(COMPUTER_USE_ENABLED ? [{ id: 'computer-use', label: 'Computer use', icon: MousePointerClick }] as SettingsSection[] : []),
+  { id: 'vcs', label: 'Version control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
-  { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
-  { id: 'chat-data', label: 'Chat Data', icon: Download },
+  { id: 'shell-actions', label: 'Shell actions', icon: MousePointerClick },
+  { id: 'chat-data', label: 'Chat data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
     { id: 'about', label: 'About', icon: Info },
 ]
@@ -677,7 +699,7 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
       {togglePosition === 'right' && chevron}
     </div>
     {progress}
-    {expanded && <div id={panelId} className="uam-disclosure-row__panel uam-reveal">{children}</div>}
+    <PresencePanel open={expanded} id={panelId} className="uam-disclosure-row__panel">{children}</PresencePanel>
   </div>
 }
 
@@ -814,7 +836,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
-  const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
   const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
   const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
@@ -850,7 +871,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const remoteBusy = remoteBusyHostIds.length > 0
   const isRemoteHostBusy = (hostId: string) => remoteBusyHostIds.includes(hostId)
   const setRemoteHostBusy = (hostId: string, busy: boolean) => setRemoteBusyHostIds(current => busy ? [...current.filter(id => id !== hostId), hostId] : current.filter(id => id !== hostId))
-  const [remoteMessage, setRemoteMessage] = useState('')
+  const [remoteMessage, setRemoteMessage] = useState<StatusMessage | null>(null)
   const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
   const [remoteCustomDirectory, setRemoteCustomDirectory] = useState(false)
   const [remoteDirectory, setRemoteDirectory] = useState('uam-helper')
@@ -864,13 +885,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [agentImportAcknowledged, setAgentImportAcknowledged] = useState(false)
   const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
   const [agentImportBusy, setAgentImportBusy] = useState(false)
-  const [agentImportMessage, setAgentImportMessage] = useState('')
+  const [agentImportMessage, setAgentImportMessage] = useState<StatusMessage | null>(null)
   const agentImportRequest = useRef(0)
   const invalidateAgentImport = () => {
     agentImportRequest.current += 1
     setAgentImportPreview(null)
     setAgentImportAcknowledged(false)
-    setAgentImportMessage('')
+    setAgentImportMessage(null)
     setAgentImportBusy(false)
   }
   useEffect(() => () => { agentImportRequest.current += 1 }, [])
@@ -915,7 +936,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
   const [cliActionError, setCliActionError] = useState<Record<string, string>>({})
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
-  const [themeMessage, setThemeMessage] = useState('')
+  const [themeMessage, setThemeMessage] = useState<StatusMessage | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
@@ -978,7 +999,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setThemeDraft(null)
       setSelectedSection(section)
       setOpenMemoryMenu(null)
-      setOpenEditorMenu(null)
       setOpenCliVersionMenu(null)
     }))
   }
@@ -1029,17 +1049,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       runnerDirectory: existing?.runnerDirectory ?? '',
     }
     if (!portableAlias || !sshAlias) {
-      setRemoteMessage('Enter one exact host alias from ~/.ssh/config.')
+      setRemoteMessage({ tone: 'error', text: 'Enter one exact host alias from ~/.ssh/config.' })
       return
     }
     setRemoteHostBusy(host.id, true)
-    setRemoteMessage('')
+    setRemoteMessage(null)
 	setRemoteCustomDirectory(Boolean(host.runnerDirectory))
 	setRemoteDirectory(host.runnerDirectory || 'uam-helper')
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
-      setRemoteMessage(response.error || 'The remote setup preview could not be created.')
+      setRemoteMessage({ tone: 'error', text: response.error || 'The remote setup preview could not be created.' })
       return
     }
     setRemotePreview(response.data)
@@ -1050,15 +1070,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
 	if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
     setRemoteHostBusy(remotePreview.host.id, true)
-    setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
+    setRemoteMessage({ tone: 'info', text: 'Connecting, verifying the copied helper, and starting the runner…' })
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
     setRemoteHostBusy(remotePreview.host.id, false)
     if (!response.ok) {
       setRemotePreview(null)
-      setRemoteMessage(response.error || 'Remote helper setup failed.')
+      setRemoteMessage({ tone: 'error', text: response.error || 'Remote helper setup failed.' })
       return
     }
-    setRemoteMessage(`${remotePreview.host.label} is ready.`)
+    setRemoteMessage({ tone: 'success', text: `${remotePreview.host.label} is ready.` })
     setRemotePreview(null)
     setRemoteAlias('')
     setRemoteLabel('')
@@ -1070,7 +1090,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     // instructionText is omitted unless changed, so the backend keeps the saved text.
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
+    setRemoteMessage(response.ok ? { tone: 'success', text: `${host.label} options saved.` } : { tone: 'error', text: response.error || 'SSH host options could not be saved.' })
   }
 
   const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
@@ -1078,17 +1098,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteHostBusy(host.id, true)
     void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
       setRemoteHostBusy(host.id, false)
-      setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+      setRemoteMessage(response.ok ? { tone: 'success', text: `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` } : { tone: 'error', text: response.error || 'Host instruction file could not be read.' })
     })
   }
 
   const removeRemoteHost = async (host: ExecutionHost) => {
     if (isRemoteHostBusy(host.id)) return
     setRemoteHostBusy(host.id, true)
-    setRemoteMessage('')
+    setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` : response.error || 'Remote host removal failed.')
+    setRemoteMessage(response.ok ? { tone: 'success', text: `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` } : { tone: 'error', text: response.error || 'Remote host removal failed.' })
   }
 
   useEffect(() => {
@@ -1126,10 +1146,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setOpenMemoryMenu(null)
         return
       }
-      if (openEditorMenu) {
-        setOpenEditorMenu(null)
-        return
-      }
       if (openCliVersionMenu) {
         setOpenCliVersionMenu(null)
         return
@@ -1143,7 +1159,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openEditorMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -1151,7 +1167,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
       if (!memoryMenuRef.current?.contains(target)) setOpenMemoryMenu(null)
-      if (!editorMenuRef.current?.contains(target)) setOpenEditorMenu(null)
       if (!cliVersionMenuRef.current?.contains(target)) setOpenCliVersionMenu(null)
     }
     document.addEventListener('mousedown', handler)
@@ -1218,7 +1233,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const toggleEditorGroup = (groupId: string) => {
-    setOpenEditorMenu(null)
     setExpandedEditorGroups((current) => ({
       ...current,
       [groupId]: !(current[groupId] ?? false),
@@ -1296,70 +1310,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const renderEditorPresetMenu = (
-    menuId: string,
     value: string,
     label: string,
     onSelect: (presetId: string) => void
   ) => (
-    <div className="relative">
-      <button
-        ref={(element) => { if (element) popupAnchorsRef.current.set(menuId, element) }}
-        type="button"
-        title={label}
-        aria-haspopup="listbox"
-        aria-expanded={openEditorMenu === menuId}
-        onClick={() => setOpenEditorMenu(openEditorMenu === menuId ? null : menuId)}
-        className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 text-left"
-        style={{
-          color: 'var(--text)',
-          borderRadius: 8,
-          padding: '8px 10px',
-        }}
-      >
-        <span className="truncate">{editorPresetLabel(value)}</span>
-        <ChevronDown className={openEditorMenu === menuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-      </button>
-      {openEditorMenu === menuId && (
-        <ViewportMenu
-          anchorRef={{ current: popupAnchorsRef.current.get(menuId) ?? null }}
-          role="listbox"
-          aria-label={label}
-          className="animate-fade-in"
-          style={{
-            width: popupAnchorsRef.current.get(menuId)?.getBoundingClientRect().width,
-            border: '1px solid var(--border-bright)',
-            borderRadius: 10,
-            background: 'var(--surface)',
-            boxShadow: 'var(--elev-3)',
-            padding: 6,
-          }}
-        >
-          {EDITOR_PRESETS.map((preset) => {
-            const selected = preset.id === value
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                onClick={() => {
-                  onSelect(preset.id)
-                  setOpenEditorMenu(null)
-                }}
-                className={`uam-menu-select__option w-full flex items-center gap-2 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                style={{
-                  borderRadius: 6,
-                  color: selected ? 'var(--text)' : 'var(--text-2)',
-                }}
-              >
-                <span className="flex-1">{preset.label}</span>
-                {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-              </button>
-            )
-          })}
-        </ViewportMenu>
-      )}
-    </div>
+    <MenuSelect label={label} value={value} options={EDITOR_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))} onChange={onSelect} />
   )
 
   const workerLogText = [
@@ -1383,7 +1338,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const themeSaveInFlightRef = useRef(false)
   const startNewTheme = (source?: CustomTheme) => {
     const base = source?.base ?? (theme === 'light' ? 'light' : 'dark')
-    const name = source ? `${source.name} Copy` : 'Custom Theme'
+    const name = source ? `${source.name} copy` : 'Custom theme'
     setThemeDraft({
       version: 1,
       id: customThemeId(name, customThemes),
@@ -1392,7 +1347,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       colors: { ...(source?.colors ?? BUILT_IN_THEME_COLORS[base]) },
     })
     setThemeStep(0)
-    setThemeMessage('')
+    setThemeMessage(null)
   }
   const cloneCurrentTheme = () => {
     if (selectedCustomTheme) {
@@ -1409,15 +1364,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try {
       const saved = await saveCustomTheme(themeDraft)
       if (!saved) {
-        setThemeMessage('Theme could not be saved. Check its name and colors.')
+        setThemeMessage({ tone: 'error', text: 'Theme could not be saved. Check its name and colors.' })
         return false
       }
       setThemeDraft(null)
       setTheme(saved.id)
-      setThemeMessage('Theme saved.')
+      setThemeMessage({ tone: 'success', text: 'Theme saved.' })
       return true
     } catch {
-      setThemeMessage('Theme could not be saved. Try again.')
+      setThemeMessage({ tone: 'error', text: 'Theme could not be saved. Try again.' })
       return false
     } finally {
       themeSaveInFlightRef.current = false
@@ -1430,10 +1385,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setThemeSaving(true)
     try {
       const deleted = await deleteCustomTheme(selectedCustomTheme.id)
-      setThemeMessage(deleted ? 'Theme deleted.' : 'Theme could not be deleted.')
+      setThemeMessage(deleted ? { tone: 'success', text: 'Theme deleted.' } : { tone: 'error', text: 'Theme could not be deleted.' })
       if (deleted) setThemeDraft(null)
       return deleted
-    } catch { setThemeMessage('Theme could not be deleted. Try again.'); return false }
+    } catch { setThemeMessage({ tone: 'error', text: 'Theme could not be deleted. Try again.' }); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const importThemeFile = async (file?: File) => {
@@ -1445,9 +1400,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
-      setThemeMessage('Theme imported.')
+      setThemeMessage({ tone: 'success', text: 'Theme imported.' })
     } catch {
-      setThemeMessage('Theme import failed. Choose a valid UAM theme JSON file.')
+      setThemeMessage({ tone: 'error', text: 'Theme import failed. Choose a valid UAM theme JSON file.' })
     }
   }
   const exportSelectedTheme = () => {
@@ -1458,7 +1413,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     anchor.download = `${selectedCustomTheme.id.slice('custom:'.length)}.json`
     anchor.click()
     URL.revokeObjectURL(url)
-    setThemeMessage('Theme exported.')
+    setThemeMessage({ tone: 'success', text: 'Theme exported.' })
   }
 
   const renderAddEditor = () => (
@@ -1485,7 +1440,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   )
 
   const renderThemeEditor = () => themeDraft ? (
-<div className="grid gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+<Card elevation={0} className="grid gap-4 p-3">
                   {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
                     <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                       <span>Name</span>
@@ -1548,20 +1503,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     ))}
                   </div>}
                   {!themeDraftValid && (
-                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
-                      Every color must use #RRGGBB format.
-                    </p>
+                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss"><span id="theme-color-format-error">Every color must use #RRGGBB format.</span></Notice>
                   )}
                   {themeStep === 2 && <div className="grid gap-3">
                     <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}<code>{themeDraft.colors[key]}</code></div>)}</div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
                     {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
-                </div>
+                </Card>
   ) : null
 
   const checkComputerUsePermissions = async () => {
@@ -1728,8 +1681,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try { configuredHost = new URL(address).hostname } catch { /* No configured address. */ }
     const repairAddresses = configuredHost && configuredHost !== '127.0.0.1' && /^\d+\.\d+\.\d+\.\d+$/.test(configuredHost) && !currentAddresses.includes(configuredHost) ? currentAddresses : []
     const phoneFeedback = (companionLoadError || companionMessage || companionNotice) ? <>
-      {companionLoadError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionLoadError}</p>}
-      {companionMessage && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{companionMessage}</p>}
+      {companionLoadError && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice>}
+      {companionMessage && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionMessage}</Notice>}
       {companionNotice && <p role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>{companionNotice}</p>}
     </> : null
     return <div className="grid gap-0">
@@ -1757,12 +1710,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </SettingRow>}
         {typeof companionSettings?.allowKeychainPrompts === 'boolean' && <SettingRow
           title="Allow Keychain prompts from phone"
-          description="When on, refreshing allowances from your phone can show the macOS Keychain dialog on this computer. When off, phone refreshes never show it."
+          description="When on, phone refreshes can show the macOS Keychain dialog on this computer. When off, they never do."
           status={companionBusyAction === 'setCompanionKeychainPrompts' ? <span role="status" aria-live="polite" style={{ color: 'var(--text-2)' }}>Saving…</span> : undefined}
           control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings.allowKeychainPrompts}
             disabled={!companionSettings.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
         />}
-        <SettingRow title="Access token" description="For manual entry in the iPhone app. Pairing by QR code also configures secure certificate trust."
+        <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
         {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}
       </SettingsSection>
@@ -1852,7 +1805,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           key={permission}
           title={label}
           status={<span className="inline-flex items-center gap-1.5" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>
-            <StatusDot tone={state ? (state.available ? 'success' : 'error') : 'neutral'} />
+            {state ? (state.available ? <Check size={13} aria-hidden /> : <X size={13} aria-hidden />) : <StatusDot tone="neutral" />}
             {state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}
           </span>}
           control={<div className="flex flex-wrap justify-end gap-1">
@@ -1876,8 +1829,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
             key={`${app.identityKind}:${app.identity}`}
-            title={app.name}
-            description={<span className="font-mono">{app.identity}</span>}
+            title={<span title={app.identity}>{app.name}</span>}
             control={<Switch hideLabel label={app.name} checked={allowed} disabled={computerUseSaveBusy} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} />}
           />
         })}
@@ -1955,7 +1907,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       onClick={() => {
                         setThemeDraft(null)
                         setTheme(choice.value)
-                        setThemeMessage('')
+                        setThemeMessage(null)
                       }}
                       className="uam-theme-tile"
                     >
@@ -1977,7 +1929,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div className="flex flex-wrap justify-end gap-1">
                   <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
                   <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
-                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage('') } else cloneCurrentTheme() }}/>
+                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage(null) } else cloneCurrentTheme() }}/>
                   <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
                   <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
                   <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
@@ -1996,7 +1948,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
               }
             >
-              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--error)' : 'var(--text-2)' }}>{themeMessage}</div>}
+              <StatusMessage message={themeMessage} />
             </SettingRow>
           </SettingsSection>
           <SettingsSection title="Chats">
@@ -2261,7 +2213,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
                                   memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
                               } }, settingsScope))} />
-                            {memoryPolicyError[provider.id] && <p role="alert" style={{ color: 'var(--error)' }}>{memoryPolicyError[provider.id]}</p>}
+                            {memoryPolicyError[provider.id] && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{memoryPolicyError[provider.id]}</Notice>}
                           </div>
                         </div>
                         {pendingDefaultYolo?.providerId === provider.id && (
@@ -2294,7 +2246,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             defaults.featurePreference ?? 'uam',
                             `${providerName} feature preference`,
                             [
-                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and permission mediation.' },
+                              { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and approvals.' },
                               { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
                             ],
                             (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
@@ -2373,13 +2325,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         const requestId = ++agentImportRequest.current
         setAgentImportPreview(null)
         setAgentImportBusy(true)
-        setAgentImportMessage('')
+        setAgentImportMessage(null)
         const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
         if (requestId !== agentImportRequest.current) return
         setAgentImportPreview(preview)
         setAgentImportId(preview?.suggestedId ?? '')
         setAgentImportAcknowledged(false)
-        setAgentImportMessage(preview ? '' : 'Preview failed.')
+        setAgentImportMessage(preview ? null : { tone: 'error', text: 'Preview failed.' })
         setAgentImportBusy(false)
       }
       // Only a workspace-scoped import needs a chat; a global import is admitted without one.
@@ -2398,7 +2350,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           acknowledgeIgnoredFields: agentImportAcknowledged,
         })
         if (requestId !== agentImportRequest.current) return
-        setAgentImportMessage(imported ? `Imported ${agentImportId.trim()}.` : 'Import failed. The source or target may have changed; preview it again.')
+        setAgentImportMessage(imported ? { tone: 'success', text: `Imported ${agentImportId.trim()}.` } : { tone: 'error', text: 'Import failed. The source or target may have changed; preview it again.' })
         if (imported) setAgentImportPreview(null)
         setAgentImportBusy(false)
       }
@@ -2525,12 +2477,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <span className="font-normal" style={{ color: 'var(--text-3)' }}> · {agentImportPreview.mode || 'unknown mode'}</span>
                   </div>
                   {agentImportPreview.securityFields.length > 0 && (
-                    <div role="alert" style={{ color: 'var(--error)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
+                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</Notice>
                   )}
                   {agentImportPreview.ignoredFields.length > 0 && (
                     <div>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
                   )}
-                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--error)' }}>{agentImportPreview.error}</div>}
+                  {agentImportPreview.error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{agentImportPreview.error}</Notice>}
                   {agentImportPreview.supported && (
                     <>
                       <SettingsField label="UAM agent ID" htmlFor="agent-import-id">
@@ -2592,7 +2544,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   )}
                 </div>
               )}
-              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
+              <StatusMessage message={agentImportMessage} />
               {importNeedsChat && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat to import into this workspace, or choose All workspaces.</div>}
             </div>
           </SettingsSection>}
@@ -2686,8 +2638,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
-      const statusColor = (status?: string) => status === 'ready' ? 'var(--green)' : status === 'error' ? 'var(--red)' : 'var(--text-3)'
-      return (
+            return (
         <div className="space-y-4">
           {COMPUTER_USE_ENABLED && <details className="text-xs" style={{ color: 'var(--text-3)' }}>
             <summary className="flex cursor-pointer items-center gap-2" style={{ color: 'var(--text-2)' }}>
@@ -2713,7 +2664,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   maxLength={128}
                   placeholder="AI desktop"
                   className="uam-field"
-                  onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                  onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
                 />
               </SettingsField>
               <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
@@ -2725,11 +2676,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   placeholder="ai-desktop"
                   spellCheck={false}
                   className="uam-field font-mono"
-                  onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                  onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
                 />
               </SettingsField>
             </div>
-            {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--success)' : 'var(--text-2)' }}>{remoteMessage}</div>}
+            <StatusMessage message={remoteMessage} />
           </SettingsSection>
 
           <SettingsSection title="Configured hosts">
@@ -2742,8 +2693,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 description={<span className="font-mono">{host.sshAlias}</span>}
                 status={(
                   <span className="inline-flex flex-wrap items-center gap-1.5">
-                    <StatusDot tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} />
-                    <span>{host.runnerStatus}</span>
+                    {host.runnerStatus === 'ready' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }} /> : host.runnerStatus === 'error' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }} /> : <StatusDot tone="neutral" />}
+                    <span>{host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus}</span>
                     {(host.runnerVersion || host.platform) && <span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span>}
                   </span>
                 )}
@@ -2790,7 +2741,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
               }
             />
-            {memoryPolicyError.app && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.app}</p>}
+            {memoryPolicyError.app && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{memoryPolicyError.app}</Notice></div>}
             {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default follows the provider policy."
               status={memoryPolicySaving.chat ? 'Saving…' : undefined}
               control={<MenuSelect label="Current chat memory policy" value={sessions.find((session) => session.id === activeSessionId)?.memoryLevel ?? 'default'} disabled={memoryPolicySaving.chat}
@@ -2844,8 +2795,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 const workerWorkspace = workerSession?.workspaceDirectory || localWorkspace
                 const workerAcp = (workerSession ? acpBindings[workerSession.id] : undefined)
                   ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === binding.workerProviderId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(workerWorkspace))
-                const providerMenuId = `${provider.id}:provider`
-                const modelMenuId = `${provider.id}:model`
                 const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId, workerAcp?.availableModels)
                 return (
                   <SettingRow
@@ -2854,128 +2803,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     title={`${providerDisplayName(provider, provider.id)} chats`}
                     control={
                     <div className="grid grid-cols-2 gap-2" style={{ width: 380 }}>
-                      <div className="relative">
-                        <button
-                          ref={(element) => { if (element) popupAnchorsRef.current.set(providerMenuId, element) }}
-                          type="button"
-                          title={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                          aria-haspopup="listbox"
-                          aria-expanded={openMemoryMenu === providerMenuId}
-                          onClick={() => setOpenMemoryMenu(openMemoryMenu === providerMenuId ? null : providerMenuId)}
-                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
-                        >
-                          <span className="flex min-w-0 items-center gap-2 truncate">
-                            <ProviderLogo providerId={binding.workerProviderId} />
-                            <span className="truncate">{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
-                          </span>
-                          <ChevronDown className={openMemoryMenu === providerMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-                        </button>
-                        {openMemoryMenu === providerMenuId && (
-                          <ViewportMenu
-                            anchorRef={{ current: popupAnchorsRef.current.get(providerMenuId) ?? null }}
-                            role="listbox"
-                            aria-label={`${providerDisplayName(provider, provider.id)} memory worker provider`}
-                            style={{
-                              width: popupAnchorsRef.current.get(providerMenuId)?.getBoundingClientRect().width,
-                              border: '1px solid var(--border-bright)',
-                              borderRadius: 10,
-                              background: 'var(--surface)',
-                              boxShadow: 'var(--elev-3)',
-                              padding: 6,
-                            }}
-                          >
-                            {providers.filter((candidate) => providerSupportsTextWorkers(candidate.id)).map((candidate) => {
-                              const selected = candidate.id === binding.workerProviderId
-                              return (
-                                <button
-                                  key={candidate.id}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={selected}
-                                  onClick={() => {
-                                    updateMemoryBinding(provider.id, {
-                                      workerProviderId: candidate.id,
-                                      workerModelId: '',
-                                    })
-                                    setOpenMemoryMenu(null)
-                                  }}
-                                  className="w-full flex items-center gap-2 text-left px-2 py-2"
-                                  style={{
-                                    borderRadius: 6,
-                                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                                  }}
-                                >
-                                  <ProviderLogo providerId={candidate.id} />
-                                  <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
-                                  {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-                                </button>
-                              )
-                            })}
-                          </ViewportMenu>
-                        )}
-                      </div>
-
-                      <div className="relative">
-                        <button
-                          ref={(element) => { if (element) popupAnchorsRef.current.set(modelMenuId, element) }}
-                          type="button"
-                          title={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                          aria-haspopup="listbox"
-                          aria-expanded={openMemoryMenu === modelMenuId}
-                          onClick={() => setOpenMemoryMenu(openMemoryMenu === modelMenuId ? null : modelMenuId)}
-                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
-                        >
-                          <span className="truncate">{selectedMemoryModelLabel(modelOptions, binding.workerModelId)}</span>
-                          <ChevronDown className={openMemoryMenu === modelMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
-                        </button>
-                        {openMemoryMenu === modelMenuId && (
-                          <ViewportMenu
-                            anchorRef={{ current: popupAnchorsRef.current.get(modelMenuId) ?? null }}
-                            role="listbox"
-                            aria-label={`${providerDisplayName(provider, provider.id)} memory worker model`}
-                            style={{
-                              width: popupAnchorsRef.current.get(modelMenuId)?.getBoundingClientRect().width,
-                              border: '1px solid var(--border-bright)',
-                              borderRadius: 10,
-                              background: 'var(--surface)',
-                              boxShadow: 'var(--elev-3)',
-                              padding: 6,
-                            }}
-                          >
-                            {modelOptions.map((option) => {
-                              const selected = option.id === binding.workerModelId
-                              return (
-                                <button
-                                  key={option.id || 'default'}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={selected}
-                                  onClick={() => {
-                                    updateMemoryBinding(provider.id, {
-                                      ...binding,
-                                      workerModelId: option.id,
-                                    })
-                                    setOpenMemoryMenu(null)
-                                  }}
-                                  className="w-full grid gap-0.5 text-left px-2 py-2"
-                                  style={{
-                                    borderRadius: 6,
-                                    background: selected ? 'var(--accent-dim)' : 'transparent',
-                                    color: selected ? 'var(--text)' : 'var(--text-2)',
-                                  }}
-                                >
-                                  <span className="flex items-center gap-2">
-                                    <span className="flex-1">{option.label}</span>
-                                    {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
-                                  </span>
-                                  <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
-                                </button>
-                              )
-                            })}
-                          </ViewportMenu>
-                        )}
-                      </div>
+                      <MenuSelect label={`${providerDisplayName(provider, provider.id)} memory worker provider`} value={binding.workerProviderId}
+                        options={providers.filter((candidate) => providerSupportsTextWorkers(candidate.id)).map((candidate) => ({ value: candidate.id, label: providerDisplayName(candidate, candidate.id), icon: <ProviderLogo providerId={candidate.id} /> }))}
+                        onChange={(workerProviderId) => updateMemoryBinding(provider.id, { workerProviderId, workerModelId: '' })} />
+                      <MenuSelect label={`${providerDisplayName(provider, provider.id)} memory worker model`} value={binding.workerModelId}
+                        options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                        onChange={(workerModelId) => updateMemoryBinding(provider.id, { ...binding, workerModelId })} />
                     </div>
                     }
                   />
@@ -3104,7 +2937,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               title="Default editor"
               description="Opens files outside every file type group."
               control={renderEditorPresetMenu(
-                'default-editor',
                 defaultEditorDraft,
                 'Default editor',
                 (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
@@ -3129,7 +2961,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>
                     </div>}
                   >
-                    {expanded && <div id={panelId} className="uam-reveal grid grid-cols-3 gap-2">
+                    <PresencePanel open={expanded} id={panelId} className="grid grid-cols-3 gap-2">
                       <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                         Name
                         <input
@@ -3161,7 +2993,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                         Editor
                         {renderEditorPresetMenu(
-                          `${association.id}:editor`,
                           association.editorPresetId,
                           `${groupName} editor`,
                           (presetId) => {
@@ -3172,13 +3003,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           }
                         )}
                       </div>
-                    </div>}
+                    </PresencePanel>
                   </SettingRow>
                 )
               })}
               {editorAssociationsDraft.length === 0 && <SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." />}
             </div>
-            {editorError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{editorError}</p>}
+            {editorError && <div className="pt-2"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{editorError}</Notice></div>}
           </SettingsSection>
 
           <SettingsSection title="Open with">
@@ -3198,7 +3029,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               description={WINDOWS_POWERSHELL_DESCRIPTIONS[windowsPowerShell]}
               control={<MenuSelect label="Terminal shell" disabled={editorSaving} value={windowsPowerShell} options={WINDOWS_POWERSHELL_OPTIONS} onChange={(value) => void saveWindowsPowerShell(value as WindowsPowerShellPreference)} />}
             />}
-            {openWithError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{openWithError}</p>}
+            {openWithError && <div className="pt-2"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{openWithError}</Notice></div>}
           </SettingsSection>
         </div>
       )
@@ -3318,7 +3149,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-                {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
+                <StatusMessage message={themeMessage} className="text-xs mt-3" />
               </div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
@@ -3339,32 +3170,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </div>
       </div>
-      <Presence open={Boolean(editorExit)}>
-        {editorExit && <Overlay open zIndex={80}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save editor changes?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>Your file type changes have not been saved.</p>
-              {editorError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{editorError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button>
-              <Button size="sm" autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={editorSaving} onClick={async () => {
-                const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
-                if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
-              }}>Save</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
+      <ConfirmDialog open={Boolean(editorExit)} tone="primary" title="Save editor changes?" label="Unsaved editor changes" confirmLabel="Save" cancelLabel="Stay" busy={editorSaving}
+        error={editorError || undefined} secondaryAction={{ label: 'Discard', onClick: () => { const next = editorExit; setEditorExit(null); next?.() } }}
+        onCancel={() => setEditorExit(null)}
+        onConfirm={async () => {
+          const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
+          if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave?.() }
+        }}>
+        <p>Your file type changes have not been saved.</p>
+      </ConfirmDialog>
       <Presence open={Boolean(themeExit)}>
         {themeExit && <Overlay open zIndex={80}>
           <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save theme changes?</div>
             <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
               <p>Your theme edits have not been saved.</p>
-              {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
+              <StatusMessage message={themeMessage} />
             </div>
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
@@ -3382,7 +3203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
             </div>
             <div className="grid gap-4 px-5 pt-4 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-  			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
+  			  <p>Uses your existing SSH login, copies the matching helper, checks its SHA-256, and starts it. Unsupported systems stop before copying.</p>
   			  <fieldset className="grid gap-2">
   				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
   				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
@@ -3411,36 +3232,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>}
-      <Presence open={confirmDiscard}>
-        {confirmDiscard && <Overlay open zIndex={70}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'} className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>{selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'}</div>
-            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
-              <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
-      <Presence open={Boolean(pendingDelete)}>
-        {pendingDelete && <Overlay open zIndex={60} onBackdropMouseDown={() => setPendingDelete(null)}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</p>
-              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <p role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</p>}
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={themeSaving || editorSaving} onClick={() => setPendingDelete(null)}>Cancel</Button>
-              <Button size="sm" variant="danger" disabled={themeSaving || editorSaving} onClick={async () => {
-                const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
-                if (deleted) setPendingDelete(null)
-              }}>Delete permanently</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
+      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'}
+        cancelLabel="Keep editing" confirmLabel="Discard changes"
+        onCancel={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}
+        onConfirm={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>
+        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
+        confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
+        error={(pendingDelete?.kind === 'theme' ? themeMessage?.text : editorError) || undefined}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={async () => {
+          if (!pendingDelete) return
+          const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
+          if (deleted) setPendingDelete(null)
+        }}>
+        <p>“{pendingDelete?.name}” will be permanently deleted.</p>
+      </ConfirmDialog>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.

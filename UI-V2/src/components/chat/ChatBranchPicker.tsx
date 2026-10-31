@@ -236,14 +236,14 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
   const canCreate = vcsType === 'git' && !loading && !loadError
 
   const displayedRevision = svnRevision || branch
-  const pendingHint = pendingBranch ? `${pendingBranch} will be created from ${branch} when you send your first message.` : ''
+  const pendingHint = pendingBranch ? `Created from ${branch} on first send. Select ${branch} to cancel.` : ''
+  const triggerTitle = vcsType === 'svn' ? [`${svnPath || 'SVN'} r${displayedRevision}`, svnContextError].filter(Boolean).join(' · ') : pendingBranch ? `${pendingBranch}, created on first send (from ${branch})` : branch
 
   const trigger = (
     <button
       ref={triggerRef}
       type="button"
       disabled={disabled || busy}
-      title={vcsType === 'svn' ? [`${svnPath || 'SVN'} r${displayedRevision}`, svnContextError].filter(Boolean).join(' · ') : pendingBranch ? `${pendingBranch}, created on first send (from ${branch})` : branch}
       aria-label={vcsType === 'svn' ? `Switch SVN folder, current ${svnPath ? `${svnPath} ` : ''}revision ${displayedRevision}${svnContextError ? `. ${svnContextError}` : ''}` : pendingBranch ? `Switch branch, ${pendingBranch} pending, created from ${branch} on first message` : `Switch branch, current ${branch}`}
       aria-haspopup="dialog"
       aria-expanded={open}
@@ -263,7 +263,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
 
   return (
     <>
-      <Tooltip label={disabled ? disabledReason : undefined}>
+      <Tooltip label={disabled ? disabledReason : triggerTitle}>
         <span className="inline-flex min-w-0">{trigger}</span>
       </Tooltip>
       {!open && switchError && <Tooltip label={switchError}>
@@ -310,10 +310,9 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                     onKeyDown={(event) => { if (event.key === 'Enter' && svnParent.trim()) { event.preventDefault(); void openPicker() } }}
                     className="mt-1 w-full rounded-sm bg-transparent px-2 py-1 font-mono outline-none" style={{ border: '1px solid var(--border-bright)', color: 'var(--text)' }} />
                 </label>
-                <div>Enter the repository folder containing the targets to switch between.</div>
                 <Button size="sm" variant="secondary" disabled={!svnParent.trim() || busy} onClick={() => void openPicker()}>Discover folders</Button>
                 {loadError && <div role="alert" style={{ color: 'var(--error)' }}>{loadError}</div>}
-                {svnPath && <div className="break-all font-mono" title={svnPath}>Current: {svnPath}</div>}
+                {svnPath && <div className="break-all font-mono">Current: {svnPath}</div>}
               </div>}
               {(vcsType !== 'svn' || Boolean(svnContext?.parent)) && <>
               <div className="flex items-center gap-2 px-2 py-1" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -354,7 +353,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                       disabled={busy}
                       onMouseEnter={() => setHighlight(index)}
                       onClick={() => chooseBranch(item)}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px]"
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors"
                       style={{ background: active ? 'var(--surface-up)' : 'transparent', color: 'var(--text)' }}
                     >
                       <span className="flex w-3.5 shrink-0 justify-center" aria-hidden>
@@ -367,7 +366,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                 })}
               </div>
               </>}
-              {svnSelection && <div className="space-y-2 border-t px-2 py-2 text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-2)' }}>
+              {svnSelection && <div className="animate-fade-in space-y-2 border-t px-2 py-2 text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-2)' }}>
                 <p>Switch this working copy to <span className="break-all font-mono">{svnSelection.path || svnSelection.name}</span>? Existing local changes must be resolved first.</p>
                 <Button ref={svnConfirmRef} size="sm" variant="secondary" loading={busy} disabled={busy || !svnContext?.parent} onClick={() => void switchTo(svnSelection.path || svnSelection.name)}>Switch folder</Button>
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setSvnSelection(null); searchRef.current?.focus() }}>Cancel</Button>
@@ -398,7 +397,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                         <Plus size={14} aria-hidden />
                         Create branch from current…
                       </button>
-                      {pendingBranch && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint} Select {branch} above to cancel.</div>}
+                      {pendingBranch && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint}</div>}
                     </>
                   )}
                 </div>
@@ -406,7 +405,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
             </>
           )}
           {switchError && (
-            <div role="alert" className="mt-1 max-h-24 overflow-y-auto break-words px-2 py-1 text-xs" style={{ color: 'var(--error)' }}>{switchError}</div>
+            <div role="alert" className="animate-fade-in mt-1 max-h-24 overflow-y-auto break-words px-2 py-1 text-xs" style={{ color: 'var(--error)' }}>{switchError}</div>
           )}
         </ViewportMenu>
       )}

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, RefreshCw, Search, Star } from 'lucide-react'
-import { Button, Tooltip } from '../ui'
+import { Check, RefreshCw, Search, Star, X } from 'lucide-react'
+import { Button, IconButton, Tooltip } from '../ui'
 import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -218,7 +218,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       : selectable[(position + (event.key === 'ArrowDown' ? 1 : -1) + selectable.length) % selectable.length])
   }
 
-  const providerLabel = (id: string) => id === 'favorites' ? 'Favourites' : providerShortName(providers.find((provider) => provider.id === id), id)
+  const providerLabel = (id: string) => id === 'favorites' ? 'Favorites' : providerShortName(providers.find((provider) => provider.id === id), id)
   return <div className="uam-model-picker flex min-h-[300px]" onKeyDown={onKeyDown}>
     <div role="toolbar" aria-label="Providers" aria-orientation="vertical" data-model-picker-sidebar="true"
       className="uam-np-rail w-11 shrink-0 overflow-x-hidden overflow-y-auto border-r p-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-high)', '--np-glide-y': `${glideY}px` } as React.CSSProperties}
@@ -234,16 +234,16 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         railRefs.current.get(id)?.focus()
       }}>
       <span aria-hidden className="uam-np-rail__glide" />
-      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => <button
-        key={entry.id} ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
-        type="button" aria-label={entry.label} title={entry.label} aria-pressed={entry.id === selectedProvider}
+      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => <Tooltip key={entry.id} label={entry.label}><button
+        ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
+        type="button" aria-label={entry.label} aria-pressed={entry.id === selectedProvider}
         disabled={entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider}
         tabIndex={entry.id === selectedProvider ? 0 : -1}
         onClick={() => selectProvider(entry.id)}
         className="uam-np-rail__button"
         style={{ opacity: entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider ? 0.4 : 1 }}>
         {entry.id === 'favorites' ? <Star size={18} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
-      </button>)}
+      </button></Tooltip>)}
     </div>
     <div className="min-w-0 flex-1 p-1">
       <div className="uam-np-search">
@@ -259,12 +259,12 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
           onClick={() => void requestCatalog(selectedProvider)}>{error ? 'Retry' : 'Refresh'}</Button>}
       </div>}
       {loading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
-      {error && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--yellow)' }}>{error}</div>}
+      {error && <div role="status" className="flex items-center gap-1 px-2 py-1 text-xs" style={{ color: 'var(--error)' }}><X size={13} aria-hidden />{error}</div>}
       <div ref={listRef} data-testid="model-options" style={{ maxHeight: listHeight, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
         {models.length === 0 && (
           <div role="status" className="uam-np-empty">
             <span className="uam-np-empty__icon">{grouped && !query ? <Star size={16} aria-hidden /> : <Search size={16} aria-hidden />}</span>
-            <span className="uam-np-empty__title">{grouped && !query ? 'No favourites yet' : 'No matching models'}</span>
+            <span className="uam-np-empty__title">{grouped && !query ? 'No favorites yet' : 'No matching models'}</span>
             <span className="uam-np-empty__text">{grouped && !query ? 'Star a model to add it here' : query ? `Nothing matches “${query}”. Try a shorter search.` : 'This provider has no models to show.'}</span>
           </div>
         )}
@@ -306,10 +306,9 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
                 </span>
               </button>
               </Tooltip>
-              <button type="button" aria-label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} aria-pressed={favorite} title={favorite ? 'Remove favorite' : 'Add favorite'}
-                onClick={() => toggleFavorite(option.providerId, option.id)} className="uam-np-model__fav">
-                <Star size={14} fill={favorite ? 'currentColor' : 'none'} aria-hidden />
-              </button>
+              <IconButton label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} tooltip={favorite ? 'Remove favorite' : 'Add favorite'} aria-pressed={favorite}
+                onClick={() => toggleFavorite(option.providerId, option.id)} className="uam-np-model__fav"
+                icon={<Star size={14} fill={favorite ? 'currentColor' : 'none'} aria-hidden />} />
             </div>
           </Fragment>
         })}

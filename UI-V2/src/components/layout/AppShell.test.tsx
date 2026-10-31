@@ -282,7 +282,7 @@ describe('AppShell', () => {
       draft.value = 'Unsent chat'
       const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
       await act(async () => { settings.click(); await import('../settings/SettingsModal') })
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP servers"]')!.click())
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
       const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
       act(() => {
@@ -361,7 +361,7 @@ describe('AppShell', () => {
     await act(async () => root.render(<AppShell/>))
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
     await act(async () => { settings.click(); await import('../settings/SettingsModal') })
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP servers"]')!.click())
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
     const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
     act(() => {
@@ -681,7 +681,7 @@ describe('AppShell', () => {
     expect(host.querySelector('button[aria-label="1 alert"]')).toBeTruthy()
     act(() => (host.querySelector('button[aria-label="1 alert"]') as HTMLButtonElement).click())
     expect(host.textContent).toContain('Homelab connection issue')
-    expect(host.textContent).toContain('Codex app-server process exited during an active turn.')
+    expect(host.textContent).toContain('Containers: connection lost')
     expect(host.querySelectorAll('[data-testid="notifications-panel"] time')).toHaveLength(1)
 
     await act(async () => useAppStore.setState((state) => ({
@@ -1365,7 +1365,7 @@ describe('AppShell', () => {
       const publish = (id = failure.id) => window.dispatchEvent(new CustomEvent(APP_FAILURE_EVENT, { detail: { ...failure, id } }))
       await act(async () => { publish(); await Promise.resolve() })
       expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
-      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications.`)
       expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
       expect(alertSurface()!.hasAttribute('aria-live')).toBe(false)
       expect(alertSurface()!.getAttribute('role')).not.toBe('status')
@@ -1382,7 +1382,7 @@ describe('AppShell', () => {
       expect(changes).toEqual([])
       // Distinct actual notifications with identical words still produce a live-region child update.
       await act(async () => { publish('fixture-announcement-b'); await Promise.resolve() })
-      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications. Use the Notifications button to read it.`)
+      expect(announcer.textContent).toBe(`${failure.message} Saved in Notifications.`)
       expect(announcer.firstChild).not.toBe(firstAnnouncement)
       expect(changes.length).toBeGreaterThan(0)
       changes.length = 0
@@ -1424,7 +1424,7 @@ describe('AppShell', () => {
       await act(async () => { reportAppFailure('No-fit private fixture', 'Retained detail'); await Promise.resolve() })
       expect(alertSurface()!.getAttribute('aria-hidden')).toBe('true')
       expect(document.getElementById(bell().getAttribute('aria-describedby')!)).toBe(announcer)
-      expect(announcer.textContent).toBe('No-fit private fixture Saved in Notifications. Use the Notifications button to read it.')
+      expect(announcer.textContent).toBe('No-fit private fixture Saved in Notifications.')
       expect(host.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1)
       expect(announcer.getAttribute('aria-atomic')).toBe('true')
       expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
@@ -1786,7 +1786,7 @@ describe('AppShell', () => {
         expect(host.querySelector('[data-testid="transient-alert-announcer"]')).toBe(announcer)
         expect(host.querySelectorAll('[data-testid="transient-alert-announcer"]')).toHaveLength(1)
         expect(announcer.closest('[aria-hidden="true"]')).toBeNull()
-        const expectedAnnouncement = `${failure.message} Saved in Notifications. Use the Notifications button to read it.`
+        const expectedAnnouncement = `${failure.message} Saved in Notifications.`
         expectedAnnouncements.push(expectedAnnouncement)
         expect(announcer.textContent).toBe(expectedAnnouncement)
         expect(announcementUpdates).toEqual(expectedAnnouncements)

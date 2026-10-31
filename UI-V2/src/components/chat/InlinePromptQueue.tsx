@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CornerUpRight, GripVertical, Pencil, X } from 'lucide-react'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import type { Attachment } from '../../types/message'
-import { Button, IconButton, StatusDot, motionAllowed } from '../ui'
+import { Button, IconButton, Notice, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS } from '../ui/Overlay'
 import './InlinePromptQueue.css'
 
@@ -208,15 +208,14 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
       {retainedAttachments.length > 0 && <div className="uam-queue-row__files" aria-label="Queued prompt attachments">
         {retainedAttachments.map((attachment) => <FileChip key={attachment.id} name={attachment.name} title={attachment.path || attachment.name} trailing={<>
           <span className="uam-queue-chip__type">{attachment.type === 'directory' ? 'dir' : attachment.type}</span>
-          <button type="button" disabled={blocked || staleEdit || editedPrompt?.prepared} onClick={() => {
+          <IconButton icon={<X size={12} aria-hidden />} label={`Remove ${attachment.name} attachment`} size="sm" className="uam-attachment-remove"
+            disabled={blocked || staleEdit || editedPrompt?.prepared} onClick={() => {
             if (blocked || staleEdit || editedPrompt?.prepared || pendingRef.current) return
             setEditing((current) => current ? {
               ...current,
               retainedAttachmentIds: (current.retainedAttachmentIds ?? editedPrompt?.attachments.map((item) => item.id) ?? []).filter((id) => id !== attachment.id),
             } : current)
-          }} title="Remove attachment" aria-label={`Remove ${attachment.name} attachment`} className="uam-attachment-remove">
-            <X size={12} aria-hidden />
-          </button>
+          }} />
         </>} />)}
       </div>}
       {markdownStoreFiles.length > 0 && <div className="uam-queue-row__files" aria-label="Queued Skills context">
@@ -237,8 +236,8 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
         <Button type="button" size="sm" variant="primary" disabled={blocked || staleEdit || editedPrompt?.prepared || !hasPromptContent} onClick={saveEdit}>{pending ? 'Saving…' : 'Save'}</Button>
         <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setEditing(null); setError('') }}>Cancel</Button>
       </div>
-      {staleEdit && <div role="alert" className="uam-queue-error">Queued prompt changed. Cancel to reload it. Your edit is kept.</div>}
+      {staleEdit && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Queued prompt changed. Cancel to reload it. Your edit is kept.</Notice>}
     </div>}
-    {error && <div role="alert" className="uam-queue-error">{error}</div>}
+    {error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice>}
   </div>
 }

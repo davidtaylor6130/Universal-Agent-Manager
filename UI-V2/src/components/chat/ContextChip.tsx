@@ -45,7 +45,7 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
     </>
   )
   return (
-    <span className={cx('uam-context-chip', error && 'is-error', partial && 'is-partial')} data-detail={detail}>
+    <span className={cx('uam-context-chip animate-fade-in', error && 'is-error', partial && 'is-partial')} data-detail={detail}>
       <Tooltip label={detail && <span style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-line' }}>{detail}</span>}>
         {openable ? (
           <button type="button" className="uam-context-chip__body" onClick={() => onInspect ? onInspect() : inspect?.(reference ?? { path: path as string })}>{body}</button>

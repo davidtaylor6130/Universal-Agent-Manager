@@ -140,8 +140,8 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
   }
 
   const effective = projection.stateStatus === 'ready'
-    ? `Effective: ${projection.effective.present ? preferenceName(projection, projection.effective.value) : 'Default'}`
-    : projection.effective.present ? `Last confirmed: ${preferenceName(projection, projection.effective.value)}` : 'Effective preference unavailable.'
+    ? `Current: ${projection.effective.present ? preferenceName(projection, projection.effective.value) : 'Default'}`
+    : projection.effective.present ? `Last known: ${preferenceName(projection, projection.effective.value)}` : 'Effective preference unavailable.'
   const unavailable = !connected ? 'Connect to UAM to change Auto routing.'
     : !projection.available ? projection.disabledReason
     : !live || disabled ? 'Wait for this chat’s current work to finish before changing Auto routing.' : ''
@@ -183,8 +183,8 @@ function ScopedAutoRoutingControl({ projection, live, disabled }: {
     <div className="px-3 pb-1 text-[11px]" style={{ color: 'var(--text-3)' }}
       role="status" aria-label="Auto routing progress">
       {working && sending !== 'refresh' && <CircleDashed size={12} className="uam-working-ring inline-block mr-1" style={{ color: 'var(--blue)' }} aria-hidden />}
-      {projection.pending.present && <span className="block">Pending: {preferenceName(projection, projection.pending.value)}</span>}
-      {projection.activating.present && <span className="block">Activating: {preferenceName(projection, projection.activating.value)}</span>}
+      {projection.pending.present && <span className="block">Next: {preferenceName(projection, projection.pending.value)}</span>}
+      {projection.activating.present && <span className="block">Switching to {preferenceName(projection, projection.activating.value)}</span>}
       {sending && <span className="block">{sending === 'preference' ? 'Sending preference…' : 'Refreshing…'}</span>}
       {projection.requestPending && !sending && <span className="block">Waiting for Copilot…</span>}
       {(nativeReceipt || receipt) && <span className="block">{nativeReceipt || receipt}</span>}

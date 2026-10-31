@@ -70,7 +70,7 @@ it('retains persisted Off after failed revocation and retries only the global di
     { action: 'getComputerUseSettings' },
     { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } },
   ])
-  expect(host.textContent).toContain('Off. UAM grants cleared.')
+  expect(host.textContent).toContain('Off.')
   expect(toggle()?.disabled).toBe(false)
 })
 
@@ -126,14 +126,14 @@ it('serializes a captured Off request across navigation between settings surface
   expect(sendToCEF).toHaveBeenCalledExactlyOnceWith({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } })
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(toggle()?.disabled).toBe(true)
-  expect(host.textContent).toContain('Turning off and clearing UAM grants')
+  expect(host.textContent).toContain('Turning off…')
   await act(async () => toggle()!.click())
   expect(sendToCEF).toHaveBeenCalledTimes(1)
   vi.mocked(sendToCEF).mockResolvedValueOnce(receipt(false, true))
   await act(async () => finish({ ok: false, error: 'The owned runtime has not stopped.' }))
   expect(host.textContent).toContain('Cleanup pending.')
   expect(toggle()?.disabled).toBe(true)
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe('The owned runtime has not stopped.')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('The owned runtime has not stopped.')
 })
 
 it('does not let an older readback clear a newer native pending observation', async () => {
@@ -182,7 +182,7 @@ it.each(['pending', 'unknown'])('removes superseded %s error feedback after a ne
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(host.querySelector('[role="alert"]')).not.toBeNull()
   await act(async () => useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false, computerUseSettingsStateRevision: 2 }))
-  expect(host.textContent).toContain('Off. UAM grants cleared.')
+  expect(host.textContent).toContain('Off.')
   expect(host.querySelector('[role="alert"]')).toBeNull()
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(host.querySelector('[role="alert"]')).toBeNull()
@@ -194,7 +194,7 @@ it('retains failure feedback for a native push received before its failure respo
     return { ok: false, error: 'Runtime controls are still stopping.' }
   }).mockResolvedValueOnce(receipt(false, true))
   await act(async () => toggle()!.click())
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Runtime controls are still stopping.')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Runtime controls are still stopping.')
 })
 
 it.each(['Retry disabling', 'Check status', 'Turn off'])('returns keyboard focus to the switch when %s recovery disappears', async label => {

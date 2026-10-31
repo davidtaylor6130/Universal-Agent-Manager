@@ -111,7 +111,6 @@ export function useCustomIconPicker() {
       </span>
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold">Icon for {target.label}</div>
-        <div className="text-xs" style={{ color: 'var(--text-3)' }}>Pick a Lucide icon, or use an emoji or PNG.</div>
       </div>
     </div>
     <div role="tablist" aria-label="Icon source" className="mb-3 flex gap-1 rounded-lg p-0.5" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
@@ -134,7 +133,7 @@ export function useCustomIconPicker() {
         reader.readAsDataURL(file)
       }} /></label>}
     </div>
-    {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
+    {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
     <div className="mt-4 flex items-center gap-2"><Button size="sm" variant="ghost" disabled={busy} onClick={() => void save(null)}>Reset to default</Button><span className="flex-1" /><Button size="sm" variant="secondary" disabled={busy} onClick={close}>Cancel</Button>{tab !== 'upload' && <Button size="sm" variant="primary" disabled={busy || !canSave} onClick={saveSelection}>Save</Button>}</div>
   </dialog>, document.body)
   return { dialog, open: (type: CustomIconTarget, id: string | BulkTarget[], label: string) => { generation.current++; setTab('library'); setLibraryName(null); setText(''); setError(''); setTarget({ type, ids: typeof id === 'string' ? [{ id, label }] : id, label }) } }

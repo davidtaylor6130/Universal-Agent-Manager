@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef } from 'react'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Switch } from '../ui'
+import { Button, Notice, Switch } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
@@ -96,15 +96,15 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   }
 
   const status = !COMPUTER_USE_ENABLED ? 'Unavailable in this build'
-    : busy === 'disable' ? 'Turning off and clearing UAM grants…'
+    : busy === 'disable' ? 'Turning off…'
     : busy === 'enable' ? 'Turning on…'
     : busy === 'check' ? 'Checking status…'
     : pending && enabled === true ? "On. A chat's controls are still stopping. Turn off for all chats to retry cleanup."
-    : pending ? known ? 'Off. Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Global status not confirmed.'
+    : pending ? known ? 'Off. Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Status not confirmed.'
     : !known ? 'Status not confirmed.'
     : enabled ? 'On. Each chat still needs an approved target.' : 'Off. UAM grants cleared.'
 
-  return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow target requests on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
+  return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
     status={<span id={statusId} role="status" aria-live="polite">{status}</span>}
     control={COMPUTER_USE_ENABLED && <div ref={controls} className="flex flex-wrap items-center justify-end gap-2">
       {known && <Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
@@ -113,6 +113,6 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       {(pending || !known) && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button>}
       {!known && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button>}
     </div>}>
-    {error && <p id={errorId} role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+    {error && <div id={errorId}><Notice key={error} tone="error" dismissLabel="Dismiss">{error}</Notice></div>}
   </SettingRow>
 }

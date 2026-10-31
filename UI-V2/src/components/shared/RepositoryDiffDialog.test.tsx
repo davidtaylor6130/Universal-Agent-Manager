@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { RepositoryDiffDialog } from './RepositoryDiffDialog'
 import type { VcsChangedFile } from '../../store/useAppStore'
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 describe('Repository diff request ownership', () => {
@@ -25,7 +27,7 @@ describe('Repository diff request ownership', () => {
       expect(document.body.textContent).toContain('current chat')
       expect(document.body.textContent).not.toContain('stale chat')
       await act(async () => render('new', { ...file, path: 'missing.txt' }))
-      expect(document.querySelector('[role="alert"]')?.textContent).toBe('Missing file')
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('Missing file')
       await act(async () => render('new', { ...file, path: 'binary.png', binary: true }))
       expect(document.querySelector('[role="alert"]')).toBeNull()
       expect(document.body.textContent).toContain('Binary changes cannot be previewed.')

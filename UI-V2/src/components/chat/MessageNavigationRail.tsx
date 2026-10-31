@@ -204,8 +204,8 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         background: count === 1 ? 'var(--text-3)' : undefined,
         backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1.5px, transparent 1.5px)' : undefined,
         backgroundSize: count > 1 ? `100% calc((100% - 1px) / ${count - 1})` : undefined }} />
-      {[...lit].map((position) => <span key={position} aria-hidden data-rail-visible={position} className="conversation-rail-lit pointer-events-none"
-        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--text)' }} />)}
+      {[...lit].map((position) => <span key={position} aria-hidden data-rail-visible={position} className="conversation-rail-lit pointer-events-none motion-reduce:transition-none"
+        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--text)', transition: 'opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)' }} />)}
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
@@ -217,8 +217,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         {preview !== null
           ? <div className="conversation-rail-preview__text">{preview}</div>
           : <>
-            <div className="conversation-rail-preview__title">Not loaded yet</div>
-            <div className="conversation-rail-preview__hint">Scroll up or click to load this part of the chat.</div>
+            <div className="conversation-rail-preview__title">Not loaded. Scroll up or click to load.</div>
           </>}
       </div>}
     </div>

@@ -19,7 +19,7 @@ export function UnsavedChangesDialog({ title, label, detail, busy = false, saveD
       <div className="px-5 pt-5 pb-3">
         <h3 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</h3>
         <p className="mt-1.5 text-xs" style={{ color: 'var(--text-2)' }}>{detail ?? 'Your changes have not been saved.'}</p>
-        {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
+        {error && <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
       </div>
       <div className="flex justify-end gap-2 px-5 pb-5 pt-2">
         <Button size="sm" autoFocus disabled={busy} onClick={onStay}>Keep editing</Button>

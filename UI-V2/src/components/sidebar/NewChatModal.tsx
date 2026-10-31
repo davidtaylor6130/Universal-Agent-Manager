@@ -5,7 +5,7 @@ import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceReposit
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
+import { CircleAlert, FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Provider } from '../../types/provider'
@@ -13,7 +13,7 @@ import { SelectionGrid } from '../shared/SelectionGrid'
 import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerCapabilities, providerDisabledOn } from '../../utils/providerMetadata'
-import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, Card, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { ModelPickerContent } from '../chat/ModelPickerContent'
 import { isAbsoluteRemoteWorkspace, isSshHost } from '../../utils/remoteWorkspace'
@@ -185,7 +185,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const isRemote = executionHostId !== 'local'
   const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
     : routingMode !== 'automatic' && isRemote && selectedExecutionHost.runnerStatus !== 'ready'
-      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
+      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings.` : ''
 
   // Use the same availability rules for the picker and the Create action.
   const providerAvailability = (provider: Provider | undefined) => {
@@ -351,18 +351,15 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         if (e.target === e.currentTarget) requestClose()
       }}
     >
-      <div
+      <Card
+        elevation={2}
+        flush
         role="dialog"
         aria-modal="true"
         aria-label="New chat"
         tabIndex={-1}
         className="flex max-h-[calc(100vh-32px)] w-full max-w-4xl flex-col overflow-hidden mx-4"
-        style={{
-          background: 'var(--surface)',
-          borderRadius: 'var(--r-lg)',
-          border: '1px solid var(--border-bright)',
-          boxShadow: 'var(--elev-3)',
-        }}
+        style={{ borderRadius: 'var(--r-lg)' }}
       >
         {/* Header */}
         <div
@@ -406,7 +403,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <SelectionGrid
             label="Runs on"
             value={routingMode === 'automatic' ? AUTOMATIC_HOST_OPTION : executionHostId}
-            options={[...(SSH_ENABLED ? [{ id: AUTOMATIC_HOST_OPTION, label: 'Automatic', icon: <Monitor size={18} aria-hidden />, disabled: creatingChat || !automaticAvailable, issues: automaticAvailable ? [] : ['Configure routing and map this workspace for the selected provider.'] }] : []), ...executionHosts.filter((host) => SSH_ENABLED || !isSshHost(host)).map((host) => ({
+            options={[...(SSH_ENABLED ? [{ id: AUTOMATIC_HOST_OPTION, label: 'Automatic', icon: <Monitor size={18} aria-hidden />, disabled: creatingChat || !automaticAvailable, issues: automaticAvailable ? [] : ['Configure routing for this workspace.'] }] : []), ...executionHosts.filter((host) => SSH_ENABLED || !isSshHost(host)).map((host) => ({
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,
@@ -414,12 +411,12 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               tone: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
               disabled: creatingChat || (isSshHost(host) && host.runnerStatus !== 'ready'),
               issues: isSshHost(host) && host.runnerStatus !== 'ready'
-                ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
+                ? [`Remote runner is ${host.runnerStatus}. Open Settings.`] : [],
             }))]}
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
-          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{hostIssue}</p>}
+          {hostIssue && <p role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><CircleAlert size={12} aria-hidden />{hostIssue}</p>}
 
           {/* Folder */}
           {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
@@ -500,7 +497,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               {creatingWorkspace ? 'Choosing…' : 'Choose workspace'}
             </Button>
           </div>}
-          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{workspaceError}</p>}
+          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><CircleAlert size={12} aria-hidden />{workspaceError}</p>}
           {SSH_ENABLED && (
             <details className="-mt-1">
               <summary className="cursor-pointer select-none text-xs" style={{ color: 'var(--text-3)' }}>More options</summary>
@@ -516,16 +513,16 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             <h3 className="font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }}>Provider and model</h3>
             <IconButton
               label={cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
-              icon={<RefreshCw size={14} style={cachedAcp?.modelsLoading ? { animation: 'uam-status-spin 0.9s linear infinite' } : undefined} />}
+              icon={<RefreshCw size={14} className={cachedAcp?.modelsLoading ? 'animate-spin motion-reduce:animate-none' : undefined} />}
               disabled={routingMode === 'automatic' || !canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)}
               onClick={requestModelDiscovery}
             />
           </div>
-          <div
+          <Card
+            elevation={0}
+            flush
             className="overflow-hidden"
             style={{
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--r-md)',
               opacity: routingMode === 'automatic' ? 0.5 : 1,
               pointerEvents: routingMode === 'automatic' ? 'none' : undefined,
             }}
@@ -546,8 +543,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
               }}
             />
-          </div>
-          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--error)' : 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
+          </Card>
+          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="flex items-center gap-1.5 text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--error)' : 'var(--text-2)' }}>{structuredCreationBlocked && terminalCreationBlocked && <CircleAlert size={12} aria-hidden />}{availability.issues[availability.issues.length - 1]}</p>}
           {terminalFallback && <p role="status" className="flex items-center gap-2 text-xs" style={{ color: 'var(--text)' }}><SquareTerminal size={14} aria-hidden />Creates a terminal chat. Structured chat is unavailable.</p>}
 
           <div role="group" aria-label="Model and reasoning" className="space-y-3">
@@ -611,7 +608,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           </Button>
         </div>
       {SSH_ENABLED && routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}
-      </div>
+      </Card>
     </div>
   )
 }

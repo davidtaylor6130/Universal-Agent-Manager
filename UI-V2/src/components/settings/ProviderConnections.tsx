@@ -4,10 +4,11 @@ import { useAppStore } from '../../store/useAppStore'
 import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Check, Minus, RefreshCw } from 'lucide-react'
-import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
+import { Check, Minus, RefreshCw, X } from 'lucide-react'
+import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
 import './provider-settings.css'
+import './provider-overview.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 
@@ -173,6 +174,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const draft = discoveryDraft?.host === activeHostId ? discoveryDraft : null
   const hostLabel = activeHostId === 'local' ? 'this computer' : hosts.find(item => item.id === activeHostId)?.label || activeHostId
   const progressiveSaving = draft?.saving === true
+  const draftPresence = usePresence(!!draft?.error)
   // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
   useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
   return <div className="space-y-3">
@@ -184,12 +186,12 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       </div>
     </div>
     {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
-    {error && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{error}</p>}
+    {error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice>}
     {statusError && <p role="status" className="uam-prov-sub">{statusError}</p>}
     {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}
-    <div className="uam-prov-card overflow-x-auto">
+    <Card flush className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
-        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer Use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
+        <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
           ? <th className="uam-prov-label uam-prov-th px-2 py-2 font-medium">MCP servers</th>
           : servers.map(server => <th key={server.id} className="uam-prov-label uam-prov-th px-2 py-2 font-medium">{server.name}</th>)}</tr></thead>
         <tbody>{ids.map(id => {
@@ -198,7 +200,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const terminalOnly = runtime?.supportsStructured === undefined ? metadata.structuredProtocol === 'none' : !runtime.supportsStructured
           const version = hostVersions.find(item => item.providerId === id)
           const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
-          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Handshake confirmed' : health?.status === 'configured-unverified' ? 'Configured, unverified' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
+          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Responding' : health?.status === 'configured-unverified' ? 'Set up, not checked' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
           const healthTone: StatusTone = terminalOnly ? 'neutral' : healthLabel === 'Connected' ? 'success' : healthLabel === 'Failed' ? 'error' : healthLabel === 'Not configured' ? 'warning' : 'neutral'
           const cli = version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
           const uamOn = health?.uamControlEnabled === undefined ? undefined : !terminalOnly && health.uamControlEnabled
@@ -207,17 +209,21 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const computerUseState = computerUse === false ? false : computerUse && computerUseKnown ? computerUseEnabled : undefined
           const computerUseDetail = computerUse === false ? 'Not available for this provider'
             : computerUse === undefined ? 'Not known yet'
-            : computerUseRevocationPending && computerUseEnabled === true ? "On. A chat's controls are still stopping. Turn off for all chats in Computer Use settings to retry cleanup."
+            : computerUseRevocationPending && computerUseEnabled === true ? "On. Chat controls are still stopping. Turn off for all chats to retry cleanup."
             : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
             : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
             : computerUseEnabled ? 'Available. Each chat needs an approved target.' : 'Off. Turn Computer Use on in Computer Use settings.'
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
-            <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span><span className="uam-prov-detail whitespace-nowrap">{cli}</span></span></button></td>
-            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
+            <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>
+            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}>{!terminalOnly && healthLabel === 'Connected' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }}/> : !terminalOnly && healthLabel === 'Failed' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }}/> : <StatusDot tone={healthTone}/>}{terminalOnly ? 'Terminal only' : healthLabel}</span>
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             {COMPUTER_USE_ENABLED && <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>}
-            <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{health?.sharedSetupEnabled === undefined
+              ? checkbox(`${metadata.shortName} Shared setup`, undefined)
+              : <button type="button" role="checkbox" className="uam-prov-avail uam-prov-avail--action" data-state={health.sharedSetupEnabled ? 'on' : 'off'} aria-label={`${metadata.shortName} Shared setup ${health.sharedSetupEnabled ? 'on' : 'off'}`} aria-checked={health.sharedSetupEnabled}
+                data-pending={pendingKey === configurationKey(activeHostId, id, 'server', 'shared-setup') || undefined} disabled={terminalOnly || pendingKey === configurationKey(activeHostId, id, 'server', 'shared-setup')} title={health.sharedSetupEnabled ? 'On. Click to turn off.' : 'Off. Click to turn on.'}
+                onClick={() => void setConfiguration(id, 'shared-setup', !health.sharedSetupEnabled)}>{health.sharedSetupEnabled ? <Check size={13}/> : <X size={13}/>}</button>}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
               : servers.map(server => {
@@ -227,13 +233,13 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           </tr>
         })}</tbody>
       </table>
-    </div>
+    </Card>
     {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
       status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
       control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
         disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
-      {draft?.error && <div className="flex gap-1">
-        <Button size="sm" disabled={progressiveSaving} onClick={() => void saveDiscovery(draft.value)}>Retry</Button>
+      {draftPresence.mounted && <div className="flex gap-1 uam-settings-presence" data-state={draftPresence.closing ? 'closed' : 'open'}>
+        <Button size="sm" disabled={progressiveSaving || !draft} onClick={() => { if (draft) void saveDiscovery(draft.value) }}>Retry</Button>
         <Button size="sm" variant="ghost" disabled={progressiveSaving} onClick={() => { setDiscoveryDraft(null); document.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.focus() }}>Discard</Button>
       </div>}
     </SettingRow>}

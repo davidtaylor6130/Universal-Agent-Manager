@@ -48,7 +48,7 @@ import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -98,6 +98,8 @@ function sameManualCompactionTarget(left: ManualCompactionAvailability, right: M
 }
 
 type ComposerNoticeTone = NoticeTone
+type SlashNotice = { message: string; tone: NoticeTone }
+const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
 
 function normalizePermissionChangeResult(result: boolean | PermissionChangeResult): PermissionChangeResult {
@@ -331,7 +333,6 @@ function ProviderHandoffDialog({
           <CornerUpRight size={18} aria-hidden style={{ color: 'var(--accent)' }} />
           <div>
             <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Switch this chat to {targetName}?</h2>
-            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-3)' }}>{sourceName} → {targetName}</p>
           </div>
         </header>
         <div id="provider-handoff-description" className="space-y-4 px-5 py-4 text-sm" style={{ color: 'var(--text-2)' }}>
@@ -418,7 +419,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [goalSubmitting, setGoalSubmitting] = useState(false)
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
-  const [slashMessage, setSlashMessage] = useState('')
+  const [slashNotice, setSlashNotice] = useState<SlashNotice | null>(null)
+  const slashMessage = slashNotice?.message ?? ''
   const [slashGroup, setSlashGroup] = useState('')
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -847,7 +849,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       acknowledgeComposerReferences(submission)
       // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
       if (mountedRef.current && currentSessionIdRef.current === submission.chatId && composerReferenceSubmissionIsCurrent(submission)) {
-        setSlashMessage((message) => UNSENT_PROMPT_NOTICE.test(message) ? '' : message)
+        setSlashNotice((notice) => notice && UNSENT_PROMPT_NOTICE.test(notice.message) ? null : notice)
       }
     }
     return accepted
@@ -1279,7 +1281,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
     setGoalArmNextMessage(false)
-    setSlashMessage(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '')
+    setSlashNotice(noticeFor(abandonedBirthSubmission ? 'The chat was replaced. Check the earlier input before sending again.' : '', 'warning'))
     setPermissionMenuOpen(false)
     messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
@@ -1566,7 +1568,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const runCompact = async (commandDraft = draft, closePalette = false) => {
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || submitInFlightRef.current || goalSubmitting) return
     if (!isCefContext()) {
-      setSlashMessage('Manual compaction is unavailable without a connected native runtime.')
+      setSlashNotice(noticeFor('Manual compaction is unavailable without a connected native runtime.', 'warning'))
       return
     }
     const state = useAppStore.getState()
@@ -1577,7 +1579,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || !renderedTarget || !target
       || !sameManualCompactionTarget(renderedTarget, target) || state.cliBindingBySessionId[session.id]?.running
       || !state.providers.some(provider => provider.id === target.providerId && provider.supportsStructured)) {
-      setSlashMessage('Manual compaction is unavailable for this chat.')
+      setSlashNotice(noticeFor('Manual compaction is unavailable for this chat.', 'warning'))
       return
     }
     // Revalidate before clearing a palette token; an old option cannot erase a newer draft.
@@ -1602,7 +1604,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     submitInFlightRef.current = true
     setSubmitting(true)
     setCompacting(true)
-    setSlashMessage('')
+    setSlashNotice(null)
     try {
       const response = await sendToCEF<{ accepted?: boolean }>({
         action: 'compactAcpSession',
@@ -1612,13 +1614,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       if (!ownsFeedback()) return
       if (!response.ok || response.data?.accepted !== true) {
         // "failed" keeps this on the error tone; a plain message would show green.
-        setSlashMessage(`Compaction failed: ${response.error || 'the request was not accepted.'}`)
+        setSlashNotice(noticeFor(`Compaction failed: ${response.error || 'the request was not accepted.'}`, 'error'))
         return
       }
       // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
       setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
     } catch {
-      if (ownsFeedback()) setSlashMessage('Failed to request compaction.')
+      if (ownsFeedback()) setSlashNotice(noticeFor('Failed to request compaction.', 'error'))
     } finally {
       if (ownsRequest()) {
         compactRequestIdRef.current = null
@@ -1680,7 +1682,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 
     if (!steerNow && isClaudeProvider(currentProvider, currentProviderId) && currentModeId === 'plan') {
       const context = captureComposerReferenceSubmission(session.id)
-      if (!context) { setSlashMessage(UNSENT_PROMPT_MESSAGE); return }
+      if (!context) { setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning')); return }
       setClaudePlanPrompt({ prompt, draft, attachments: readyAttachments, context })
       return
     }
@@ -1786,7 +1788,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     try {
       const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
-      if (!response.ok) { setSlashMessage(response.error || 'Side chat could not be changed.'); return }
+      if (!response.ok) { setSlashNotice(noticeFor(response.error || 'Side chat could not be changed.', 'error')); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
@@ -1955,15 +1957,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // Live dividers sit at the end of the transcript; bring them into view as a new message would.
     if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [liveDividerOpen])
-  const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
-    ? 'error'
-    : /working|unavailable|provider-managed|send the prompt again|send again|wasn't sent|could not confirm the prompt|chat was replaced/i.test(slashMessage)
-      ? 'warning'
-      : 'success'
+  const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
   const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   const unsupportedProviderMessage = providerSupported
     ? ''
-    : `${currentProviderName} is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
+    : `${currentProviderName} is not available in this app. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to continue.`
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
@@ -2310,7 +2308,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!isClaudeProvider(currentProvider, currentProviderId) || currentModeId !== 'plan') {
       setClaudePlanPrompt(null)
     }
-    setSlashMessage('')
+    setSlashNotice(null)
   }, [currentModeId, currentProvider, currentProviderCapabilities.structuredPermissionControl, currentProviderId])
   const permissionControlsDisabled = runtimeBlocksControlChanges && !providerAcp?.pendingPermission
   const permissionModes = useMemo(
@@ -2336,7 +2334,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return applyPermissionMode(modeId)
   }
   const showPermissionResult = (result: PermissionChangeResult, fallback: string) => {
-    setSlashMessage(result.ok || result.cancelled ? '' : result.error || fallback)
+    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : result.error || fallback, 'error'))
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
@@ -2348,11 +2346,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSlashIndex(0)
     setPermissionMenuOpen(false)
     if (!providerSupported || !currentProvider.supportsStructured || !permissionsManagedByUam) {
-      setSlashMessage(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`)
+      setSlashNotice(noticeFor(`${currentProviderName} permissions are provider-managed; respond in the provider interface.`, 'warning'))
       return
     }
     if (permissionControlsDisabled) {
-      setSlashMessage(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working; permissions can be changed when the current operation stops.`, 'warning'))
       return
     }
 
@@ -2366,7 +2364,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       mode.id.toLowerCase() === normalized || mode.name.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported permission mode "${rawMode}". Supported: ${permissionModes.map((mode) => mode.id).join(', ')}.`, 'error'))
       return
     }
 
@@ -2376,13 +2374,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const runCodexOptionCommand = async (kind: 'reasoning' | 'speed', rawValue?: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const options = kind === 'reasoning' ? reasoningOptions : speedOptions
     const label = kind === 'reasoning' ? 'Reasoning' : 'Speed'
     if (options.length === 0) {
-      setSlashMessage(`${label} changes are unavailable for ${currentProviderName}.`)
+      setSlashNotice(noticeFor(`${label} changes are unavailable for ${currentProviderName}.`, 'warning'))
       return
     }
     if (!rawValue) {
@@ -2395,22 +2393,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       option.label.toLowerCase().replace(/\s+/g, '-') === normalized
     )
     if (!requested) {
-      setSlashMessage(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`)
+      setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
     const changed = kind === 'reasoning'
       ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
       : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashMessage(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
     if (runtimeBlocksControlChanges) {
-      setSlashMessage(`${currentProviderName} is still working.`)
+      setSlashNotice(noticeFor(`${currentProviderName} is still working.`, 'warning'))
       return
     }
     const changed = await setAcpConfigOption(session.id, configId, value)
-    setSlashMessage(changed ? `${label} requested.` : `Failed to change ${label}.`)
+    setSlashNotice(noticeFor(changed ? `${label} requested.` : `Failed to change ${label}.`, changed ? 'success' : 'error'))
   }
   const supportsPlanActions = isCodexProvider(currentProvider, currentProviderId) && currentModeId === 'plan'
   const latestPlanMessageIndex = useMemo(() => supportsPlanActions ? messages.reduce((latest, message, index) => {
@@ -2548,7 +2546,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
     if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
-    if (!result.ok) setSlashMessage(result.error || 'Computer use could not be changed.')
+    if (!result.ok) setSlashNotice(noticeFor(result.error || 'Computer use could not be changed.', 'error'))
     return result
   }
 
@@ -2916,7 +2914,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       useAppStore.getState().sessions.find((chat) => chat.id === submittedSessionId)?.createdAt.getTime() === submission.context.birth
     const refuseStaleSubmission = () => {
       if (mountedRef.current) setClaudePlanPrompt((current) => current === submission ? null : current)
-      if (ownsFeedback()) setSlashMessage(UNSENT_PROMPT_MESSAGE)
+      if (ownsFeedback()) setSlashNotice(noticeFor(UNSENT_PROMPT_MESSAGE, 'warning'))
     }
     if (!composerReferenceSubmissionIsCurrent(submission.context)) {
       refuseStaleSubmission()
@@ -2927,7 +2925,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSubmitting(true)
     try {
       const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
-      if (!modeOk) { if (ownsFeedback()) setSlashMessage('Failed to change provider mode.'); return }
+      if (!modeOk) { if (ownsFeedback()) setSlashNotice(noticeFor('Failed to change provider mode.', 'error')); return }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
         refuseStaleSubmission()
         return
@@ -2936,7 +2934,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
         : { ok: true }
       if (!permissionResult.ok) {
-        if (ownsFeedback() && !permissionResult.cancelled) setSlashMessage(permissionResult.error || 'Failed to change permission mode to Accept Edits.')
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept Edits.', 'error'))
         return
       }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
@@ -2950,13 +2948,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         acknowledgeChatComposerDraft(submittedSessionId, submission.context.birth, { text: submission.draft, attachments: readyAttachments })
       }
       if (!ownsFeedback()) return
-      if (!ok) { setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.'); return }
+      if (!ok) { setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning')); return }
       setDraft((current) => current === submission.draft ? '' : current)
       setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => attachmentsEquivalent([attachment], [sentAttachment]))))
       setAttachmentError('')
       setClaudePlanPrompt(null)
     } catch {
-      if (ownsFeedback()) setSlashMessage('Could not confirm the prompt. Check its saved state before retrying.')
+      if (ownsFeedback()) setSlashNotice(noticeFor('Could not confirm the prompt. Check its saved state before retrying.', 'warning'))
     } finally {
       if (claudePlanResolvingRef.current === submission) {
         if (ownsFeedback()) { submitInFlightRef.current = false; setSubmitting(false) }
@@ -3288,9 +3286,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       <div className="relative flex-1 flex flex-col min-w-0"
         style={showComposer ? undefined : { '--composer-dock-h': '0px' } as React.CSSProperties}>
         {showSubagentLineage && subagentParent && <nav aria-label="Subagent lineage" className="px-4 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
-          <button type="button" className="uam-btn uam-btn--ghost uam-btn--sm" onClick={() => showChatInPane(subagentParent.id)}>
-            <CornerUpLeft size={14} aria-hidden /><span>Subagent of {subagentParent.name}</span>
-          </button>
+          <Button type="button" variant="ghost" size="sm" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(subagentParent.id)}>
+            Subagent of {subagentParent.name}
+          </Button>
         </nav>}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
@@ -3584,21 +3582,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               </Notice>
             )}
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
-              <div
-                role="alert"
-                className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"
-                style={{
-                  border: '1px solid color-mix(in srgb, var(--red) 42%, var(--border))',
-                  background: 'color-mix(in srgb, var(--red) 9%, var(--surface))',
-                  color: 'var(--red)',
-                }}
+              <Notice
+                tone="error"
+                title={currentErrorTitle}
+                dismissLabel="Dismiss composer error"
+                onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
+                actions={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
               >
-                <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>{currentErrorSource}: {currentAcpError}</span>
-                <span className="flex shrink-0 items-center gap-1">
-                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
-                  <IconButton icon={<X size={13} />} size="sm" label="Dismiss composer error" onClick={() => setDismissedAcpErrorKey(currentAcpErrorKey)} />
-                </span>
-              </div>
+                {currentErrorSource}: {currentAcpError}
+              </Notice>
             )}
             {CLAUDE_ENABLED && claudePlanPrompt !== null && (
               <Notice
@@ -3640,7 +3632,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               </Notice>
             )}
             {slashMessage && (
-              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashMessage('')}>
+              <Notice key={`command:${slashMessage}`} tone={slashNoticeTone} title={slashNoticeTitle} dismissLabel={`Dismiss ${slashNoticeTitle.toLowerCase()} feedback`} onDismiss={() => setSlashNotice(null)}>
                 {slashMessage}
               </Notice>
             )}
@@ -3917,6 +3909,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 className="flex items-center gap-2 px-3 pt-2 text-[11px]"
                 style={{ color: dictationError ? 'var(--red)' : 'var(--accent)' }}
               >
+                {dictationError && <CircleAlert size={13} aria-hidden className="shrink-0" />}
                 <span className="min-w-0 flex-1">
                   {dictationError || (
                     dictationState === 'starting'

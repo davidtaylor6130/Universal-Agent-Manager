@@ -6,7 +6,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -192,8 +192,12 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         <span className="uam-set-section__title min-w-0 truncate">{entry.path.length ? entry.path[entry.path.length - 1] : 'Ungrouped'}</span>
         <span className="ml-auto text-xs tabular-nums">{entry.count}</span>
       </button>
-      <div id={id} role="group" aria-label={label} hidden={collapsed} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>
-        {renderEntries(entry.entries, renderAction)}
+      <div className="grid transition-[grid-template-rows,visibility] duration-150 motion-reduce:transition-none" style={{ gridTemplateRows: collapsed ? '0fr' : '1fr', visibility: collapsed ? 'hidden' : 'visible' }}>
+        <div style={{ minHeight: 0, overflow: 'hidden' }}>
+          <div id={id} role="group" aria-label={label} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>
+            {renderEntries(entry.entries, renderAction)}
+          </div>
+        </div>
       </div>
     </div>
   })
@@ -219,25 +223,18 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           </form>
         </Overlay>
       </Presence>
-      <Presence open={Boolean(pendingDeleteAction)}>
-        <Overlay open zIndex={80} onBackdropMouseDown={() => setPendingDeleteActionId('')}>
-          <div role="alertdialog" aria-modal="true" aria-label="Delete shell action" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setPendingDeleteActionId('') } }}>
-            <h3 className="text-sm font-semibold">Delete shell action?</h3>
-            <p className="text-xs" style={{ color: 'var(--text-2)' }}>Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.</p>
-            <div className="flex justify-end gap-2">
-              <Button autoFocus onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
-              <Button variant="danger" onClick={() => {
-                const id = pendingDeleteActionId
-                setActions((current) => current.filter((item) => item.id !== id))
-                setPendingDeleteActionId('')
-              }}>Delete action</Button>
-            </div>
-          </div>
-        </Overlay>
-      </Presence>
+      <ConfirmDialog open={Boolean(pendingDeleteAction)} title="Delete shell action?" label="Delete shell action" confirmLabel="Delete action"
+        onCancel={() => setPendingDeleteActionId('')}
+        onConfirm={() => {
+          const id = pendingDeleteActionId
+          setActions((current) => current.filter((item) => item.id !== id))
+          setPendingDeleteActionId('')
+        }}>
+        Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.
+      </ConfirmDialog>
 
       <SettingsSection title="Actions"
-        actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
+        actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
         {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add one to start chats from Finder or Explorer." />}
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
@@ -304,7 +301,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   label={`Action for ${action.label}`}
                   onChange={(value) => update(action.id, { openWorkspace: value === 'workspace' })}
                   options={[
-                    { value: 'workspace', label: 'Open as Workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
+                    { value: 'workspace', label: 'Open as workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
                     { value: 'skill', label: 'Run skill', description: 'Apply a skill to the selection.', icon: <Sparkles size={15} /> },
                   ]}
                 />

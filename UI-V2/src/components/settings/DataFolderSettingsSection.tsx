@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { createRequestId, isCompanionContext, sendToCEF, type CEFRequest, type CEFResponse } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog } from '../ui'
+import { Button, ConfirmDialog, Notice, Tooltip } from '../ui'
 import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { observesFolderChoice, parseDataFolderSettings, readUnconfirmedFolderChoice, retainUnconfirmedFolderChoice,
   readUnconfirmedFolderRestart, retainUnconfirmedFolderRestart,
@@ -114,22 +114,22 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
     {settings?.pendingFolder && <SettingRow title={settings.transitionState === 'publicationUnknown' ? 'Unconfirmed folder choice' : 'Saved folder choice'}
       description="Your current folder remains in use."
       control={<div className="flex flex-wrap gap-2"><Button size="sm" disabled={blocked} onClick={() => void change('cancelDataFolderChoice')}>Cancel folder change</Button>
-        <Button size="sm" disabled={blocked || !settings.restartReady} onClick={() => setRestartConfirmation(true)} title="Native validation must permit the guarded transfer before restart is available.">Restart to use folder</Button></div>}>
+        <Tooltip label="Restart is available after the folder change is validated"><span className="inline-flex"><Button size="sm" disabled={blocked || !settings.restartReady} onClick={() => setRestartConfirmation(true)}>Restart to use folder</Button></span></Tooltip></div>}>
       <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{settings.pendingFolder}</p>
     </SettingRow>}
     {settings && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>{settings.message}</p>}
     {unconfirmed && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>Unconfirmed {unconfirmed.action === 'chooseDataFolder' ? 'folder choice' : 'cancellation'}{unconfirmed.folder ? `: ${unconfirmed.folder}` : ''}. The request may have reached UAM. Refresh its state before making another change.</p>}
     {restartAttempt && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>Restart requested for {restartAttempt.folder}. This does not confirm migration. Folder changes remain held until the application reopens.</p>}
-    {error && <p role="alert" className="p-3 text-xs" style={{ color: 'var(--text)' }}><strong>Error: </strong>{error}</p>}
+    {error && <Notice key={error} tone="error" dismissLabel="Dismiss">{error}</Notice>}
     <ConfirmDialog open={Boolean(candidate)} title="Save this data-folder choice?" tone="primary" confirmLabel="Save folder choice" busy={busy}
       error={error || undefined} onCancel={() => { if (!busyRef.current) setCandidate('') }} onConfirm={() => { if (!unconfirmed) void change('chooseDataFolder') }}>
       <p className="break-all">{candidate}</p>
-      <p className="mt-2">This saves a pending choice. Your current folder remains in use. Restart-to-apply becomes available only when native validation permits the guarded transfer.</p>
+      <p className="mt-2">Your current folder stays in use until you restart.</p>
     </ConfirmDialog>
     <ConfirmDialog open={restartConfirmation} title="Restart to use this folder?" tone="primary" confirmLabel="Restart and transfer" busy={busy}
       error={error || undefined} onCancel={() => { if (!busyRef.current) setRestartConfirmation(false) }} onConfirm={() => void restart()}>
       <p className="break-all">From: {settings?.currentFolder}</p><p className="mt-2 break-all">To: {settings?.pendingFolder}</p>
-      <p className="mt-2">UAM must stop all writers, own both folders and verify the copy before using the destination. The original profile stays retained for recovery. Unconfirmed ownership or publication holds the transition.</p>
+      <p className="mt-2">UAM copies your data to the new folder and keeps the original for recovery.</p>
     </ConfirmDialog>
   </SettingsSection>
 })

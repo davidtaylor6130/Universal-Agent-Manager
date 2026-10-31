@@ -364,7 +364,7 @@ describe('production sequential questions', () => {
         expect(onResolve).toHaveBeenCalledTimes(2)
         await act(async () => resolve(true))
         expect(document.querySelector('.qr-question')).toBeNull()
-        expect(button('Answers submitted').disabled).toBe(true)
+        expect(document.querySelector('.qr-header h2')?.textContent).toBe('Answers submitted')
     })
 
     it('clears drafts for a new request with reused question IDs and ignores an old completion', async () => {

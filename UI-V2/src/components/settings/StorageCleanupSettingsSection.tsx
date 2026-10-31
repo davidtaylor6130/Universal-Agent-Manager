@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button } from '../ui'
+import { Button, ConfirmDialog, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -63,7 +63,7 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
   }
   return <div className="grid gap-6">
     <SettingsSection title="Worktrees">
-      <SettingRow title="Worktree cleanup" description="Removes old worktrees only after safety checks." control={modes('Worktree cleanup', draft.enabled, ['Enabled', 'Disabled'], (value) => edit({ enabled: value }))} />
+      <SettingRow title="Worktree cleanup" description="Removes old worktrees only after safety checks." control={<Switch hideLabel label="Worktree cleanup" checked={draft.enabled} disabled={Boolean(saving)} onChange={(event) => edit({ enabled: event.currentTarget.checked })} />} />
       <SettingRow title="Worktree age" description="Branches and commits are kept. 1–3650 days." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)} />
       {!worktreeValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button><SaveButton saving={saving === 'worktree'} disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>Save worktree settings</SaveButton></div>
@@ -76,6 +76,10 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button><SaveButton saving={saving === 'storage'} disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>Save backup and cache policy</SaveButton></div>
     </SettingsSection>
     {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-    {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved cleanup changes?</span><div className="flex gap-2"><Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button></div></div>}
+    <ConfirmDialog open={Boolean(exit)} title="Discard unsaved cleanup changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
+      onCancel={() => setExit(null)}
+      onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next?.() }}>
+      Your unsaved worktree, backup and cache changes will be lost.
+    </ConfirmDialog>
   </div>
 })

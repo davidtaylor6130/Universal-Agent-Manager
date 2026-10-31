@@ -1,0 +1,5 @@
+/* Shared setup cell: a known on/off value is a clickable glyph; unknown keeps the dashed switch. */
+.uam-prov-avail--action:not(:disabled) { cursor: pointer; }
+.uam-prov-avail--action[data-state='on'] { color: var(--success); }
+.uam-prov-avail--action[data-state='off'] { color: var(--error); }
+.uam-prov-avail--action:focus-visible { outline: none; box-shadow: var(--focus-ring); }

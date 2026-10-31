@@ -4,9 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sumProviderUsage, USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
 import { clearUsageHistoryCache } from '../../hooks/useUsageHistory'
 import { useAppStore } from '../../store/useAppStore'
+
 import { UsagePage, parseUsagePrices } from './UsagePage'
 import { UsageLimits } from './UsageLimits'
 import { clearProviderAllowanceCache } from '../../services/providerAllowances'
+
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const values = new Map<string, string>()

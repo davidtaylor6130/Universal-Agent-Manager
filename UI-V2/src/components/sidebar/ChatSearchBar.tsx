@@ -146,7 +146,7 @@ export function ChatSearchBar({
           <button
             ref={triggerRef}
             type="button"
-            aria-label="Filter chats"
+            aria-label={activeFilterCount > 0 ? `Filter chats, ${activeFilterCount} active` : 'Filter chats'}
             aria-haspopup="menu"
             aria-expanded={filtersOpen}
             aria-controls={filtersOpen ? menuId : undefined}
@@ -177,7 +177,7 @@ export function ChatSearchBar({
               role="menu"
               aria-label="Chat filters"
               onRequestClose={closeFilters}
-              className="w-56 rounded-md p-2 text-xs shadow-xl"
+              className="uam-reveal w-56 rounded-md p-2 text-xs shadow-xl"
               style={{
                 background: 'var(--surface-up)',
                 border: '1px solid var(--border-bright)',
@@ -215,7 +215,9 @@ export function ChatSearchBar({
                 onClick={onToggleDeepSearch}
               >
                 <span>Search contents</span>
-                <span style={{ color: deepSearch ? 'var(--accent)' : 'var(--text-3)' }}>{deepSearch ? 'On' : 'Off'}</span>
+                {deepSearch
+                  ? <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />
+                  : <X size={13} style={{ color: 'var(--text-3)' }} aria-hidden />}
               </button>
 
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>

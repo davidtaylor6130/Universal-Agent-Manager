@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { LoaderCircle, X } from 'lucide-react'
+import { CircleAlert, LoaderCircle, X } from 'lucide-react'
 import type { ContextReference } from '../../types/contextReference'
 import { readChatComposerDraft, subscribeChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
@@ -45,14 +45,17 @@ function SnapshotDialog({ snapshot, label, onClose }: { snapshot: ContextReferen
       <header className="uam-rv-dialog__header">
         <div className="min-w-0 flex-1">
           <div className="break-all text-sm font-semibold">{snapshot.sourcePath ?? snapshot.worktreeDirectory ?? snapshot.branchName ?? snapshot.label}</div>
-          <div className="break-all text-xs" style={{ color: 'var(--text-2)' }}>Host: {snapshot.executionHostId} · Workspace: {snapshot.workspaceDirectory}</div>
-          <div className="break-all text-xs" style={{ color: 'var(--text-2)' }}>Captured: <time dateTime={snapshot.capturedAt} title={snapshot.capturedAt}>{capturedTime(snapshot.capturedAt)}</time></div>
-          <div className="break-all text-xs" style={{ color: 'var(--text-2)' }}>Source chat: {snapshot.sourceChatId}{snapshot.sourceChatCreatedAt && <> · Created: <time dateTime={snapshot.sourceChatCreatedAt} title={snapshot.sourceChatCreatedAt}>{capturedTime(snapshot.sourceChatCreatedAt)}</time></>}</div>
+          <details className="text-xs" style={{ color: 'var(--text-2)' }}>
+            <summary>Details</summary>
+            <div className="break-all">Host: {snapshot.executionHostId} · Workspace: {snapshot.workspaceDirectory}</div>
+            <div className="break-all">Captured: <time dateTime={snapshot.capturedAt}>{capturedTime(snapshot.capturedAt)}</time></div>
+            <div className="break-all">Source chat: {snapshot.sourceChatId}{snapshot.sourceChatCreatedAt && <> · Created: <time dateTime={snapshot.sourceChatCreatedAt}>{capturedTime(snapshot.sourceChatCreatedAt)}</time></>}</div>
+          </details>
         </div>
         <IconButton icon={<X size={16} />} label="Close captured context" onClick={onClose} />
       </header>
       <p className="px-3 py-2 text-xs" style={{ color: 'var(--text-2)' }}>
-        Captured context for your message.{snapshot.truncated ? ' Limited to the first 16 KiB; this snapshot is incomplete.' : ' The source may have changed since capture.'}
+        Captured for your message.{snapshot.truncated ? ' Limited to the first 16 KiB; this snapshot is incomplete.' : ' The source may have changed since capture.'}
         {snapshot.kind === 'branch' || snapshot.kind === 'worktree' ? ' This records context only; it does not switch branches or workspaces.' : ''}
       </p>
       <pre role="region" aria-label="Captured snapshot text" className="min-h-0 overflow-auto p-3 text-xs" tabIndex={0} style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', outlineOffset: -3 }}>{snapshot.text || '(Empty file)'}</pre>
@@ -190,6 +193,7 @@ export function ComposerReferenceChips({ references }: { references: ComposerRef
       </span>}
     </div>}
     {error && <div role="alert" className="flex items-center gap-2 pt-2 text-xs" style={{ color: 'var(--error)' }}>
+      <CircleAlert size={12} aria-hidden style={{ color: 'var(--error)' }} />
       <span className="min-w-0 flex-1">{error}</span>
       <IconButton icon={<X size={12} />} label="Dismiss reference error" size="sm" onClick={references.dismissError} />
     </div>}

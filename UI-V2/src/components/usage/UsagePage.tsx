@@ -1,5 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import { ArrowLeft, Info, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { ArrowLeft, Check, Info, RefreshCw, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageCostBasis, usageWindow, type UsageCostBasis, type UsageProvider, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
@@ -118,6 +118,31 @@ function StatTile({ label, value, sub, title }: { label: string; value: string; 
   </div>
 }
 
+/** Segmented choice whose active highlight is one element that glides (translateX + width) to the pressed option. */
+function UsageSegment<T extends string | number>({ label, value, options, disabled = false, onChange }: { label: string; value: T; options: { value: T; label: string }[]; disabled?: boolean; onChange: (value: T) => void }) {
+  const groupRef = useRef<HTMLDivElement>(null)
+  const [slot, setSlot] = useState<{ x: number; w: number } | null>(null)
+  useLayoutEffect(() => {
+    const group = groupRef.current
+    if (!group) return
+    const measure = () => {
+      const active = group.querySelector<HTMLElement>('[aria-pressed="true"]')
+      setSlot(active ? { x: active.offsetLeft, w: active.offsetWidth } : null)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(group)
+    return () => observer.disconnect()
+  }, [value, options.length])
+  return <div role="group" aria-label={label} ref={groupRef} className="uam-usage-seg">
+    {slot && <span aria-hidden className="uam-usage-seg__indicator" style={{ transform: `translateX(${slot.x}px)`, width: slot.w }} />}
+    {options.map(option => <Button key={String(option.value)} size="sm" variant="ghost" disabled={disabled} aria-pressed={value === option.value} onClick={() => onChange(option.value)}>{option.label}</Button>)}
+  </div>
+}
+
+const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`
+
 function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; prices: UsagePriceOverride[]; onSave: (prices: UsagePriceOverride[]) => void; onClose: () => void }) {
   const existing = prices.find(price => modelKey(price) === modelKey(model))
   const [fields, setFields] = useState(() => priceFields.map(([key]) => (existing ? existing[key] : model.priceReference?.[key])?.toString() ?? ''))
@@ -142,7 +167,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
       <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
-    {error && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
+    {error && <p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{error}</p>}
     <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button>{existing && <Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button>}</div>
   </form>
 }
@@ -264,8 +289,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
         <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
       </Tooltip>}
       <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
-      <div role="group" aria-label="Usage metric" className="uam-usage-seg">{(['cost', 'tokens', 'limits'] as const).map(value => <Button key={value} size="sm" variant={metric === value ? 'secondary' : 'ghost'} aria-pressed={metric === value} onClick={() => setMetric(value)}>{value[0].toUpperCase() + value.slice(1)}</Button>)}</div>
-      <div role="group" aria-label="Usage period" className="uam-usage-seg">{USAGE_WINDOWS.map(option => <Button size="sm" key={option.days} disabled={metric === 'limits'} variant={days === option.days ? 'secondary' : 'ghost'} aria-pressed={days === option.days} onClick={() => { setDays(option.days); setRange(usageWindow(option.days)); setSelectedModel(null); setEditingPrice(false) }}>{option.label}</Button>)}</div>
+      <UsageSegment label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
+      <UsageSegment label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
       {metric !== 'limits' && <IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} />}
       {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
       {metric !== 'limits' && <span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span>}
@@ -273,7 +298,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
       {metric === 'limits' ? <UsageLimits executionHostId={hostId} /> : <div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
-        {history.error && <div role="alert" className="flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--error)' }}>{history.error}{shownAt && !history.kept && ` Showing figures from ${shownAt}.`}<Button size="sm" onClick={refresh}>Retry</Button></div>}
+        {history.error && <div role="alert" className="flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--error)' }}><span className="flex items-center gap-1.5"><TriangleAlert size={13} className="shrink-0" aria-hidden />{history.error}</span>{shownAt && !history.kept && ` Showing figures from ${shownAt}.`}<Button size="sm" onClick={refresh}>Retry</Button></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
@@ -284,7 +309,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <span className="uam-usage-chip-dot" aria-hidden />
               <ProviderLogo providerId={provider.providerId} size={14} />
               <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
-              <span className="uam-usage-chip-value tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{providerValue(provider)}</span>
+              {off ? <X size={12} aria-hidden /> : <Check size={12} aria-hidden />}
+              <Tooltip label={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}><span className="uam-usage-chip-value tabular-nums">{providerValue(provider)}</span></Tooltip>
             </button>
           })}</div>
           {totals.totalTokens === 0 && !history.loading && <p className="uam-usage-empty">No usage recorded in this range.</p>}
@@ -340,7 +366,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                   <th scope="row"><span className="flex min-w-0 items-center gap-2 font-normal"><i className="uam-usage-swatch" style={{ '--c': providerColor[provider.providerId] } as CSSProperties} aria-hidden /><span className="truncate">{providerLabel(provider.providerId)}</span></span></th>
                   {state === 'used' ? <>
                     <td><TokenStack total={provider} height={14} labels /><span className="sr-only">{TOKEN_SEGMENTS.filter(segment => segment.key !== 'reasoning' && segment.value(provider) > 0).map(segment => `${segment.label} ${percentOf(segment.value(provider), provider.totalTokens)}`).join(', ')}</span></td>
-                    <td className="text-right tabular-nums" title={provider.totalTokens.toLocaleString()}>{formatUsageCount(provider.totalTokens)}</td>
+                    <td className="text-right tabular-nums"><Tooltip label={provider.totalTokens.toLocaleString()}><span>{formatUsageCount(provider.totalTokens)}</span></Tooltip></td>
                     <td><span className="uam-usage-cost-cell"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></td>
                   </> : <td colSpan={3} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
                 </tr>)}</tbody>
@@ -352,13 +378,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><div role="group" aria-label="Usage breakdown" className="uam-usage-seg"><Button size="sm" variant={breakdown === 'model' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'model'} onClick={() => setBreakdown('model')}>Models</Button><Button size="sm" variant={breakdown === 'time' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'time'} onClick={() => setBreakdown('time')}>Time</Button></div></div>
             {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
               <button className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
-                <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><span className="truncate" title={model.modelId}>{model.modelId}</span>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
+                <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><Tooltip label={model.modelId}><span className="truncate">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
                 <span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span>
               </button>
               {currentModel === model && <div className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</div>}
             </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span><span className="uam-usage-model-bar col-span-2"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span></div>)}</div>}
           </section>
-          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{data.duplicates} duplicate records, {data.unidentifiedRecords} records without stable identity, {data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0)} copied fork records suppressed.</p></details>}
+          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></details>}
         </div>}
       </div>}
     </div>

@@ -79,7 +79,7 @@
   border-radius: 6px;
   background: color-mix(in srgb, var(--surface-up) 72%, transparent);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .uam-composer-choice .uam-menu-select__trigger > span {

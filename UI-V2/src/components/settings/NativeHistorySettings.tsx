@@ -53,7 +53,7 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     else setError('The import filters could not be saved. Your changes are kept.')
   }
   return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
-    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored. Most providers title a session with its first message.">
+    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
       <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
@@ -187,7 +187,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
           <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
           {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
-          {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads settled CLI SQLite and supported legacy histories. Changing, nested or unrecognised native records remain unimported and report a retryable issue.</li>}
+          {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads finished CLI chats and supported older histories. Chats that changed, are nested or are unrecognised are skipped and listed as issues.</li>}
         </ul>
       </details>
     </SettingRow>

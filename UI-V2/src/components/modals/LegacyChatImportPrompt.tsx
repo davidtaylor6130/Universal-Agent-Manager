@@ -62,7 +62,7 @@ export function LegacyChatImportPrompt() {
       onCancel={() => void stop()}
     >
       <p>Found {source.chatCount} {source.chatCount === 1 ? 'chat' : 'chats'} from an earlier version in {source.path}.</p>
-      <p className="mt-2">Copy chats adds them to your current history and leaves the originals in place. Brand new keeps your current history and stops asking about this folder. Stop closes Universal Agent Manager without changing anything.</p>
+      <p className="mt-2">Copy chats keeps the originals. Brand new keeps your current history. Stop closes UAM.</p>
     </ConfirmDialog>
   )
 }

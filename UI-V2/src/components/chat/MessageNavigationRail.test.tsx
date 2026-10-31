@@ -313,8 +313,7 @@ describe('Message navigation rail', () => {
       act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 2, 40]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
       const slider = host.querySelector('[role="slider"]')!
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
-      expect(host.textContent).toContain('Not loaded yet')
-      expect(host.textContent).toContain('Scroll up or click to load this part of the chat.')
+      expect(host.textContent).toContain('Not loaded. Scroll up or click to load.')
       expect(host.textContent).not.toContain('Open this message')
       expect(slider.getAttribute('aria-valuetext')).toBe('User message 3 of 3. Not loaded yet. Scroll up or click to load this part of the chat.')
     } finally { act(() => root.unmount()); host.remove() }
@@ -495,7 +494,7 @@ describe('Message navigation rail', () => {
       expect(slider.getAttribute('aria-valuetext')).toBe(targetValue)
       expect(host.querySelector('[data-rail-target="0"]')).not.toBeNull()
       expect(host.querySelector('.conversation-rail-preview__label')?.textContent).toBe('User message 1 of 3')
-      expect(host.querySelector('.conversation-rail-preview__title')?.textContent).toBe('Not loaded yet')
+      expect(host.querySelector('.conversation-rail-preview__title')?.textContent).toBe('Not loaded. Scroll up or click to load.')
     } finally {
       act(() => root.unmount())
       host.remove()

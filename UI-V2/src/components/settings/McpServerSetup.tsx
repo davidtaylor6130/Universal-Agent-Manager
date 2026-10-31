@@ -3,7 +3,7 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, usePresence } from '../ui'
+import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, Tooltip, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -242,7 +242,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
   const cancelSetup = () => { setSetup(null); setMessage(''); setImportWarnings([]) }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
-  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <button type="button" className="uam-prov-option" aria-label={label} title={detail} onClick={onClick}>
+  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <button type="button" className="uam-prov-option" aria-label={label} onClick={onClick}>
     <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
     <span className="grid min-w-0 text-left"><span className="uam-prov-option__label">{label}</span><span className="uam-prov-option__detail">{detail}</span></span>
     <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
@@ -256,7 +256,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     {OPENCODE_ENABLED && <>
       <p className="text-sm" style={{ color: 'var(--text-2)' }}>Read OpenCode's config or paste its MCP section.</p>
       {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
-      <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
+      <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read OpenCode config</Button>
     </>}
     <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
     {importSources.length > 0 && <div className="text-xs break-all" style={{ color: 'var(--text-3)' }}>{importSources.map(source => <div key={source}>{source}</div>)}</div>}
@@ -320,7 +320,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
               <label className="uam-set-field"><span className="uam-set-field__label">Connection type</span>
                 <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
-                  <option value="stdio">Local program (runs on the same computer as the agent)</option>
+                  <option value="stdio">Local program</option>
                   <option value="http">Remote URL (HTTP)</option>
                   <option value="sse">Remote URL (SSE, older servers)</option>
                 </select>
@@ -371,7 +371,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <div className="flex items-center justify-end gap-2 flex-wrap">
       <span className="uam-set-section__desc mr-auto">{setup !== null ? 'Finish or cancel setup before saving.' : 'Running chats keep their old setup until restarted.'}</span>
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
-      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} title={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</Button>
+      <Tooltip label={setup !== null ? 'Finish or cancel setup before saving.' : undefined}><Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} title={validationError || undefined} onClick={() => void save()}>Save</Button></Tooltip>
     </div>
     {setup === null && (message || validationError) && <p role="status" className="uam-prov-sub">{message || validationError}</p>}
     {setup === null && warningNotice}

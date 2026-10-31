@@ -2,11 +2,11 @@
 // the MessageFrame wrapper. Extracted from ChatView.tsx (MO-3).
 
 import { ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { ConversationTurn, type ConversationDelivery } from './ConversationTurn'
 import { useSubAgentDisclosure } from './ConversationWork'
 import { useToolQuestionDialog } from './useToolQuestionDialog'
 import './ToolDetails.css'
+import './SubagentDisclosure.css'
 import { ChevronLeft, ChevronRight, User, Pencil, RotateCcw, Wrench, X } from 'lucide-react'
 import type {
   AcpPendingPermission,
@@ -14,7 +14,7 @@ import type {
   AcpToolCall,
 } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
-import { EXIT_MS, IconButton, motionAllowed } from '../ui'
+import { Button, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed } from '../ui'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   CopyTextButton,
@@ -90,31 +90,21 @@ export function SubAgentRunningPanel({
           </span>
           <span className="min-w-0" style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 2 }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--blue)' }}>
-              {transcriptAvailable ? 'Subtask:' : 'Provider sub-agent event:'}
+              {transcriptAvailable ? 'Subtask:' : 'Sub-agent event:'}
               <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>
                 {tool.kind && tool.kind !== 'sub-agent' ? tool.kind : ''}
               </span>
             </span>
             <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
-            {tool.currentActivity && <span className="truncate text-xs" title={tool.currentActivity}>{tool.currentActivity}</span>}
+            {tool.currentActivity && <Tooltip label={tool.currentActivity}><span className="truncate text-xs">{tool.currentActivity}</span></Tooltip>}
           </span>
         </span>
-        <span className="flex flex-col items-end gap-1">
-          <ToolStatusIcon status={tool.status} />
-          <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{transcriptAvailable ? 'Transcript available' : 'Provider event'}</span>
-        </span>
+        <ToolStatusIcon status={tool.status} />
       </summary>
       {open && (
-        <div className="space-y-3" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
+        <div className="space-y-3 uam-subagent-disclosure" data-state="open" style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
           {renderHistory?.() ?? <pre className="whitespace-pre-wrap text-xs">{tool.content || 'No sub-agent history available yet.'}</pre>}
-          <button
-            type="button"
-            onClick={() => onSelectTool(tool.id)}
-            className="h-7 px-2 text-xs"
-            style={{ border: '1px solid var(--border)', borderRadius: 5, background: 'var(--bg)', color: 'var(--text-2)' }}
-          >
-            Tool details
-          </button>
+          <Button size="sm" onClick={() => onSelectTool(tool.id)}>Tool details</Button>
         </div>
       )}
     </details>
@@ -148,18 +138,19 @@ export function ToolCallInlineRows({
         const active = normalizedStatus === 'running' || normalizedStatus === 'in_progress' || normalizedStatus === 'inprogress'
         return (
           <div key={tool.id} className="uam-tool-timeline__item">
-            <button
-              type="button"
-              title="Open tool details"
-              data-active={active}
-              onClick={() => onSelectTool(tool.id)}
-              className="w-full grid text-left uam-tool-row"
-            >
-              <Wrench className="uam-tool-row__icon" size={13} aria-hidden />
-              <span className="uam-tool-row__kind">Tool</span>
-              <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
-              <ToolStatusIcon status={tool.status} />
-            </button>
+            <Tooltip label="Open tool details">
+              <button
+                type="button"
+                data-active={active}
+                onClick={() => onSelectTool(tool.id)}
+                className="w-full grid text-left uam-tool-row"
+              >
+                <Wrench className="uam-tool-row__icon" size={13} aria-hidden />
+                <span className="uam-tool-row__kind">Tool</span>
+                <span className="text-xs truncate" style={{ color: 'var(--text)' }}>{displayTitle}</span>
+                <ToolStatusIcon status={tool.status} />
+              </button>
+            </Tooltip>
           </div>
         )
       })}
@@ -261,7 +252,7 @@ export function PermissionInlineCard({
           }}
         >
           <div className="font-medium" style={{ color: 'var(--text)' }}>
-            This approval has not had runtime activity for {Math.max(120, waitSeconds ?? 0)}s.
+            This approval has had no activity for {Math.max(120, waitSeconds ?? 0)}s.
           </div>
           <div>{waitStaleReason || 'The provider may be waiting on a stale command or tool request.'}</div>
           <div className="flex flex-wrap gap-2 mt-2">
@@ -291,7 +282,7 @@ export function PermissionInlineCard({
               onClick={onStopRuntime}
               disabled={Boolean(submittingOptionId)}
             >
-              Stop runtime
+              Stop
             </button>
           </div>
         </div>
@@ -583,9 +574,9 @@ function ToolCallDetails({
       : response.error || 'Failed to resume the interrupted run.')
   }
 
-  return createPortal(
-    <div className="tool-details-backdrop" data-state={closing ? 'closed' : 'open'} style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
-      onMouseDown={event => { if (event.target === event.currentTarget) requestClose() }}>
+  return (
+    <Overlay open={!closing} dim={false} zIndex={1000} className="tool-details-backdrop" style={accentColor ? { '--accent': accentColor } as React.CSSProperties : undefined}
+      onBackdropMouseDown={requestClose}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} className="uam-tool-modal tool-details-dialog">
         <header className="tool-details-header">
           <span className="tool-details-icon"><ToolStatusIcon status={tool.status} /></span>
@@ -593,7 +584,6 @@ function ToolCallDetails({
             <h2 id={`${id}-title`}>{toolDisplayTitle(tool)}</h2>
             <div className="tool-details-subtitle">
               {toolDisplayKind(tool) && <span className="tool-details-chip">{toolDisplayKind(tool)}</span>}
-              {tool.status && <span className="tool-details-chip" data-status={tool.status}>{tool.status.replace(/_/g, ' ')}</span>}
               {tool.isSubAgent && <span>{tool.subAgentTitle || 'Sub-agent'}</span>}
             </div>
           </div>
@@ -651,9 +641,9 @@ function ToolCallDetails({
               <dt>Type</dt><dd>{[toolDisplayKind(tool), tool.kind].filter(Boolean).join(' / ') || 'tool'}</dd>
               <dt>Status</dt><dd>{tool.status || 'unknown'}</dd>
               {tool.isSubAgent && <><dt>Agent</dt><dd>{tool.subAgentId || tool.subAgentTitle || 'provider sub-agent'}</dd></>}
-              {managedTranscript && <><dt>Run ID</dt><dd>{managedTranscript.runId}</dd><dt>Execution</dt><dd>{managedTranscript.executionCapability}</dd></>}
+              {managedTranscript && <><dt>Run ID</dt><dd>{managedTranscript.runId}</dd>{managedTranscript.executionCapability !== 'unknown' && <><dt>Execution</dt><dd>{managedTranscript.executionCapability}</dd></>}</>}
             </dl>
-            {tool.isSubAgent && onOpenSubAgent && <button type="button" onClick={onOpenSubAgent}>Open chat</button>}
+            {tool.isSubAgent && onOpenSubAgent && <Button size="sm" onClick={onOpenSubAgent}>Open chat</Button>}
           </div>}
           {activeTab === 'Transcript' && <div className="tool-details-transcript">
           {transcriptChatId && !managedTranscript && (
@@ -667,7 +657,7 @@ function ToolCallDetails({
               {managedTranscriptLoading ? 'Loading transcript…' : 'View managed agent transcript'}
             </button>
           )}
-          {managedTranscriptError && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--red)' }}>{managedTranscriptError}</div>}
+          {managedTranscriptError && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{managedTranscriptError}</div>}
           {managedTranscript && (
             <section className="mt-3 grid gap-2" aria-label="Managed agent transcript">
               <div className="flex items-center justify-between gap-2 text-xs">
@@ -686,7 +676,7 @@ function ToolCallDetails({
                   )}
                 </span>
               </div>
-              {managedResumeMessage && <div role="status" className="text-xs" style={{ color: managedResumeMessage.startsWith('Failed') ? 'var(--red)' : 'var(--text-2)' }}>{managedResumeMessage}</div>}
+              {managedResumeMessage && <div role="status" className="text-xs" style={{ color: managedResumeMessage.startsWith('Failed') ? 'var(--error)' : 'var(--text-2)' }}>{managedResumeMessage}</div>}
               {managedTranscript.messages.length === 0 ? (
                 <div className="text-xs" style={{ color: 'var(--text-3)' }}>No persisted messages yet.</div>
               ) : managedTranscript.messages.map((message, index) => (
@@ -701,7 +691,7 @@ function ToolCallDetails({
           </div>}
         </div>
       </section>
-    </div>, document.body
+    </Overlay>
   )
 }
 

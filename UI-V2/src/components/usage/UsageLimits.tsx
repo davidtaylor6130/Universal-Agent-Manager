@@ -7,7 +7,8 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
-import { Button } from '../ui'
+import { Button, Tooltip } from '../ui'
+import { TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
 
@@ -47,7 +48,7 @@ function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false
   return <div className="uam-pace-row">
     <div className="uam-pace-row__label min-w-0">
       <span className="break-words">{label}</span>
-      {reset && <small title={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}>{reset}</small>}
+      {reset && <Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small>{reset}</small></Tooltip>}
     </div>
     <PaceTrack label={meterLabel} percent={valid ? percent : null} tick={valid && window ? elapsedShare(window, now) : null} />
     <span className="uam-pace-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
@@ -87,7 +88,7 @@ function ConsumptionStack({ total }: { total: AcpTokenUsage['total'] }) {
     ['Output', Math.max(0, total.outputTokens - total.reasoningOutputTokens), 'var(--token-output)'],
     ['Reasoning', total.reasoningOutputTokens, 'var(--token-reasoning)'],
   ] as const
-  return <div className="grid gap-2"><span className="uam-usage-stack" aria-hidden>{segments.map(([label, value, color]) => value > 0 ? <span key={label} title={`${label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': color } as CSSProperties} /> : null)}</span>
+  return <div className="grid gap-2"><span className="uam-usage-stack" aria-hidden>{segments.map(([label, value, color]) => value > 0 ? <Tooltip key={label} label={`${label} · ${value.toLocaleString()}`}><span style={{ flexGrow: value, '--c': color } as CSSProperties} /></Tooltip> : null)}</span>
     <ul className="uam-usage-key text-xs" aria-hidden>{segments.map(([label, , color]) => <li key={label} className="uam-usage-key-item"><i className="uam-usage-swatch" style={{ '--c': color } as CSSProperties} />{label}</li>)}</ul>
   </div>
 }
@@ -153,7 +154,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
     </div>
     {executionHostId === 'local' && <div className="uam-pace-key" aria-hidden><span><i />Where you are in the reset period</span><span><b />Used</span></div>}
     {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly</p>}
-    {account.error && <p role="status" className="text-xs" style={{ color: 'var(--warning)' }}>{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
+    {account.error && <p role="status" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
     <div className="uam-pace-list">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
 }
@@ -186,7 +187,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     <header className="uam-pace-prov__head">
       <h2 className="uam-pace-prov__title"><ProviderLogo providerId={provider} size={16} />{name}</h2>
       {hasAllowance && plan && <span className="uam-limits-chip">{plan}</span>}
-      {hasAllowance && <span className="uam-limits-updated" title={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}>{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span>}
+      {hasAllowance && <Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip>}
     </header>
     {(loading || allowance?.status === 'loading') && <p role="status" className="text-xs uam-usage-muted animate-pulse">Reading allowances…</p>}
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
@@ -201,7 +202,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
         <span className="uam-pace-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
       </div>}
       {limits?.credits && <p className="text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
-      {limits?.spendControlReached && <p className="text-xs" style={{ color: 'var(--error)' }}>Spend limit reached.</p>}
+      {limits?.spendControlReached && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
     </div>}
     {!consumption && <p className="text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
     {(context || consumption) && <details className="uam-limits-tokens text-xs">

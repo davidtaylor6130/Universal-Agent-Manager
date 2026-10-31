@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronRight, X } from 'lucide-react'
+import { Check, ChevronRight, TriangleAlert, X } from 'lucide-react'
 import { IconButton } from './IconButton'
+import { usePresence } from './Overlay'
 import './notice-motion.css'
 
 export type NoticeTone = 'info' | 'success' | 'warning' | 'error'
@@ -24,12 +25,15 @@ export function Notice({
 }) {
   const [visible, setVisible] = useState(true)
   const [expanded, setExpanded] = useState(true)
-  if (!visible) return null
-  const color = tone === 'success' ? 'green' : tone === 'warning' ? 'yellow' : tone === 'error' ? 'red' : 'accent'
+  const { mounted, closing } = usePresence(visible)
+  if (!mounted) return null
+  const color = tone === 'success' ? 'success' : tone === 'warning' ? 'warning' : tone === 'error' ? 'error' : 'accent'
   const heading = title ?? (tone === 'error' ? 'Error' : tone === 'warning' ? 'Warning' : tone === 'success' ? 'Completed' : 'Notice')
+  const StatusIcon = tone === 'success' ? Check : tone === 'warning' ? TriangleAlert : tone === 'error' ? X : null
   return (
     <div
       role={tone === 'error' ? 'alert' : 'status'}
+      data-state={closing ? 'closed' : 'open'}
       className="uam-notice mb-2 overflow-hidden rounded-md text-xs"
       style={{
         border: `1px solid color-mix(in srgb, var(--${color}) 42%, var(--border))`,
@@ -45,6 +49,7 @@ export function Notice({
           onClick={() => setExpanded((current) => !current)}
         >
           <ChevronRight size={13} className="shrink-0 transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none', color: `var(--${color})` }} aria-hidden />
+          {StatusIcon && <StatusIcon size={13} className="shrink-0" style={{ color: `var(--${color})` }} aria-hidden />}
           <span className="truncate">{heading}</span>
         </button>
         {dismissible && <IconButton

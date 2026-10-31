@@ -3,6 +3,7 @@ import { inlineFileReference, parseFileReference, type FileReference } from '../
 import { memo, ReactNode, useContext } from 'react'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { ContextChip } from '../chat/ContextChip'
+import { Tooltip } from '../ui'
 import { inlineChipFor, isPotentialTableRow, parseTableSeparator, replaceInlineLatexSymbols, safeHref, splitTableRow } from './markdownParsing'
 
 /** chipBranches is null when inline code should stay plain (chips disabled for this surface). */
@@ -43,7 +44,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
         lastIndex = match.index + token.length
         continue
       }
-      nodes.push(<code key={key}>{reference ? <button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)} title="Inspect file">{value}</button> : value}</code>)
+      nodes.push(<code key={key}>{reference ? <Tooltip label="Inspect file"><button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)}>{value}</button></Tooltip> : value}</code>)
     } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{replaceInlineLatexSymbols(token.slice(2, -2))}</strong>)
     } else {
@@ -56,7 +57,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
             {replaceInlineLatexSymbols(link?.[1] ?? '')}
           </a>
         ) : file ? (
-          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{replaceInlineLatexSymbols(link?.[1] ?? '')}</button>
+          <Tooltip key={key} label="Inspect file"><button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)}>{replaceInlineLatexSymbols(link?.[1] ?? '')}</button></Tooltip>
         ) : (
           <span key={key}>{link ? replaceInlineLatexSymbols(link[1]) : token}</span>
         )

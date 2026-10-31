@@ -1,9 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronRight } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { Button, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
+import { Button, IconButton, Overlay, Presence, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import './GoalBanner.css'
 
@@ -146,12 +145,8 @@ function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { ob
     }
   }
 
-  return createPortal(
-    <div
-      className="uam-overlay fixed inset-0 z-[1100] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={() => { if (!saving) onClose() }}
-    >
+  return (
+    <Overlay open zIndex={1100} onBackdropMouseDown={() => { if (!saving) onClose() }}>
       <form
         ref={dialogRef}
         role="dialog"
@@ -164,7 +159,7 @@ function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { ob
       >
         <div className="mb-3 flex items-center gap-3">
           <h2 className="flex-1 text-base font-semibold" style={{ color: 'var(--text)' }}>Edit goal</h2>
-          <button type="button" aria-label="Close edit goal" disabled={saving} onClick={onClose} className="rounded-md p-1.5" style={{ color: 'var(--text-2)', background: 'transparent', border: 0 }}><X size={17} aria-hidden /></button>
+          <IconButton icon={<X size={17} aria-hidden />} label="Close edit goal" disabled={saving} onClick={onClose} />
         </div>
         <label className="mb-1 block text-xs font-medium" htmlFor="goal-objective-edit" style={{ color: 'var(--text-2)' }}>Objective</label>
         <textarea
@@ -179,12 +174,11 @@ function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { ob
         />
         {error && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</div>}
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" disabled={saving} onClick={onClose} className="rounded-md px-3 py-1.5 text-sm" style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-2)' }}>Cancel</button>
-          <button type="submit" disabled={saving} className="rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: 'var(--accent)', border: 0, color: 'var(--on-accent)' }}>{saving ? 'Saving…' : 'Save'}</button>
+          <Button type="button" disabled={saving} onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
         </div>
       </form>
-    </div>,
-    document.body,
+    </Overlay>
   )
 }
 
@@ -235,14 +229,13 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
       <div className="flex flex-shrink-0 flex-col items-center gap-1">
         <div className="flex items-center gap-1.5">
           <Target size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
-          <span className="uam-goal-pill" data-tone={tone}>
-            <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
-            {statusLabel(goal.status)}
-          </span>
+          <Tooltip label={goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}>
+            <span className="uam-goal-pill" data-tone={tone}>
+              <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
+              {statusLabel(goal.status)}
+            </span>
+          </Tooltip>
         </div>
-        <span className="uam-goal-banner__secondary text-xs" style={{ color: 'var(--text-3)' }}>
-          {goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}
-        </span>
       </div>
 
       {/* Objective + optional blocker */}
@@ -258,11 +251,6 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
 						)}
 					</span>
         </summary>
-        {goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && (
-          <div className="uam-goal-banner__secondary mt-1 truncate text-xs" style={{ color: 'var(--text-3)' }} title={`Worker: ${workerModelLabel} · Reviewer: ${reviewerModelLabel}`}>
-            Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked
-          </div>
-        )}
         <div
           data-goal-details-scroll
           role="region"
@@ -272,7 +260,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
           style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
         >
           <div className="whitespace-pre-wrap" style={{ color: 'var(--text-2)' }}>{goal.objective}</div>
-					{blockerDisplay && <div><strong style={{ color: 'var(--text)' }}>Blocker:</strong> <span style={{ color: 'var(--text-2)' }}>{blockerDisplay}</span></div>}
+					{goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && <div><strong style={{ color: 'var(--text)' }}>Models:</strong> <span style={{ color: 'var(--text-2)' }}>Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked</span></div>}
 					{goal.lastDiagnostic && <div><strong style={{ color: 'var(--text)' }}>Last check:</strong> <span style={{ color: 'var(--text-2)' }}>{readableDiagnostic(goal.lastDiagnostic)}</span></div>}
           {currentStep && <div><strong style={{ color: 'var(--text)' }}>Current step:</strong> <span style={{ color: 'var(--text-2)' }}>{currentStep}</span></div>}
           {completedItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Completed steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{completedItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
@@ -312,21 +300,17 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
 
       {/* All goal actions consolidated into one overflow menu */}
       <div ref={menuRef} className="relative flex-shrink-0">
-        <Tooltip label="Goal actions">
-          <button
-            ref={triggerRef}
-            type="button"
-            aria-label="Goal actions"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            aria-controls={menuOpen ? menuId : undefined}
-            className="uam-goal-action"
-            data-open={menuOpen || undefined}
-            onClick={() => setMenuOpen((v) => !v)}
-          >
-            <MoreHorizontal size={15} aria-hidden />
-          </button>
-        </Tooltip>
+        <IconButton
+          ref={triggerRef}
+          icon={<MoreHorizontal size={15} aria-hidden />}
+          label="Goal actions"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls={menuOpen ? menuId : undefined}
+          className="uam-goal-action"
+          data-open={menuOpen || undefined}
+          onClick={() => setMenuOpen((v) => !v)}
+        />
         {menuPresence.mounted && (
           <ViewportMenu
             ref={popupRef}
@@ -356,7 +340,9 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
           </ViewportMenu>
         )}
       </div>
-      {editing && onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} returnFocusElement={triggerRef.current} />}
+      <Presence open={editing && Boolean(onEdit)}>
+        {onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} returnFocusElement={triggerRef.current} />}
+      </Presence>
     </div>
   )
 }

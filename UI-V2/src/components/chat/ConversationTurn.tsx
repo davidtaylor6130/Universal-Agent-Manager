@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, Pencil, RotateCcw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pencil, RotateCcw, X } from 'lucide-react'
 import { IconButton, Tooltip } from '../ui'
 import './conversation.css'
 
@@ -35,7 +35,7 @@ export function ConversationTurn({
     {(branchLabel || branchActions || branchNavigation || delivery) && <footer className="conversation-turn__footer">
       {delivery && <Tooltip label={delivery.label}>
         <span className="conversation-turn__delivery" tabIndex={0} role="status" aria-label={`${DELIVERY_TEXT[delivery.state]}. ${delivery.label}`}>
-          {DELIVERY_TEXT[delivery.state]}
+          {delivery.state === 'unsent' && <X size={12} aria-hidden style={{ color: 'var(--error)' }} />}{DELIVERY_TEXT[delivery.state]}
         </span>
       </Tooltip>}
       {delivery && deliveryActions}

@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { Brain, ChevronRight, FileText, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
+import { Brain, Check, ChevronRight, FileText, MessageSquare, Search, Terminal, Users, Wrench, X } from 'lucide-react'
 import type { AcpToolCall, AcpTurnEvent } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
 import { MarkdownContent } from '../markdown/Markdown'
+import { Tooltip } from '../ui'
 import { usePresence } from '../ui/Overlay'
 import { toolDisplayTitle } from './StatusHelpers'
 import './conversation.css'
@@ -95,11 +96,13 @@ function ConversationTool({ tool, onSelectTool, renderSubAgentHistory }: {
   const status = (tool.status.trim().toLowerCase() || 'pending').replace(/_/g, ' ')
   const Icon = tool.isSubAgent ? Users : tool.kind === 'read' ? FileText : tool.kind === 'search' ? Search : ['execute', 'shell'].includes(tool.kind) ? Terminal : Wrench
   return <li className="conversation-work__event">
-    <button type="button" className="conversation-work__tool" title={title} onClick={() => onSelectTool(tool.id)} aria-label={`${title}, ${status}`}>
+    <Tooltip label={title}><button type="button" className="conversation-work__tool" onClick={() => onSelectTool(tool.id)} aria-label={`${title}, ${status}`}>
       <Icon size={15} className="conversation-work__event-icon" aria-hidden />
       <span className="conversation-work__tool-title">{title}{tool.isSubAgent && tool.currentActivity && <span className="conversation-work__activity">{tool.currentActivity}</span>}</span>
-      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>{status}</span>
-    </button>
+      <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>
+        {['failed', 'error'].includes(status) ? <X size={12} aria-hidden style={{ color: 'var(--error)' }} /> : ['completed', 'complete'].includes(status) ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : null}{status}
+      </span>
+    </button></Tooltip>
     {tool.isSubAgent && renderSubAgentHistory && <details className="conversation-work__subagent" open={historyOpen}>
       <summary onClick={(event) => { event.preventDefault(); setHistoryOpen(!historyOpen) }}>Sub-agent transcript <ChevronRight size={12} aria-hidden /></summary>
       {historyOpen && <div className="conversation-work__history">{renderSubAgentHistory(tool)}</div>}

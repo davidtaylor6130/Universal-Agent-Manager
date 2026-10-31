@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Button, cx } from '../ui'
+import { Button, Tooltip, cx } from '../ui'
 import type { ButtonProps } from '../ui'
 import './settings-shell.css'
 
@@ -26,7 +26,7 @@ export function SettingsSection({ title, description, actions, children, flush =
       <header className="uam-set-section__head">
         <div className="min-w-0">
           <h3 className="uam-set-section__title">{title}</h3>
-          {description && <p className="uam-set-section__desc" title={typeof description === 'string' ? description : undefined}>{description}</p>}
+          {description && <Tooltip label={typeof description === 'string' ? description : undefined}><p className="uam-set-section__desc">{description}</p></Tooltip>}
         </div>
         {actions && <div className="uam-set-section__actions">{actions}</div>}
       </header>
@@ -87,7 +87,7 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
         {icon && <span className="uam-set-row__icon">{icon}</span>}
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
-          {description && <div id={descriptionId} className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
+          {description && <Tooltip label={typeof description === 'string' ? description : undefined}><div id={descriptionId} className="uam-set-row__desc">{description}</div></Tooltip>}
           {status && <div id={statusId} className="uam-set-row__status">{status}</div>}
         </div>
         {control && <div ref={controlRef} className="uam-set-row__control">{control}</div>}

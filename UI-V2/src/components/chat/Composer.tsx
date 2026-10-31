@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight, Check, X } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -23,7 +23,7 @@ import {
   modelOptionFor,
   reasoningEffortForModel,
 } from './modelOptions'
-import { MenuSelect, ViewportMenu } from '../ui'
+import { MenuSelect, Tooltip, ViewportMenu } from '../ui'
 import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -70,7 +70,7 @@ export function ComposerIcon({ name, size = 14 }: { name: ComposerIconName; size
       <span
         aria-hidden="true"
         className="font-semibold leading-none font-mono"
-        style={{ fontSize: 11, letterSpacing: 0 }}
+        style={{ fontSize: 'var(--fs-xs)', letterSpacing: 0 }}
       >
         .md
       </span>
@@ -105,7 +105,7 @@ function ComposerChoice({ icon, chipLabel, ...props }: Parameters<typeof MenuSel
 function ActiveModeChip({ label, compactLabel = label, icon, onClear }: { label: string; compactLabel?: string; icon: ReactNode; onClear?: () => void }) {
   return onClear
     ? <ComposerChoice label={label} chipLabel={label} value="on" icon={icon} options={[{ value: 'on', label: compactLabel }, { value: 'off', label: 'Off' }]} onChange={(value) => { if (value === 'off') onClear() }} />
-    : <span data-mode-chip={label} className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2 text-xs" title={label}>{icon}<span>{compactLabel}</span></span>
+    : <Tooltip label={label}><span data-mode-chip={label} className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2 text-xs">{icon}<span>{compactLabel}</span></span></Tooltip>
 }
 
 /** Selected agent precedes the draft without becoming part of submitted text. */
@@ -379,10 +379,9 @@ export function ComposerToolbar({
       }}
     >
       <div ref={optionsRef} className="relative shrink-0" style={isCompanionContext() ? { display: 'none' } : undefined}>
-        <button
+        <Tooltip label="Add files, goal, and options"><button
           ref={optionsTriggerRef}
           type="button"
-          title="Add files, goal, and options"
           aria-label="Options"
           aria-haspopup="menu"
           aria-expanded={optionsOpen}
@@ -396,7 +395,7 @@ export function ComposerToolbar({
           }}
         >
           <Plus size={16} aria-hidden />
-        </button>
+        </button></Tooltip>
         {optionsOpen && (
           <ViewportMenu
             ref={optionsMenuRef}
@@ -409,11 +408,11 @@ export function ComposerToolbar({
             className="uam-cmenu"
           >
             {!isCompanionContext() && <>
-              <button type="button" role="menuitem" className="uam-cmenu__item" title="Attach files to the next message" onClick={() => { setOptionsOpen(false); onAttachFile() }}>
+              <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onAttachFile() }}>
                 <Paperclip size={15} aria-hidden className="uam-cmenu__icon" />
-                <span className="uam-cmenu__text"><span>Attach files</span><small>Add files to the next message</small></span>
+                <span className="uam-cmenu__text"><span>Attach files</span></span>
               </button>
-              <button type="button" role="menuitem" className="uam-cmenu__item" title="Open Skills" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
+              <button type="button" role="menuitem" className="uam-cmenu__item" onClick={() => { setOptionsOpen(false); onOpenMarkdownStore() }}>
                 <span className="uam-cmenu__icon"><ComposerIcon name="markdown" /></span>
                 <span className="uam-cmenu__text"><span>Skills</span><small>Insert a saved prompt</small></span>
                 <ChevronRight size={14} aria-hidden className="uam-cmenu__trail" />
@@ -426,14 +425,13 @@ export function ComposerToolbar({
               role="menuitem"
               className="uam-cmenu__item"
               data-on={goalActive || goalArmed}
-              title={goalActive ? 'Pause goal mode' : goalPaused ? 'Resume goal mode' : goalArmed ? 'Next message will become the goal' : 'Use the next message as a goal'}
               aria-pressed={goalActive || goalArmed}
               disabled={modelDisabled}
               onClick={() => { setOptionsOpen(false); onToggleGoal() }}
             >
               <Target size={15} aria-hidden className="uam-cmenu__icon" style={{ color: goalActive || goalArmed ? 'var(--purple)' : undefined }} />
               <span className="uam-cmenu__text"><span>{goalArmed ? 'Goal: next message' : 'Goal'}</span><small>{goalActive ? 'Running · click to pause' : goalPaused ? 'Paused · click to resume' : 'Keep working until a goal is met'}</small></span>
-              <span className="uam-cmenu__pill" data-on={goalActive || goalArmed}>{goalActive || goalArmed ? 'On' : 'Off'}</span>
+              <span className="uam-cmenu__pill" data-on={goalActive || goalArmed}>{goalActive || goalArmed ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{goalActive || goalArmed ? 'On' : 'Off'}</span>
             </button>
             <label className="uam-cmenu__setting uam-cmenu__setting--nested" aria-label="Goal token budget">
               <span>Token budget</span>
@@ -452,13 +450,12 @@ export function ComposerToolbar({
               role="menuitem"
               className="uam-cmenu__item"
               data-on={computerUseMode}
-              title={computerUseMode ? 'Turn off computer use' : 'Turn on computer use'}
               aria-pressed={computerUseMode}
               onClick={() => { setOptionsOpen(false); onToggleComputerUseMode() }}
             >
               <MousePointer2 size={15} aria-hidden className="uam-cmenu__icon" style={{ color: computerUseMode ? 'var(--accent)' : undefined }} />
               <span className="uam-cmenu__text"><span>Computer use…</span><small>Let the agent see and control an app</small></span>
-              <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? 'On' : 'Off'}</span>
+              <span className="uam-cmenu__pill" data-on={computerUseMode}>{computerUseMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{computerUseMode ? 'On' : 'Off'}</span>
             </button>}
             {featurePreference === 'uam' && <button
               type="button"
@@ -472,7 +469,7 @@ export function ComposerToolbar({
             >
               <Cpu size={15} aria-hidden className="uam-cmenu__icon" style={{ color: smallModelMode ? 'var(--accent)' : undefined }} />
               <span className="uam-cmenu__text"><span>Architect + worker</span><small>Plan, then run and review step by step</small></span>
-              <span className="uam-cmenu__pill" data-on={smallModelMode}>{smallModelMode ? 'On' : 'Off'}</span>
+              <span className="uam-cmenu__pill" data-on={smallModelMode}>{smallModelMode ? <Check size={12} aria-hidden style={{ color: 'var(--success)' }} /> : <X size={12} aria-hidden />}{smallModelMode ? 'On' : 'Off'}</span>
             </button>}
             {featurePreference === 'uam' && smallModelMode && <>
               <div className="uam-cmenu__setting uam-cmenu__setting--nested">
@@ -597,9 +594,8 @@ export function ComposerToolbar({
         )}
       </div>
       {dictationActive ? (
-        <button
+        <Tooltip label={dictationError || dictationLabel}><button
           type="button"
-          title={dictationError || dictationLabel}
           aria-label={dictationLabel}
           aria-pressed={dictationState !== 'idle'}
           aria-busy={dictationState === 'starting' || dictationState === 'stopping'}
@@ -618,9 +614,9 @@ export function ComposerToolbar({
           {dictationState === 'listening' && (
             <span className="tabular-nums">{Math.floor(dictationElapsedSeconds / 60)}:{String(dictationElapsedSeconds % 60).padStart(2, '0')}</span>
           )}
-        </button>
+        </button></Tooltip>
       ) : <>
-      <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+      <fieldset style={{ border: 0, padding: 0, margin: 0 }} className="animate-fade-in uam-composer-status-chips flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
         {goalArmed && <ActiveModeChip label="Goal: next message" compactLabel="Goal" icon={<Target size={12} aria-hidden style={{ color: 'var(--purple)' }} />} onClear={onToggleGoal} />}
         {COMPUTER_USE_ENABLED && computerUseMode && <ActiveModeChip label={computerUseAwaitingTarget ? 'Computer use: awaiting target approval' : 'Computer use'} compactLabel="Computer" icon={<MousePointer2 size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={onToggleComputerUseMode} />}
         {featurePreference === 'provider' && providerPlanActive && <ComposerChoice label="Provider mode" chipLabel="Provider Plan" value={providerModeId ?? 'default'} icon={<ClipboardList size={12} aria-hidden />} options={providerModes.map((mode) => ({ value: mode.id, label: mode.name, description: mode.description }))} onChange={onSelectProviderMode} disabled={modelDisabled} />}
@@ -633,12 +629,11 @@ export function ComposerToolbar({
           onChange={onSelectPermissionMode}
           disabled={!permissionsManagedByUam || permissionControlsDisabled}
         />
-        <button
+        <Tooltip label="Use memories in this chat"><button
           type="button"
           data-mode-chip={memoryOn ? 'Memory On' : 'Memory Off'}
           aria-pressed={memoryOn}
           aria-label={memoryOn ? 'Memory on' : 'Memory off'}
-          title="Use memories in this chat"
           onClick={() => onSelectMemoryLevel(memoryOn ? 'off' : memoryRestoreLevel)}
           disabled={memoryDisabled}
           className="uam-composer-action inline-flex h-[26px] min-w-0 shrink-0 items-center gap-1.5 px-2 text-xs"
@@ -646,7 +641,7 @@ export function ComposerToolbar({
         >
           <Brain size={12} aria-hidden />
           <span>{memoryOn ? `Memory On · ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}` : 'Memory Off'}</span>
-        </button>
+        </button></Tooltip>
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
         {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
@@ -655,13 +650,12 @@ export function ComposerToolbar({
 
       </fieldset>
       <div className="flex shrink-0 items-center gap-2">
-        {draftPending && <span data-draft-indicator className="text-xs" style={{ color: 'var(--text-3)' }} title="You have unsent text in the composer">Draft</span>}
+        {draftPending && <Tooltip label="You have unsent text in the composer"><span data-draft-indicator className="text-xs" style={{ color: 'var(--text-3)' }}>Draft</span></Tooltip>}
         <ProviderAllowanceIndicator providerId={providerId} sourceProviderId={acp?.providerId} rateLimits={acp?.providerUsage?.rateLimits} running={Boolean(acp?.running)} />
         <div ref={modelMenuRef} className="relative">
-          <button
+          <Tooltip label={`${architectModelsInOptions ? 'Worker model is managed in Options' : 'Model'} · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}><button
             ref={modelTriggerRef}
             type="button"
-            title={`${architectModelsInOptions ? 'Worker model is managed in Options' : 'Model'} · ${providerName} · ${currentModel.label} · ${runtimeStatusLabel}`}
             aria-label={architectModelsInOptions ? 'Worker model is managed in Options' : 'Select provider and model'}
             onClick={onToggleModel}
             disabled={selectorDisabled}
@@ -681,7 +675,7 @@ export function ComposerToolbar({
             <ProviderLogo providerId={providerId} />
             <span className="truncate" style={{ color: 'var(--text)' }}>{currentModel.shortLabel}</span>
             <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: runtimeStatusColor }} />
-          </button>
+          </button></Tooltip>
           {modelOpen && !selectorDisabled && (
             <ViewportMenu
               anchorRef={modelTriggerRef}
@@ -722,9 +716,9 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        {<button type="button" title={isCompanionContext() ? `${dictationLabel} · or use your keyboard microphone` : dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
+        {<Tooltip label={isCompanionContext() ? `${dictationLabel} · or use your keyboard microphone` : dictationLabel}><button type="button" aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
           <Mic size={15} aria-hidden />
-        </button>}
+        </button></Tooltip>}
       </div>
       </>}
         {running && !canSend ? (
@@ -740,7 +734,7 @@ export function ComposerToolbar({
             borderRadius: 8,
             border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
             background: canSend ? 'var(--accent)' : 'var(--surface-up)',
-            color: canSend ? '#fff' : 'var(--text-3)',
+            color: canSend ? 'var(--on-accent)' : 'var(--text-3)',
           }}
         >
           <ComposerIcon name="send" size={15} />

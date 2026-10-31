@@ -57,12 +57,12 @@
   background: var(--message-user-bg);
   color: var(--text);
 }
-.conversation-turn__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; line-height: 1.4; color: var(--text-3); }
+.conversation-turn__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; font-size: var(--fs-xs); line-height: 1.4; color: var(--text-3); }
 .conversation-turn--user .conversation-turn__footer { justify-content: flex-end; margin-top: 5px; }
 .conversation-turn__actions, .conversation-turn__branches { display: inline-flex; align-items: center; gap: 3px; }
 .conversation-turn__branches { font-variant-numeric: tabular-nums; }
 
-.conversation-work { width: 100%; margin-bottom: 4px; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.conversation-work { width: 100%; margin-bottom: 4px; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-3); }
 .conversation-work__summary { display: block; list-style: none; cursor: pointer; }
 .conversation-work__summary::-webkit-details-marker { display: none; }
 .conversation-work__heading { display: flex; align-items: center; gap: 7px; min-height: 24px; }
@@ -84,11 +84,11 @@
 .conversation-work__tool { display: flex; width: 100%; align-items: baseline; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
 .conversation-work__event-icon { position: absolute; left: -8px; top: 5px; color: var(--text-3); background: var(--bg); }
 .conversation-work__tool-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-work__status { flex-shrink: 0; font-size: 12px; color: var(--text-3); }
+.conversation-work__status { flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-3); }
 .conversation-work__status[data-failed="true"] { color: var(--red); }
 .conversation-work__tool:hover .conversation-work__tool-title { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
-.conversation-work__reasoning, .conversation-work .conversation-work__reasoning .prose-msg { color: var(--text-3); font-size: 12px; line-height: 1.55; }
-.conversation-work__subagent { margin-top: 6px; font-size: 12px; }
+.conversation-work__reasoning, .conversation-work .conversation-work__reasoning .prose-msg { color: var(--text-3); font-size: var(--fs-sm); line-height: 1.55; }
+.conversation-work__subagent { margin-top: 6px; font-size: var(--fs-sm); }
 .conversation-work__subagent > summary { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; }
 .conversation-work__subagent > summary::-webkit-details-marker { display: none; }
 .conversation-work__subagent[open] > summary > svg { transform: rotate(90deg); }
@@ -105,7 +105,7 @@
 .conversation-day-divider { display: flex; align-items: center; gap: var(--sp-2); margin: var(--sp-4) 0 0; color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .conversation-day-divider::before, .conversation-day-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 /* Static notice divider: same hairline-and-label form as the compacted-context line. */
-.conversation-interrupted { display: flex; align-items: center; gap: 8px; margin: 16px 0; color: var(--text-3); font-size: 12px; }
+.conversation-interrupted { display: flex; align-items: center; gap: 8px; margin: 16px 0; color: var(--text-3); font-size: var(--fs-sm); }
 .conversation-interrupted::before, .conversation-interrupted::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .conversation-interrupted svg { flex-shrink: 0; color: var(--warning); }
 [data-processing-step="true"] .conversation-work__tool-title,
@@ -138,8 +138,8 @@
   [data-processing-step="true"] .conversation-work__thought-label::after { display: none; }
 }
 
-.conversation-work__inline { font-size: 12px; line-height: 1.55; color: var(--text-3); }
-.conversation-work__thought-label { flex-shrink: 0; font-size: 11px; color: var(--text-3); }
+.conversation-work__inline { font-size: var(--fs-sm); line-height: 1.55; color: var(--text-3); }
+.conversation-work__thought-label { flex-shrink: 0; font-size: var(--fs-xs); color: var(--text-3); }
 .conversation-work__thought > summary { display: flex; align-items: center; gap: 8px; list-style: none; cursor: pointer; }
 .conversation-work__thought > summary::-webkit-details-marker { display: none; }
 .conversation-work__thought > summary > svg:last-child { flex-shrink: 0; }
@@ -150,16 +150,16 @@
 .conversation-trace__internal { margin-left: 7px; border-left: 1px solid var(--border-bright); }
 .conversation-trace__text { padding-block: 4px; }
 
-.conversation-work__inline .conversation-work__reasoning .prose-msg { font-size: 12px; line-height: 1.55; color: var(--text-3); }
+.conversation-work__inline .conversation-work__reasoning .prose-msg { font-size: var(--fs-sm); line-height: 1.55; color: var(--text-3); }
 
 .context-compaction { margin: 16px 0; }
-.context-compaction > summary { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 6px; color: var(--text-3); font-size: 12px; cursor: pointer; list-style: none; }
+.context-compaction > summary { display: flex; align-items: center; gap: 10px; padding: 6px 4px; border-radius: 6px; color: var(--text-3); font-size: var(--fs-sm); cursor: pointer; list-style: none; }
 .context-compaction > summary::-webkit-details-marker { display: none; }
 .context-compaction > summary::before, .context-compaction > summary::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .context-compaction > summary:hover { color: var(--text-2); }
 .context-compaction > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .context-compaction[open] > summary { color: var(--text-2); }
-.context-compaction > div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 13px; color: var(--text-2); }
+.context-compaction > div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: var(--fs-base); color: var(--text-2); }
 
 /* Loading and empty history: a quiet shimmer on placeholder rows that mirror the transcript layout. */
 .conversation-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-4); min-height: 30vh; font-size: var(--fs-base); color: var(--text-2); }
@@ -186,7 +186,7 @@
 
 /* Message rail hover preview, beside the hovered mark. */
 .conversation-rail-preview { position: absolute; transform: translateY(-50%); left: 62px; width: 220px; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface-up); box-shadow: var(--elev-2); color: var(--text-2); font-size: var(--fs-xs); line-height: 1.4; pointer-events: none; white-space: normal; text-align: left; animation: conversation-rail-in var(--dur-fast) var(--ease-out-soft) backwards; }
-.conversation-rail-preview__label { display: block; margin-bottom: 2px; color: var(--text-3); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.conversation-rail-preview__label { display: block; margin-bottom: 2px; color: var(--text-3); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .conversation-rail-preview__title { color: var(--text); font-weight: 600; }
 .conversation-rail-preview__hint { margin-top: 2px; color: var(--text-3); }
 .conversation-rail-preview__text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
@@ -222,7 +222,7 @@
 /* ── Chat status divider ─────────────────────────────────────
    Live status is an inline transcript divider, styled like the compacted-context line: hairlines either
    side of a small illustrated scene (tinted per state), the title and a live timer. Springs in and out. */
-.chat-status-strip { --strip-tint: var(--info); display: flex; align-items: center; gap: 10px; width: 100%; margin: 16px 0; color: var(--text-3); font-size: 12px; animation: chat-status-in 420ms var(--ease-spring) backwards; }
+.chat-status-strip { --strip-tint: var(--info); display: flex; align-items: center; gap: 10px; width: 100%; margin: 16px 0; color: var(--text-3); font-size: var(--fs-sm); animation: chat-status-in 420ms var(--ease-spring) backwards; }
 .chat-status-strip::before, .chat-status-strip::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .chat-status-strip[data-tone="agents"] { --strip-tint: var(--teal); }
 .chat-status-strip[data-tone="warning"] { --strip-tint: var(--warning); }
@@ -288,7 +288,7 @@
 .status-bed__sleeper .status-agent__closed--on { opacity: 1; }
 .status-bed__frame { opacity: .7; }
 .status-bed__z { opacity: 0; animation: scene-z 3.2s ease-out infinite; }
-.status-bed__z--2 { animation-delay: 1.6s; font-size: 6.5px; }
+.status-bed__z--2 { animation-delay: 1.6s; font-size: 6.5px; /* glyph size, not text */ }
 @keyframes scene-breathe { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.18); } }
 
 /* Refreshing history: a page whose three lines are read in turn, left to right. */

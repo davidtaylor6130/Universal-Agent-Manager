@@ -54,13 +54,6 @@
   overflow-wrap: anywhere;
 }
 .uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.uam-np-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-}
 .uam-np-row__dismiss {
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);

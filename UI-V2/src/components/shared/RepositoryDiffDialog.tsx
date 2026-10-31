@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { Button, IconButton, Overlay, Presence } from '../ui'
+import { Button, IconButton, Notice, Overlay, Presence, Tooltip } from '../ui'
 import './review.css'
 import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
@@ -96,17 +96,19 @@ export function RepositoryDiffDialog({
         <header className="uam-rv-dialog__header">
           <FileText size={16} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold" title={file.path} style={{ color: 'var(--text)' }}>{file.path}</div>
-            {(comparisonLabel || comparisonRef) && <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{comparisonLabel || `Against ${comparisonRef}`}</div>}
-            {showFileStats && <div className="uam-rv-stat mt-0.5">
-              <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-              {!file.binary && <><span style={{ color: 'var(--success)' }}>+{file.additions}</span><span style={{ color: 'var(--error)' }}>-{file.deletions}</span></>}
+            <Tooltip label={file.path}><div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{file.path}</div></Tooltip>
+            {(comparisonLabel || comparisonRef || showFileStats) && <div className="flex min-w-0 items-center gap-2 text-xs" style={{ color: 'var(--text-3)' }}>
+              {(comparisonLabel || comparisonRef) && <span className="truncate">{comparisonLabel || `Against ${comparisonRef}`}</span>}
+              {showFileStats && <span className="uam-rv-stat shrink-0">
+                <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
+                {!file.binary && <><span style={{ color: 'var(--success)' }}>+{file.additions}</span><span style={{ color: 'var(--error)' }}>-{file.deletions}</span></>}
+              </span>}
             </div>}
           </div>
           <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
           {!file.binary && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
-            <button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} title="Unified diff view" onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button>
-            <button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} title="Split diff view" onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button>
+            <Tooltip label="Unified diff view"><button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button></Tooltip>
+            <Tooltip label="Split diff view"><button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button></Tooltip>
           </div>}
           {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
           <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
@@ -115,7 +117,7 @@ export function RepositoryDiffDialog({
           {file.binary ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>Binary changes cannot be previewed.</div>
           ) : error ? (
-            <div role="alert" className="uam-rv-alert m-4" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</div>
+            <div className="m-4"><Notice tone="error" dismissLabel="Dismiss">{error}</Notice></div>
           ) : diff === null ? (
             <div role="status" className="p-6 text-center text-sm" style={{ color: 'var(--text-3)' }}>Loading file changes…</div>
           ) : diff.length === 0 ? (

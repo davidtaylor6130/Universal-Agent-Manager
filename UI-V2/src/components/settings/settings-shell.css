@@ -32,17 +32,6 @@
 /* Typography: each row pairs its controls with a live sample. */
 .uam-typo-row { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .uam-typo-row:last-child { padding-bottom: 0; border-bottom: 0; }
-.uam-typo-row__preview {
-  min-height: 36px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  color: var(--text);
-  white-space: pre;
-  overflow-x: auto;
-  transition: font-size var(--dur-base) var(--ease-out-soft);
-}
 .uam-typo-row__meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
 
 /* Section-level helpers shared by settings pages. */

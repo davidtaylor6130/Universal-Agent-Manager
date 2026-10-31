@@ -3,7 +3,7 @@ import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { routingReservation, type RoutingReservation } from '../../types/executionRouting'
 import type { Session } from '../../types/session'
-import { Button, ConfirmDialog, IconButton, Overlay } from '../ui'
+import { Button, ConfirmDialog, IconButton, Notice, Overlay } from '../ui'
 import { ExecutionRoutingSettings } from '../settings/ExecutionRoutingSettings'
 import './ExecutionRoutingDialog.css'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
@@ -51,15 +51,18 @@ export function ExecutionRoutingWaitNotice({ session }: { session: Session }) {
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   if (!session.routingWaitReason && !session.routingUnresolvedReservation) return null
-  return <div role="status" className="border-b border-[var(--border)] px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
-    <span>{session.routingWaitReason || 'This chat has an unresolved remote reservation.'}</span>
-    <Button variant="ghost" size="sm" onClick={() => setConfigure(true)}>Routing settings</Button>
-    {routingReservation(session) && <Button variant="ghost" size="sm" onClick={() => { setExpected(routingReservation(session)); setError('') }}>Release reservation</Button>}
+  return <>
+    <Notice tone="warning" title="Routing needs attention" dismissible={false} dismissLabel="Dismiss" actions={<>
+      <Button variant="ghost" size="sm" onClick={() => setConfigure(true)}>Routing settings</Button>
+      {routingReservation(session) && <Button variant="ghost" size="sm" onClick={() => { setExpected(routingReservation(session)); setError('') }}>Release reservation</Button>}
+    </>}>
+      {session.routingWaitReason || 'This chat has an unresolved remote reservation.'}
+    </Notice>
     {configure && <ExecutionRoutingDialog onClose={() => setConfigure(false)} />}
     <ConfirmDialog open={expected !== null} title="Release remote reservation?" confirmLabel="Release reservation" busy={busy} error={error} onCancel={() => { if (!busyRef.current) setExpected(null) }} onConfirm={() => {
       if (!expected || busyRef.current) return
       busyRef.current = true; setBusy(true); setError('')
       void release(expected).then(() => setExpected(null)).catch((failure) => setError(failure instanceof Error ? failure.message : 'The reservation could not be released.')).finally(() => { busyRef.current = false; setBusy(false) })
     }}>The existing runner process may still exist on this computer. Release this reservation only after checking the runner. UAM may assign new work to this computer after release.</ConfirmDialog>
-  </div>
+  </>
 }

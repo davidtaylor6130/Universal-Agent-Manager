@@ -7,6 +7,7 @@ import { fallbackProviderForId } from '../../utils/providerMetadata'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
+vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 describe('Composer unavailable Gemini thinking', () => {
   it('exposes the saved unavailable choice and keyboard Default recovery for an alias', () => {
     window.cefQuery = undefined

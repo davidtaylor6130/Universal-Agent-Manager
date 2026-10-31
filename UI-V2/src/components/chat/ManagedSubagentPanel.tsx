@@ -1,7 +1,7 @@
 import { readChatGridLayout } from '../../utils/chatGridStorage'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Bot, CircleDashed, Square, Users } from 'lucide-react'
-import { Button, Tooltip } from '../ui'
+import { Button, Notice, Tooltip, motionAllowed } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { isCefContext } from '../../ipc/cefBridge'
 import { subagentRouteFor, subscribeSubagentNavigation, subagentNavigationRevision, openSubagentView } from '../../utils/subagentNavigation'
@@ -271,9 +271,9 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
   return <section ref={panelRef} tabIndex={-1} className="uam-managed-panel" aria-label="UAM-managed subagents">
     <details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
       <summary><Users size={15} aria-hidden /><span>Managed subagents{page ? ` (${page.totalCount})` : ''}</span></summary>
-      {open && <>
+      {open && <div className={motionAllowed() ? 'uam-reveal' : undefined}>
         {loading && !page && <p role="status">Loading managed subagents…</p>}
-        {error && <p role={page?.totalCount || runId ? 'alert' : undefined} className={page?.totalCount || runId ? 'uam-managed-panel__error' : 'uam-managed-panel__meta'}>{error}{page ? ' Previously loaded rows remain visible.' : ''}</p>}
+        {error && (page?.totalCount || runId ? <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}{page ? ' Previously loaded rows remain visible.' : ''}</Notice> : <p className="uam-managed-panel__meta">{error}{page ? ' Previously loaded rows remain visible.' : ''}</p>)}
         {stopMessage && <p role="status" className="uam-managed-panel__meta">{stopMessage}</p>}
         {page && <>
           {page.runs.length === 0 && <p role="status">No managed subagents on this page.</p>}
@@ -298,7 +298,7 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
             <Button size="sm" variant="ghost" disabled={page.nextOffset === null || Boolean(stopping)} onClick={() => { if (page.nextOffset !== null) { interruptRead(); if (offset === page.nextOffset) setAttempt(value => value + 1); else setOffsets(value => [...value, page.nextOffset!]) } }}>More children</Button>
           </div>}
         </>}
-      </>}
+      </div>}
     </details>
   </section>
 }
@@ -307,6 +307,5 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
 function ManagedRunDetails({ run, runs, names }: { run: ManagedSubagentRun; runs: ManagedSubagentRun[]; names: Map<string, string> }) {
   return <>
     <p className="uam-managed-panel__meta">{run.parentRunId ? `Subagent of ${names.get(run.parentRunId) || 'another managed run'}` : 'Subagent of this parent chat'} · {[run.agentId, run.providerId, run.modelId, run.host || 'Execution host unavailable'].filter(Boolean).join(' · ')}</p>
-    {run.parentRunId && <p className="uam-managed-panel__identity">Parent run: {run.parentRunId}</p>}
   </>
 }

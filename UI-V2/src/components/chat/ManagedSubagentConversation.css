@@ -8,13 +8,13 @@
 .uam-subagent-transcript:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .uam-subagent-transcript__meta { color: var(--text-3); font-size: var(--fs-xs); text-align: center; margin-block: 4px 8px; }
 .uam-subagent-transcript__empty { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; }
-.uam-managed-conversation__meta { color: var(--text-3); font-size: 11px; }
+.uam-managed-conversation__meta { color: var(--text-3); font-size: var(--fs-xs); }
 .uam-managed-conversation > .uam-managed-conversation__meta:not(.sr-only) { padding-inline: 16px; }
-.uam-managed-conversation__error { color: var(--red); font-size: 12px; overflow-wrap: anywhere; padding-inline: 16px; }
+.uam-managed-conversation__error { color: var(--red); font-size: var(--fs-sm); overflow-wrap: anywhere; padding-inline: 16px; }
 
 /* Shown only while a follow-up request or draft is unresolved; never a standing composer. */
 .uam-managed-conversation__followup { display: grid; flex: none; gap: 6px; padding: 10px 16px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.uam-managed-conversation__followup > label { color: var(--text-2); font-size: 12px; }
+.uam-managed-conversation__followup > label { color: var(--text-2); font-size: var(--fs-sm); }
 .uam-managed-conversation__followup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
 /* Keep the multi-pane colour cue on the child bar, matching the chat header it replaces. */

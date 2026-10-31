@@ -5,7 +5,7 @@ import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, IconButton, Overlay, Tooltip } from '../ui'
+import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import '../shared/review.css'
 
@@ -262,27 +262,32 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
             const providerName = providerMetadataForId(candidate.providerId).name
             const host = candidate.executionHostId && candidate.executionHostId !== 'local' ? candidate.executionHostId : ''
             const providerLabel = host ? `${providerName} · ${host}` : providerName
-            const grouped = !candidate.folderId || candidate.newWorkspace
             const assigning = assignmentId === candidate.candidateId
             const formId = `native-assignment-${candidate.candidateId}`
-            return <div key={candidate.candidateId} style={grouped ? { borderBottom: '1px solid var(--border)' } : undefined}>
-              <label className="uam-rv-row" style={grouped ? { borderBottom: 'none' } : undefined} data-selected={selected.includes(candidate.candidateId)}>
-                <input className="uam-rv-check" type="checkbox" data-native-candidate-id={candidate.candidateId} aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
-                <span className="uam-rv-row__title">{candidate.title}</span>
-                <Tooltip label={providerLabel}>
-                  <span role="img" aria-label={providerLabel} className="uam-rv-row__provider"><ProviderLogo providerId={candidate.providerId} size={14} /></span>
-                </Tooltip>
-                <Tooltip label={candidate.workspaceDirectory}>
-                  <span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{lastDirectoryName(candidate.workspaceDirectory)}</span>
-                </Tooltip>
-              </label>
-              {!candidate.folderId && <div className="grid gap-2 px-4 pb-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="uam-rv-muted">Workspace required</span>
+            const newWorkspaceNote = `New workspace: ${candidate.workspaceTitle}. Saved with import.`
+            return <div key={candidate.candidateId}>
+              <div className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
+                <label className="uam-rv-row__main">
+                  <input className="uam-rv-check" type="checkbox" data-native-candidate-id={candidate.candidateId} aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
+                  <Tooltip label={providerLabel}>
+                    <span role="img" aria-label={providerLabel} className="uam-rv-row__provider"><ProviderLogo providerId={candidate.providerId} size={14} /></span>
+                  </Tooltip>
+                  <Tooltip label={candidate.workspaceDirectory}>
+                    <span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{lastDirectoryName(candidate.workspaceDirectory)}</span>
+                  </Tooltip>
+                  <Tooltip label={candidate.title}>
+                    <span className="uam-rv-row__title">{candidate.title}</span>
+                  </Tooltip>
+                </label>
+                {candidate.newWorkspace && <Tooltip label={newWorkspaceNote}><span className="uam-rv-row__note">{newWorkspaceNote}</span></Tooltip>}
+                {!candidate.folderId && <>
+                  <span className="uam-rv-row__note">Workspace required</span>
                   <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} aria-expanded={assigning} aria-controls={assigning ? formId : undefined} disabled={busy || importing || assigning} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
-                </div>
-                {assigning && <form id={formId} className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void assignWorkspace(candidate.candidateId) }}>
-                  <p className="uam-rv-muted">Use the native workspace below. It will be saved in UAM only when a selected chat is imported.</p>
+                </>}
+              </div>
+              {!candidate.folderId && assigning && <div className="grid gap-2 px-4 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                <form id={formId} className="grid gap-2" onSubmit={(event) => { event.preventDefault(); void assignWorkspace(candidate.candidateId) }}>
+                  <p className="uam-rv-muted">Saved when the chat is imported.</p>
                   <code className="break-all">{candidate.workspaceDirectory}</code>
                   <label className="grid gap-1">
                     <span>Workspace name</span>
@@ -290,18 +295,17 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
                   </label>
                   <div className="flex justify-end gap-2">
                     <Button type="button" size="sm" variant="ghost" disabled={busy || importing} onClick={() => { assignmentFocus.current = candidate.candidateId; setAssignmentId(null) }}>Cancel assignment</Button>
-                    <Button type="submit" size="sm" disabled={busy || importing || !workspaceName.trim()}>Stage workspace</Button>
+                    <Button type="submit" size="sm" disabled={busy || importing || !workspaceName.trim()}>Save workspace</Button>
                   </div>
-                </form>}
+                </form>
               </div>}
-              {candidate.newWorkspace && <p className="uam-rv-muted px-4 pb-2">New workspace: {candidate.workspaceTitle}. Saved with import.</p>}
             </div>
           })}
         </div>
         <div className="flex flex-col gap-2 px-4 py-2">
           {!busy && !importing && page && candidates.length === 0 && <p style={{ color: 'var(--text-2)' }}>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
           {needsAssignment > 0 && <p role="status" className="uam-rv-muted">Assign workspaces for {needsAssignment} selected {needsAssignment === 1 ? 'history' : 'histories'} before importing.</p>}
-          {busy && !importing && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'assign' ? 'Staging workspace…' : busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
+          {busy && !importing && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'assign' ? 'Saving workspace…' : busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
           {importing && <div className="flex flex-col gap-1">
             <div className="uam-rv-importing">
               <Loader2 size={14} className="uam-rv-spin" aria-hidden style={{ color: 'var(--text-2)' }} />
@@ -311,10 +315,10 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
               <span style={batch.expectedCount > 0 ? { transform: `scaleX(${batchDone / batch.expectedCount})` } : undefined} />
             </div>
           </div>}
-          {error && <p role="alert" className="uam-rv-alert" style={outcome ? { background: partial ? 'var(--warning-dim)' : 'var(--error-dim)', color: partial ? 'var(--warning)' : 'var(--error)' } : { background: 'var(--error-dim)', color: 'var(--error)' }}>
+          {error && <Notice key={error} tone={partial ? 'warning' : 'error'} dismissLabel="Dismiss">
             {error}
             {outcome && outcome.failed > 0 && <strong className="uam-rv-alert__count">{outcome.failed} failed</strong>}
-          </p>}
+          </Notice>}
         </div>
         <div className="uam-rv-actions">
           <IconButton size="sm" icon={<EyeOff size={14} />} label="Ignore selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)} />
@@ -325,7 +329,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
             <Button type="button" size="sm" variant="ghost" disabled={busy || importing || page.nextOffset >= page.totalCount} onClick={() => void load(page.nextOffset)}>Next</Button>
           </>}
           <span className="uam-rv-actions__spacer" />
-          <Button type="button" size="sm" variant="primary" leadingIcon={<Download size={14} />} aria-label="Import selected" disabled={busy || importing || selected.length === 0 || needsAssignment > 0} onClick={() => void decide(true)}>{selected.length > 0 ? `Import ${selected.length}` : 'Import'}</Button>
+          <Button type="button" size="sm" variant="primary" leadingIcon={<Download size={14} />} disabled={busy || importing || selected.length === 0 || needsAssignment > 0} onClick={() => void decide(true)}>{selected.length > 0 ? `Import ${selected.length}` : 'Import'}</Button>
         </div>
       </div>
     </div>

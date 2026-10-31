@@ -351,7 +351,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         {!markdownStoreDirectory ? <div className="flex-1 min-h-0 flex flex-col py-4">
           <div className="uam-store-card uam-store-empty flex-1">
             <FolderOpen size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
-            <div className="uam-store-empty__title">Choose a Skills folder</div>
+            <div className="uam-store-empty__title">Choose a skills folder</div>
             <div className="uam-store-empty__desc">Skills are plain Markdown files kept in one folder. Pick where yours should live.</div>
             <div className="uam-store-empty__action"><Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button></div>
           </div>

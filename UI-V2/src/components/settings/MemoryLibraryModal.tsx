@@ -4,7 +4,7 @@ import './stores.css'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -339,10 +339,10 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
   const isAllMemory = memoryLibraryScope.scopeType === 'all'
   const memoryTitle = memoryLibraryScope.scopeType === 'global'
-    ? 'Global Memory'
+    ? 'Global memory'
     : isAllMemory
-      ? 'All Memory'
-      : `${memoryLibraryScope.label} Memory`
+      ? 'All memory'
+      : `${memoryLibraryScope.label} memory`
   const targetValue = draft.targetScopeType === 'folder' && draft.targetFolderId
     ? `folder:${draft.targetFolderId}`
     : 'global'
@@ -592,11 +592,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                                       <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
                                     </div>
                                   </div>
-                                  <div className="uam-memory-card__meta">
+                                  <div className="uam-memory-card__meta" title={entry.sourceChatId ? `Source chat: ${chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}` : undefined}>
                                     <span className="uam-memory-chip" data-confidence={entry.confidence}>{entry.confidence} confidence</span>
-                                    <span>{entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}</span>
-                                    <span>{entry.scope}</span>
-                                    {entry.sourceChatId && <span title={`Source chat: ${entry.sourceChatId}`}>From “{chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}”</span>}
                                     {entry.lastObserved && <span title={entry.lastObserved}>Seen {formatObserved(entry.lastObserved)}</span>}
                                   </div>
                                 </article>
@@ -723,101 +720,33 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         </div>
       </div>}
 
-      {pendingDelete && (
-        <div
-          className="uam-overlay uam-overlay--dim fixed inset-0 z-[60] flex items-center justify-center"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setPendingDeleteEntryId(null)
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Delete memory entry"
-            tabIndex={-1}
-            className="rounded-xl shadow-2xl w-full max-w-md mx-4"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}
-          >
-            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-              <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-                Delete memory entry?
-              </div>
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="text-sm" style={{ color: 'var(--text)' }}>
-                This permanently removes "{pendingDelete.title}" and deletes its backing markdown file. This cannot be undone or restored.
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setPendingDeleteEntryId(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  void deleteMemoryEntry(pendingDelete.id)
-                  setPendingDeleteEntryId(null)
-                }}
-              >
-                Delete memory
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete memory entry?"
+        label="Delete memory entry"
+        confirmLabel="Delete memory"
+        onCancel={() => setPendingDeleteEntryId(null)}
+        onConfirm={() => {
+          if (pendingDelete) void deleteMemoryEntry(pendingDelete.id)
+          setPendingDeleteEntryId(null)
+        }}
+      >
+        This permanently deletes "{pendingDelete?.title}" and its file. This cannot be undone.
+      </ConfirmDialog>
 
-      {pendingMassDeleteEntryIds && (
-        <div
-          className="uam-overlay uam-overlay--dim fixed inset-0 z-[60] flex items-center justify-center"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setPendingMassDeleteEntryIds(null)
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'}
-            tabIndex={-1}
-            className="rounded-xl shadow-2xl w-full max-w-md mx-4"
-            style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}
-          >
-            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-              <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-                {hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}
-              </div>
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="text-sm" style={{ color: 'var(--text)' }}>
-                This permanently deletes {pendingMassDeleteCount} {hasSearchQuery ? 'matching' : 'listed'} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'} and removes the backing markdown {pendingMassDeleteCount === 1 ? 'file' : 'files'}. This cannot be undone or restored.
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setPendingMassDeleteEntryIds(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  void deleteMemoryEntries(pendingMassDeleteEntryIds)
-                  setPendingMassDeleteEntryIds(null)
-                }}
-              >
-                Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={pendingMassDeleteEntryIds !== null}
+        title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}
+        label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'}
+        confirmLabel={`Delete ${pendingMassDeleteCount} ${pendingMassDeleteCount === 1 ? 'memory' : 'memories'}`}
+        onCancel={() => setPendingMassDeleteEntryIds(null)}
+        onConfirm={() => {
+          if (pendingMassDeleteEntryIds) void deleteMemoryEntries(pendingMassDeleteEntryIds)
+          setPendingMassDeleteEntryIds(null)
+        }}
+      >
+        This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
+      </ConfirmDialog>
     </div>
   )
 })

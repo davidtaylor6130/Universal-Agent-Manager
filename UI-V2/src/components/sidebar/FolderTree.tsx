@@ -844,7 +844,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       onRescan={() => {
         setActionError('')
         void rescanFolderChats(folder.id).then((rescanned) => {
-          if (!rescanned) setActionError(`Could not open native history for ${folder.name}. Try again.`)
+          if (!rescanned) setActionError(`Could not rescan chats for ${folder.name}. Try again.`)
         })
       }}
       onEditNameChange={setEditFolderName}
@@ -924,7 +924,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             action={!isCompanionContext() && (
               <button
                 type="button"
-                aria-label="Mark all active chats done"
+                aria-label="Clear all active chats"
                 className="rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
                 style={{ background: 'var(--surface)', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
                 onClick={() => {
@@ -1232,7 +1232,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       {/* Add folder */}
       <div ref={addControlsRef} className="mt-1 px-2.5" style={isCompanionContext() ? { display: 'none' } : undefined}>
         {actionError && (
-          <Notice tone="error" title="Folder action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
+          <Notice tone="error" title="Workspace action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
             {actionError}
           </Notice>
         )}
@@ -1299,7 +1299,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             </div>
             {newFolderIsRemote && (
               <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>
-                The path is interpreted only by {newFolderExecutionHost?.label}. Browse is read-only and requires a ready helper.
+                Browse needs {newFolderExecutionHost?.label} to be online.
               </p>
             )}
             <div className="uam-inline-form__actions">
@@ -1338,7 +1338,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
               className="uam-field w-full"
             />
             <div className="uam-inline-form__actions">
-              <span className="uam-inline-form__hint">Groups workspaces together</span>
               <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={() => { setNewCollectionName(''); setAddingCollection(false) }}>Cancel</Button>
               <Button variant="primary" size="sm" aria-label="Create collection" disabled={!newCollectionName.trim()} onClick={commitAddCollection}>Create</Button>
             </div>
@@ -1469,10 +1468,10 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
         onFolderDrop(folderId)
       }}
     >
+      <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
       <div
         data-testid={`collection-header-${collection.id}`}
         data-collection-id={collection.id}
-        title={isCompanionContext() ? undefined : 'Shift-click to select collections'}
         className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
         style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? 'var(--accent-dim)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
         onContextMenu={(event) => {
@@ -1522,6 +1521,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           </button>
         </Tooltip>}
       </div>
+      </Tooltip>
       {menuOpen && (
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} onRequestClose={() => { setMenuOpen(false); setMenuPoint(null) }} onClick={(e) => e.stopPropagation()} className="fixed z-50 rounded-md py-1 animate-fade-in" style={{ minWidth: 168, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
           {selectionTargets ? <>
@@ -1552,7 +1552,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             }}
           >
             {children}
-            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></div>)}
+            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}><button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
             {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
@@ -1865,26 +1865,8 @@ function DeleteFolderModal({
 
         <div className="p-5 space-y-4">
           <p className="text-sm" style={{ color: 'var(--text)' }}>
-            This removes "{folder.name}" from Universal Agent Manager and deletes {chatLabel} inside it.
-            This will not delete the actual workspace directory from your computer.
+            Delete "{folder.name}" and {chatLabel}? The folder on disk is kept.
           </p>
-
-          {folder.directory && (
-            <div
-              className="rounded-md px-3 py-2"
-              style={{
-                background: 'var(--surface-up)',
-                border: '1px solid var(--border)',
-              }}
-            >
-              <div className="text-[10px] uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
-                Directory stays on disk
-              </div>
-              <div className="truncate text-xs mt-1" style={{ color: 'var(--text-2)' }}>
-                {folder.directory}
-              </div>
-            </div>
-          )}
 
           {chatCount > 0 && (
             <p className="text-xs" style={{ color: 'var(--error)' }}>
@@ -1913,7 +1895,7 @@ function DeleteFolderModal({
             loading={deleting}
             onClick={onConfirm}
           >
-            Delete Folder
+            Delete folder
           </Button>
         </div>
       </div>
@@ -2089,10 +2071,10 @@ const FolderRow = memo(function FolderRow({
           setMenuPos({ x: event.clientX, y: event.clientY })
         }}
       >
+      <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select workspaces'}>
       <div
         data-testid={`folder-header-${folder.id}`}
         data-workspace-id={folder.id}
-        title={isCompanionContext() ? undefined : "Shift-click to select workspaces"}
         role="button"
         aria-label={`${folder.name}${selected ? ", selected for bulk actions" : ""}`}
         tabIndex={0}
@@ -2151,6 +2133,7 @@ const FolderRow = memo(function FolderRow({
           {sessionIds.length}
         </span>
       </div>
+      </Tooltip>
         {/* Overflow menu trigger: revealed on hover and whenever keyboard focus is in the row. */}
         <div
           className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
@@ -2198,7 +2181,7 @@ const FolderRow = memo(function FolderRow({
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="workspace" icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" />
             <CollectionMenuItems target={folder.id} label={folder.name} targets={selectionTargets} onAdded={() => setMenuPos(null)} />
-            <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" />
+            <SingleOnlyMenuItem noun="workspace" icon={<RefreshCw size={14} aria-hidden />} label="Review chats" />
             <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} workspaces`} onClick={() => { setMenuPos(null); iconPicker.open('workspace', selectionTargets, `${selectionTargets.length} workspaces`) }} />
             <SingleOnlyMenuItem noun="workspace" icon={<Monitor size={14} aria-hidden />} label="Change host icon" />
             <SingleOnlyMenuItem noun="workspace" icon={<Pencil size={14} aria-hidden />} label="Rename folder" />
@@ -2206,7 +2189,7 @@ const FolderRow = memo(function FolderRow({
           </> : <>
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}

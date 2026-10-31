@@ -128,8 +128,8 @@ describe('MainPanel', () => {
 
     expect(chatButton().textContent).toBe('')
     expect(cliButton().textContent).toBe('')
-    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project · Local')
-    expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.className).toContain('shrink-0')
+    expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('project')
+    expect(host.querySelector('[data-testid="chat-host-chat-1"]')).toBeNull()
     expect(cliButton().disabled).toBe(true)
 
     act(() => {
@@ -736,7 +736,7 @@ describe('MainPanel', () => {
     const root = createRoot(host)
     act(() => root.render(<MainPanel />))
 
-    const newChat = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'New Chat')[1]
+    const newChat = Array.from(host.querySelectorAll('button')).filter((button) => button.textContent === 'New chat')[1]
     act(() => newChat.click())
     expect(readChatGridLayout().activeLeafId).toBe(chatGridLeaves(layout.root)[2].id)
     expect(setNewChatModalOpen).toHaveBeenCalledWith(true)

@@ -367,6 +367,7 @@
   align-items: center;
   gap: var(--sp-3);
   min-height: 30px;
+  white-space: nowrap;
   padding: 4px var(--sp-4);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
@@ -390,6 +391,27 @@
 .uam-rv-row__provider {
   display: inline-flex;
   flex-shrink: 0;
+}
+
+/* Checkbox, provider, location and name share one line; the name takes the spare width. */
+.uam-rv-row__main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.uam-rv-row__note {
+  flex-shrink: 1;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
 }
 
 .uam-rv-row__meta {

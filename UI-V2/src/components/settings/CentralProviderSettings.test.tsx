@@ -14,6 +14,7 @@ import { CentralProviderSettings, type CentralProviderSettingsHandle } from './C
 const defaults = { ...useAppStore.getState().centralProviderConfiguration, instructionFiles: [], defaultSkills: [], defaultAgents: [], defaultAgentId: 'build' }
 let root: Root
 let host: HTMLDivElement
+const saveFile = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save file')!
 const handle = createRef<CentralProviderSettingsHandle>()
 
 beforeEach(() => {
@@ -100,14 +101,14 @@ it('edits a saved instruction file inline without saving unchanged content', asy
       ? { ok: true, data: { path: instructionPath, content: request.payload.content } }
       : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
-  expect(host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.disabled).toBe(true)
+  expect(saveFile().disabled).toBe(true)
   expect(document.activeElement).toBe(host.querySelector('[aria-label="Instruction file contents"]'))
   editInstructionText('Updated instructions\n')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(send).toHaveBeenCalledWith({ action: 'saveCentralInstructionFile', payload: {
     path: instructionPath, content: 'Updated instructions\n', expectedContent: 'Keep CRLF\r\n日本語\r\n',
   } })
-  expect(host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.disabled).toBe(true)
+  expect(saveFile().disabled).toBe(true)
   expect(useAppStore.getState().centralProviderConfiguration.instructionFiles).toEqual([instructionPath])
   expect(document.activeElement).toBe(host.querySelector('[aria-label="Instruction file contents"]'))
 })
@@ -120,7 +121,7 @@ it('retains an instruction draft after conflict and guards leaving until discard
       : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('Keep this unsaved draft\n')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('Keep this unsaved draft\n')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('The file changed outside UAM')
   const leave = vi.fn()
@@ -154,7 +155,7 @@ it('keeps an empty-file editor mounted after clearing a failed save draft', asyn
     : request.action === 'saveCentralInstructionFile' ? { ok: false, error: 'Disk full' } : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('x')
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   editInstructionText('')
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('')
 })
@@ -222,7 +223,7 @@ it('keeps a file save single-flight and blocks leaving until it settles', async 
     : request.action === 'saveCentralInstructionFile' ? pending : { ok: true, data: { agents: [], errors: [] } })
   await openInstructions()
   editInstructionText('Changed')
-  const save = host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!
+  const save = saveFile()
   const leave = vi.fn()
   act(() => { save.click(); save.click(); handle.current!.requestLeave(leave) })
   expect(send.mock.calls.filter(([request]) => request.action === 'saveCentralInstructionFile')).toHaveLength(1)
@@ -240,7 +241,7 @@ it('retains a draft when its file is removed from the saved configuration', asyn
   await openInstructions()
   editInstructionText('Retain me')
   act(() => useAppStore.setState({ centralProviderConfiguration: defaults }))
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save instruction file"]')!.click())
+  await act(async () => saveFile().click())
   expect(send.mock.calls.some(([request]) => request.action === 'saveCentralInstructionFile')).toBe(false)
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('Retain me')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('no longer in Central Setup')

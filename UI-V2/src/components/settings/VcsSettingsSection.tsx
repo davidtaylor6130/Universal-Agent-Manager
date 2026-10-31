@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, Switch } from '../ui'
+import { Button, ConfirmDialog, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
@@ -50,7 +50,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <Switch hideLabel label={label} checked={checked} disabled={saving || disabled} onChange={(event) => change(event.currentTarget.checked)} />
   return <div className="grid gap-6">
     <SettingsSection title="Git">
-      <SettingRow title="Git" control={toggle('Enable Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
+      <SettingRow title="Enable Git" control={toggle('Enable Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
       <SettingRow title="Automatic isolation" description="Separate worktree before each new chat." control={toggle('Automatic isolation', draft.gitAutoWorktree, (value) => edit({ gitAutoWorktree: value }), !draft.gitEnabled)} />
       <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-field" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
       <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit." control={<div className="flex gap-1" role="group" aria-label="Port method">
@@ -60,11 +60,10 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       </div>} />
       <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={toggle('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
     </SettingsSection>
-    <SettingsSection title="SVN">
-      <SettingRow title="SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
+    <SettingsSection title="SVN" description="SVN branch and merge defaults are not supported.">
+      <SettingRow title="Enable SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
       <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
-      <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
     </SettingsSection>
     <SettingsSection title="No VCS">
       <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
@@ -74,8 +73,10 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved); setError('') }}>Discard</Button>
       <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>
     </div>
-    {exit && <div role="alert" className="flex items-center justify-between gap-3"><span>Discard unsaved VCS changes?</span><div className="flex gap-2">
-      <Button size="sm" onClick={() => setExit(null)}>Keep editing</Button><Button size="sm" disabled={saving} onClick={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next() }}>Discard and leave</Button>
-    </div></div>}
+    <ConfirmDialog open={Boolean(exit)} busy={saving} title="Discard unsaved VCS changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
+      onCancel={() => setExit(null)}
+      onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next?.() }}>
+      Your unsaved Git, SVN and VCS changes will be lost.
+    </ConfirmDialog>
   </div>
 })
