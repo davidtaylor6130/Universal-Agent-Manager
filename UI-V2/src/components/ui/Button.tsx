@@ -20,6 +20,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   block?: boolean
   /** Opt-in: when disabled, stay focusable (aria-disabled) and explain why in a Tooltip. */
   disabledReason?: string
+  /** Inline text-link look (`.uam-btn--link`); ignores variant and size. */
+  asLink?: boolean
 }
 
 /** Blocks clicks without removing focus; shared by Button and IconButton. */
@@ -31,7 +33,7 @@ export const blockDisabledClick = (event: MouseEvent) => event.preventDefault()
  * rather than restyling <button> ad-hoc.
  */
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'secondary', size = 'md', leadingIcon, trailingIcon, loading = false, block = false, disabled, disabledReason, className, children, onClick, ...rest },
+  { variant = 'secondary', size = 'md', leadingIcon, trailingIcon, loading = false, block = false, disabled, disabledReason, asLink = false, className, children, onClick, ...rest },
   ref
 ) {
   const blocked = Boolean(disabled || loading)
@@ -42,7 +44,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       <button
         ref={ref}
         type="button"
-        className={cx('uam-btn', `uam-btn--${variant}`, `uam-btn--${size}`, block && 'uam-btn--block', className)}
+        className={cx('uam-btn', ...(asLink ? ['uam-btn--link'] : [`uam-btn--${variant}`, `uam-btn--${size}`]), block && 'uam-btn--block', className)}
         disabled={reasonActive ? undefined : blocked}
         aria-disabled={reasonActive || undefined}
         aria-describedby={reasonActive ? reasonId : undefined}

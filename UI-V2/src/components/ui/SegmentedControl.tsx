@@ -1,12 +1,20 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button } from './Button'
+import { Tooltip } from './Tooltip'
 import { cx } from './cx'
 
 export interface SegmentedOption<T extends string | number> {
   value: T
   label: string
   icon?: ReactNode
+  /** Shows only the icon; the label becomes the accessible name and default tooltip. */
+  iconOnly?: boolean
+  disabled?: boolean
+  /** Tooltip text; defaults to the label for icon-only options. */
+  tooltip?: string
+  /** Accessible name when it should differ from the visible label. */
+  ariaLabel?: string
 }
 
 export interface SegmentedControlProps<T extends string | number> {
@@ -42,6 +50,11 @@ export function SegmentedControl<T extends string | number>({ options, value, on
   }, [value, options.length])
   return <div role="group" aria-label={label} ref={groupRef} className={cx('uam-seg', className)}>
     {slot && <span aria-hidden className="uam-seg__indicator" style={{ transform: `translateX(${slot.x}px)`, width: slot.w }} />}
-    {options.map(option => <Button key={String(option.value)} size={size} variant="ghost" disabled={disabled} leadingIcon={option.icon} aria-pressed={value === option.value} onClick={() => onChange(option.value)}>{option.label}</Button>)}
+    {options.map(option => {
+      const iconOnly = Boolean(option.iconOnly && option.icon)
+      return <Tooltip key={String(option.value)} label={option.tooltip ?? (iconOnly ? option.label : undefined)}>
+        <Button size={size} variant="ghost" disabled={disabled || option.disabled} className={iconOnly ? 'uam-seg__icon' : undefined} aria-label={option.ariaLabel ?? (iconOnly ? option.label : undefined)} leadingIcon={option.icon} aria-pressed={value === option.value} onClick={() => onChange(option.value)}>{iconOnly ? undefined : option.label}</Button>
+      </Tooltip>
+    })}
   </div>
 }

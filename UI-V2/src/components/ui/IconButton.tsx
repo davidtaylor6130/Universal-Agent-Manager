@@ -12,8 +12,8 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   icon: ReactNode
   /** Required accessible label — also the default tooltip. Enforces "tooltips on everything". */
   label: string
-  /** Optional richer tooltip text shown instead of `label` (label stays the stable accessible name). */
-  tooltip?: string
+  /** Optional richer tooltip text shown instead of `label` (label stays the stable accessible name). `false` skips this button's own Tooltip when the caller already wraps it. */
+  tooltip?: string | false
   variant?: IconButtonVariant
   size?: IconButtonSize
   /** Keyboard shortcut hint shown in the tooltip. */
@@ -35,8 +35,9 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
 ) {
   const reasonId = useId()
   const reasonActive = Boolean(disabledReason && disabled)
+  const tipOff = tooltip === false
   return (
-    <Tooltip label={reasonActive ? disabledReason : (tooltip ?? label)} shortcut={reasonActive ? undefined : shortcut} side={tooltipSide}>
+    <Tooltip label={tipOff ? undefined : reasonActive ? disabledReason : (tooltip ?? label)} shortcut={tipOff || reasonActive ? undefined : shortcut} side={tooltipSide}>
       <button
         ref={ref}
         type="button"

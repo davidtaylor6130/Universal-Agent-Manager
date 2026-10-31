@@ -13,7 +13,7 @@ The authorized [native phone design](../phone-native.md) uses native iOS sheets,
 - [Settings](settings.md): the shared settings presentation contract.
 - [Review](review.md): verification and scope of UI work.
 
-Outgoing messages remain in stable transcript positions through pending or failed admission, with accessible explanations and native-authorized recovery; message navigation reserves a local padded gutter and shared transient notices sit beside the right-hand notification/update rail. These targets follow the [sending](../chat/sending.md), [content navigation](../chat/tools-and-content.md) and [notification](notifications.md) agreements and retain pending verification and acceptance.
+Outgoing messages remain in stable transcript positions through pending or failed admission, with accessible explanations and native-authorized recovery; message navigation reserves a local padded gutter and shared transient notices sit bottom-right inside the chat area, clear of the notification/update rail. These follow the [sending](../chat/sending.md), [content navigation](../chat/tools-and-content.md) and [notification](notifications.md) agreements and retain pending verification and acceptance.
 
 Update the owning UI rule in the same commit as an authorized deliberate design change. A documented target does not establish current implementation; [recorded decisions](../architecture/decisions.md) retain pending notification and undo work. Feature-specific behaviour lives under [Chat](../chat/chat.md), [Sidebar](../sidebar/sidebar.md) and [Settings](../settings/settings.md).
 

@@ -76,3 +76,18 @@ describe('Tooltip', () => {
     host.remove()
   })
 })
+
+describe('Button asLink', () => {
+  it('uses the inline text-link look instead of a variant and size', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<Button asLink variant="danger" size="lg">Add folder</Button>))
+    const button = host.querySelector('button') as HTMLButtonElement
+    expect(button.classList.contains('uam-btn--link')).toBe(true)
+    expect(button.classList.contains('uam-btn--danger')).toBe(false)
+    expect(button.classList.contains('uam-btn--lg')).toBe(false)
+    expect(button.querySelector('.uam-btn__label')?.textContent).toBe('Add folder')
+    act(() => root.unmount()); host.remove()
+  })
+})

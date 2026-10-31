@@ -813,7 +813,7 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
               color var(--dur-fast) var(--ease),
               box-shadow var(--dur-fast) var(--ease);
 }
-.uam-choice-button:hover:not(:disabled) { background: var(--surface-up) !important; }
+.uam-choice-button:hover:not(:disabled):not([data-selected="true"]) { background: var(--surface-up) !important; }
 .uam-choice-button:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -1598,6 +1598,19 @@ summary,
 .uam-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
 .uam-btn__spinner { opacity: 0.85; }
+/* asLink: inline text link (same look as .uam-add-link) */
+.uam-btn--link {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.uam-btn--link:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-btn--link:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.96); }
 .uam-btn__kbd {
   margin-left: 2px;
   padding: 1px 5px;
@@ -1718,6 +1731,10 @@ summary,
 .uam-menu-item__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uam-menu-item__detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); text-align: left; }
 .uam-menu-item__detail:empty { display: none; }
+.uam-menu-item__text { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; text-align: left; }
+.uam-menu-item__text .uam-menu-item__detail { flex: none; }
+.uam-menu-item__trailing { display: inline-flex; flex: 0 0 auto; align-items: center; margin-left: auto; padding-left: 12px; }
+.uam-menu-item__trailing + .uam-menu-kbd { margin-left: 0; }
 
 /* ── SegmentedControl: one sliding highlight behind the pressed option ── */
 .uam-seg {
@@ -1746,6 +1763,85 @@ summary,
 [data-motion="off"] .uam-seg__indicator { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .uam-seg__indicator { transition: none; }
+}
+.uam-seg > .uam-btn.uam-seg__icon { padding: 0; aspect-ratio: 1 / 1; }
+
+/* ── Chip: compact choice button (same look as .uam-choice-button) ── */
+.uam-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.uam-chip--sm { height: 24px; padding: 0 8px; }
+.uam-chip[data-selected="true"] {
+  background: var(--accent-dim);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-bright));
+  color: var(--text);
+}
+.uam-chip[data-tone="danger"] { color: var(--error); }
+.uam-chip[data-tone="danger"][data-selected="true"] {
+  background: var(--error-dim);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+
+/* ── Tabs: underline or pill, one sliding indicator (same motion rules as SegmentedControl) ── */
+.uam-tabs { position: relative; display: inline-flex; max-width: 100%; }
+.uam-tab {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.uam-tab:hover:not(:disabled) { color: var(--text); }
+.uam-tab[aria-selected="true"] { color: var(--text); }
+.uam-tab:disabled { opacity: .5; cursor: not-allowed; }
+.uam-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-tabs[data-variant="underline"] .uam-tab { height: 34px; padding: 8px var(--sp-1); }
+.uam-tabs[data-variant="pill"] {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-tabs[data-variant="pill"] .uam-tab { height: 26px; padding: 0 var(--sp-2); border-radius: var(--r-sm); color: var(--text-2); }
+.uam-tabs[data-variant="pill"] .uam-tab[aria-selected="true"] { color: var(--text); }
+.uam-tabs__indicator {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), width var(--dur-base) var(--ease-out-soft);
+}
+.uam-tabs[data-variant="underline"] .uam-tabs__indicator { bottom: 0; height: 2px; background: var(--accent); }
+.uam-tabs[data-variant="pill"] .uam-tabs__indicator {
+  top: 2px;
+  bottom: 2px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+[data-motion="off"] .uam-tabs__indicator { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-tabs__indicator { transition: none; }
 }
 
 /* ── RowButton: reset plus hover and focus; row classes keep their look ── */

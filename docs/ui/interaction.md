@@ -24,6 +24,8 @@ Patterns:
 
 - Custom icons (chats, workspaces, hosts, collections): pick from the searchable Lucide library first (stored as text `lucide:<name>`), with Emoji and PNG upload as secondary tabs; render through `components/shared/CustomIcon.tsx`.
 
+Menu items that cannot run explain why through `MenuItem` `disabledReason`, exposed as the accessible description and tooltip. Disabled model rows still use a native `title` for their reason; moving them to `disabledReason` remains a target. Shared `SegmentedControl`, `MenuItem` and `RowButton` primitives replace hand-styled equivalents where they fit; the remaining raw buttons are a target only where primitives lack a required feature.
+
 Provider questions show each option’s consequence beside its label for sighted and screen-reader users; approval choices must not hide essential decision text in accessibility-only content.
 
 UX rules (enforce):
@@ -37,7 +39,7 @@ UX rules (enforce):
 8. Don't invent features or data the code does not provide.
 9. Key information lives in the composer/primary surface, never a top-right status area; StatusDot plus semantic colour only when state matters.
 10. Success and failure each keep one consistent colour and tick/cross icon everywhere; on/off states are visibly distinct, not just by switch position.
-11. Dialogs: one task per dialog; never duplicate or stack; a modal takes focus only when its chat is the one currently open and activity in another chat never interrupts.
+11. Dialogs: one task per dialog; never duplicate or stack; a modal takes focus only when its chat is the one currently open and activity in another chat never interrupts. `ConfirmDialog` keeps its confirm action disabled through `confirmDisabled` while a blocking condition holds, and multi-step flows show their steps inline inside the same dialog. The composer branch picker takes focus only for the open chat.
 
 The sidebar and composer patterns above link to their owning [sidebar](../sidebar/sidebar.md), [composer](../chat/composer/composer.md) and [message](../chat/messages.md) agreements. [Settings](settings.md) is authoritative over older general settings examples.
 
