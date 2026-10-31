@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronLeft, ChevronRight, MessageSquare, ChevronUp, ChevronDown } from 'lucide-react'
-import { Button } from '../ui'
+import { Button, usePresence } from '../ui'
 import type { AcpPendingUserInput, AcpUserInputAnswers } from '../../store/useAppStore'
 import './QuestionInput.css'
 
@@ -36,6 +36,17 @@ function answerFor(question: Question, draft?: Draft)
 export function UserInputInlineCard(props: Props)
 {
     return <QuestionRequest key={`${props.input.requestId}:${props.input.itemId}`} {...props} />
+}
+
+/** Grid-rows collapse: the panel stays mounted for its exit, then unmounts (reduced motion and Motion Off unmount at once). */
+function QuestionCollapse({ open, children }: { open: boolean; children: ReactNode }) {
+    const { mounted, closing } = usePresence(open)
+    const lastChildren = useRef(children)
+    if (open) lastChildren.current = children
+    if (!mounted) return null
+    return <div className="qr-collapse" data-state={closing ? 'closed' : 'open'}>
+        <div className="qr-collapse__inner">{open ? children : lastChildren.current}</div>
+    </div>
 }
 
 function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
@@ -89,9 +100,9 @@ function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
                 {accepted ? 'Answers submitted' : open ? <><ChevronUp size={14} aria-hidden />Collapse questions</> : <><ChevronDown size={14} aria-hidden />Answer questions</>}
             </button>
         </header>
-        {open && !accepted && <QuestionPanel input={input} drafts={drafts} step={Math.min(step, Math.max(0, input.questions.length - 1))}
+        <QuestionCollapse open={open && !accepted}><QuestionPanel input={input} drafts={drafts} step={Math.min(step, Math.max(0, input.questions.length - 1))}
             onDraft={(id, draft) => setDrafts(current => ({ ...current, [id]: draft }))} onStep={setStep}
-            onSubmit={() => void submit()} busy={submitting || !pending} complete={complete} error={error} {...wait} />}
+            onSubmit={() => void submit()} busy={submitting || !pending} complete={complete} error={error} {...wait} /></QuestionCollapse>
     </section>
 }
 

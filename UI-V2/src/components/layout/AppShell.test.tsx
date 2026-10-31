@@ -1280,7 +1280,7 @@ describe('AppShell', () => {
       act(() => vi.advanceTimersByTime(200))
       expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
-      act(() => vi.advanceTimersByTime(8000))
+      act(() => vi.advanceTimersByTime(5000))
       act(() => vi.advanceTimersByTime(200))
       expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
@@ -1482,9 +1482,9 @@ describe('AppShell', () => {
       expect(announcer.getAttribute('aria-live')).toBe('polite')
       expect(announcer.getAttribute('aria-atomic')).toBe('true')
       expect(surface.hasAttribute('aria-live')).toBe(false)
-      expect(surface.style.right).toBe('52px')
-      expect(surface.style.bottom).toBe('0px')
-      expect(surface.getBoundingClientRect().bottom).toBe(window.innerHeight)
+      expect(surface.style.right).toBe('60px')
+      expect(surface.style.bottom).toBe('16px')
+      expect(surface.getBoundingClientRect().bottom).toBe(window.innerHeight - 16)
       expect(surface.style.left).toBe('')
       expect(surface.getBoundingClientRect().right).toBeLessThan(bell().getBoundingClientRect().left)
       expect(surface.getAttribute('aria-hidden')).toBeNull()
@@ -1514,7 +1514,7 @@ describe('AppShell', () => {
       settle(20000)
       expect(alertSurface()).toBeTruthy()
       act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
-      settle(8000)
+      settle(5000)
       settle(200)
       expect(alertSurface()).toBeNull()
 
@@ -1567,9 +1567,9 @@ describe('AppShell', () => {
       const send = new DOMRect(1068, 750, 32, 32) // Prior collision is now intentionally permitted.
       const rect = surface.getBoundingClientRect()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.style.bottom).toBe('0px')
-      expect(rect.bottom).toBe(800)
-      expect(rect.right).toBe(1228)
+      expect(surface.style.bottom).toBe('16px')
+      expect(rect.bottom).toBe(784)
+      expect(rect.right).toBe(1220)
       expect(rect.width).toBe(360)
       expect(Math.min(rect.right, send.right) - Math.max(rect.left, send.left)).toBeGreaterThan(0)
       expect(Math.min(rect.bottom, send.bottom) - Math.max(rect.top, send.top)).toBeGreaterThan(0)
@@ -1581,9 +1581,9 @@ describe('AppShell', () => {
       // Horizontal placement still follows the real rail at a narrower viewport.
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 480 })
       notifyResize()
-      expect(surface.getBoundingClientRect().right).toBe(428)
+      expect(surface.getBoundingClientRect().right).toBe(420)
       expect(surface.getBoundingClientRect().width).toBe(360)
-      expect(surface.getBoundingClientRect().bottom).toBe(800)
+      expect(surface.getBoundingClientRect().bottom).toBe(784)
     } finally {
       cleanup()
       expect(fixture.activeObserverCount()).toBe(0)
@@ -1611,13 +1611,13 @@ describe('AppShell', () => {
       act(() => reportAppFailure('Notice during the first turn', 'Retained detail'))
       const surface = alertSurface()!
       const initial = surface.getBoundingClientRect()
-      expect(initial.bottom).toBe(800)
-      expect(initial.right).toBe(1228)
+      expect(initial.bottom).toBe(784)
+      expect(initial.right).toBe(1220)
       for (const top of [250, 500, 703]) {
         layoutRects.set(form, new DOMRect(172, top, 936, 85))
         transition(top === 250 ? 'transitionrun' : top === 703 ? 'transitionend' : 'transitioncancel')
         notifyResize()
-        expect(surface.style.bottom).toBe('0px')
+        expect(surface.style.bottom).toBe('16px')
         expect(surface.getBoundingClientRect()).toEqual(initial)
       }
     } finally { cleanup(); vi.useRealTimers() }
@@ -1643,10 +1643,10 @@ describe('AppShell', () => {
       const surface = alertSurface()!
       const text = surface.querySelector<HTMLElement>('[aria-label="Notification message"]')!
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.style.bottom).toBe('0px')
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.style.bottom).toBe('16px')
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(surface.getBoundingClientRect().top).toBeGreaterThanOrEqual(96)
-      expect(Number.parseFloat(text.style.maxHeight)).toBe(194)
+      expect(Number.parseFloat(text.style.maxHeight)).toBe(178)
       expect(text.style.overflowY).toBe('auto')
       expect(text.tabIndex).toBe(0)
       expect(text.textContent).toBe(message)
@@ -1659,7 +1659,7 @@ describe('AppShell', () => {
       layoutRects.set(dock, new DOMRect(44, 110, 632, 190))
       notifyResize()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(document.activeElement).toBe(text)
       // An actually short viewport leaves insufficient room below the header for accessible actions.
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: 120 })
@@ -1682,7 +1682,7 @@ describe('AppShell', () => {
         layoutRects.set(bell(), new DOMRect(width - 37, 222, 30, 30))
         notifyResize()
         expect(surface.getAttribute('aria-hidden')).toBe('true')
-        expect(surface.style.bottom).toBe('0px')
+        expect(surface.style.bottom).toBe('16px')
         expect(bell().getAttribute('aria-label')).toBe('1 alert')
       }
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 720 })
@@ -1690,7 +1690,7 @@ describe('AppShell', () => {
       layoutRects.set(bell(), new DOMRect(683, 222, 30, 30))
       notifyResize()
       expect(surface.getAttribute('aria-hidden')).toBeNull()
-      expect(surface.getBoundingClientRect().bottom).toBe(300)
+      expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(bell().hasAttribute('aria-describedby')).toBe(false)
       act(() => bell().click()); settle(200)
       expect(alertSurface()).toBeNull()

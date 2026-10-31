@@ -1,6 +1,7 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
+import { reportAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -50,7 +51,7 @@ import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Button, ConfirmDialog, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
@@ -285,23 +286,8 @@ function ProviderHandoffDialog({
   onCancel: () => void
   onConfirm: () => Promise<boolean>
 }) {
-  const dialogRef = useRef<HTMLElement>(null)
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    return () => previouslyFocused?.focus?.()
-  }, [])
-
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && !switching) onCancel()
-    }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [onCancel, switching])
 
   const confirm = async () => {
     if (switching || blockedReason) return
@@ -312,57 +298,40 @@ function ProviderHandoffDialog({
     setError('The provider or model could not be changed. Finish any active work and try again.')
   }
 
-  return createPortal(
-    <div
-      className="uam-overlay fixed inset-0 z-[1000] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.52)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={() => { if (!switching) onCancel() }}
+  return (
+    <ConfirmDialog
+      open
+      tone="primary"
+      title={`Switch this chat to ${targetName}?`}
+      label={`Switch from ${sourceName} to ${targetName}`}
+      confirmLabel={`Switch to ${targetName}`}
+      confirmDisabled={Boolean(blockedReason)}
+      busy={switching}
+      error={error || undefined}
+      onConfirm={() => void confirm()}
+      onCancel={onCancel}
     >
-      <section
-        ref={dialogRef}
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={`Switch from ${sourceName} to ${targetName}`}
-        aria-describedby="provider-handoff-description"
-        tabIndex={-1}
-        className="w-full max-w-lg overflow-hidden rounded-xl"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="flex items-center gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <CornerUpRight size={18} aria-hidden style={{ color: 'var(--accent)' }} />
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Switch this chat to {targetName}?</h2>
-          </div>
-        </header>
-        <div id="provider-handoff-description" className="space-y-4 px-5 py-4 text-sm" style={{ color: 'var(--text-2)' }}>
-          <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Chat messages and recorded tool results</li>
-              <li>Chat title and workspace</li>
-              <li>Selected UAM agent and goals</li>
-            </ul>
-          </div>
-          <div>
-            <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Native session and provider-specific live tool state</li>
-              <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
-            </ul>
-          </div>
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
-          {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
-          {error && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>}
+      <div className="space-y-4">
+        <p>UAM keeps the recorded conversation, but provider-native state cannot move between providers.</p>
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--green)' }}>Kept</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Chat messages and recorded tool results</li>
+            <li>Chat title and workspace</li>
+            <li>Selected UAM agent and goals</li>
+          </ul>
         </div>
-        <footer className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-          <Button type="button" size="sm" variant="secondary" disabled={switching} onClick={onCancel}>Cancel</Button>
-          <Button type="button" size="sm" loading={switching} disabled={Boolean(blockedReason)} onClick={() => void confirm()}>Switch to {targetName}</Button>
-        </footer>
-      </section>
-    </div>,
-    document.body
+        <div>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Native session and provider-specific live tool state</li>
+            <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
+          </ul>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
+        {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+      </div>
+    </ConfirmDialog>
   )
 }
 
@@ -1315,10 +1284,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [session.workspaceIsolationKind])
 
+  // Workspace success is a completed system action: it goes to the shared notifications path, not an inline banner.
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
-    const timeout = window.setTimeout(() => setWorkspaceFeedback(null), 5000)
-    return () => window.clearTimeout(timeout)
+    reportAppNotice(workspaceFeedback.message, 'success')
+    setWorkspaceFeedback(null)
   }, [workspaceFeedback])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)

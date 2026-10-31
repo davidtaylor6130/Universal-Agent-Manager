@@ -23,10 +23,14 @@ export interface ConfirmDialogProps {
   secondaryAction?: { label: string; onClick: () => void }
   /** False keeps Escape and backdrop clicks from cancelling, for choices that must be made explicitly. */
   dismissible?: boolean
+  /** Blocks the confirm action while a reason shown in children (or error) prevents it. */
+  confirmDisabled?: boolean
+  /** Marks the dialog so the Settings modal's keyboard owner lets it handle Escape and Tab. */
+  settingsOwned?: boolean
 }
 
 /** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle unless dismissible is false. */
-export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const busyRef = useRef(busy)
@@ -83,6 +87,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
         role="alertdialog"
         aria-modal="true"
         aria-label={label ?? title}
+        data-settings-owned-overlay={settingsOwned || undefined}
         className="uam-confirm-dialog w-full max-w-sm rounded-xl"
       >
         <div className="flex gap-3 p-5">
@@ -100,7 +105,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
         <div className="flex justify-end gap-2 px-5 pb-5">
           <Button ref={cancelRef} size="sm" disabled={busy} onClick={onCancel}>{cancelLabel}</Button>
           {secondaryAction && <Button size="sm" disabled={busy} onClick={secondaryAction.onClick}>{secondaryAction.label}</Button>}
-          <Button size="sm" variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} onClick={onConfirm}>{confirmLabel}</Button>
+          <Button size="sm" variant={tone === 'danger' ? 'danger' : 'primary'} loading={busy} disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>
     </Overlay>

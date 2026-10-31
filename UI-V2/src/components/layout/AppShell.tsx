@@ -41,7 +41,7 @@ import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { Logo } from '../shared/Logo'
 import { ThemeToggle } from '../shared/ThemeToggle'
-import { Button, IconButton, Notice, Presence, StatusDot, Tooltip, usePresence } from '../ui'
+import { Button, IconButton, Notice, Presence, Tooltip, usePresence } from '../ui'
 import { VIEWPORT_MENU_Z_INDEX } from '../ui/ViewportMenu'
 import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
@@ -64,9 +64,11 @@ const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewCha
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
-type TransientAlert = { id: string; tone: 'error' | 'info'; message: string; actionLabel: string; action: 'notifications' | 'updates' }
+type TransientAlert = { id: string; tone: 'error' | 'info' | 'success'; message: string; actionLabel: string; action: 'notifications' | 'updates' }
 
-const ALERT_EXPIRY_MS = 8000
+const ALERT_EXPIRY_MS = 5000
+/** Same gap from the chat area's bottom edge as from its right edge (and from the window's bottom edge). */
+const ALERT_GAP_PX = 16
 
 /** The one shared transient alert for app-wide messages; every message is also kept in the notifications panel. */
 function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChange, fallbackId, onFallbackChange }: { alert: TransientAlert | null; notice: Pick<TransientAlert, 'id' | 'message'> | null; onAction: (action: TransientAlert['action']) => void; onDismiss: () => void; onHeldChange: (held: boolean) => void; fallbackId: string; onFallbackChange: (fallback: boolean) => void }) {
@@ -76,7 +78,7 @@ function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChang
   const [focused, setFocused] = useState(false)
   const [placement, setPlacement] = useState<{ right: number; width: number; height: number; fits: boolean } | null>(null)
   const [announcement, setAnnouncement] = useState<{ id: string; message: string } | null>(null)
-  // Keep the existing rail-relative horizontal anchor, with the popup at the GUI's bottom edge.
+  // Anchored bottom-right of the chat area, left of the right rail, with the same gap on both edges.
   // David explicitly permits covering Send; composer growth and first-send FLIP do not lift it.
   useLayoutEffect(() => {
     if (!mounted || !alert || !surfaceRef.current) {
@@ -97,11 +99,11 @@ function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChang
       const bell = app?.querySelector<HTMLElement>('[data-notification-bell]')
       const railRect = rail ? visibleRect(rail) : null
       const bellRect = bell ? visibleRect(bell) : null
-      const rightEdge = Math.min(window.innerWidth - 16, (railRect?.left ?? window.innerWidth) - 8)
-      const width = Math.max(0, Math.min(360, rightEdge - 16))
+      const rightEdge = Math.min(window.innerWidth - ALERT_GAP_PX, (railRect?.left ?? window.innerWidth) - ALERT_GAP_PX)
+      const width = Math.max(0, Math.min(360, rightEdge - ALERT_GAP_PX))
       const left = rightEdge - width
       const overlaps = (rect: DOMRect) => rect.left < rightEdge && rect.right > left
-      const bottomEdge = window.innerHeight
+      const bottomEdge = window.innerHeight - ALERT_GAP_PX
       const appRect = app?.getBoundingClientRect()
       const stripHeight = app ? Number.parseFloat(getComputedStyle(app).paddingTop) || 0 : 0
       let topEdge = Math.max(16, (appRect?.top ?? 0) + stripHeight + 8)
@@ -188,10 +190,11 @@ function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChang
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
       className="uam-transient-alert fixed flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
-      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, right: placement?.right ?? 16, bottom: 0, width: placement?.width ?? 360, maxHeight: placement?.height, visibility: placement?.fits ? 'visible' : 'hidden', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
+      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, right: placement?.right ?? ALERT_GAP_PX, bottom: ALERT_GAP_PX, width: placement?.width ?? 360, maxHeight: placement?.height, visibility: placement?.fits ? 'visible' : 'hidden', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
       <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1 focus-visible:ring-1 focus-visible:ring-[var(--accent)]" style={{ overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: Math.max(0, (placement?.height ?? 0) - 10), color: current.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>{current.message}</span>
       <Button className="shrink-0" variant="ghost" size="sm" onClick={() => finish(() => { onAction(current.action); onDismiss() })}>{current.actionLabel}</Button>
       <IconButton className="shrink-0" icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={() => finish(onDismiss)} />
+      {!closing && <span key={current.id} aria-hidden className="uam-transient-alert__countdown" style={{ animationDuration: `${ALERT_EXPIRY_MS}ms`, animationPlayState: held ? 'paused' : 'running' }} />}
     </div>
   </>
 }
@@ -374,7 +377,7 @@ function NotificationsPanel({
   const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
-  type Notification = { id: string; title: string; detail: string; warning?: boolean; failure?: AppFailure; actions?: NotificationAction[] }
+  type Notification = { id: string; title: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -388,7 +391,9 @@ function NotificationsPanel({
       title: `${FILE_MANAGER_NAME} action`,
       detail: shellActionNotification,
     }] : []),
-    ...failures.map((failure): Notification => ({ id: failure.id, title: 'Change not saved', detail: failure.detail, failure })),
+    ...failures.map((failure): Notification => failure.tone
+      ? { id: failure.id, title: failure.message, detail: '', notice: failure.tone }
+      : { id: failure.id, title: 'Change not saved', detail: failure.detail, failure }),
     ...remoteNotifications,
     ...(updates.length > 0 ? [{
       id: updateNotificationId(updates),
@@ -525,8 +530,8 @@ function NotificationsPanel({
             {groups.flatMap((group) => [
                 <div key={`group-${group.label}`} className="uam-np-group">{group.label}</div>,
                 ...group.items.map((notification) => {
-                  const tone = notification.failure ? 'error' : notification.warning ? 'warning' : 'info'
-                  const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : Info
+                  const tone = notification.failure ? 'error' : notification.warning ? 'warning' : notification.notice === 'success' ? 'success' : 'info'
+                  const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
                   const time = new Date(notification.time)
                   const exactTime = time.toLocaleString()
                   const relativeTime = relativeNotificationTime(notification.time, now)
@@ -628,8 +633,8 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
           onClick={onToggleAlerts}
         />
         {alertCount > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" aria-hidden>
-            <StatusDot tone="warning" size={7} />
+          <span className="absolute -right-1.5 -top-1.5 pointer-events-none min-w-4 rounded-full px-1 text-center text-[10px] font-bold leading-4" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} aria-hidden>
+            {alertCount}
           </span>
         )}
       </span>
@@ -685,16 +690,26 @@ export function AppShell() {
     const onFailure = (event: Event) => {
       const failure = (event as CustomEvent<AppFailure>).detail
       setAppFailures((history) => [...history, failure])
-      setTransientAlert({ id: failure.id, tone: 'error', message: failure.message, actionLabel: 'View in notifications', action: 'notifications' })
+      setTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, actionLabel: 'View in notifications', action: 'notifications' })
     }
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
     return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
   }, [])
 
+  // Expiry pauses while held (hover/focus) and resumes with the time left, matching the countdown bar's paused animation.
+  const alertRemainingMs = useRef(ALERT_EXPIRY_MS)
+  useEffect(() => { alertRemainingMs.current = ALERT_EXPIRY_MS }, [transientAlert])
   useEffect(() => {
     if (!transientAlert || alertHeld) return
-    const timer = window.setTimeout(() => setTransientAlert(null), ALERT_EXPIRY_MS)
-    return () => window.clearTimeout(timer)
+    const started = Date.now()
+    const timer = window.setTimeout(() => {
+      alertRemainingMs.current = ALERT_EXPIRY_MS
+      setTransientAlert(null)
+    }, alertRemainingMs.current)
+    return () => {
+      window.clearTimeout(timer)
+      alertRemainingMs.current = Math.max(0, alertRemainingMs.current - (Date.now() - started))
+    }
   }, [transientAlert, alertHeld])
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
@@ -857,6 +872,8 @@ export function AppShell() {
   const commitPresence = usePresence(commitPanelOpen)
   const alertsPresence = usePresence(alertsOpen)
   const updatesPresence = usePresence(updatesOpen)
+  const settingsPresence = usePresence(isSettingsOpen)
+  const usagePresence = usePresence(usageOpen)
   // Any open right-side panel sits beside the rail; the alert would cover it. The bell keeps the message and unread count.
   const alertSuppressed = transientAlert !== null && (alertsOpen || updatesOpen || commitPanelOpen)
   useEffect(() => { if (alertSuppressed) setTransientAlert(null) }, [alertSuppressed])
@@ -947,7 +964,7 @@ export function AppShell() {
       />
 
       {/* Keep chat components mounted while Settings occupies the middle region. */}
-      <div data-testid="chat-region" hidden={isSettingsOpen || usageOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen || usageOpen ? 'none' : 'flex'}}>
+      <div data-testid="chat-region" hidden={settingsPresence.mounted || usagePresence.mounted} className="min-w-0 flex-1 h-full" style={{display: settingsPresence.mounted || usagePresence.mounted ? 'none' : 'flex'}}>
 
       {sidebarPresence.mounted && (
         <>
@@ -979,8 +996,8 @@ export function AppShell() {
         <div className="min-h-0 flex-1"><ChatPanel /></div>
       </main>
       </div>
-      {isSettingsOpen && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div className="uam-settings-scroll"><div className="uam-settings-frame" style={{ maxWidth: 720 }}><SettingsLoading rows={4} /><SettingsLoading rows={2} /></div></div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
-      {usageOpen && <InterfaceErrorBoundary panel onDismiss={() => setUsageOpen(false)}><Suspense fallback={<div role="status" className="min-w-0 flex-1 p-4 text-xs">Loading usage…</div>}><UsagePage onClose={() => { setUsageOpen(false); window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="Usage"]')?.focus()) }} /></Suspense></InterfaceErrorBoundary>}
+      {settingsPresence.mounted && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} data-state={settingsPresence.closing ? 'closed' : 'open'} className="uam-shell-workspace min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div className="uam-settings-scroll"><div className="uam-settings-frame" style={{ maxWidth: 720 }}><SettingsLoading rows={4} /><SettingsLoading rows={2} /></div></div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {usagePresence.mounted && <div data-state={usagePresence.closing ? 'closed' : 'open'} className="uam-shell-workspace flex min-h-0 min-w-0 flex-1"><InterfaceErrorBoundary panel onDismiss={() => setUsageOpen(false)}><Suspense fallback={<div role="status" className="min-w-0 flex-1 p-4 text-xs">Loading usage…</div>}><UsagePage onClose={() => { setUsageOpen(false); window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="Usage"]')?.focus()) }} /></Suspense></InterfaceErrorBoundary></div>}
 
       {commitPresence.mounted && (
         <>

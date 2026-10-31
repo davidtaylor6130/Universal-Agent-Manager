@@ -45,6 +45,8 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
   vcsType?: 'git' | 'svn'
 }) {
   const [open, setOpen] = useState(false)
+  // Only the chat on screen takes focus; a picker in another chat (e.g. a background load) never steals it.
+  const isActiveChat = useAppStore((state) => state.activeSessionId === chatId)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [branches, setBranches] = useState<ChatBranch[]>([])
@@ -104,12 +106,12 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
   }, [disabled])
 
   useEffect(() => {
-    if (open && !loading) (searchRef.current ?? svnParentRef.current)?.focus()
-  }, [open, loading, vcsType, svnContext?.parent])
+    if (open && !loading && isActiveChat) (searchRef.current ?? svnParentRef.current)?.focus()
+  }, [open, loading, vcsType, svnContext?.parent, isActiveChat])
 
   useEffect(() => {
-    if (svnSelection) svnConfirmRef.current?.focus()
-  }, [svnSelection])
+    if (svnSelection && isActiveChat) svnConfirmRef.current?.focus()
+  }, [svnSelection, isActiveChat])
 
   useEffect(() => {
     if (!open && !busy && restoreFocusRef.current) {

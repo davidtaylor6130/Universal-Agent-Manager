@@ -1,8 +1,8 @@
-import { useContext, type ReactNode } from 'react'
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen, FileText, Folder, GitBranch, Image as ImageIcon, X } from 'lucide-react'
 import { FileInspectionContext } from '../shared/fileInspectionContext'
 import type { FileReference } from '../../utils/fileReferences'
-import { IconButton, Tooltip, cx } from '../ui'
+import { EXIT_MS, IconButton, Tooltip, cx, motionAllowed, scaledMs } from '../ui'
 import './ContextChip.css'
 
 export type ContextChipKind = 'file' | 'directory' | 'image' | 'skill' | 'branch' | 'worktree'
@@ -36,6 +36,16 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
   removeLabel?: string
 }) {
   const inspect = useContext(FileInspectionContext)
+  // Removal plays the exit first; the parent drops the chip once it has left (immediately under reduced motion or Motion Off).
+  const [leaving, setLeaving] = useState(false)
+  const leaveTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(leaveTimer.current), [])
+  const remove = () => {
+    if (!onRemove || leaving) return
+    if (!motionAllowed()) { onRemove(); return }
+    setLeaving(true)
+    leaveTimer.current = window.setTimeout(onRemove, scaledMs(EXIT_MS))
+  }
   const openable = Boolean(onInspect || (inspect && path && kind !== 'directory' && kind !== 'branch' && kind !== 'worktree'))
   const body = (
     <>
@@ -45,7 +55,7 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
     </>
   )
   return (
-    <span className={cx('uam-context-chip animate-fade-in', error && 'is-error', partial && 'is-partial')} data-detail={detail}>
+    <span className={cx('uam-context-chip animate-fade-in', error && 'is-error', partial && 'is-partial', leaving && 'is-leaving')} data-detail={detail}>
       <Tooltip label={detail && <span style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-line' }}>{detail}</span>}>
         {openable ? (
           <button type="button" className="uam-context-chip__body" onClick={() => onInspect ? onInspect() : inspect?.(reference ?? { path: path as string })}>{body}</button>
@@ -54,7 +64,7 @@ export function ContextChip({ kind, name, detail, path, reference, meta, error, 
         )}
       </Tooltip>
       {onRemove && (
-        <IconButton className="uam-context-chip__remove" size="sm" icon={<X size={12} aria-hidden />} label={removeLabel ?? `Remove ${name}`} onClick={onRemove} />
+        <IconButton className="uam-context-chip__remove" size="sm" icon={<X size={12} aria-hidden />} label={removeLabel ?? `Remove ${name}`} onClick={remove} />
       )}
     </span>
   )

@@ -342,6 +342,20 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     setWorkspaceError('')
   }
 
+  // One dialog at a time: the remote browser and SSH routing replace this form as steps, never stacked on it.
+  if (remoteBrowserOpen && selectedExecutionHost) {
+    return <RemoteDirectoryBrowser
+      host={selectedExecutionHost}
+      initialPath={remoteWorkspace}
+      onCancel={() => setRemoteBrowserOpen(false)}
+      onSelect={(directory) => {
+        setRemoteWorkspace(directory)
+        setRemoteBrowserOpen(false)
+      }}
+    />
+  }
+  if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />
+
   return (
     <div
       className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
@@ -578,18 +592,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           </section>
         </div>
 
-        {remoteBrowserOpen && selectedExecutionHost && (
-          <RemoteDirectoryBrowser
-            host={selectedExecutionHost}
-            initialPath={remoteWorkspace}
-            onCancel={() => setRemoteBrowserOpen(false)}
-            onSelect={(directory) => {
-              setRemoteWorkspace(directory)
-              setRemoteBrowserOpen(false)
-            }}
-          />
-        )}
-
         {/* Footer */}
         {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--error)' }}>{chatError}</div>}
         <div
@@ -607,7 +609,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             {creatingChat ? 'Creating…' : 'Create chat'}
           </Button>
         </div>
-      {SSH_ENABLED && routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}
       </Card>
     </div>
   )

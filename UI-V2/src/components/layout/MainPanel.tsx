@@ -10,8 +10,9 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, Notice, Tooltip } from '../ui'
+import { Button, IconButton, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
+import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
@@ -133,6 +134,11 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const [stopRuntimeError, setStopRuntimeError] = useState('')
   useEffect(() => setStopRuntimeError(''), [session.id])
+  useEffect(() => {
+    if (!stopRuntimeError) return
+    reportAppFailure('Runtime stop failed', stopRuntimeError)
+    setStopRuntimeError('')
+  }, [stopRuntimeError])
   const refreshFor = useRef({ key: nativeFollowupOwnerKey })
   if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
   const refreshOwner = refreshFor.current
@@ -140,6 +146,12 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   // Derive flags during render so a changed owner never paints the previous owner's state.
   const refreshing = refreshState.owner === refreshOwner && refreshState.pending
   const refreshError = refreshState.owner === refreshOwner ? refreshState.error : ''
+  // Pane failures go to the shared notifications path; the retained entry keeps the detail.
+  useEffect(() => {
+    if (!refreshError) return
+    reportAppFailure('Refresh failed', refreshError)
+    setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)
+  }, [refreshError, refreshOwner])
   useLayoutEffect(() => { setRefreshState({ owner: refreshOwner, pending: false, error: '' }) }, [refreshOwner])
   const cliSwitchLocked = useAppStore((s) => {
     const acpBinding = s.acpBindingBySessionId[session.id]
@@ -349,16 +361,6 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       )}
 
       {SSH_ENABLED && <ExecutionRoutingWaitNotice session={session} />}
-      {refreshError && (
-        <Notice tone="error" title="Refresh failed" dismissLabel="Dismiss refresh error" onDismiss={() => setRefreshState(current => current.owner === refreshOwner ? { ...current, error: '' } : current)}>
-          {refreshError}
-        </Notice>
-      )}
-      {stopRuntimeError && (
-        <Notice tone="error" title="Runtime stop failed" dismissLabel="Dismiss runtime error" onDismiss={() => setStopRuntimeError('')}>
-          {stopRuntimeError}
-        </Notice>
-      )}
 
       {/* View content */}
       <div key={`${session.id}:${view}`} className={`${glide && !multiPane ? 'uam-pane-glide ' : ''}flex-1 overflow-hidden`} data-pane-content={session.id} data-view={view}>

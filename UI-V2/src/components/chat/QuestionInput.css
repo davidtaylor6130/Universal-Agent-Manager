@@ -57,3 +57,8 @@
 @keyframes qr-body-enter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .qr-body { animation: qr-body-enter var(--dur-enter) var(--ease-out-soft); }
 @media (prefers-reduced-motion: reduce) { .qr-body { animation: none; } }
+
+/* Panel collapse: rows animate 1fr <-> 0fr, the panel unmounts after the exit (instant under reduced motion or Motion Off). */
+.qr-collapse { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-base) var(--ease-out-soft); }
+.qr-collapse[data-state="closed"] { grid-template-rows: 0fr; transition-duration: var(--dur-exit); transition-timing-function: var(--ease); }
+.qr-collapse__inner { min-height: 0; overflow: clip; overflow-clip-margin: 4px; }

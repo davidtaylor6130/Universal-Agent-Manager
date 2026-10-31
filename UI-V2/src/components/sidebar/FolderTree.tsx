@@ -29,7 +29,7 @@ import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
-import { usePresence } from '../ui/Overlay'
+import { Overlay, usePresence } from '../ui/Overlay'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 
 interface FolderTreeProps {
@@ -387,6 +387,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const pendingDeleteChatCount = useMemo(
     () => sessions.filter((session) => session.folderId === pendingDeleteFolderId).length,
     [sessions, pendingDeleteFolderId]
+  )
+  const pendingDeleteWorkspaceChatCount = useMemo(
+    () => sessions.filter((session) => session.folderId && pendingDeleteFolderIds?.includes(session.folderId)).length,
+    [sessions, pendingDeleteFolderIds]
   )
   const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
 
@@ -1368,30 +1372,36 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         />
       )}
 
-      {!companionContext && pendingDeleteFolderIds && (
-        <DeleteWorkspacesModal
-          folderCount={pendingDeleteFolderIds.length}
-          chatCount={sessions.filter((session) => session.folderId && pendingDeleteFolderIds.includes(session.folderId)).length}
-          error={deleteFolderError}
-          deleting={deletingFolder}
-          onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
-          onConfirm={() => { void confirmDeleteWorkspaces() }}
-        />
-      )}
-      {!companionContext && pendingDeleteFolder && (
-        <DeleteFolderModal
-          folder={pendingDeleteFolder}
-          chatCount={pendingDeleteChatCount}
-          error={deleteFolderError}
-          deleting={deletingFolder}
-          onCancel={() => {
-            if (deletingFolder) return
-            setPendingDeleteFolderId(null)
-            setDeleteFolderError('')
-          }}
-          onConfirm={() => { void confirmDeleteFolder() }}
-        />
-      )}
+      <ConfirmDialog
+        open={!companionContext && Boolean(pendingDeleteFolderIds)}
+        title="Delete selected workspaces?"
+        label="Delete selected workspaces"
+        confirmLabel="Delete workspaces"
+        busy={deletingFolder}
+        error={deleteFolderError || undefined}
+        onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
+        onConfirm={() => { void confirmDeleteWorkspaces() }}
+      >
+        <p>Delete {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
+        {deletingFolder && <>
+          <p role="status" aria-live="polite" className="mt-2">Deleting {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}…</p>
+          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
+        </>}
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={!companionContext && Boolean(pendingDeleteFolder)}
+        title="Delete folder and chats?"
+        label="Delete folder and chats"
+        confirmLabel="Delete folder"
+        busy={deletingFolder}
+        error={deleteFolderError || undefined}
+        onCancel={() => { if (deletingFolder) return; setPendingDeleteFolderId(null); setDeleteFolderError('') }}
+        onConfirm={() => { void confirmDeleteFolder() }}
+      >
+        <p>Delete "{pendingDeleteFolder?.name}" and {pendingDeleteChatCount === 1 ? '1 chat' : `${pendingDeleteChatCount} chats`}? The folder on disk is kept.</p>
+        {pendingDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
+        {deletingFolder && <DeletionProgressBar label="Deleting workspace" className="mt-2" />}
+      </ConfirmDialog>
     </div>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
@@ -1621,63 +1631,6 @@ function DeletionProgressBar({ label, className }: { label: string; className?: 
   </div>
 }
 
-function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCancel, onConfirm }: {
-  folderCount: number; chatCount: number; error: string; deleting: boolean; onCancel: () => void; onConfirm: () => void
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const previousFocus = document.activeElement as HTMLElement | null
-    dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
-    return () => previousFocus?.focus()
-  }, [])
-  useEffect(() => {
-    if (deleting) dialogRef.current?.focus()
-  }, [deleting])
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        if (!deleting) onCancel()
-      }
-      if (event.key === 'Tab') {
-        const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
-        if (buttons.length === 0) { event.preventDefault(); dialogRef.current?.focus(); return }
-        const first = buttons[0], last = buttons[buttons.length - 1]
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-      }
-    }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [deleting, onCancel])
-  return <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }} onClick={(event) => { if (event.target === event.currentTarget && !deleting) onCancel() }}>
-    <div ref={dialogRef} role="alertdialog" aria-modal="true" aria-label="Delete selected workspaces" aria-describedby="delete-workspaces-description" aria-busy={deleting} tabIndex={-1} className="w-full max-w-md" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)' }}>
-      <div className="px-5 py-4 text-sm font-semibold">Delete selected workspaces?</div>
-      <div className="px-5 pb-5 text-sm">
-        <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
-        {deleting && <>
-          <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>
-          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
-        </>}
-        {error && <p role="alert" className="mt-2" style={{ color: 'var(--error)' }}>{error}</p>}
-      </div>
-      <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-        <Button size="sm" disabled={deleting} onClick={onCancel}>Cancel</Button>
-        <Button size="sm" variant="danger" disabled={deleting} onClick={onConfirm}>{deleting ? 'Deleting…' : 'Delete workspaces'}</Button>
-      </div>
-    </div>
-  </div>
-}
-
-interface DeleteFolderModalProps {
-  folder: Folder
-  chatCount: number
-  error: string
-  deleting: boolean
-  onCancel: () => void
-  onConfirm: () => void
-}
-
 interface WorkspaceFolderRecoveryModalProps {
   dialogRef: RefObject<HTMLDivElement>
   preview: WorkspaceFolderRecoveryPreview | null
@@ -1712,18 +1665,14 @@ function WorkspaceFolderRecoveryModal({
   const hasResults = (preview?.groups.length ?? 0) > 0 || attentionSections.length > 0
 
   return (
-    <div
-      className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,.55)' }}
-      onClick={(event) => { if (event.target === event.currentTarget && !applying) onCancel() }}
-    >
+    <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) onCancel() }}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Rebuild workspace folders"
         tabIndex={-1}
-        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl animate-slide-in"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl"
         style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
       >
         <div className="flex items-start justify-between gap-4 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -1809,97 +1758,7 @@ function WorkspaceFolderRecoveryModal({
           </Button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function DeleteFolderModal({
-  folder,
-  chatCount,
-  error,
-  deleting,
-  onCancel,
-  onConfirm,
-}: DeleteFolderModalProps) {
-  const chatLabel = chatCount === 1 ? '1 chat' : `${chatCount} chats`
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !deleting) {
-        onCancel()
-      }
-    }
-
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [deleting, onCancel])
-
-  return (
-    <div
-      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !deleting) onCancel()
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Delete folder and chats"
-        tabIndex={-1}
-        className="rounded-xl shadow-2xl w-full max-w-md mx-4 animate-slide-in"
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border-bright)',
-        }}
-      >
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-            Delete folder and chats?
-          </span>
-          <IconButton icon={<X size={16} />} label="Close delete folder dialog" disabled={deleting} onClick={onCancel} />
-        </div>
-
-        <div className="p-5 space-y-4">
-          <p className="text-sm" style={{ color: 'var(--text)' }}>
-            Delete "{folder.name}" and {chatLabel}? The folder on disk is kept.
-          </p>
-
-          {chatCount > 0 && (
-            <p className="text-xs" style={{ color: 'var(--error)' }}>
-              Deleted chats cannot be restored from this app.
-            </p>
-          )}
-          {deleting && <DeletionProgressBar label="Deleting workspace" />}
-          {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-        </div>
-
-        <div
-          className="flex items-center justify-end gap-2 px-5 py-4"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
-          <Button
-            variant="ghost"
-            size="md"
-            disabled={deleting}
-            onClick={onCancel}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="danger"
-            size="md"
-            loading={deleting}
-            onClick={onConfirm}
-          >
-            Delete folder
-          </Button>
-        </div>
-      </div>
-    </div>
+    </Overlay>
   )
 }
 

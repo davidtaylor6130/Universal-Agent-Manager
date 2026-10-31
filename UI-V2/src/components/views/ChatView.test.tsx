@@ -4,7 +4,8 @@ import { captureContextReference, formatContextReferences } from '../../utils/co
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, projectUnsentPrompts, reviewAssistantLabel } from './ChatView'
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
@@ -20,6 +21,11 @@ const realSendAcpPrompt = useAppStore.getState().sendAcpPrompt
 
 // Outgoing presentation rows outlive ChatView by design; isolate them per test.
 beforeEach(() => resetOutgoingPresentation())
+// Success messages go to the shared notifications path (reportAppNotice); collect them here.
+const appNotices: string[] = []
+const onAppNotice = (event: Event) => { appNotices.push((event as CustomEvent<AppFailure>).detail.message) }
+beforeEach(() => { appNotices.length = 0; window.addEventListener(APP_FAILURE_EVENT, onAppNotice) })
+afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, onAppNotice))
 
 // Legacy ChatView fixtures have no managed-run server. The explicit integration case
 // below uses a strict launch result and owned root listing; panel/navigation contracts
@@ -8424,7 +8430,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(host.textContent).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : host.textContent).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -8491,9 +8497,8 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open in editor')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Opened workspace editor.')
-    expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeTruthy()
-    act(() => vi.advanceTimersByTime(5000))
+    // Success goes to the shared notifications path, not an inline banner; its expiry is the alert's job.
+    expect(appNotices).toContain('Opened workspace editor.')
     expect(host.textContent).not.toContain('Opened workspace editor.')
 
     openWorkspaceActions(host)
@@ -8638,7 +8643,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(rollbackChatTurn).toHaveBeenCalledWith('chat-1', 1)
-    expect(host.textContent).toContain('Rolled the isolated worktree back to before this turn.')
+    expect(appNotices).toContain('Rolled the isolated worktree back to before this turn.')
 
     act(() => root.unmount())
     host.remove()
@@ -8710,7 +8715,7 @@ describe('ChatView', () => {
     })
 
     expect(discardChatWorktreeChanges).toHaveBeenCalledWith('chat-1')
-    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+    expect(appNotices).toContain('Discarded changes in the chat worktree.')
 
     act(() => {
       root.render(<ChatView session={useAppStore.getState().sessions[1]} />)
@@ -8771,7 +8776,7 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
 
-    expect(host.textContent).toContain('Discarded changes in the chat worktree.')
+    expect(appNotices).toContain('Discarded changes in the chat worktree.')
 
     const returnedSession = {
       ...useAppStore.getState().sessions[0],

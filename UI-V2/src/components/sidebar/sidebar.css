@@ -113,10 +113,14 @@
 .uam-sb-menu-item--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
 .uam-sb-menu-divider { margin: 4px 8px; border-top: 1px solid var(--border); }
 
-/* Submenus fade out quicker than they open; pointer-events stop while leaving. */
+/* Submenus slide out of the trigger row's edge and return to it; pointer-events stop while leaving. */
+[data-viewport-menu].uam-sb-submenu { animation: uam-sb-submenu-in var(--dur-base) var(--ease-out-soft) backwards; }
 .uam-sb-submenu[data-state="closing"] { animation: uam-sb-submenu-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-@keyframes uam-sb-submenu-out { to { opacity: 0; transform: scale(0.98); } }
-@media (prefers-reduced-motion: reduce) { .uam-sb-submenu[data-state="closing"] { animation: none; } }
+@keyframes uam-sb-submenu-in { from { opacity: 0; transform: translateX(-6px); } }
+@keyframes uam-sb-submenu-out { to { opacity: 0; transform: translateX(-6px); } }
+@media (prefers-reduced-motion: reduce) {
+  [data-viewport-menu].uam-sb-submenu, .uam-sb-submenu[data-state="closing"] { animation: none; }
+}
 
 /* Collapsed Active section: one calm warning strip that expands the section. */
 .uam-sb-attention-strip {

@@ -610,6 +610,15 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       {isAdding && <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={event => { if(event.target === event.currentTarget) requestClose() }}>
         <div role="dialog" aria-modal="true" aria-label="New memory" tabIndex={-1} className="uam-form-dialog rounded-xl p-5 space-y-3 w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto mx-4">
           <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
+          {/* The unsaved-memory prompt is a step inside this dialog, not a second dialog on top of it. The form stays mounted under it. */}
+          {pendingExit && (
+            <div role="group" aria-label="Unsaved memory" className="space-y-4">
+              <p className="text-sm font-semibold">Save this memory before leaving?</p>
+              {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
+              <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+            </div>
+          )}
+          <div hidden={Boolean(pendingExit)} className="space-y-3">
 
 
                 {isAllMemory && (
@@ -710,13 +719,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 >
                   Save memory
                 </SaveButton>
-        </div>
-      </div>}
-      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
-        <div role="alertdialog" aria-modal="true" aria-label="Unsaved memory" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}}>
-          <h3 className="text-sm font-semibold">Save this memory before leaving?</h3>
-          {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
-          <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+          </div>
         </div>
       </div>}
 

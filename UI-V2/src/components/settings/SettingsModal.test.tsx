@@ -2669,7 +2669,7 @@ describe('SettingsModal memory settings', () => {
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
-      const dialog = host.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
+      const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
       expect(dialog).toBeTruthy()
       act(() => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
       await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.click())

@@ -53,8 +53,13 @@ button.uam-context-chip__body:hover .uam-context-chip__name { color: var(--accen
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
+/* Removal sinks back toward the composer line it rose from, then the parent drops it. */
+.uam-context-chip.is-leaving { animation: uam-context-chip-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-context-chip-out {
+  to { opacity: 0; transform: translateY(4px); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .uam-context-chip { animation: none; }
+  .uam-context-chip, .uam-context-chip.is-leaving { animation: none; }
 }
 /* Chips inside assistant prose sit on the text line without growing it. */
 .prose-msg .uam-context-chip { vertical-align: middle; margin-block: -3px; }

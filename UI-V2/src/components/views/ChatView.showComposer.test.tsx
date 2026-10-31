@@ -10,6 +10,7 @@ import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { sanitizeCppAcpSession } from '../../store/cpp/sanitizers'
 import { captureContextReference } from '../../utils/contextReferences'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -584,12 +585,14 @@ describe('showComposer presentation contract, authored UNRUN', () => {
 
         await act(async () => refresh().click())
         expect(reads).toHaveLength(3)
+        const reported: string[] = []
+        const onFailure = (event: Event) => { reported.push((event as CustomEvent<AppFailure>).detail.detail) }
+        window.addEventListener(APP_FAILURE_EVENT, onFailure)
         await act(async () => reads[2].resolve(false))
         expect(refresh().disabled).toBe(false)
-        expect(actualNativePane().textContent).toContain(errorText)
-        const dismiss = actualNativePane().querySelector<HTMLButtonElement>('[aria-label="Dismiss refresh error"]')
-        expect(dismiss).not.toBeNull()
-        await act(async () => dismiss!.click())
+        // Refresh failures go to the shared notifications path, not an inline banner.
+        expect(reported).toEqual([errorText])
+        window.removeEventListener(APP_FAILURE_EVENT, onFailure)
         expect(actualNativePane().textContent).not.toContain(errorText)
         await act(async () => refresh().click())
         expect(reads).toHaveLength(4)

@@ -1625,12 +1625,12 @@ summary,
 .uam-iconbtn--sm { width: 26px; height: 26px; }
 .uam-iconbtn--md { width: 30px; height: 30px; }
 .uam-iconbtn--lg { width: 36px; height: 36px; }
-.uam-iconbtn:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-iconbtn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-iconbtn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
-.uam-iconbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.uam-iconbtn:disabled, .uam-iconbtn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 .uam-iconbtn.is-active { background: var(--accent-dim); color: var(--accent); }
 .uam-iconbtn--solid { background: var(--surface); border-color: var(--border-bright); }
 .uam-iconbtn--danger:hover:not(:disabled) { background: var(--error-dim); color: color-mix(in srgb, var(--error) 72%, var(--text)); }

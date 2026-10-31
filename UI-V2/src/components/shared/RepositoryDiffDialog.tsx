@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { Button, IconButton, Notice, Overlay, Presence, Tooltip } from '../ui'
+import { Button, IconButton, Notice, Overlay, Tooltip } from '../ui'
 import './review.css'
 import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
@@ -35,6 +35,7 @@ export function RepositoryDiffDialog({
   const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
   const [error, setError] = useState('')
   const [inspection, setInspection] = useState<{ chatId: string; path: string } | null>(null)
+  const inspecting = inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path)
   const [layout, setLayout] = useState<'unified' | 'split'>(() => {
     try { return localStorage.getItem('uam-diff-layout') === 'unified' ? 'unified' : 'split' } catch { return 'split' }
   })
@@ -82,7 +83,10 @@ export function RepositoryDiffDialog({
   }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
 
 
-  return <>
+  // Inspecting replaces this dialog's content in place; closing the inspection returns to the diff.
+  if (inspecting) return <FilePreviewDialog zIndex={zIndex} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />
+
+  return (
     <Overlay open zIndex={zIndex} onBackdropMouseDown={onClose}>
       <section
         ref={dialogRef}
@@ -128,5 +132,5 @@ export function RepositoryDiffDialog({
         </div>
       </section>
     </Overlay>
-  <Presence open={inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path)}>{inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</Presence></>
+  )
 }
