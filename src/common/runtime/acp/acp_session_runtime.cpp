@@ -2509,9 +2509,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out) *error_out = "Native session settings are waiting for the owning input and idle runtime.";
 				return false;
 			}
-			// A fresh stream can receive its first model report only after input. Its captured launch
-			// option is sufficient for restart selection, never native execution/model attestation.
-			const std::string& restart_model_id = session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
+			// Compare the captured launch option, not the provider-reported model: Claude reports a resolved
+			// name (claude-opus-5-5) for an alias launch (opus), which would otherwise restart every turn.
+			// The option is sufficient for restart selection, never native execution/model attestation.
+			const std::string& restart_model_id = session.launch_model_options_captured || session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
 			// An empty selection removes an explicit launch model; a reported default model alone
 			// must not restart every later turn of an already default-configured stream.
 			// An unknown reattached launch establishes Default by owned idle restart.
@@ -2663,7 +2664,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.current_mode_id = desired_mode;
 				else if (!SetAcpSessionMode(app, chat.id, desired_mode, error_out)) return false;
 			}
-			const std::string& configured_model_id = session.current_model_id.empty() && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
+			const std::string& configured_model_id = (session.launch_model_options_captured || session.current_model_id.empty()) && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
 			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id)
 			{
 				if (runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::ApplyLocally)
