@@ -9,6 +9,7 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -30,8 +31,9 @@ namespace uam::platform
 #else
 		// Linux niceness is per thread (tid); never raise an already-lower thread.
 		const id_t tid = static_cast<id_t>(syscall(SYS_gettid));
+		errno = 0; // getpriority can legitimately return -1, so only errno marks failure.
 		const int current = getpriority(PRIO_PROCESS, tid);
-		if (current < kBackgroundWorkerNice) (void)setpriority(PRIO_PROCESS, tid, kBackgroundWorkerNice);
+		if (errno != 0 || current < kBackgroundWorkerNice) (void)setpriority(PRIO_PROCESS, tid, kBackgroundWorkerNice);
 #endif
 	}
 } // namespace uam::platform
