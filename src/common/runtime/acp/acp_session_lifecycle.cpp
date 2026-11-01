@@ -3578,6 +3578,10 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 				chat.remote_prompt_delivery_id =
 				    uam::time::SteadyEpochNanosecondsTokenNow();
 			chat.remote_prompt_delivery_payload = SerializeStructuredMessage(session, msg);
+			session.pending_remote_delivery_input_ids.clear();
+			for (const std::size_t index : unsent_messages)
+				if (index < chat.messages.size() && chat.messages[index].native_input_id)
+					session.pending_remote_delivery_input_ids.push_back(*chat.messages[index].native_input_id);
 		}
 		if (session.cold_retry_binding || CanDeferRemotePromptAdmission(app, session, chat) || CanStageRemoteGoalPromptAdmission(app, session, chat))
 		{

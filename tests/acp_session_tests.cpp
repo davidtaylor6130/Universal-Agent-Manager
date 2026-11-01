@@ -1173,6 +1173,47 @@ UAM_TEST(AcpRemoteInputReceiptIsConsumedBeforeProviderParsing)
 	UAM_ASSERT(session.stdout_buffer.empty());
 }
 
+UAM_TEST(AcpRemoteInputReceiptSettlesSendingWhileTurnStreams)
+{
+	// #628: the helper receipt is the remote write fact; the turn keeps running and streaming.
+	TempDir temp("uam-acp-remote-receipt-write-fact");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-receipt-write-fact";
+	chat.execution_host_id = "ssh-test";
+	chat.messages_loaded = true;
+	chat.remote_active_turn_id = "turn-1";
+	chat.remote_prompt_delivery_id = "prompt-9";
+	Message sent;
+	sent.role = MessageRole::User;
+	sent.content = "hello";
+	sent.native_input_id = "input-sent";
+	Message other = sent;
+	other.native_input_id = "input-other";
+	chat.messages = {sent, other};
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.running = true;
+	session.processing = true;
+	session.pending_remote_delivery_input_ids = {"input-sent"};
+
+	uam::AcpSessionState mismatched; // Each drain may stop this pipe-less fixture, so use one per receipt.
+	mismatched.running = true;
+	mismatched.pending_remote_delivery_input_ids = {"input-sent"};
+	mismatched.pending_remote_input_receipt_id = "prompt-other";
+	(void)uam::acp_detail::DrainStdout(app, mismatched, app.chats.front(), nullptr);
+	UAM_ASSERT(!app.chats.front().messages[0].input_write_completed);
+
+	session.pending_remote_input_receipt_id = "prompt-9";
+	(void)uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+	UAM_ASSERT(app.chats.front().messages[0].input_write_completed);
+	UAM_ASSERT(!app.chats.front().messages[1].input_write_completed);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(app.chats.front().remote_active_turn_id, std::string("turn-1"));
+	UAM_ASSERT(session.pending_remote_delivery_input_ids.empty());
+}
+
 UAM_TEST(AcpRemoteInputReceiptKeepsReplayPayloadWhenChatSaveFails)
 {
 	TempDir temp("uam-acp-input-receipt-save-failure");
