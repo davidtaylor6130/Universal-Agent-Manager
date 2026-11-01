@@ -287,7 +287,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       <Reveal open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
         {errorNote.mounted && <div className="uam-presence" data-state={errorNote.closing ? 'closed' : 'open'}><Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
-        {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
+        <Reveal open={!!data}>{data ? <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
           {coverage.length > 0 && <ul aria-label="Usage machine coverage" className="sr-only">{coverage.map((line, index) => <li key={index}>{line}</li>)}</ul>}
           <div role="group" aria-label="Providers" className="uam-usage-chips">{data.providers.map(provider => {
@@ -372,7 +372,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
             </div>)}<Reveal open={models.length > modelLimit}><Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button></Reveal></div></Reveal><Reveal open={breakdown !== 'model'}><div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,12rem)_auto] items-center gap-x-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="uam-usage-model-bar"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span><span className="tabular-nums">{amount(period)}</span></div>)}</div></Reveal>
           </section>
           <Reveal open={(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0))}><Disclosure className="text-xs" summary="History diagnostics"><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></Disclosure></Reveal>
-        </div>}
+        </div> : null}</Reveal>
       </div></Reveal>
     </div>
   </main>

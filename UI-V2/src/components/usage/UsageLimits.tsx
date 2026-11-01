@@ -6,7 +6,7 @@ import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
-import { Button, Chip, Disclosure, ProgressFill, Tooltip, cx, usePresence, Reveal } from '../ui'
+import { Button, Disclosure, ProgressFill, Tooltip, cx, usePresence, Reveal } from '../ui'
 import { SettingsSection } from '../settings/SettingsPrimitives'
 import { LoaderCircle, TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
@@ -210,7 +210,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     title={name}
     className="uam-limits-section"
     actions={<>
-      <Reveal open={!!(hasAllowance && plan)}><Chip size="sm" tabIndex={-1} className="uam-limits-chip">{plan}</Chip></Reveal>
+      <Reveal open={!!(hasAllowance && plan)}><span className="uam-choice-button uam-chip uam-chip--sm uam-limits-chip">{plan}</span></Reveal>
       <Reveal open={hasAllowance}><Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip></Reveal>
     </>}
   >{body}</SettingsSection>

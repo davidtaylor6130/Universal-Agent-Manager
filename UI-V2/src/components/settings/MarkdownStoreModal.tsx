@@ -10,8 +10,9 @@ import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate } from '../../types/markdownStore'
-import { Download, ExternalLink, FileInput, FileText, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronRight, Download, ExternalLink, FileInput, FileText, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
 import './stores.css'
+import './provider-settings.css'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
 const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
@@ -356,13 +357,17 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
       <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
-      <Swap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="flex flex-wrap gap-2">
+      <Swap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="grid gap-2">
         {[
           { label: 'Create', icon: <Plus size={14} />, action: beginNew },
           { label: 'Import from provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
           { label: 'Import file', icon: <FileInput size={14} />, action: () => void chooseImport('file') },
           { label: 'Import folder', icon: <FolderInput size={14} />, action: () => void chooseImport('folder') },
-        ].map((choice) => <Button key={choice.label} size="sm" aria-label={choice.label} leadingIcon={choice.icon} disabled={previewing} onClick={choice.action}>{choice.label}</Button>)}
+        ].map((choice) => <RowButton key={choice.label} className="uam-prov-option" aria-label={choice.label} disabled={previewing} onClick={choice.action}>
+          <span className="uam-prov-option__icon" aria-hidden>{choice.icon}</span>
+          <span className="uam-prov-option__label min-w-0 text-left">{choice.label}</span>
+          <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
+        </RowButton>)}
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
         <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>

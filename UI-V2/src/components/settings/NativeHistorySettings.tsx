@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, Disclosure, usePresence, Reveal } from '../ui'
+import { Button, Disclosure, ProgressFill, usePresence, Reveal } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
@@ -151,6 +151,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
   const idForName = (name: string) => providerIds.find((id) => providerMetadataForId(id).shortName === name)
   const reviewPresence = usePresence(status.phase === 'ready' && status.totalCount > 0)
   return <SettingsSection title="Native provider history">
+    <ProgressFill label="Native history scan" indeterminate active={active} className="uam-set-row">
     <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
@@ -188,6 +189,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
         </ul>
       </Disclosure>
     </SettingRow>
+    </ProgressFill>
     <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </SettingsSection>
 }

@@ -461,7 +461,7 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
     click('Add skill')
     const choices = host.querySelector('[aria-label="Add skill choices"]') as HTMLElement
-    expect(choices.className).toContain('flex-wrap')
+    expect(choices.className).toContain('grid')
     expect(Array.from(choices.querySelectorAll('button')).map((item) => item.textContent)).toEqual(['Create', 'Import from provider', 'Import file', 'Import folder'])
     for (const choice of choices.querySelectorAll('button')) {
       expect(choice.querySelector('svg')).toBeTruthy()
