@@ -42,7 +42,8 @@ on:
       - 'UI-V2/**'
 
 concurrency:
-  group: build-flag-leaks-${{ github.ref }}
+  # Event name keeps a manual run on the default branch from cancelling the weekly schedule.
+  group: build-flag-leaks-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -99,7 +100,7 @@ jobs:
   # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
   native-skipped:
     name: Native flag builds not requested (add the build-flags label to run 19 full builds)
-    if: github.event_name == 'pull_request' && github.base_ref != 'uam/v5-improvements' && !contains(github.event.pull_request.labels.*.name, 'build-flags')
+    if: github.event_name == 'pull_request' && github.base_ref != 'uam/v5-improvements' && !contains(github.event.pull_request.labels.*.name, 'build-flags') && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -112,7 +113,8 @@ jobs:
     # Full application builds are expensive: pull requests run them when they target uam/v5-improvements or carry the
     # build-flags label; pushes, schedules and manual runs always do. Rows whose native residue is not yet reviewed in build_flag_native_residue.json report
     # but do not fail the workflow; their failure uploads the candidate strings for review.
-    if: github.event_name != 'pull_request' || github.base_ref == 'uam/v5-improvements' || contains(github.event.pull_request.labels.*.name, 'build-flags')
+    # Adding an unrelated label must not restart the 19 builds.
+    if: (github.event_name != 'pull_request' || github.base_ref == 'uam/v5-improvements' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: macos-latest
     continue-on-error: ${{ !matrix.measured }}
     strategy:
