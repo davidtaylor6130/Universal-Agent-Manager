@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { SaveButton, SettingsLoading } from './SettingsPrimitives'
+import { SaveButton, SettingsField, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
 import './settings-shell.css'
 import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
@@ -80,10 +80,9 @@ function InlineMenu({
   onChange: (value: string) => void
 }) {
   return (
-    <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-      <span>{label}</span>
+    <SettingsField label={label}>
       <MenuSelect label={label} value={value} options={options} onChange={onChange} />
-    </div>
+    </SettingsField>
   )
 }
 
@@ -249,6 +248,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const exitPrompt = usePresence(Boolean(pendingExit))
   const formPresence = usePresence(!pendingExit)
+  const toolbarPresence = usePresence(!isAdding)
   const lastPendingExit = useRef<(() => void) | null>(null)
   if (pendingExit) lastPendingExit.current = pendingExit
   const libraryRef = useRef<HTMLDivElement>(null)
@@ -579,7 +579,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 </Notice>
               </div>
             )}
-            {!isAdding && <div className="flex items-center gap-2 mb-4">
+            {toolbarPresence.mounted && <div data-state={toolbarPresence.closing ? 'closed' : 'open'} className="uam-memory-toolbar flex items-center gap-2 mb-4">
               <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 bg-[var(--surface-up)] border border-[var(--border)]">
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
@@ -650,9 +650,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       }}
                     />
 
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      Title
+                    <SettingsField label="Title" htmlFor="memory-draft-title">
                       <input
+                        id="memory-draft-title"
                         autoFocus
                         aria-label="Title"
                         value={draft.title}
@@ -662,11 +662,11 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         }}
                         className="uam-field"
                       />
-                    </label>
+                    </SettingsField>
 
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      Memory
+                    <SettingsField label="Memory" htmlFor="memory-draft-memory">
                       <textarea
+                        id="memory-draft-memory"
                         value={draft.memory}
                         onChange={(event) => {
                           const value = event.currentTarget.value
@@ -675,11 +675,11 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         rows={5}
                         className="uam-field uam-field--area"
                       />
-                    </label>
+                    </SettingsField>
 
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      Evidence
+                    <SettingsField label="Evidence" htmlFor="memory-draft-evidence">
                       <textarea
+                        id="memory-draft-evidence"
                         value={draft.evidence}
                         onChange={(event) => {
                           const value = event.currentTarget.value
@@ -688,7 +688,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         rows={3}
                         className="uam-field uam-field--area"
                       />
-                    </label>
+                    </SettingsField>
 
                     <div className="grid gap-2">
                       <InlineMenu
@@ -700,9 +700,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                         }}
                       />
 
-                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                        Source chat
+                      <SettingsField label="Source chat" htmlFor="memory-draft-source-chat">
                         <input
+                          id="memory-draft-source-chat"
                           value={draft.sourceChatId}
                           onChange={(event) => {
                             const value = event.currentTarget.value
@@ -710,7 +710,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                           }}
                           className="uam-field"
                         />
-                      </label>
+                      </SettingsField>
                     </div>
 
                     <SaveButton

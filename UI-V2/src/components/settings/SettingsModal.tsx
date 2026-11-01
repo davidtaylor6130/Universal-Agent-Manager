@@ -996,7 +996,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       runnerDirectory: existing?.runnerDirectory ?? '',
     }
     if (!portableAlias || !sshAlias) {
-      setRemoteMessage({ tone: 'error', text: 'Enter one exact host alias from ~/.ssh/config.' })
+      reportAppFailure('Enter one exact host alias from ~/.ssh/config.', 'Check the SSH alias and try again.')
       return
     }
     setRemoteHostBusy(host.id, true)
@@ -1604,7 +1604,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try { configuredHost = new URL(address).hostname } catch { /* No configured address. */ }
     const repairAddresses = configuredHost && configuredHost !== '127.0.0.1' && /^\d+\.\d+\.\d+\.\d+$/.test(configuredHost) && !currentAddresses.includes(configuredHost) ? currentAddresses : []
     // Load failures persist until a retry succeeds; action results are reported as app events.
-    const phoneFeedback = companionLoadError ? <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice> : null
+    const phoneFeedback = <PresencePanel open={Boolean(companionLoadError)}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice></PresencePanel>
     return <div className="grid gap-0">
       <SettingsSection title="Phone access">
         <SettingRow
@@ -1615,7 +1615,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         />
         <SettingRow
           title="Connection"
-          description={companionLoadError ? 'Retry to check phone access on this computer.' : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
+          description={companionLoadError ? undefined : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
           status={<span role="status" aria-live="polite" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             {(failed || companionLoadError) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button>}
@@ -1741,7 +1741,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           description={computerUseAllowlistEnabled ? 'Chats can target only the apps checked below.' :'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
-        {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." />}
+        <PresencePanel open={computerUseApps.length === 0}><SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." /></PresencePanel>
         {computerUseApps.map((app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
@@ -2251,9 +2251,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 />
               }
             />
-            {favoriteUamAgentIds.length === 0 && (
+            <PresencePanel open={favoriteUamAgentIds.length === 0}>
               <SettingRow title="No custom favourites" description="The cycle is Build, then Plan." />
-            )}
+            </PresencePanel>
             {favoriteUamAgentIds.map((agentId, index) => {
               const available = activeUamAgents.some((agent) => agent.id === agentId)
               return (
@@ -2389,7 +2389,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </>
               )}
               </PresencePanel>
-              {importNeedsChat && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">Open a workspace chat to import into this workspace, or choose All workspaces.</Notice>}
+              <PresencePanel open={importNeedsChat}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">Open a workspace chat to import into this workspace, or choose All workspaces.</Notice></PresencePanel>
             </div>
           </SettingsSection>}
         </div>
@@ -2400,8 +2400,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const managers = (effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId)
       return (
         <div ref={cliVersionMenuRef} className="grid gap-0">
-          {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">Choose a computer above to manage its CLI version.</Notice>}
-          {managers.length === 0 && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">No CLI installation information is available. Check the provider on this host.</Notice>}
+          <PresencePanel open={Boolean(scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS)}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">Choose a computer above to manage its CLI version.</Notice></PresencePanel>
+          <PresencePanel open={managers.length === 0}><Notice tone="info" dismissible={false} dismissLabel="Dismiss">No CLI installation information is available. Check the provider on this host.</Notice></PresencePanel>
           {managers.map((manager) => {
             const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
             const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
@@ -2415,7 +2415,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             }
             const rows = (
               <>
-                {issues.map(issue => <Notice key={issue} tone="warning" dismissible={false} dismissLabel="Dismiss">{issue}</Notice>)}
+                <PresencePanel open={issues.length > 0}>{issues.map(issue => <Notice key={issue} tone="warning" dismissible={false} dismissLabel="Dismiss">{issue}</Notice>)}</PresencePanel>
                 <SettingRow title="Installed" control={<span>{manager.installedVersion || 'Not detected'}</span>} />
                 <SettingRow title="Recommended" control={<span>{manager.preferredVersion || 'Unavailable'}</span>} />
                 <PresencePanel open={pendingCliInstall?.providerId === manager.providerId}>{pendingCliInstall?.providerId === manager.providerId && <div role="group" aria-label="Confirm CLI installation">
@@ -2538,7 +2538,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
           {remoteBusy ? <ProgressFill label="Remote host setup running" indeterminate>{addHostSection}</ProgressFill> : addHostSection}
           <SettingsSection title="Configured hosts">
-            {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" />}
+            <PresencePanel open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></PresencePanel>
             {remoteHosts.map((host) => (
               <SettingRow
                 key={host.id}
@@ -2600,13 +2600,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             
-            {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default follows the provider policy."
+            <PresencePanel open={Boolean(sessions.find((session) => session.id === activeSessionId))}><SettingRow title="Current chat memory" description="Default follows the provider policy."
               status={memoryPolicySaving.chat ? 'Saving…' : undefined}
               control={<MenuSelect label="Current chat memory policy" value={sessions.find((session) => session.id === activeSessionId)?.memoryLevel ?? 'default'} disabled={memoryPolicySaving.chat}
                 options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
                 onChange={(level) => { if (activeSessionId) void saveMemoryPolicy('chat', () => setSessionMemoryLevel(activeSessionId, level as MemoryLevel)) }} />}>
-              
-            </SettingRow>}
+
+            </SettingRow></PresencePanel>
             <SettingRow
               title="Idle delay (seconds)"
               description="Idle time before a chat's memory is processed."
@@ -2673,7 +2673,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 )
               })}
             </div>
-            {memoryLastStatus && <SettingRow title="Last run" description={memoryLastStatus} />}
+            <PresencePanel open={Boolean(memoryLastStatus)}><SettingRow title="Last run" description={memoryLastStatus || undefined} /></PresencePanel>
 
             {hasWorkerLog && (
               <Disclosure className="mt-3 text-xs" summary={<span style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</span>}>
@@ -2861,7 +2861,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </SettingRow>
                 )
               })}
-              {editorAssociationsDraft.length === 0 && <SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." />}
+              <PresencePanel open={editorAssociationsDraft.length === 0}><SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." /></PresencePanel>
             </div>
           </SettingsSection>
 

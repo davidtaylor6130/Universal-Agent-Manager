@@ -7,7 +7,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, RowButton, StatusDot, Switch, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, usePresence } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -32,6 +32,19 @@ function ActionEditor({ open, children }: { open: boolean; children: ReactNode }
   const presence = usePresence(open)
   if (!presence.mounted) return null
   return <div className="uam-central-editor uam-settings-presence grid gap-3 sm:grid-cols-2" data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
+}
+
+/** Name field that slides open under the Group control, so creating a group never stacks a second dialog. */
+function NewGroupForm({ open, value, onChange, onSubmit, onCancel }: { open: boolean; value: string; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void }) {
+  const presence = usePresence(open)
+  if (!presence.mounted) return null
+  return <form aria-label="New group" className="uam-settings-presence flex items-center gap-2" data-state={presence.closing ? 'closed' : 'open'}
+    onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel() } }}
+    onSubmit={event => { event.preventDefault(); if (parseGroupPath(value).length) onSubmit() }}>
+    <input autoFocus aria-label="Group name" placeholder="Group name" value={value} onChange={event => onChange(event.target.value)} className="uam-field min-w-0 flex-1" />
+    <Button type="submit" size="sm" disabled={!parseGroupPath(value).length}>Add group</Button>
+    <IconButton size="sm" icon={<X size={14} />} label="Cancel new group" onClick={onCancel} />
+  </form>
 }
 
 function groupPathText(action: ShellAction) {
@@ -214,15 +227,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         onStay={() => { setPendingExit(null); revealInvalidAction() }}
         onDiscard={() => { const next = pendingExit; setActions(appliedActions); setPendingExit(null); next() }}
         onSave={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }} />}</Presence>
-      <Presence open={Boolean(newGroupActionId)}>
-        <Overlay open zIndex={80}>
-          <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; moveToGroup(newGroupActionId, parseGroupPath(newGroupName)); setNewGroupActionId('') }}>
-            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16} />} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
-            <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="uam-field w-full" />
-            <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
-          </form>
-        </Overlay>
-      </Presence>
       <ConfirmDialog open={Boolean(pendingDeleteAction)} title="Delete shell action?" label="Delete shell action" confirmLabel="Delete action"
         onCancel={() => setPendingDeleteActionId('')}
         onConfirm={() => {
@@ -263,6 +267,9 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   if (value === '__new__') { setNewGroupActionId(action.id); setNewGroupName('') }
                   else moveToGroup(action.id, parseGroupPath(value))
                 }} options={[{ value: '', label: 'No group', icon: <FolderTree size={15} /> }, ...groupOptions.map(group => ({ value: group, label: group, icon: <FolderTree size={15} /> })), { value: '__new__', label: 'New group…', icon: <Plus size={15} /> }]} />
+                <NewGroupForm open={newGroupActionId === action.id} value={newGroupName} onChange={setNewGroupName}
+                  onSubmit={() => { moveToGroup(action.id, parseGroupPath(newGroupName)); setNewGroupActionId('') }}
+                  onCancel={() => { setNewGroupActionId(''); document.getElementById(actionFieldId(action.id, 'group'))?.focus() }} />
               </SettingsField>
               <SettingsField label="Provider">
                 <MenuSelect

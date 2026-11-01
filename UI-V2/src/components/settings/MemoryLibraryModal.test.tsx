@@ -182,7 +182,7 @@ describe('MemoryLibraryModal all memory scope', () => {
 
     clickButton(document.body, 'Add memory')
 
-    const sourceChatInput = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.includes('Source chat'))?.querySelector('input')
+    const sourceChatInput = document.getElementById('memory-draft-source-chat')
     expect(sourceChatInput?.parentElement?.parentElement?.className).not.toContain('grid-cols-2')
 
     expect(document.body.querySelector('select')).toBeNull()
@@ -210,8 +210,8 @@ describe('MemoryLibraryModal all memory scope', () => {
     const createMemoryEntry = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
     const { host, root } = renderModal({ createMemoryEntry })
     clickButton(document.body, 'Add memory')
-    const title = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
-    const memory = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Memory'))?.querySelector('textarea') as HTMLTextAreaElement
+    const title = document.getElementById('memory-draft-title') as HTMLInputElement
+    const memory = document.getElementById('memory-draft-memory') as HTMLTextAreaElement
     changeInput(title, 'Remember once')
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(memory, 'Only one persisted entry')
@@ -238,14 +238,14 @@ describe('MemoryLibraryModal all memory scope', () => {
     const closeMemoryLibrary = useAppStore.getState().closeMemoryLibrary as ReturnType<typeof vi.fn>
 
     clickButton(document.body, 'Add memory')
-    const title = Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement
+    const title = document.getElementById('memory-draft-title') as HTMLInputElement
     changeInput(title, 'Keep this draft')
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
     expect(document.body.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
     clickButton(document.body, 'Go back')
-    expect((Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
+    expect((document.getElementById('memory-draft-title') as HTMLInputElement).value).toBe('Keep this draft')
 
     clickButton(document.body, 'Close add memory')
     clickButton(document.body, 'Discard')
@@ -372,7 +372,7 @@ describe('MemoryLibraryModal all memory scope', () => {
     try {
       clickButton(document.body, 'Add memory')
       const title = document.body.querySelector<HTMLInputElement>('[aria-label="Title"]')!
-      const memory = Array.from(document.body.querySelectorAll('label')).find(label => label.textContent?.startsWith('Memory'))!.querySelector('textarea')!
+      const memory = document.getElementById('memory-draft-memory')!
       const setMemory = (value: string) => act(() => {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(memory, value)
         memory.dispatchEvent(new Event('input', { bubbles: true }))

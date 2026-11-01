@@ -69,7 +69,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const addTriggerRef = useRef<HTMLButtonElement | null>(null)
   const childOpen = Boolean(editing || addView || imports.length)
   // The step stays mounted while it slides out to the right; the snapshot keeps its last content during that exit.
-  const stepPresence = usePresence(childOpen, 180)
+  const stepPresence = usePresence(childOpen)
   const childSnapshot = useRef<ReactElement | null>(null)
   const openAddChoices = () => { editorTriggerRef.current = addTriggerRef.current; resetError(); setAddView('choose') }
   const previousChildOpenRef = useRef(false)

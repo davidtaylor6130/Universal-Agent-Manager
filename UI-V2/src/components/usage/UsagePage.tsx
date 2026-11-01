@@ -7,7 +7,7 @@ import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GE
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, Tooltip, cx, usePresence } from '../ui'
-import { reportAppNotice } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
 
@@ -136,7 +136,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
       if (next.length >= 200) { setError('Up to 200 model prices can be saved. Remove an unused override first.'); return }
       next.push({ providerId: model.providerId, modelId: model.modelId, speed: model.speed, inputPerMillion: values[0], cachedInputPerMillion: values[1], cacheWritePerMillion: values[2], outputPerMillion: values[3] })
     }
-    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose(); reportAppNotice(remove ? 'Price override removed.' : 'Model prices saved.', 'success') } catch { setError('Could not save prices on this device. Your previous prices were kept.') }
+    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose(); reportAppNotice(remove ? 'Price override removed.' : 'Model prices saved.', 'success') } catch { reportAppFailure('Could not save prices on this device.', 'Your previous prices were kept.') }
   }
   return <form className="grid gap-3 py-4" aria-label={`Prices for ${model.modelId}`} onSubmit={event => { event.preventDefault(); save() }}>
     <p className="text-xs">USD per million tokens. Blank rates stay unknown. These estimates do not change provider billing.</p>
@@ -257,7 +257,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     metric === 'cost' && data.pricing?.error,
     metric === 'cost' && data.pricing?.aliasError,
     !data.complete && 'Partial history. Totals include available and cached records.',
-    data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All Time includes recorded and available history. Previously deleted records may be missing.',
+    data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All time includes recorded and available history. Previously deleted records may be missing.',
     data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
     noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
     metric === 'cost' && pricingPending && totals.unpricedTokens > 0 && `${totals.unpricedTokens.toLocaleString()} tokens are still awaiting prices.`,

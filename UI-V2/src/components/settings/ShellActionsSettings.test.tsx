@@ -321,7 +321,7 @@ describe('ShellActionsSettings', () => {
         await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Group for Explain ü"]')!.click())
         await act(async () => option('New group…').click())
         act(() => type(document.body.querySelector<HTMLInputElement>('input[aria-label="Group name"]')!, ' Ünï / Sub '))
-        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Create group')!.click())
+        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Add group')!.click())
         expect(titles(group(host, 'Ünï / Sub'))).toEqual(['Explain ü'])
         expect(host.querySelector<HTMLInputElement>('input[aria-label="Label for Explain ü"]')?.value).toBe('Explain ü')
 

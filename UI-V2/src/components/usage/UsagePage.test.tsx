@@ -47,7 +47,7 @@ describe('UsagePage', () => {
     } finally { act(() => root.unmount()) }
   })
 
-  it('requests All Time and renders bounded cohorts across the full retained date range', async () => {
+  it('requests All time and renders bounded cohorts across the full retained date range', async () => {
     storage()
     const requests: { windowDays: number; startMs: number }[] = []
     window.cefQuery = request => {
@@ -64,7 +64,7 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(row => row.textContent === 'All Time')!
+      const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(row => row.textContent === 'All time')!
       await act(async () => button.click())
       expect(requests.at(-1)?.windowDays).toBe(0); expect(requests.at(-1)?.startMs).toBe(0)
       expect(button.getAttribute('aria-pressed')).toBe('true')

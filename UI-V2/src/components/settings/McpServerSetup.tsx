@@ -374,8 +374,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     </SettingsSection>
 
     <div className="flex items-center justify-end gap-2 flex-wrap">
-      {setup === null && <span className="uam-set-section__desc mr-auto">Running chats keep their old setup until restarted.</span>}
-      {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button>}
+      {setup === null && <span className="uam-set-section__desc mr-auto uam-reveal">Running chats keep their old setup until restarted.</span>}
+      {dirty && <Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button>}
       <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
     </div>
     {setup === null && validationError && <p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p>}
