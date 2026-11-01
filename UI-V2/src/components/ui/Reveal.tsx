@@ -5,7 +5,7 @@ import './reveal.css'
 
 /**
  * Conditional content. Mounts while `open`, keeps its last open children through the exit, then unmounts.
- * Enter rises --sp-1 and fades in; exit fades out. Reduced motion and Motion Off skip movement.
+ * Enter rises --sp-1 and fades in; exit sinks back the same way. Reduced motion and Motion Off skip movement.
  */
 export function Reveal({ open, as: Tag = 'div', id, className, children }: { open: boolean; as?: 'div' | 'span'; id?: string; className?: string; children: ReactNode }) {
   const { mounted, closing } = usePresence(open)

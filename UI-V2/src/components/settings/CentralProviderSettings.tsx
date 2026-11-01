@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Bot, FileText, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, usePresence, Reveal } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -67,6 +67,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [pendingExit, setPendingExit] = useState<{ next: () => void } | null>(null)
   const [agentExitPrompt, setAgentExitPrompt] = useState(false)
+  const [removingKeys, setRemovingKeys] = useState<Set<string>>(() => new Set())
   const editingOriginal = useRef<Agent | null>(null)
   const [instructionEditor, setInstructionEditor] = useState<InstructionEditor | null>(null)
   const instructionRequest = useRef(0)
@@ -118,8 +119,17 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     startEditing(null); await loadAgents()
     return true
   }
+  // Keeps a removed row mounted through its exit (Reveal), then runs the removal; the row returns if the removal fails.
+  const exitRow = async (key: string, remove: () => Promise<boolean> | boolean) => {
+    if (!motionAllowed()) return remove()
+    setRemovingKeys(current => new Set([...current, key]))
+    await new Promise(resolve => window.setTimeout(resolve, scaledMs(EXIT_MS)))
+    try { return await remove() }
+    finally { setRemovingKeys(current => { const next = new Set(current); next.delete(key); return next }) }
+  }
   const deleteAgent = async (id: string) => {
-    if (await run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`)) {
+    const removed = await exitRow(`agent:${id}`, () => run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`))
+    if (removed) {
       if (editing?.draft.id === id) startEditing(null)
       setPendingDelete(null)
       await loadAgents()
@@ -223,11 +233,11 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
       <Reveal open={instructionFiles.length === 0}><SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." /></Reveal>
-      {instructionFiles.map(path => <SettingRow key={path} icon={<FileText size={15} aria-hidden />} title={fileName(path)}
+      {instructionFiles.map(path => <Reveal key={path} open={!removingKeys.has(`instruction:${path}`)}><SettingRow icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
         control={<>
           <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${fileName(path)}`} disabled={busy || instructionDirty || !saved.instructionFiles.includes(path)} onClick={event => { instructionTrigger.current = event.currentTarget; void openInstructionFile(path) }} />
-          <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />
+          <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => void exitRow(`instruction:${path}`, () => { setInstructionFiles(instructionFiles.filter(item => item !== path)); return true })} />
         </>}>
         {instructionPresence.mounted && shownEditor?.path === path && <div className="uam-central-editor uam-presence grid gap-3" data-state={instructionPresence.closing ? 'closed' : 'open'}>
           <Reveal open={shownEditor.loading}><SettingsLoading label="Opening instruction file" rows={3} /></Reveal>
@@ -243,7 +253,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
             </div>
           </></Reveal>
         </div>}
-      </SettingRow>)}
+      </SettingRow></Reveal>)}
       <Reveal open={!!(saved.instructions)}><SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." /></Reveal>
     </SettingsSection>
 
@@ -271,14 +281,14 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       <Reveal open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></Reveal>
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)
-        return <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />}
+        return <Reveal key={agent.id} open={!removingKeys.has(`agent:${agent.id}`)}><SettingRow icon={<Bot size={15} aria-hidden />}
           title={agent.id}
           description={agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'}
           status={usedAs?.label}
           control={<>
             <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
             {!agent.builtIn && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
-          </>} />
+          </>} /></Reveal>
       })}
     </SettingsSection>
 

@@ -1,7 +1,7 @@
 import { cloneElement, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, RowButton, SegmentedControl, Switch, usePresence, Swap } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, Reveal, RowButton, SegmentedControl, Switch, usePresence, Swap } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -346,13 +346,13 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       {idleActionsPresence.mounted && <div className="flex justify-end gap-2 uam-presence" data-state={idleActionsPresence.closing ? 'closed' : 'open'}><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
     </> : imports.length ? <>
       <div className="uam-set-section__title shrink-0 px-1">Import preview</div>
-      <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <div key={candidate.id} title={candidate.sourcePath} className="uam-reveal flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
+      <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <Reveal key={candidate.id} open><div title={candidate.sourcePath} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
           {candidate.validationError && <span className="flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{candidate.validationError}</span>}
         </div>
         {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label="If a skill with this name exists" disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip' }, { value: 'replace', label: 'Replace' }, { value: 'separate', label: 'Keep both' }]} /></div>}
-      </div>)}</div>
+      </div></Reveal>)}</div>
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
       <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
@@ -376,13 +376,13 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div className="min-h-0 flex flex-col">
         <div className="uam-set-section__title shrink-0 px-1 pb-2">Library</div>
         <div aria-label="Skill folders" className="min-h-0 flex-1 overflow-y-auto">
-          {loading ? <SettingsLoading label="Loading skills" rows={5} /> : filtered.length === 0 ? (search.trim() || filter !== 'all'
+          <Swap swapKey={loading ? 'loading' : filtered.length === 0 ? 'empty' : 'list'}>{loading ? <SettingsLoading label="Loading skills" rows={5} /> : filtered.length === 0 ? (search.trim() || filter !== 'all'
             ? <p className="px-1 text-sm" style={{ color: 'var(--text-2)' }}>No skills match this view.</p>
             : visibleError ? null
             : <div className="grid justify-items-start gap-2 px-1 py-2">
               <p className="text-sm" style={{ color: 'var(--text-3)' }}>No skills yet.</p>
               <Button size="sm" onClick={openAddChoices}>Add skill</Button>
-            </div>) : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}
+            </div>) : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}</Swap>
         </div>
       </div>
       <section aria-label="Skill preview" className="uam-skill-preview flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -435,10 +435,10 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       </div>
       {/* Stage: the library and the step share one area, so the step slides over the library. */}
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
-      {!markdownStoreDirectory ? <div className="grid justify-items-start gap-2 px-1 py-4">
+      <Swap swapKey={markdownStoreDirectory ? 'library' : 'empty'} className="flex-1 min-h-0 flex flex-col">{!markdownStoreDirectory ? <div className="grid justify-items-start gap-2 px-1 py-4">
         <p className="text-sm" style={{ color: 'var(--text-3)' }}>Choose a skills folder to get started.</p>
         <Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button>
-      </div> : <div className={`uam-skills-library flex-1 min-h-0 flex flex-col${embedded ? '' : ' px-5'}`} data-away={childOpen || undefined} aria-hidden={childOpen || undefined} {...(childOpen ? { inert: '' } : {})}>{library}</div>}
+      </div> : <div className={`uam-skills-library flex-1 min-h-0 flex flex-col${embedded ? '' : ' px-5'}`} data-away={childOpen || undefined} aria-hidden={childOpen || undefined} {...(childOpen ? { inert: '' } : {})}>{library}</div>}</Swap>
       {/* Slides out, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
       {stepPresence.mounted && childSnapshot.current && cloneElement(childSnapshot.current, exitProps)}
       </div>

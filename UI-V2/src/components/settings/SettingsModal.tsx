@@ -325,13 +325,13 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         status={startupStatus}
         control={<Switch hideLabel name="startupEnabled" label="Start helper at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
-      {host.platform === 'linux' && (
+      <Reveal open={host.platform === 'linux'}>
         <SettingRow
           title="Run CLI updates with sudo"
           description="Needs passwordless sudo for npm. Chats still run as you."
           control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" checked={cliUpdatesAsAdmin} disabled={busy} onChange={(event) => setCliUpdatesAsAdmin(event.currentTarget.checked)} />}
         />
-      )}
+      </Reveal>
       <SettingsField label="Host instructions" htmlFor={`remote-host-instructions-${host.id}`} hint={textHint}>
         <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
         <Reveal open={Boolean(textError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span></Reveal>

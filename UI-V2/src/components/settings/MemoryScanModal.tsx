@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, Overlay, Switch, useOverlayState } from '../ui'
+import { Button, IconButton, Overlay, Reveal, Swap, Switch, useOverlayState } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { providerMetadataForId } from '../../utils/providerMetadata'
 import { SettingRow, SettingsLoading } from './SettingsPrimitives'
@@ -81,7 +81,7 @@ export function MemoryScanModal() {
             </div>
           </div>
 
-          <div key={memoryScanLoading ? 'loading' : memoryScanCandidates.length === 0 ? 'empty' : 'list'} className="uam-reveal">
+          <Swap swapKey={memoryScanLoading ? 'loading' : memoryScanCandidates.length === 0 ? 'empty' : 'list'}>
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />
           ) : memoryScanCandidates.length === 0 ? (
@@ -110,10 +110,10 @@ export function MemoryScanModal() {
               })}
             </div>
           )}
-          </div>
-          {!memoryScanLoading && memoryScanCandidates.length > 0 && (
-            <p className="uam-reveal text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
-          )}
+          </Swap>
+          <Reveal open={!memoryScanLoading && memoryScanCandidates.length > 0}>
+            <p className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
+          </Reveal>
         </div>
 
         <div className="uam-scan-foot">
