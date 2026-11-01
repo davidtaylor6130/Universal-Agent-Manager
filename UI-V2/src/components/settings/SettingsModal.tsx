@@ -1622,8 +1622,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             {(failed || companionSettings?.restartRequired) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button>}
           </div>}
         >{phoneFeedback}</SettingRow>
-        {repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
-          control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}
+        <PresencePanel open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
+          control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}</PresencePanel>
         {address && <SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
           control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
           <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
@@ -1738,7 +1738,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       >
         <SettingRow
           title="Only listed apps"
-          description={computerUseAllowlistEnabled ? 'Only listed apps can be targeted.' : 'Each chat asks before targeting an app.'}
+          description={computerUseAllowlistEnabled ? 'Chats can target only the apps checked below.' :'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
         {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." />}
@@ -2135,7 +2135,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         </PresencePanel>
                         {!refreshFailed && (
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}
+                            {modelsLoading ? <ProgressFill label={`Refreshing ${providerName} models`} indeterminate>Refreshing models…</ProgressFill> : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}
                           </span>
                         )}
                       </div>
@@ -2317,8 +2317,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
               </SettingsField>
 
-              {agentImportPreview && (
-                <div className="grid gap-3">
+              <PresencePanel open={Boolean(agentImportPreview)} className="grid gap-3">
+                {agentImportPreview && (
+                <>
                   <SettingRow
                     title={agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
                     description={agentImportPreview.mode || 'Unknown mode'}
@@ -2385,8 +2386,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       </div>
                     </>
                   )}
-                </div>
+                </>
               )}
+              </PresencePanel>
               {importNeedsChat && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">Open a workspace chat to import into this workspace, or choose All workspaces.</Notice>}
             </div>
           </SettingsSection>}
@@ -2416,7 +2418,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 {issues.map(issue => <Notice key={issue} tone="warning" dismissible={false} dismissLabel="Dismiss">{issue}</Notice>)}
                 <SettingRow title="Installed" control={<span>{manager.installedVersion || 'Not detected'}</span>} />
                 <SettingRow title="Recommended" control={<span>{manager.preferredVersion || 'Unavailable'}</span>} />
-                {pendingCliInstall?.providerId === manager.providerId && <div role="group" aria-label="Confirm CLI installation">
+                <PresencePanel open={pendingCliInstall?.providerId === manager.providerId}>{pendingCliInstall?.providerId === manager.providerId && <div role="group" aria-label="Confirm CLI installation">
                   <SettingRow
                     title={`Install ${pendingCliInstall.providerName} ${pendingCliInstall.version} on ${installHostName} using ${manager.installMethod || 'npm'}?`}
                     control={
@@ -2432,6 +2434,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     }
                   />
                 </div>}
+                </PresencePanel>
                 {(manager.lastCommand || manager.lastOutput) && (
                   <Disclosure summary="Last command output">
                     <div className="grid gap-2">
@@ -2492,46 +2495,48 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
+      const addHostSection = (
+            <SettingsSection
+              title="Add a host"
+              actions={
+                <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
+                  Preview setup
+                </Button>
+              }
+            >
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SettingsField label="Display name" htmlFor="remote-host-name">
+                  <input
+                    id="remote-host-name"
+                    aria-label="Remote host display name"
+                    value={remoteLabel}
+                    maxLength={128}
+                    placeholder="AI desktop"
+                    className="uam-field"
+                    onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
+                  />
+                </SettingsField>
+                <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
+                  <input
+                    id="remote-host-alias"
+                    aria-label="SSH config alias"
+                    value={remoteAlias}
+                    maxLength={255}
+                    placeholder="ai-desktop"
+                    spellCheck={false}
+                    className="uam-field font-mono"
+                    onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
+                  />
+                </SettingsField>
+              </div>
+              <StatusMessage message={remoteMessage} />
+            </SettingsSection>
+      )
       return (
         <div className="grid gap-0">
           {COMPUTER_USE_ENABLED && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</p>}
 
-          <SettingsSection
-            title="Add a host"
-            actions={
-              <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
-                Preview setup
-              </Button>
-            }
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SettingsField label="Display name" htmlFor="remote-host-name">
-                <input
-                  id="remote-host-name"
-                  aria-label="Remote host display name"
-                  value={remoteLabel}
-                  maxLength={128}
-                  placeholder="AI desktop"
-                  className="uam-field"
-                  onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
-                />
-              </SettingsField>
-              <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
-                <input
-                  id="remote-host-alias"
-                  aria-label="SSH config alias"
-                  value={remoteAlias}
-                  maxLength={255}
-                  placeholder="ai-desktop"
-                  spellCheck={false}
-                  className="uam-field font-mono"
-                  onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage(null) }}
-                />
-              </SettingsField>
-            </div>
-            <StatusMessage message={remoteMessage} />
-          </SettingsSection>
-
+          {remoteBusy ? <ProgressFill label="Remote host setup running" indeterminate>{addHostSection}</ProgressFill> : addHostSection}
           <SettingsSection title="Configured hosts">
             {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" />}
             {remoteHosts.map((host) => (
@@ -2728,7 +2733,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'goal-loops') {
       return (
-        <SettingsSection title="Goal loop safety">
+        <div className="grid gap-0">
           <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[10000, 25000, 50000, 100000, 200000, 500000].map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
           <SettingRow
             title="Maximum iterations"
@@ -2774,7 +2779,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               />
             }
           />
-        </SettingsSection>
+        </div>
       )
     }
 

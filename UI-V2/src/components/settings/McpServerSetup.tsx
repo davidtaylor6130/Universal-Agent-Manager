@@ -3,8 +3,8 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2, 
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, Disclosure, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
-import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { Button, Disclosure, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -250,11 +250,13 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
   const cancelSetup = () => { setSetup(null); setImportWarnings([]) }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
-  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <RowButton className="uam-prov-option" aria-label={label} title={detail} onClick={onClick}>
-    <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
-    <span className="uam-prov-option__label min-w-0 text-left">{label}</span>
-    <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
-  </RowButton>
+  const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <Tooltip label={detail} side="bottom" align="start">
+    <RowButton className="uam-prov-option" aria-label={label} onClick={onClick}>
+      <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
+      <span className="uam-prov-option__label min-w-0 text-left">{label}</span>
+      <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
+    </RowButton>
+  </Tooltip>
   const setupBody = setup === 'choose' ? <div className="grid gap-2">
     {option(<Download size={16} />, 'Import configuration', OPENCODE_ENABLED ? 'Bring servers over from OpenCode or pasted JSON.' : 'Bring servers over from pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]) })}
     {option(<Wand2 size={16} />, 'Step by step', 'Answer two short questions. Best for a single new server.', () => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') })}
@@ -374,7 +376,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <div className="flex items-center justify-end gap-2 flex-wrap">
       {setup === null && <span className="uam-set-section__desc mr-auto">Running chats keep their old setup until restarted.</span>}
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button>}
-      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</Button>
+      <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
     </div>
     {setup === null && validationError && <p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p>}
     {setup === null && warningNotice}

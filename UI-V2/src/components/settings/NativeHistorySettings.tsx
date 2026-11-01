@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, Disclosure } from '../ui'
+import { Button, Disclosure, usePresence } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
@@ -149,11 +149,12 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     : status.generation ? `${status.totalCount} histories awaiting review; ${status.importedCount} imported in this scan.`
     : 'Discovery does not import or resume chats.'
   const idForName = (name: string) => providerIds.find((id) => providerMetadataForId(id).shortName === name)
+  const reviewPresence = usePresence(status.phase === 'ready' && status.totalCount > 0)
   return <SettingsSection title="Native provider history">
     <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
-        {status.phase === 'ready' && status.totalCount > 0 && <Button size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
+        {reviewPresence.mounted && <Button className="uam-settings-presence" data-state={reviewPresence.closing ? 'closed' : 'open'} size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
         <Button size="sm" variant="secondary" data-native-history-discovery disabled={requesting || active || companion} leadingIcon={<Search size={14} />} aria-busy={requesting || status.phase === 'scanning' || undefined} onClick={() => void discover()}>Discover histories</Button>
       </div>}>
       <ul className="uam-native-scope" aria-label={providerScope ? `Reads ${providerScope} native history stores for this user.` : 'Reads native history stores supported by this desktop build.'}>

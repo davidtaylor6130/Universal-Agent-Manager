@@ -1,4 +1,5 @@
-import { MenuSelect, Tooltip } from '../ui'
+import { useRef } from 'react'
+import { MenuSelect, Tooltip, usePresence } from '../ui'
 import type { ExecutionHost } from '../../types/session'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { isSshHost } from '../../utils/remoteWorkspace'
@@ -19,6 +20,12 @@ export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onC
 }) {
   const sshHosts = hosts.filter((host) => isSshHost(host))
   const selected = sshHosts.find((host) => host.id === value)
+  const hintText = selectorEnabled && selected
+    ? (supported ? `Changes here apply only to ${selected.label}.` : 'Computer actions only; defaults and MCP lists stay global.')
+    : ''
+  const hint = usePresence(hintText !== '')
+  const lastHint = useRef('')
+  if (hintText) lastHint.current = hintText
   const options = [
     { value: SETTINGS_ALL_ENVIRONMENTS, label: 'All environments' },
     ...sshHosts.map((host) => ({ value: host.id, label: host.label, description: host.sshAlias })),
@@ -33,9 +40,7 @@ export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onC
           </span>
         </Tooltip>
       </div>
-      {selectorEnabled && selected && (supported
-        ? <p className="text-xs" style={{ color: 'var(--text-3)' }}>Changes here apply only to {selected.label}.</p>
-        : <p className="text-xs" style={{ color: 'var(--text-3)' }}>Computer actions only; defaults and MCP lists stay global.</p>)}
+      {hint.mounted && <p className="text-xs uam-settings-presence" data-state={hint.closing ? 'closed' : 'open'} style={{ color: 'var(--text-3)' }}>{hintText || lastHint.current}</p>}
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, Disclosure, MenuSelect, Presence, StatusDot, Switch, usePresence, type StatusTone } from '../ui'
+import { Button, MenuSelect, Presence, StatusDot, Switch, usePresence, type StatusTone } from '../ui'
 import { NumberField } from './NumberField'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -20,9 +20,9 @@ export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: Status
   error: { tone: 'error', label: 'Error' },
 }
 
-/** Collapsed remote-folder block: title and a count on the summary line. */
-function FolderDisclosure({ title, summary, children }: { title: string; summary: string; children: React.ReactNode }) {
-  return <Disclosure className="uam-rt-disclosure" summary={<><span>{title}</span><span className="uam-rt-disclosure__summary">{summary}</span></>}>{children}</Disclosure>
+/** Remote-folder row: the folder count is the status line, the folder list is the row content. */
+function FolderRow({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return <SettingRow title="Remote folders" status={summary}>{children}</SettingRow>
 }
 
 export interface ExecutionRoutingSettingsHandle { requestLeave: (next: () => void) => void }
@@ -178,9 +178,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                 <SettingRow key={provider.id} title={provider.name} description={`Confirm once you have signed in to ${provider.name} on this computer.`}
                   control={<Switch hideLabel label={`${provider.name} signed in on ${host.label}`} checked={confirmed(policy, host.id, provider.id)} onChange={(event) => update(host.id, (item) => ({ ...item, providers: event.target.checked ? [...item.providers.filter((entry) => entry.providerId !== provider.id), { providerId: provider.id, connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }] : item.providers.filter((entry) => entry.providerId !== provider.id) }))} />} />
               ))}
-              <div className="uam-set-row">
                 {matching
-                  ? <FolderDisclosure title="Remote folders" summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
+                  ? <FolderRow summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
                       <div className="grid gap-3">
                         {localFolders.length === 0 && <p className="uam-rt-dialog__empty">Give a local folder a path first, then it can be matched here.</p>}
                         {localFolders.length > 0 && repositories === null && !repositoryError && <SettingsLoading label="Checking repositories" rows={2} />}
@@ -213,8 +212,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                           </div>
                         })}
                       </div>
-                    </FolderDisclosure>
-                  : <FolderDisclosure title="Remote folders" summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
+                    </FolderRow>
+                  : <FolderRow summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
                     <div className="grid gap-3">
                       {localFolders.length === 0 && <p className="uam-rt-dialog__empty">Give a local folder a path first, then map it here.</p>}
                       {localFolders.length > 0 && remoteFolders.length === 0 && <p className="uam-rt-dialog__empty">No folders exist on {host.label} yet, so there is nothing to map to.</p>}
@@ -226,8 +225,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                         </SettingsField>
                       })}
                     </div>
-                  </FolderDisclosure>}
-              </div>
+                  </FolderRow>}
             </SettingsSection>
           })}
       </fieldset>

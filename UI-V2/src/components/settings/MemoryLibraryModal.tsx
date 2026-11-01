@@ -5,7 +5,7 @@ import './settings-shell.css'
 import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, Notice, Overlay, RowButton, usePresence, useOverlayState } from '../ui'
+import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -18,6 +18,7 @@ const MEMORY_CATEGORIES = [
 ] as const
 
 const MEMORY_CONFIDENCE = ['high', 'medium', 'low'] as const
+const confidenceLabel = (value: string) => value.charAt(0).toUpperCase() + value.slice(1)
 
 const memoryFolderLabel = (folder: Folder, hosts: ExecutionHost[]) => (folder.executionHostId || 'local') === 'local' ? folder.name : `${folder.name} · ${hosts.find((host) => host.id === folder.executionHostId)?.label || folder.executionHostId}`
 /** "3 hours ago" / "12 Sept" — raw ISO stamps are hard to scan. */
@@ -247,6 +248,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [isAdding, setIsAdding] = useState(false)
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const exitPrompt = usePresence(Boolean(pendingExit))
+  const formPresence = usePresence(!pendingExit)
   const lastPendingExit = useRef<(() => void) | null>(null)
   if (pendingExit) lastPendingExit.current = pendingExit
   const libraryRef = useRef<HTMLDivElement>(null)
@@ -260,6 +262,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
+  // Rows collapsing out before the store removes them.
+  const [removingEntryIds, setRemovingEntryIds] = useState<Set<string>>(() => new Set())
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
   const [viewingEntryId, setViewingEntryId] = useState<string | null>(null)
@@ -389,7 +393,19 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       .map((folder) => ({ value: `folder:${folder.id}`, label: memoryFolderLabel(folder, executionHosts) })),
   ]
   const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: memoryCategoryLabel(category) }))
-  const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidence }))
+  const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidenceLabel(confidence) }))
+
+  // Rows slide out before the delete runs; a failed delete puts them back.
+  const removeWithExit = (ids: string[], remove: () => Promise<boolean>): Promise<boolean> => {
+    const run = async () => {
+      const ok = await remove()
+      setRemovingEntryIds((current) => { const next = new Set(current); ids.forEach((id) => next.delete(id)); return next })
+      return ok
+    }
+    if (!motionAllowed()) return run()
+    setRemovingEntryIds((current) => new Set([...current, ...ids]))
+    return new Promise((resolve) => window.setTimeout(() => resolve(run()), scaledMs(EXIT_MS)))
+  }
 
   const submitDraft = async () => {
     if (submittingRef.current || !draft.title.trim() || !draft.memory.trim()) {
@@ -547,7 +563,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="uam-reveal mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
                   <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id).then((ok) => { if (ok) reportAppNotice(`Deleted “${pendingDelete.title}”.`, 'success') }); setPendingDeleteEntryId(null) }}>Delete memory</Button>
+                  <Button variant="danger" onClick={() => { const entry = pendingDelete; setPendingDeleteEntryId(null); void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') }) }}>Delete memory</Button>
                 </>}>
                   This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.
                 </Notice>
@@ -597,7 +613,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             )}
 
             {isAdding ? (
-              <div role="group" aria-label="New memory" className="space-y-3">
+              <div role="group" aria-label="New memory" className="space-y-3 uam-reveal">
               <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
               {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
               {exitPrompt.mounted && (
@@ -606,7 +622,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=lastPendingExit.current; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next?.()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = lastPendingExit.current; setPendingExit(null); next?.()} }}>Save and leave</Button></div>
                 </div>
               )}
-              <div hidden={Boolean(pendingExit)} className="space-y-3">
+              <div hidden={!formPresence.mounted} data-state={formPresence.closing ? 'closed' : 'open'} className="uam-memory-form space-y-3">
 
 
                     {isAllMemory && (
@@ -719,7 +735,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 <div className="text-base font-semibold" style={{ color: 'var(--text)' }}>{viewingEntry.title}</div>
                 <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--text-3)' }}>
                   <dt>Category</dt><dd style={{ color: 'var(--text-2)' }}>{memoryCategoryLabel(viewingEntry.category)}</dd>
-                  <dt>Confidence</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.confidence}</dd>
+                  <dt>Confidence</dt><dd style={{ color: 'var(--text-2)' }}>{confidenceLabel(viewingEntry.confidence)}</dd>
                   <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>
                   <dt>Scope</dt><dd style={{ color: 'var(--text-2)' }}>{memoryLocationLabel(viewingEntry, memoryLibraryScope)}</dd>
                   {viewingEntry.sourceChatId && <><dt>Source chat</dt><dd style={{ color: 'var(--text-2)' }}>{chatTitleById.get(viewingEntry.sourceChatId) ?? viewingEntry.sourceChatId}</dd></>}
@@ -753,7 +769,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                             </div>
                             <div className="grid gap-2">
                               {entries.map((entry) => (
-                                <div key={entry.id} className="uam-memory-row">
+                                <div key={entry.id} className="uam-memory-row" data-state={removingEntryIds.has(entry.id) ? 'closed' : 'open'}>
                                   <RowButton className="uam-memory-row__open" onClick={() => setViewingEntryId(entry.id)}>
                                     <span className="uam-memory-row__title">{entry.title}</span>
                                     <span className="uam-memory-row__summary">{entry.preview || 'No preview available.'}</span>

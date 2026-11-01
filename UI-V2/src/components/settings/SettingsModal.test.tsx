@@ -443,7 +443,7 @@ describe('SettingsModal memory settings', () => {
       expect(repairs).toHaveLength(1)
       const repair = repairs[0]
       const status = rows.find(row => row.querySelector('.uam-set-row__title')?.textContent === 'Connection')!
-      expect(status.nextElementSibling).toBe(repair)
+      expect(status.nextElementSibling?.contains(repair)).toBe(true) // repair row sits in its presence wrapper
       expect(host.textContent).not.toContain('LAN')
       expect(repair.querySelectorAll('button')).toHaveLength(2)
       expect(host.querySelector<HTMLDivElement>('.uam-settings-frame')?.style.margin).toBe('0px auto')
