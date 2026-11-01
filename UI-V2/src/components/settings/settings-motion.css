@@ -13,7 +13,9 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-settings-motion,
   .uam-settings-motion .uam-settings-page,
-  .uam-settings-motion .uam-settings-page-header .uam-reveal { animation: none; }
+  .uam-settings-motion .uam-settings-page-header .uam-reveal,
+  .uam-settings-presence,
+  .uam-settings-presence[data-state="closed"] { animation: none; }
 }
 
 /* Presence wrappers: enter with the reveal, exit with the same fade as overlays (usePresence drives data-state). */

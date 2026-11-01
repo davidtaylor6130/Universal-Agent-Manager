@@ -330,8 +330,6 @@
   .uam-usage-col-stack,
   .uam-usage-stack > span,
   .uam-usage-refresh.is-busy svg,
-  .uam-pace-prov,
-  .uam-pace-fill,
   .uam-limits-tokens[open] > :not(summary) {
     animation: none;
   }
@@ -362,26 +360,12 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: provider sections in one column; each window is a pace row (used track with elapsed-time tick). */
-.uam-pace-list { display: grid; max-width: 720px; }
-.uam-pace-prov { display: grid; gap: var(--sp-3); align-content: start; padding: var(--sp-5) 0; border-top: 1px solid var(--border); animation: uam-usage-fade var(--dur-enter) var(--ease-out-soft) both; }
-.uam-pace-prov:first-child { border-top: none; padding-top: 0; }
-.uam-pace-prov__head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-.uam-pace-prov__title { display: flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: var(--fs-md); font-weight: 600; }
-.uam-pace-rows { display: grid; gap: var(--sp-1); }
-.uam-pace-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 92px; align-items: center; gap: var(--sp-4); padding: var(--sp-2) 0; }
-.uam-pace-row__label { display: grid; min-width: 0; }
-.uam-pace-row__label > span { font-size: var(--fs-sm); color: var(--text-2); }
-.uam-pace-row__label > small { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.uam-pace-row__value { text-align: right; font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
-.uam-pace-track { position: relative; display: block; height: 6px; border-radius: var(--r-full); background: var(--surface-up); }
-.uam-pace-track--open { background: none; border: 1px dashed var(--border-bright); }
-.uam-pace-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; transform-origin: 0 50%; animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both; }
-.uam-pace-tick { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
-.uam-pace-key { display: flex; gap: var(--sp-4); font-size: var(--fs-xs); color: var(--text-3); }
-.uam-pace-key > span { display: inline-flex; align-items: center; gap: var(--sp-1); }
-.uam-pace-key i { display: inline-block; width: 2px; height: 10px; background: var(--text-2); }
-.uam-pace-key b { display: inline-block; width: 10px; height: 6px; border-radius: var(--r-full); background: var(--text-3); }
+/* Limits: one provider section per settings section; each limit is one row whose background fills to its used share. */
+.uam-limit-row { display: flex; align-items: center; gap: var(--sp-3); padding-inline: var(--sp-2); }
+.uam-limit-row__name { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
+.uam-limit-row__name > small { margin-left: var(--sp-2); }
+.uam-limit-row__value { font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uam-limit-row__reset { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .uam-limits-host-title { margin: 0; font-size: var(--fs-md); font-weight: 600; }
 .uam-limits-group { margin: 0; font-size: var(--fs-xs); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
 .uam-limits-lede { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text-2); }

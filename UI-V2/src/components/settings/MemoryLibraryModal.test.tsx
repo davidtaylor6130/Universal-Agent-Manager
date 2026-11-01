@@ -247,15 +247,16 @@ describe('MemoryLibraryModal all memory scope', () => {
     clickButton(document.body, 'Go back')
     expect((Array.from(document.body.querySelectorAll('label')).find((label) => label.textContent?.startsWith('Title'))?.querySelector('input') as HTMLInputElement).value).toBe('Keep this draft')
 
+    clickButton(document.body, 'Close add memory')
+    clickButton(document.body, 'Discard')
+    expect(document.body.querySelector('[aria-label="New memory"]')).toBeNull()
+
     clickButton(document.body, 'Delete Global lesson')
     expect(document.body.querySelector('[role="group"][aria-label="Delete memory entry"]')).toBeTruthy()
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(document.body.querySelector('[role="group"][aria-label="Delete memory entry"]')).toBeNull()
     expect(closeMemoryLibrary).not.toHaveBeenCalled()
 
-    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    expect(document.body.querySelector('[aria-label="Unsaved memory"]')).not.toBeNull()
-    clickButton(document.body, 'Discard')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(closeMemoryLibrary).toHaveBeenCalledTimes(1)
 

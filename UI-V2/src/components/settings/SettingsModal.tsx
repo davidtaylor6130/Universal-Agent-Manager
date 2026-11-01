@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
+import { Button, Card, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -79,7 +79,7 @@ import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOption
 import './settings-motion.css'
 import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { reportAppFailure } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
@@ -895,13 +895,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [agentImportAcknowledged, setAgentImportAcknowledged] = useState(false)
   const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
   const [agentImportBusy, setAgentImportBusy] = useState(false)
-  const [agentImportMessage, setAgentImportMessage] = useState<StatusMessage | null>(null)
   const agentImportRequest = useRef(0)
   const invalidateAgentImport = () => {
     agentImportRequest.current += 1
     setAgentImportPreview(null)
     setAgentImportAcknowledged(false)
-    setAgentImportMessage(null)
     setAgentImportBusy(false)
   }
   useEffect(() => () => { agentImportRequest.current += 1 }, [])
@@ -2117,10 +2115,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             </summary>
                             <div className="grid gap-1 px-2 pb-2">
                               {!visibilityGroups.length && modelOptions.filter((option) => option.id).map((option) => (
-                                <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--bg)' }}>
-                                  <input type="checkbox" checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                <div key={option.id} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--bg)' }}>
                                   <span className="truncate" style={{ color: defaults.hiddenModelIds?.includes(option.id) ? 'var(--text-3)' : 'var(--text)' }}>{option.label}</span>
-                                </label>
+                                  <Switch hideLabel label={option.label} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                </div>
                               ))}
                               {visibilityGroups.map((group) => {
                                 const groupModels = modelOptions.filter((option) => option.id && option.id.split('/')[0] === group)
@@ -2129,16 +2127,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 return (
                                   <details key={group} className="rounded-md" style={{ background: 'var(--bg)' }}>
                                     <summary className="flex cursor-pointer items-center gap-2 px-2 py-1.5">
-                                      <input type="checkbox" aria-label={`Show ${group}`} checked={groupShown} onClick={(event) => event.stopPropagation()} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
+                                      <span onClick={(event) => event.stopPropagation()}><Switch hideLabel label={`Show ${group}`} checked={groupShown} onChange={() => toggleVisibility('hiddenProviderIds', group)} /></span>
                                       <span className="min-w-0 flex-1 truncate font-medium" style={{ color: groupShown ? 'var(--text)' : 'var(--text-3)' }}>{group}</span>
                                       <span style={{ color: 'var(--text-3)' }}>{groupShown ? `${shownCount}/${groupModels.length}` : 'hidden'}</span>
                                     </summary>
                                     <div className="grid gap-0.5 pb-1.5 pl-8 pr-2" style={{ opacity: groupShown ? 1 : 0.5 }}>
                                       {groupModels.map((option) => (
-                                        <label key={option.id} className="flex cursor-pointer items-center gap-2 py-1">
-                                          <input type="checkbox" disabled={!groupShown} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                        <div key={option.id} className="flex items-center justify-between gap-2 py-1">
                                           <span className="truncate">{option.label}</span>
-                                        </label>
+                                          <Switch hideLabel label={option.label} disabled={!groupShown} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
+                                        </div>
                                       ))}
                                     </div>
                                   </details>
@@ -2217,7 +2215,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                     updateProviderDefaults(provider.id, nextDefaults)
                                   }
                                 )
-                              : <div className="rounded-md border px-2 py-2" style={{ borderColor: 'var(--border)' }}>Provider managed</div>}
+                              : <div style={{ color: 'var(--text-3)' }}>Provider managed</div>}
                           </div>
                           <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                             <div>Memory</div>
@@ -2257,17 +2255,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           )}
                           <span style={{ color: 'var(--text-3)' }}>Used for architecture and read-only review.</span>
                         </div>
-                        <div className="grid gap-1">
-                          <Button
-                            variant={defaults.smallModelMode ? 'primary' : 'secondary'}
-                            size="sm"
-                            aria-pressed={defaults.smallModelMode}
-                            onClick={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })}
-                          >
-                            {defaults.smallModelMode ? 'Architect + worker on' : 'Architect + worker off'}
-                          </Button>
-                          <span style={{ color: 'var(--text-3)' }}>Reviewer plans and checks each step; the model implements it.</span>
-                        </div>
+                        <SettingRow
+                          title="Architect + worker"
+                          description="Reviewer plans and checks each step; the model implements it."
+                          control={<Switch hideLabel label="Architect + worker" checked={Boolean(defaults.smallModelMode)} onChange={() => updateProviderDefaults(provider.id, { ...defaults, smallModelMode: !defaults.smallModelMode })} />}
+                        />
                           </div>
                         </details>
                         {modelRefreshError && !modelsLoading ? (
@@ -2319,13 +2311,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         const requestId = ++agentImportRequest.current
         setAgentImportPreview(null)
         setAgentImportBusy(true)
-        setAgentImportMessage(null)
         const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
         if (requestId !== agentImportRequest.current) return
         setAgentImportPreview(preview)
         setAgentImportId(preview?.suggestedId ?? '')
         setAgentImportAcknowledged(false)
-        setAgentImportMessage(preview ? null : { tone: 'error', text: 'Preview failed.' })
+        if (!preview) reportAppFailure('Preview failed.', agentImportPath.trim())
         setAgentImportBusy(false)
       }
       // Only a workspace-scoped import needs a chat; a global import is admitted without one.
@@ -2344,7 +2335,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           acknowledgeIgnoredFields: agentImportAcknowledged,
         })
         if (requestId !== agentImportRequest.current) return
-        setAgentImportMessage(imported ? { tone: 'success', text: `Imported ${agentImportId.trim()}.` } : { tone: 'error', text: 'Import failed. The source or target may have changed; preview it again.' })
+        if (imported) reportAppNotice(`Imported ${agentImportId.trim()}.`, 'success')
+        else reportAppFailure('Import failed.', 'The source or target may have changed; preview it again.')
         if (imported) setAgentImportPreview(null)
         setAgentImportBusy(false)
       }
@@ -2515,15 +2507,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         </SettingsField>
                       </div>
                       {agentImportPreview.ignoredFields.length > 0 && (
-                        <label className="flex items-start gap-2" style={{ color: 'var(--text-2)' }}>
-                          <input
-                            type="checkbox"
-                            aria-label="Acknowledge omitted provider fields"
-                            checked={agentImportAcknowledged}
-                            onChange={(event) => setAgentImportAcknowledged(event.target.checked)}
-                          />
-                          <span>I understand the listed provider-only fields will not be copied.</span>
-                        </label>
+                        <SettingRow
+                          title="I understand the listed provider-only fields will not be copied."
+                          control={<Switch hideLabel label="Acknowledge omitted provider fields" checked={agentImportAcknowledged} onChange={(event) => setAgentImportAcknowledged(event.target.checked)} />}
+                        />
                       )}
                       <div className="flex justify-end">
                         <Button
@@ -2538,7 +2525,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   )}
                 </div>
               )}
-              <StatusMessage message={agentImportMessage} />
               {importNeedsChat && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat to import into this workspace, or choose All workspaces.</div>}
             </div>
           </SettingsSection>}
@@ -2577,8 +2563,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     }}/>
                     {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
                     {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
-                      <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
-                      <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
+                      <MenuItem label={`Download recommended${manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}`} disabled={!manager.preferredVersion} onSelect={() => requestInstall(manager.preferredVersion)} />
+                      <MenuItem label="Download latest" onSelect={() => requestInstall('latest')} />
                     </ViewportMenu>}
                   </div>
                 </div>
@@ -2605,8 +2591,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       </code>
                     )}
                     <pre
-                      className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
+                      className="leading-5 overflow-auto rounded-lg px-3 py-2"
                       style={{
+                        fontSize: 'var(--fs-xs)',
                         maxHeight: 180,
                         background: 'var(--surface-up)',
                         color: 'var(--text-2)',
@@ -2814,11 +2801,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             {hasWorkerLog && (
               <details className="mt-3 text-xs" style={{ color: 'var(--text-2)' }}>
                 <summary className="cursor-pointer" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</summary>
-                {memoryActivity.lastWorkerStatus && <p className="mt-2 text-[11px]" style={{ color: 'var(--text-3)' }}>{memoryActivity.lastWorkerStatus}</p>}
-                {workerLogMeta && <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{workerLogMeta}</p>}
+                {memoryActivity.lastWorkerStatus && <p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p>}
+                {workerLogMeta && <p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p>}
                 <pre
-                  className="mt-2 rounded-lg px-3 py-2 text-[11px] leading-5 overflow-auto"
+                  className="mt-2 rounded-lg px-3 py-2 leading-5 overflow-auto"
                   style={{
+                    fontSize: 'var(--fs-xs)',
                     background: 'var(--bg)',
                     border: '1px solid var(--border)',
                     color: 'var(--text-2)',
@@ -3007,7 +2995,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             {editorError && <div className="pt-2"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{editorError}</Notice></div>}
           </SettingsSection>
 
-          <SettingsSection title="Open with">
+          <SettingsSection title="Folders and terminal">
             <SettingRow
               title="File explorer"
               description={customExplorer ? 'A custom application opens folders.' : 'Your system file manager opens folders.'}

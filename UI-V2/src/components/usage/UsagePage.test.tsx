@@ -537,12 +537,12 @@ describe('UsageLimits', () => {
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(host.textContent).toContain('25% used')
-      expect(host.textContent).toContain('Context: 1,234 of 200,000 tokens')
+      expect(host.textContent).toContain('1,234 of 200,000 tokens')
       expect(host.textContent).not.toContain('90% remaining')
       expect(host.textContent).not.toContain('95% remaining')
       expect(host.textContent).not.toContain('80% used')
       expect(host.textContent).toContain('Provider-reported reset time has passed')
-      expect(host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('25')
+      expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 })

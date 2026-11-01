@@ -596,7 +596,121 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               </Notice>
             )}
 
-            {memoryLibraryLoading ? (
+            {isAdding ? (
+              <div role="group" aria-label="New memory" className="space-y-3">
+              <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
+              {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
+              {pendingExit && (
+                <div role="group" aria-label="Unsaved memory" className="space-y-4">
+                  <p className="text-sm font-semibold">Save this memory before leaving?</p>
+                  {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
+                  <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+                </div>
+              )}
+              <div hidden={Boolean(pendingExit)} className="space-y-3">
+
+
+                    {isAllMemory && (
+                      <InlineMenu
+                        label="Save to"
+                        value={targetValue}
+                        options={targetOptions}
+                        onChange={(value) => {
+                          if (value === 'global') {
+                            setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
+                            return
+                          }
+                          const folderId = value.replace(/^folder:/, '')
+                          setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
+                        }}
+                      />
+                    )}
+
+                    <InlineMenu
+                      label="Category"
+                      value={draft.category}
+                      options={categoryOptions}
+                      onChange={(value) => {
+                        setDraft((current) => ({ ...current, category: value }))
+                      }}
+                    />
+
+                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      Title
+                      <input
+                        autoFocus
+                        aria-label="Title"
+                        value={draft.title}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
+                          setDraft((current) => ({ ...current, title: value }))
+                        }}
+                        className="uam-field"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      Memory
+                      <textarea
+                        value={draft.memory}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
+                          setDraft((current) => ({ ...current, memory: value }))
+                        }}
+                        rows={5}
+                        className="uam-field uam-field--area"
+                      />
+                    </label>
+
+                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                      Evidence
+                      <textarea
+                        value={draft.evidence}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
+                          setDraft((current) => ({ ...current, evidence: value }))
+                        }}
+                        rows={3}
+                        className="uam-field uam-field--area"
+                      />
+                    </label>
+
+                    <div className="grid gap-2">
+                      <InlineMenu
+                        label="Confidence"
+                        value={draft.confidence}
+                        options={confidenceOptions}
+                        onChange={(value) => {
+                          setDraft((current) => ({ ...current, confidence: value }))
+                        }}
+                      />
+
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Source chat
+                        <input
+                          value={draft.sourceChatId}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value
+                            setDraft((current) => ({ ...current, sourceChatId: value }))
+                          }}
+                          className="uam-field"
+                        />
+                      </label>
+                    </div>
+
+                    {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError || memoryLibraryError}</div>}
+                    <SaveButton
+                      saving={submitting}
+                      pendingLabel="Saving..."
+                      block
+                      disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
+                      onClick={() => void submitDraft()}
+                    >
+                      Save memory
+                    </SaveButton>
+              </div>
+              </div>
+            ) : memoryLibraryLoading ? (
               <SettingsLoading label="Loading memory library" rows={4} />
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
               memoryLibraryError ? null : <div className="uam-store-card uam-store-empty">
@@ -659,122 +773,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           </div>
         </div>
       </div>
-
-      {isAdding && <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center bg-black/50" onClick={event => { if(event.target === event.currentTarget) requestClose() }}>
-        <div role="dialog" aria-modal="true" aria-label="New memory" tabIndex={-1} className="uam-form-dialog rounded-xl p-5 space-y-3 w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto mx-4">
-          <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
-          {/* The unsaved-memory prompt is a step inside this dialog, not a second dialog on top of it. The form stays mounted under it. */}
-          {pendingExit && (
-            <div role="group" aria-label="Unsaved memory" className="space-y-4">
-              <p className="text-sm font-semibold">Save this memory before leaving?</p>
-              {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
-              <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
-            </div>
-          )}
-          <div hidden={Boolean(pendingExit)} className="space-y-3">
-
-
-                {isAllMemory && (
-                  <InlineMenu
-                    label="Save to"
-                    value={targetValue}
-                    options={targetOptions}
-                    onChange={(value) => {
-                      if (value === 'global') {
-                        setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
-                        return
-                      }
-                      const folderId = value.replace(/^folder:/, '')
-                      setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
-                    }}
-                  />
-                )}
-
-                <InlineMenu
-                  label="Category"
-                  value={draft.category}
-                  options={categoryOptions}
-                  onChange={(value) => {
-                    setDraft((current) => ({ ...current, category: value }))
-                  }}
-                />
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Title
-                  <input
-                    autoFocus
-                    aria-label="Title"
-                    value={draft.title}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, title: value }))
-                    }}
-                    className="uam-field"
-                  />
-                </label>
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Memory
-                  <textarea
-                    value={draft.memory}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, memory: value }))
-                    }}
-                    rows={5}
-                    className="uam-field uam-field--area"
-                  />
-                </label>
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Evidence
-                  <textarea
-                    value={draft.evidence}
-                    onChange={(event) => {
-                      const value = event.currentTarget.value
-                      setDraft((current) => ({ ...current, evidence: value }))
-                    }}
-                    rows={3}
-                    className="uam-field uam-field--area"
-                  />
-                </label>
-
-                <div className="grid gap-2">
-                  <InlineMenu
-                    label="Confidence"
-                    value={draft.confidence}
-                    options={confidenceOptions}
-                    onChange={(value) => {
-                      setDraft((current) => ({ ...current, confidence: value }))
-                    }}
-                  />
-
-                  <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                    Source chat
-                    <input
-                      value={draft.sourceChatId}
-                      onChange={(event) => {
-                        const value = event.currentTarget.value
-                        setDraft((current) => ({ ...current, sourceChatId: value }))
-                      }}
-                      className="uam-field"
-                    />
-                  </label>
-                </div>
-
-                {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError || memoryLibraryError}</div>}
-                <SaveButton
-                  saving={submitting}
-                  pendingLabel="Saving..."
-                  block
-                  disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
-                  onClick={() => void submitDraft()}
-                >
-                  Save memory
-                </SaveButton>
-          </div>
-        </div>
-      </div>}
     </div>
   )
 })

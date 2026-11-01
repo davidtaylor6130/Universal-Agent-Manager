@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Overlay, Presence, RowButton, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Overlay, Presence, RowButton, Switch, useOverlayState } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -398,9 +398,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         {editing ? <>
           <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
             <div className="flex items-center justify-between"><strong className="text-sm">{editing === 'new' ? 'New entry' : 'Edit entry'}</strong><Button variant="secondary" size="sm" onClick={() => setShowEditorPreview((value) => !value)}>{showEditorPreview ? 'Edit Markdown' : 'Preview Markdown'}</Button></div>
-            <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group, for example Coding / Safety" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} /></div>
-            <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="text-sm" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px' }} />
+            <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="uam-field text-sm" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="uam-field text-sm" /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group, for example Coding / Safety" className="uam-field text-sm" /></div>
+            <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="uam-field text-sm" />
             {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />}
           </fieldset>
           {confirmation ? <div ref={confirmationRef} role="group" aria-label={confirmation === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} className="p-3" style={{ border: '1px solid var(--border-bright)' }}>
@@ -415,11 +415,11 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <strong className="text-sm shrink-0">Import preview</strong>
           {resultsView}
           <div data-import-candidates className="grid min-h-0 gap-2 overflow-y-auto">{imports.map((candidate) => <div key={candidate.id} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
-            <label className="flex min-w-0 flex-1 items-start gap-2">
-              <input type="checkbox" disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
-              <span className="min-w-0 flex-1"><strong style={{ color: 'var(--text)' }}>{candidate.title || candidate.sourcePath.split(/[\\/]/).pop()}</strong><span className="block truncate" title={candidate.sourcePath} style={{ color: 'var(--text-3)' }}>{candidate.sourcePath}</span>{candidate.validationError && <span className="block" style={{ color: 'var(--error)' }}>{candidate.validationError}</span>}</span>
-            </label>
-            {candidate.collisionPath && <select disabled={importing} aria-label={`Collision action for ${candidate.title}`} value={conflicts[candidate.id] ?? 'skip'} onChange={(event) => setConflicts({ ...conflicts, [candidate.id]: event.target.value as MarkdownStoreConflictAction })} className="uam-field uam-field--select text-xs" style={{ width: 'auto' }}><option value="skip">Skip existing</option><option value="replace">Replace existing</option><option value="separate">Keep separate</option></select>}
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} description={candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
+              {candidate.validationError && <span className="block" style={{ color: 'var(--error)' }}>{candidate.validationError}</span>}
+            </div>
+            {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label={`Collision action for ${candidate.title}`} disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip existing' }, { value: 'replace', label: 'Replace existing' }, { value: 'separate', label: 'Keep separate' }]} /></div>}
           </div>)}</div>
           <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
         </> : <>

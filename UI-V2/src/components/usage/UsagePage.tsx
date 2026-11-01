@@ -260,7 +260,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
   }}>
-    <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
+    <header className="flex shrink-0 items-center gap-3 overflow-x-auto border-b px-4" style={{ height: 'var(--pane-header-h)', borderColor: 'var(--border)' }}>
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
       {/* ui: raw button kept — trigger of this Tooltip with the bespoke status icon and attention look; IconButton would restyle it. */}

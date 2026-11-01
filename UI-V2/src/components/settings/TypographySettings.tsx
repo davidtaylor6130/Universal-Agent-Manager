@@ -1,5 +1,6 @@
 import { Button, MenuSelect } from '../ui'
 import { MONO_FONTS, SANS_FONTS, useTypographyStore, type TypographyPreferences } from '../../store/typographyStore'
+import { NumberField } from './NumberField'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 
 export function TypographySettings() {
@@ -29,10 +30,10 @@ export function TypographySettings() {
                     options={Object.entries(row.fonts).map(([id, font]) => ({ value: id, label: font.label }))}
                     onChange={(value) => update({ [fontKey]: value })} />
                 </div>
-                <input type="number" aria-label={`${row.label} font size`} min={row.min} max={row.max} step={1}
-                  value={size} onChange={(event) => { if (event.target.value) update({ [sizeKey]: event.target.valueAsNumber }) }}
-                  className="uam-field" style={{ width: 64 }} />
-                <span className="text-xs" style={{ color: 'var(--text-3)' }}>px</span>
+                <div style={{ width: 96 }}>
+                  <NumberField label={`${row.label} font size`} value={size} min={row.min} max={row.max} unit="px"
+                    onCommit={(value) => update({ [sizeKey]: value })} />
+                </div>
               </div>} />
           )
         })}

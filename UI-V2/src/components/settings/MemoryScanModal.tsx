@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, Overlay, useOverlayState } from '../ui'
+import { Button, IconButton, Overlay, Switch, useOverlayState } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { SettingRow, SettingsLoading } from './SettingsPrimitives'
 import './provider-settings.css'
@@ -93,24 +93,16 @@ export function MemoryScanModal() {
             <div className="uam-set-card">
               {memoryScanCandidates.map((candidate) => {
                 const selected = selectedMemoryScanChatIds.includes(candidate.chatId)
-                const inputId = `memory-scan-${candidate.chatId}`
                 return (
                   <SettingRow
                     key={candidate.chatId}
-                    htmlFor={inputId}
                     title={<span className="uam-scan-title-row">
                       {candidate.title}
                       {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
                     </span>}
                     description={`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}
                     status={<span>Provider <span className="uam-prov-detail">{candidate.providerId}</span> · Last scanned {candidate.memoryLastProcessedAt || 'never'}</span>}
-                    control={<input
-                      id={inputId}
-                      type="checkbox"
-                      checked={selected}
-                      disabled={memoryScanRunning}
-                      onChange={() => toggleMemoryScanChat(candidate.chatId)}
-                    />}
+                    control={<Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />}
                   />
                 )
               })}

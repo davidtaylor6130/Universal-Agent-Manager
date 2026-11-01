@@ -150,7 +150,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     : 'Discovery does not import or resume chats.'
   const idForName = (name: string) => providerIds.find((id) => providerMetadataForId(id).shortName === name)
   return <SettingsSection title="Native provider history">
-    <SettingRow title="Discover native histories" description="Scan this computer, then choose chats to import."
+    <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
         {status.phase === 'ready' && status.totalCount > 0 && <Button size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}

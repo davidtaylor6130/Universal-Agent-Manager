@@ -1,11 +1,5 @@
 /* Provider & MCP settings. Scoped to .uam-prov-*; colours are tokens only. */
 
-.uam-prov-heading {
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--text);
-}
-
 .uam-prov-sub {
   font-size: var(--fs-sm);
   line-height: 1.45;
@@ -27,37 +21,12 @@
   overflow: hidden;
 }
 
-.uam-prov-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
-  transition: background var(--dur-fast) var(--ease-out-soft);
-}
-
-.uam-prov-row + .uam-prov-row {
-  border-top: 1px solid var(--border);
-}
-
-.uam-prov-row:hover {
-  background: var(--surface-up);
-}
-
 .uam-prov-card tbody tr {
   transition: background var(--dur-fast) var(--ease-out-soft);
 }
 
 .uam-prov-card tbody tr:hover {
   background: var(--surface-up);
-}
-
-.uam-prov-row-main {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-  text-align: left;
-  border-radius: var(--r-sm);
 }
 
 .uam-prov-detail {
@@ -192,7 +161,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .uam-prov-enter,
-  .uam-prov-row,
   .uam-prov-switch,
   .uam-prov-switch::after {
     animation: none;
@@ -260,7 +228,6 @@
 .uam-central-editor { display: grid; gap: var(--sp-3); padding-block: var(--sp-3); border-top: 1px solid var(--border); }
 .uam-central-editor .uam-set-field { gap: 4px; }
 .uam-central-editor textarea.uam-field { font-family: var(--font-mono); font-size: var(--fs-xs); }
-.uam-central-choice { display: grid; gap: var(--sp-2); }
 
 /* Add-server chooser: descriptive option cards. */
 .uam-prov-option { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }

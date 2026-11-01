@@ -67,6 +67,8 @@ describe('Typography preferences', () => {
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '18')
         input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.focus()
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       })
       expect(useTypographyStore.getState().preferences).toMatchObject({ terminalFont: 'consolas', promptSize: 18 })
       expect(JSON.parse(window.localStorage.getItem('uam-typography-v1')!).state.preferences).toMatchObject({ terminalFont: 'consolas', promptSize: 18 })

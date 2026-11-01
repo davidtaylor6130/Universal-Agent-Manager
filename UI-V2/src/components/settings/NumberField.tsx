@@ -30,6 +30,6 @@ export function NumberField({ label, value, min, max, step = 1, unit, onCommit }
         className="uam-field w-full tabular-nums" style={{ height: 34, paddingRight: unit ? 64 : undefined, ...(invalid ? { borderColor: 'var(--error)' } : {}) }} />
       {unit && <span aria-hidden className="pointer-events-none absolute right-3 text-xs" style={{ color: 'var(--text-3)' }}>{unit}</span>}
     </span>
-    <span id={captionId} className="text-[11px]" style={{ color: invalid ? 'var(--error)' : 'var(--text-3)' }}>{min.toLocaleString()}–{max.toLocaleString()}{unit ? ` ${unit}` : ''}</span>
+    <span id={captionId} style={{ fontSize: 'var(--fs-xs)', color: invalid ? 'var(--error)' : 'var(--text-3)' }}>{min.toLocaleString()}–{max.toLocaleString()}{unit ? ` ${unit}` : ''}</span>
   </span>
 }

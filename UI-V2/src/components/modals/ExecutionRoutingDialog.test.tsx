@@ -39,14 +39,16 @@ describe('SSH routing controls', () => {
     expect(save).not.toHaveBeenCalled()
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('whole number')
     input('[aria-label="Concurrent sessions on Server A"]', '2')
-    const destination = document.body.querySelector<HTMLSelectElement>('[aria-label="Destination for Source on Server A"]')!
-    expect(Array.from(destination.options).map((option) => option.value)).toEqual(['', 'target'])
-    act(() => { destination.value = 'target'; destination.dispatchEvent(new Event('change', { bubbles: true })); (document.body.querySelector('[aria-label="Codex signed in on Server A"]') as HTMLInputElement).click() })
+    const destinationTrigger = '[aria-label="Destination for Source on Server A"]'
+    act(() => document.body.querySelector<HTMLButtonElement>(destinationTrigger)!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map((option) => option.textContent)).toEqual(["Don't route this folder", 'Destination · /remote'])
+    act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('Destination · /remote'))!.click())
+    act(() => (document.body.querySelector('[aria-label="Codex signed in on Server A"]') as HTMLInputElement).click())
     await act(async () => submit().click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ maxActiveTurns: 2, providers: [{ providerId: 'codex-cli', connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))
     expect(close).not.toHaveBeenCalled()
     expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
-    expect(destination.value).toBe('target')
+    expect(document.body.querySelector(destinationTrigger)?.textContent).toContain('Destination')
   })
 
   it('shows an actionable wait and rejects release when the assignment changes during confirmation', async () => {

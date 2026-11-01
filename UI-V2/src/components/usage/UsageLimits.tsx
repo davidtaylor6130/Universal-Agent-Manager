@@ -4,10 +4,10 @@ import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, type UsageProviderId } from '../
 import type { AcpContextUsage, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
-import { ProviderLogo } from '../shared/ProviderLogo'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
-import { Button, Tooltip } from '../ui'
+import { Button, ProgressFill, Tooltip, cx } from '../ui'
+import { SettingsSection } from '../settings/SettingsPrimitives'
 import { TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
@@ -21,23 +21,7 @@ const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 
 const formatPercent = (percent: number) => percentFormat.format(percent)
 const isValidPercent = (percent: number) => Number.isFinite(percent) && percent >= 0 && percent <= 100
 
-/** Used track; the tick marks how far through the provider-reported reset period we are. */
-function PaceTrack({ label, percent, tick = null }: { label: string; percent: number | null; tick?: number | null }) {
-  if (percent === null) return <span aria-hidden="true" className="uam-pace-track uam-pace-track--open" />
-  return <span role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} className="uam-pace-track">
-    <span className="uam-pace-fill" style={{ width: `${percent}%`, background: meterTone(percent) }} />
-    {tick !== null && <span aria-hidden="true" className="uam-pace-tick" style={{ left: `${tick * 100}%` }} />}
-  </span>
-}
-
-/** Share of the reset period already elapsed, from the provider-reported window length. Null when either is unknown. */
-function elapsedShare(window: AcpRateLimitWindow, now: number) {
-  if (!window.windowDurationMinutes || window.resetsAt === null) return null
-  const remainingMs = window.resetsAt * 1000 - now
-  if (remainingMs <= 0) return null
-  return Math.min(1, Math.max(0, 1 - remainingMs / (window.windowDurationMinutes * 60000)))
-}
-
+/** One limit per line: the row is the progress track, its background fills to the used share. */
 function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false, awaitingUpdate = false, missingLabel = 'Not readable at this time' }: { label: string; meterLabel: string; window: AcpRateLimitWindow | null; now: number; showUnknownReset?: boolean; awaitingUpdate?: boolean; missingLabel?: string }) {
   const percent = window ? window.usedPercent : NaN
   const valid = isValidPercent(percent)
@@ -45,22 +29,21 @@ function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false
   const reset = window && window.resetsAt !== null
     ? expired ? awaitingUpdate ? 'Reset passed, awaiting update' : 'Provider-reported reset time has passed' : `Resets ${relativeIn(window.resetsAt * 1000, now)}`
     : showUnknownReset ? 'Reset time unavailable' : null
-  return <div className="uam-pace-row">
-    <div className="uam-pace-row__label min-w-0">
-      <span className="break-words">{label}</span>
-      {reset && <Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small>{reset}</small></Tooltip>}
-    </div>
-    <PaceTrack label={meterLabel} percent={valid ? percent : null} tick={valid && window ? elapsedShare(window, now) : null} />
-    <span className="uam-pace-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
-  </div>
+  const content = <>
+    <span className="uam-limit-row__name break-words">{label}</span>
+    <span className="uam-limit-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
+    {reset && <Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip>}
+  </>
+  return valid
+    ? <ProgressFill label={meterLabel} value={percent} className="uam-set-row uam-limit-row">{content}</ProgressFill>
+    : <div className="uam-set-row uam-limit-row">{content}</div>
 }
 
 /** Codex Pro reports no secondary window; the 5-hour period is shown as unlimited instead. */
 function UnlimitedRow({ label }: { label: string }) {
-  return <div className="uam-pace-row">
-    <div className="uam-pace-row__label"><span>{label}</span></div>
-    <PaceTrack label={label} percent={null} />
-    <span className="uam-pace-row__value uam-usage-muted">Unlimited</span>
+  return <div className="uam-set-row uam-limit-row">
+    <span className="uam-limit-row__name">{label}</span>
+    <span className="uam-limit-row__value uam-usage-muted">Unlimited</span>
   </div>
 }
 
@@ -152,10 +135,9 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
       </div>
       {executionHostId === 'local' && <Button size="sm" variant="secondary" onClick={account.refresh} disabled={account.coolingDown} loading={account.refreshing || account.requestingRefresh}>Refresh allowances</Button>}
     </div>
-    {executionHostId === 'local' && <div className="uam-pace-key" aria-hidden><span><i />Where you are in the reset period</span><span><b />Used</span></div>}
     {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly</p>}
     {account.error && <p role="status" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
-    <div className="uam-pace-list">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
+    <div className="grid">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
 }
 
@@ -183,34 +165,31 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
   const renderRow = (row: WindowRow) => row.unlimited
     ? <UnlimitedRow key={row.id} label={row.label} />
     : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} />
-  return <section className="uam-pace-prov" aria-label={`${name} limits`}>
-    <header className="uam-pace-prov__head">
-      <h2 className="uam-pace-prov__title"><ProviderLogo providerId={provider} size={16} />{name}</h2>
-      {hasAllowance && plan && <span className="uam-limits-chip">{plan}</span>}
-      {hasAllowance && <Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip>}
-    </header>
-    {(loading || allowance?.status === 'loading') && <p role="status" className="text-xs uam-usage-muted animate-pulse">Reading allowances…</p>}
+  const body = <>
+    {(loading || allowance?.status === 'loading') && <p role="status" className="uam-set-row text-xs uam-usage-muted animate-pulse">Reading allowances…</p>}
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
-    {allowance?.error && <p className={allowance.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice'}>{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
-    {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="text-xs uam-usage-muted">Account allowances unavailable.</p>}
-    {showWindowRows && <div className="uam-pace-rows">
+    {allowance?.error && <p className={cx('uam-set-row', allowance.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice')}>{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
+    {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
+    {showWindowRows && <>
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
-      {modelWindows.length > 2 && <details className="uam-limits-tokens"><summary>{modelWindows.length - 2} more model allowance{modelWindows.length > 3 ? 's' : ''}</summary><div className="uam-pace-rows">{rows.slice(2).map(renderRow)}</div></details>}
-      {limits?.individualLimit && <div className="uam-pace-row">
-        <div className="uam-pace-row__label"><span>Spend limit</span><small>{limits.individualLimit.used} of {limits.individualLimit.limit}</small></div>
-        <PaceTrack label={`${name} spend limit`} percent={Math.min(100, Math.max(0, 100 - limits.individualLimit.remainingPercent))} />
-        <span className="uam-pace-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
+      {modelWindows.length > 2 && <details className="uam-set-row uam-limits-tokens"><summary>{modelWindows.length - 2} more model allowance{modelWindows.length > 3 ? 's' : ''}</summary><div className="grid">{rows.slice(2).map(renderRow)}</div></details>}
+      {limits?.individualLimit && <div className="uam-set-row uam-limit-row">
+        <span className="uam-limit-row__name">Spend limit<small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small></span>
+        <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
       </div>}
-      {limits?.credits && <p className="text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
-      {limits?.spendControlReached && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
-    </div>}
-    {!consumption && <p className="text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
-    {(context || consumption) && <details className="uam-limits-tokens text-xs">
+      {limits?.credits && <p className="uam-set-row text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
+      {limits?.spendControlReached && <p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
+    </>}
+    {!consumption && <p className="uam-set-row text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
+    {(context || consumption) && <details className="uam-set-row uam-limits-tokens text-xs">
       <summary><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</summary>
       <div className="grid gap-3">
         {context && <div className="grid gap-1.5">
-          <PaceTrack label={`${name} context usage`} percent={contextPercent} />
-          <p className="uam-usage-muted" title={context.title || 'chat'}>Context: {context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens{now - context.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+          <ProgressFill label={`${name} context usage`} value={contextPercent} className="uam-limit-row uam-set-row">
+            <span className="uam-limit-row__name">Context</span>
+            <span className="uam-limit-row__value tabular-nums">{context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens</span>
+          </ProgressFill>
+          {now - context.usage.updatedAt >= 300000 && <p className="uam-usage-muted" title={context.title || 'chat'}>Cached snapshot</p>}
         </div>}
         {consumption && <>
           <ConsumptionStack total={consumption.usage.total} />
@@ -226,7 +205,15 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
         </>}
       </div>
     </details>}
-  </section>
+  </>
+  return <SettingsSection
+    title={name}
+    className="uam-limits-section"
+    actions={<>
+      {hasAllowance && plan && <span className="uam-limits-chip">{plan}</span>}
+      {hasAllowance && <Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip>}
+    </>}
+  >{body}</SettingsSection>
 }
 
 function windowLabel(minutes: number | null | undefined, key: 'primary' | 'secondary') {

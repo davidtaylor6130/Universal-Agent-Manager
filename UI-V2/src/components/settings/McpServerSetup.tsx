@@ -3,8 +3,8 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, EXIT_MS, IconButton, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
+import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import './provider-settings.css'
@@ -272,7 +272,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <Button size="sm" variant="primary" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); setMessage('Imported into the draft. Review the servers, then Save.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not import configuration.') } }}>Review import</Button>
   </> : <>
     {text('Server name', guidedName, setGuidedName, 'playwright')}
-    <label className="uam-set-field"><span className="uam-set-field__label">How does this server connect?</span><select aria-label="Setup connection type" className="uam-field" value={guidedTransport} onChange={event => setGuidedTransport(event.currentTarget.value as McpServerConfiguration['transport'])}><option value="stdio">Run a program on the agent's machine</option><option value="http">Connect to an HTTP URL</option><option value="sse">Connect to an SSE URL</option></select></label>
+    <SettingsField label="How does this server connect?"><MenuSelect label="Setup connection type" value={guidedTransport} onChange={value => setGuidedTransport(value as McpServerConfiguration['transport'])} options={[{ value: 'stdio', label: "Run a program on the agent's machine" }, { value: 'http', label: 'Connect to an HTTP URL' }, { value: 'sse', label: 'Connect to an SSE URL' }]} /></SettingsField>
     <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setMessage('Step 2 of 2: enter the connection details below, then Save.'); }}>Next: connection details</Button>
   </>
 
@@ -329,14 +329,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy || removing} onClick={() => removeServer(server.id)} />
             </>}>
             <ServerEditorCollapse open={expanded}><div className="uam-prov-enter grid gap-3 pb-1">
-              {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
-              <label className="uam-set-field"><span className="uam-set-field__label">Connection type</span>
-                <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
-                  <option value="stdio">Local program (runs on the same computer as the agent)</option>
-                  <option value="http">Remote URL (HTTP)</option>
-                  <option value="sse">Remote URL (SSE, older servers)</option>
-                </select>
-              </label>
+              {text('Name', server.name, name => update(server.id, { name }), 'playwright')}
+              <SettingsField label="Connection type"><MenuSelect label="Connection type" value={server.transport} disabled={busy} onChange={value => update(server.id, { transport: value as McpServerConfiguration['transport'] })} options={[{ value: 'stdio', label: 'Local program (runs on the same computer as the agent)' }, { value: 'http', label: 'Remote URL (HTTP)' }, { value: 'sse', label: 'Remote URL (SSE, older servers)' }]} /></SettingsField>
               {server.transport === 'stdio' ? <>
                 {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', SSH_ENABLED ? 'Full path. Over SSH, the path on the remote machine.' : 'Full path.')}
                 <div className="uam-set-field"><span className="uam-set-field__label">Arguments</span>
@@ -351,9 +345,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               <div className="uam-set-field"><span className="uam-set-field__label">{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
                 {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
                   <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
-                  <select aria-label={`Value source ${index + 1}`} className="uam-field text-xs" style={{ width: 'auto' }} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={event => { const literal = event.currentTarget.value === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }}>
-                    <option value="value">=</option><option value="variable">from variable</option>
-                  </select>
+                  <div className="w-36 shrink-0"><MenuSelect label={`Value source ${index + 1}`} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={value => { const literal = value === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }} options={[{ value: 'value', label: '=' }, { value: 'variable', label: 'from variable' }]} /></div>
                   {ref.value !== undefined
                     ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://mcp.example.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
                     : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}
@@ -365,13 +357,13 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               <details className="uam-mcp-advanced"><summary className="cursor-pointer text-sm">Limit where it runs (optional)</summary>
                 <div className="grid gap-3 pt-2">
                   {text('Only in this workspace', server.workspaceDirectory, workspaceDirectory => update(server.id, { workspaceDirectory }), 'Empty = every workspace')}
-                  <label className="uam-set-field"><span className="uam-set-field__label">Only on this machine</span>
-                    <select className="uam-field w-full" value={server.executionHostId} disabled={busy} onChange={event => update(server.id, { executionHostId: event.currentTarget.value })}>
-                      <option value="">{SSH_ENABLED ? 'Every machine, including SSH' : 'Every machine'}</option>
-                      {hosts.map(host => <option key={host.id} value={host.id}>{host.label}</option>)}
-                      {server.executionHostId && !hosts.some(host => host.id === server.executionHostId) && <option value={server.executionHostId}>{server.executionHostId} (unavailable)</option>}
-                    </select>
-                  </label>
+                  <div className="uam-set-field"><span className="uam-set-field__label">Only on this machine</span>
+                    <MenuSelect label="Only on this machine" value={server.executionHostId ?? ''} disabled={busy} onChange={executionHostId => update(server.id, { executionHostId })} options={[
+                      { value: '', label: SSH_ENABLED ? 'Every machine, including SSH' : 'Every machine' },
+                      ...hosts.map(host => ({ value: host.id, label: host.label })),
+                      ...(server.executionHostId && !hosts.some(host => host.id === server.executionHostId) ? [{ value: server.executionHostId, label: `${server.executionHostId} (unavailable)` }] : []),
+                    ]} />
+                  </div>
                 </div>
               </details>
             </div></ServerEditorCollapse>

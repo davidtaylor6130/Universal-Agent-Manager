@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, Switch } from '../ui'
+import { Button, ConfirmDialog, Notice, SegmentedControl, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -52,10 +52,8 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     } catch { setError('Could not save cleanup policy. Your changes are retained.') }
     finally { busy.current = false; setSaving(null) }
   }
-  const modes = (label: string, enabled: boolean, choices: [string, string], change: (value: boolean) => void) => <div className="flex gap-1" role="group" aria-label={label}>
-    {[true, false].map((value, index) => <Button key={String(value)} size="sm" aria-pressed={enabled === value} disabled={Boolean(saving)}
-      style={enabled === value ? { borderColor: 'var(--text)', background: 'var(--surface-high)' } : undefined} onClick={() => change(value)}>{choices[index]}</Button>)}
-  </div>
+  const modes = (label: string, enabled: boolean, change: (value: boolean) => void) => <SegmentedControl aria-label={label} disabled={Boolean(saving)} value={enabled ? 'periodic' : 'disabled'}
+    options={[{ value: 'periodic', label: 'Periodic' }, { value: 'disabled', label: 'Disabled' }]} onChange={(value) => change(value === 'periodic')} />
   const number = (label: string, value: string, minimum: number, change: (value: string) => void, disabled = false) => <div className="flex items-center gap-2"><input className="uam-field tabular-nums" style={{ width: 88 }} type="number" aria-label={label} value={value} min={minimum} max={3650} step={1} disabled={Boolean(saving) || disabled} onChange={(event) => change(event.currentTarget.value)} /><span className="text-xs" style={{ color: 'var(--text-3)' }}>days</span></div>
   const discard = (group: 'worktree' | 'storage') => {
     const patch = group === 'worktree' ? { enabled: saved.enabled, worktree: saved.worktree } : { logs: saved.logs, cache: saved.cache, periodic: saved.periodic }
@@ -70,12 +68,12 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     </SettingsSection>
     <SettingsSection title="Logs and cache">
       <SettingRow title="Backup log retention" description="Current logs are kept. 0 keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
-      <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, ['Periodic', 'Disabled'], (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
+      <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
       <SettingRow title="Cache interval" description="Starts counting without clearing at once. 1–3650 days." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)} />
       {!storageValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button><SaveButton saving={saving === 'storage'} disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>Save backup and cache policy</SaveButton></div>
     </SettingsSection>
-    {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+    {error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice>}
     <ConfirmDialog open={Boolean(exit)} title="Discard unsaved cleanup changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
       onCancel={() => setExit(null)}
       onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next?.() }}>

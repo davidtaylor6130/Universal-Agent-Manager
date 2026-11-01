@@ -16,7 +16,7 @@ const workspaces = { workspaces: [
 
 function mount(component: React.ReactNode) { const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host); mounted.push({ host, root }); act(() => root.render(component)); return host }
 function buttonsNamed(text: string) { return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).filter((button) => button.textContent === text) }
-function choose(selector: string, value: string) { const select = document.body.querySelector<HTMLSelectElement>(selector)!; act(() => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) }) }
+function choose(selector: string, optionText: string) { act(() => document.body.querySelector<HTMLButtonElement>(selector)!.click()); act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((item) => item.textContent?.includes(optionText))!.click()) }
 async function flush() { await act(async () => { await Promise.resolve() }) }
 
 describe('SSH routing repository matching', () => {
@@ -58,7 +58,7 @@ describe('SSH routing repository matching', () => {
     expect(document.body.querySelector('[aria-label="Destination for Source on Server A"]')).toBeNull()
 
     act(() => buttonsNamed('Choose folder…')[0].click())
-    choose('[aria-label="Choose folder for Source on Server A"]', 'target')
+    choose('[aria-label="Choose folder for Source on Server A"]', 'Remote checkout')
     expect(document.body.textContent).toContain('Chosen folder')
     await act(async () => buttonsNamed('Save routing')[0].click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))

@@ -51,7 +51,7 @@ describe('UsageLimits allowance evidence', () => {
   it('exposes numeric meters only for known usage, including a reported zero', async () => {
     const unknown = await renderLimits()
     try {
-      expect(unknown.host.querySelectorAll('[role="meter"]')).toHaveLength(0)
+      expect(unknown.host.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
       expect(unknown.host.textContent).toContain('Account allowances unavailable.')
     } finally { unknown.close() }
 
@@ -59,7 +59,7 @@ describe('UsageLimits allowance evidence', () => {
     limits.primary!.usedPercent = 0
     const known = await renderLimits(limits)
     try {
-      const meters = known.host.querySelectorAll('[role="meter"]')
+      const meters = known.host.querySelectorAll('[role="progressbar"]')
       expect(meters).toHaveLength(1)
       expect(meters[0].getAttribute('aria-label')).toBe('Codex primary usage')
       expect(meters[0].getAttribute('aria-valuenow')).toBe('0')
@@ -87,7 +87,7 @@ describe('UsageLimits allowance evidence', () => {
       vi.setSystemTime(now + 1000)
       window.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: false, providers: [{ providerId: 'codex-cli', scope: 'local:codex-command', status: 'ready', limits: { ...allowance(now / 1000 + 60), updatedAt: now + 1000 }, error: '' }] }))
       await act(async () => view.host.querySelector('button')?.click())
-      expect(view.host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('Updated just now')
+      expect(view.host.querySelector('[aria-label="Codex"]')?.textContent).toContain('Updated just now')
       expect(view.host.textContent).not.toContain('Update time unavailable')
     } finally { view.close() }
   })
@@ -107,8 +107,8 @@ describe('UsageLimits independent account allowances', () => {
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(requests).toContainEqual(expect.objectContaining({ action: 'getProviderAllowances', payload: expect.objectContaining({ executionHostId: 'local' }) }))
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('25% used')
-      expect(host.querySelectorAll('.uam-pace-prov')).toHaveLength(6)
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
+      expect(host.querySelectorAll('.uam-limits-section')).toHaveLength(6)
       expect(host.textContent).not.toContain('Latest provider snapshots from chats')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -124,11 +124,11 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      const codex = host.querySelector('[aria-label="Codex limits"]')
+      const codex = host.querySelector('[aria-label="Codex"]')
       expect(codex?.textContent).toContain('25% used')
       expect(codex?.textContent).not.toContain('99% used')
-      expect(host.querySelector('[aria-label="Claude limits"]')?.textContent).toContain('57% used')
-      const copilot = host.querySelector('[aria-label="Copilot limits"]')
+      expect(host.querySelector('[aria-label="Claude"]')?.textContent).toContain('57% used')
+      const copilot = host.querySelector('[aria-label="Copilot"]')
       expect(copilot?.textContent).toContain('Chat allowance')
       expect(copilot?.textContent).toContain('Completions allowance')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
@@ -148,9 +148,9 @@ describe('UsageLimits independent account allowances', () => {
       const button = host.querySelector('button')
       expect(button?.textContent).toContain('Refresh allowances')
       await act(async () => button?.click())
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('25% used')
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
       await act(async () => refresh.onFailure(503, 'Account refresh unavailable'))
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('25% used')
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
       expect(host.textContent).toContain('Account refresh unavailable')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -166,10 +166,10 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="second-host" />))
       expect(pending).toHaveLength(2)
       await act(async () => pending[1].onSuccess(JSON.stringify(snapshot('second-host', 70))))
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('70% used')
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('70% used')
       await act(async () => pending[0].onSuccess(JSON.stringify(snapshot('first-host', 10))))
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('70% used')
-      expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).not.toContain('10% used')
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('70% used')
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).not.toContain('10% used')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
@@ -193,9 +193,9 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      const copilot = host.querySelector('[aria-label="Copilot limits"]')!
+      const copilot = host.querySelector('[aria-label="Copilot"]')!
       expect(copilot.textContent).toContain('0.4% used')
-      expect(copilot.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('0.4')
+      expect(copilot.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('0.4')
     } finally { act(() => root.unmount()) }
   })
 
@@ -211,7 +211,7 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      const gemini = host.querySelector('[aria-label="Gemini limits"]')!
+      const gemini = host.querySelector('[aria-label="Gemini"]')!
       expect(gemini.textContent).toContain('Model A requests')
       expect(gemini.textContent).toContain('Model B requests')
       expect(gemini.textContent).not.toContain('Primary window')
@@ -220,7 +220,7 @@ describe('UsageLimits independent account allowances', () => {
       const extra = gemini.querySelector('details')!
       expect(extra.open).toBe(false)
       expect(extra.querySelector('summary')?.textContent).toBe('2 more model allowances')
-      expect(extra.querySelectorAll('[role="meter"]')).toHaveLength(2)
+      expect(extra.querySelectorAll('[role="progressbar"]')).toHaveLength(2)
       act(() => extra.querySelector('summary')!.click())
       expect(extra.open).toBe(true)
       expect(extra.textContent).toContain('Model C tokens')
@@ -245,7 +245,7 @@ describe('UsageLimits independent account allowances', () => {
     vi.useFakeTimers(); vi.setSystemTime(now)
     const view = await renderLimits(allowance(now / 1000 - 60))
     try {
-      const codex = view.host.querySelector('[aria-label="Codex limits"]')!
+      const codex = view.host.querySelector('[aria-label="Codex"]')!
       expect(codex.textContent).toContain('Provider-reported reset time has passed')
       expect(codex.textContent).not.toContain('awaiting update')
       expect(codex.textContent).toContain('Not reported by provider')
@@ -262,7 +262,7 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      const codex = host.querySelector('[aria-label="Codex limits"]')!
+      const codex = host.querySelector('[aria-label="Codex"]')!
       expect(codex.textContent).toContain('Primary window')
       expect(codex.textContent).toContain('Not readable at this time')
       await act(async () => pending.onSuccess(JSON.stringify(data)))
@@ -283,12 +283,12 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      const opencode = host.querySelector('[aria-label="OpenCode limits"]')!
+      const opencode = host.querySelector('[aria-label="OpenCode"]')!
       const unsupported = Array.from(opencode.querySelectorAll('p')).find(p => p.textContent === 'Account allowance is not available from this provider connection.')!
       expect(unsupported.className).toContain('uam-usage-muted')
       expect(unsupported.className).not.toContain('uam-limits-notice')
-      expect(opencode.querySelectorAll('[role="meter"]')).toHaveLength(0)
-      const failed = Array.from(host.querySelector('[aria-label="Antigravity limits"]')!.querySelectorAll('p')).find(p => p.textContent === 'Could not read account allowance.')!
+      expect(opencode.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
+      const failed = Array.from(host.querySelector('[aria-label="Antigravity"]')!.querySelectorAll('p')).find(p => p.textContent === 'Could not read account allowance.')!
       expect(failed.className).toContain('uam-limits-notice')
     } finally { act(() => root.unmount()) }
   })
@@ -301,14 +301,14 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.querySelector('[aria-label="OpenCode limits"]')).toBeNull()
+      expect(host.querySelector('[aria-label="OpenCode"]')).toBeNull()
       // Re-enabling reconfigures the native reader, so the page reads again instead of waiting for the next poll.
       const before = reads
       await act(async () => useAppStore.setState({ providerAvailability: [{ providerId: 'antigravity-cli', executionHostId: 'lab', enabled: false }] }))
-      expect(host.querySelector('[aria-label="OpenCode limits"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="OpenCode"]')).not.toBeNull()
       expect(reads).toBeGreaterThan(before)
       await act(async () => useAppStore.setState({ providerAvailability: [{ providerId: 'opencode-cli', executionHostId: 'local', enabled: false }, { providerId: 'antigravity-cli', executionHostId: 'lab', enabled: false }] }))
-      expect(host.querySelector('[aria-label="Antigravity limits"]')).not.toBeNull()
+      expect(host.querySelector('[aria-label="Antigravity"]')).not.toBeNull()
       expect(host.textContent).not.toContain('No provider is turned on')
       act(() => useAppStore.setState({ providerAvailability: ['codex-cli', 'claude-cli', 'gemini-cli', 'opencode-cli', 'copilot-cli', 'antigravity-cli'].map(providerId => ({ providerId, executionHostId: 'local', enabled: false })) }))
       expect(host.querySelector('[aria-label$=" limits"]')).toBeNull()
@@ -374,7 +374,7 @@ describe('UsageLimits observed native consumption', () => {
       const other = observedOnly ? 'Tokens consumed in' : 'Tokens observed while attached to'
       expect(host.textContent).toContain(`${prefix} Observed native chat: 29`)
       expect(host.textContent).not.toContain(`${other} Observed native chat`)
-      const tokenDetails = host.querySelector<HTMLDetailsElement>(`[aria-label="${observedOnly ? 'Antigravity' : 'Codex'} limits"] details.uam-limits-tokens`)
+      const tokenDetails = host.querySelector<HTMLDetailsElement>(`[aria-label="${observedOnly ? 'Antigravity' : 'Codex'}"] details.uam-limits-tokens`)
       expect(tokenDetails).not.toBeNull()
       expect(tokenDetails!.open).toBe(false)
       expect(tokenDetails!.querySelector('summary')?.textContent).toContain('Context and tokens')

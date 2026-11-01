@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, RowButton, StatusDot, Switch, type StatusTone } from '../ui'
+import { Button, MenuSelect, RowButton, StatusDot, Switch, type StatusTone } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
@@ -213,10 +213,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                               </span>
                             </div>
                             {picking === pickId && <div className="uam-rt-pick">
-                              <select autoFocus className="uam-rv-field w-full" aria-label={`Choose folder for ${source.name} on ${host.label}`} value={override?.id ?? ''} onChange={(event) => { if (event.target.value) setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value }) }}>
-                                <option value="">Choose a folder</option>
-                                {remoteFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
-                              </select>
+                              <MenuSelect label={`Choose folder for ${source.name} on ${host.label}`} value={override?.id ?? ''} onChange={(value) => { if (value) setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: value }) }}
+                                options={[{ value: '', label: 'Choose a folder' }, ...remoteFolders.map((folder) => ({ value: folder.id, label: `${folder.name} · ${folder.directory}` }))]} />
                               <Button variant="ghost" size="sm" onClick={() => setPicking('')}>Cancel</Button>
                             </div>}
                           </div>
@@ -230,10 +228,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                       {localFolders.map((source) => {
                         const id = `routing-map-${host.id}-${source.id}`
                         return <SettingsField key={source.id} label={source.name} htmlFor={id} hint={<span className="uam-rt-alias">{source.directory}</span>}>
-                          <select id={id} className="uam-rv-field w-full" aria-label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(event) => setWorkspaceMapping(host.id, source, event.target.value ? { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value } : null)}>
-                            <option value="">Don&apos;t route this folder</option>
-                            {remoteFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
-                          </select>
+                          <MenuSelect id={id} label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(value) => setWorkspaceMapping(host.id, source, value ? { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: value } : null)}
+                            options={[{ value: '', label: "Don't route this folder" }, ...remoteFolders.map((folder) => ({ value: folder.id, label: `${folder.name} · ${folder.directory}` }))]} />
                         </SettingsField>
                       })}
                     </div>

@@ -6,6 +6,7 @@ import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presenc
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+import { reportAppNotice } from '../../utils/appFailure'
 
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -63,7 +64,8 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [editing, setEditing] = useState<{ draft: Agent; isNew: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState<'defaults' | 'agent' | null>(null)
-  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+  /** Failures stay beside the form; successes are reported as app notices. */
+  const [message, setMessage] = useState<{ tone: 'error'; text: string } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
   const editingOriginal = useRef<Agent | null>(null)
@@ -91,16 +93,14 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   }, [])
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
-  // Success notes fade after a few seconds; errors stay until the next action.
-  useEffect(() => {
-    if (message?.tone !== 'ok') return
-    const timer = window.setTimeout(() => setMessage(null), 4000)
-    return () => window.clearTimeout(timer)
-  }, [message])
-
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
     setBusy(true); setSaving(save); setMessage(null)
-    try { const result = await action(); setMessage(result.ok ? { tone: 'ok', text: success } : { tone: 'error', text: result.error || 'Could not save.' }); return result.ok }
+    try {
+      const result = await action()
+      if (result.ok) reportAppNotice(success, 'success')
+      else setMessage({ tone: 'error', text: result.error || 'Could not save.' })
+      return result.ok
+    }
     catch { setMessage({ tone: 'error', text: 'Could not save. Try again.' }); return false }
     finally { setBusy(false); setSaving(null) }
   }
@@ -112,7 +112,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     if (!editing || nameError) return false
     const draft = { ...editing.draft, id: draftId, description: editing.draft.description.trim() }
     if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`, 'agent')) return false
-    startEditing(null); setMessage({ tone: 'ok', text: `Agent ${draft.id} saved.` }); await loadAgents()
+    startEditing(null); await loadAgents()
     return true
   }
   const deleteAgent = async (id: string) => {

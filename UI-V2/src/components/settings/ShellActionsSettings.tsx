@@ -247,7 +247,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
           return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
-            description={<span className="uam-prov-detail">{summary}</span>}
+            description={<span className="uam-prov-sub">{summary}</span>}
             status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />

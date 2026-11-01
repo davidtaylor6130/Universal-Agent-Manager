@@ -136,10 +136,13 @@ describe('SSH Routing settings page', () => {
         { sourceFolderId: 'source-b', sourceDirectory: '/b', destinationFolderId: 'target-b' },
       ] }] } })
     mount(<ExecutionRoutingSettings variant="page" />)
-    const select = document.body.querySelector<HTMLSelectElement>('[aria-label="Destination for source-a on Server A"]')!
-    act(() => { select.value = 'target-b'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    const choose = (label: string) => {
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Destination for source-a on Server A"]')!.click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((item) => item.textContent?.includes(label))!.click())
+    }
+    choose('target-b')
     expect(buttonNamed('Save routing').disabled).toBe(false)
-    act(() => { select.value = 'target-a'; select.dispatchEvent(new Event('change', { bubbles: true })) })
+    choose('target-a')
     expect(buttonNamed('Save routing').disabled).toBe(true)
     expect(buttonNamed('Discard').disabled).toBe(true)
   })

@@ -1538,8 +1538,8 @@ describe('SettingsModal memory settings', () => {
     expect(visibility).toBeTruthy()
     act(() => visibility.querySelector<HTMLInputElement>('input[aria-label="Show openai"]')!.click())
     expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }), '*')
-    const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
-    act(() => model.querySelector<HTMLInputElement>('input')!.click())
+    const model = visibility.querySelector<HTMLInputElement>('input[aria-label*="Sonnet model"]')!
+    act(() => model.click())
     expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }), '*')
     expect(useAppStore.getState().providerModelCatalogs[0].availableModels).toHaveLength(2)
     act(() => root.unmount())
@@ -1619,7 +1619,7 @@ describe('SettingsModal memory settings', () => {
     await act(async () => inheritedMemory.click())
     expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'codex-cli': expect.objectContaining({ memoryLevel: 'default', memoryEnabled: false }) }) }), '*')
 
-    const smallModelWorkflow = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Architect + worker off')) as HTMLButtonElement
+    const smallModelWorkflow = host.querySelector<HTMLInputElement>('input[aria-label="Architect + worker"]')!
     expect(smallModelWorkflow).toBeTruthy()
     act(() => smallModelWorkflow.click())
     expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
