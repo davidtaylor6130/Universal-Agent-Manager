@@ -43,7 +43,8 @@ on:
 
 concurrency:
   # Event name keeps a manual run on the default branch from cancelling the weekly schedule.
-  group: build-flag-leaks-${{ github.event_name }}-${{ github.ref }}
+  # An unrelated label event gets its own group, so it neither cancels nor replaces the real run.
+  group: build-flag-leaks-${{ github.event_name }}-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'build-flags') && github.run_id || 'run' }}
   cancel-in-progress: true
 
 permissions:
