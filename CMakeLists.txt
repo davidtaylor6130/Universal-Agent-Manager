@@ -1761,6 +1761,9 @@ if(UAM_BUILD_TESTS)
         "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
     )
   endif()
+  # Source scans in this file must not depend on the test working directory.
+  set_source_files_properties(tests/background_thread_priority_tests.cpp PROPERTIES
+    COMPILE_DEFINITIONS "UAM_TEST_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
   target_compile_definitions(uam_core_tests PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
     NOMINMAX

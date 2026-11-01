@@ -62,7 +62,7 @@ UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
 	// Force/shutdown barriers block the UI on the save publication, baseline, prepare and queue
 	// futures, and stop workers serve a user stop, so none of them may be lowered (#647).
 	// ponytail: source scan, replace with a priority probe if these workers gain an injection seam.
-	const std::filesystem::path root = std::filesystem::path(__FILE__).parent_path().parent_path();
+	const std::filesystem::path root = UAM_TEST_SOURCE_DIR;
 	for (const char* relative : {"src/common/runtime/acp/acp_session_runtime.cpp", "src/app/chat_lifecycle_service.cpp"})
 	{
 		std::ifstream input(root / relative);
