@@ -1,8 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Notice, Switch } from '../ui'
+import { Button, Switch } from '../ui'
+import { reportAppFailure } from '../../utils/appFailure'
 import { SettingRow } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
@@ -22,23 +23,12 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   const enabled = useAppStore(state => state.computerUseEnabled)
   const pending = useAppStore(state => state.computerUseRevocationPending)
   const busy = useAppStore(state => state.computerUseSettingsOperation)
-  const retainedError = useAppStore(state => state.computerUseSettingsError ?? '')
-  const errorRevision = useAppStore(state => state.computerUseSettingsErrorStateRevision)
-  const revision = useAppStore(state => state.computerUseSettingsStateRevision)
-  const error = busy || revision === errorRevision ? retainedError : ''
-  const setError = (message: string) => useAppStore.setState({ computerUseSettingsError: message, computerUseSettingsErrorStateRevision: useAppStore.getState().computerUseSettingsStateRevision })
   const controls = useRef<HTMLDivElement>(null)
   const focusAfterRecovery = useRef<HTMLInputElement | HTMLButtonElement | null>(null)
   const statusId = useId()
-  const errorId = useId()
   const known = typeof enabled === 'boolean' && typeof pending === 'boolean'
-  const describedBy = `${statusId}${error ? ` ${errorId}` : ''}`
+  const describedBy = statusId
 
-  useEffect(() => {
-    if (!busy && retainedError && revision !== errorRevision) {
-      useAppStore.setState({ computerUseSettingsError: '', computerUseSettingsErrorStateRevision: undefined })
-    }
-  }, [busy, retainedError, revision, errorRevision])
   useLayoutEffect(() => {
     if (busy || !focusAfterRecovery.current) return
     const trigger = focusAfterRecovery.current
@@ -69,7 +59,6 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
     if (trigger && document.activeElement === trigger) focusAfterRecovery.current = trigger
     operationInFlight = true
     useAppStore.setState({ computerUseSettingsOperation: next === undefined ? 'check' : next ? 'enable' : 'disable' })
-    setError('')
     try {
       if (next === undefined) await check()
       else {
@@ -88,7 +77,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       if (!confirmed) {
         useAppStore.setState({ computerUseEnabled: undefined, computerUseRevocationPending: undefined })
       }
-      setError(confirmed ? message : `${message} Status is not confirmed; check before trying again.`)
+      reportAppFailure(message, confirmed ? '' : 'Status is not confirmed; check before trying again.')
     } finally {
       operationInFlight = false
       useAppStore.setState({ computerUseSettingsOperation: undefined })
@@ -113,6 +102,5 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       {(pending || !known) && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button>}
       {!known && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button>}
     </div>}>
-    {error && <div id={errorId}><Notice key={error} tone="error" dismissLabel="Dismiss">{error}</Notice></div>}
   </SettingRow>
 }

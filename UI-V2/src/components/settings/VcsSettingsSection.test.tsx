@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VcsSettingsSection, type VcsSettingsSectionHandle } from './VcsSettingsSection'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const initial = useAppStore.getState()
@@ -89,7 +91,7 @@ describe('VCS defaults controls', () => {
       await act(async () => fail!())
       expect(useAppStore.getState().gitEnabled).toBe(true)
       expect(toggle(host, 'Enable Git').checked).toBe(false)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       expect(button(host, 'Save VCS settings').disabled).toBe(false)
       expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(leave).not.toHaveBeenCalled()
@@ -119,7 +121,7 @@ describe('VCS defaults controls', () => {
       expect(replies).toHaveLength(1)
       await act(async () => replies[0].fail(500, 'Disk full'))
       expect(branch().value).toBe('feature/retry')
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       expect(document.body.textContent).toContain('Discard unsaved VCS changes?')
       expect(firstLeave).not.toHaveBeenCalled()
 
@@ -207,7 +209,7 @@ describe('separate Git and SVN sections', () => {
       await act(async () => button(host, 'Save VCS settings').click())
       expect(Array.from(host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).every((control) => control.disabled)).toBe(true)
       await act(async () => fail?.())
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       expect([toggle(host, 'Automatic isolation').checked, toggle(host, 'Pull before first chat').checked, toggle(host, 'Update before new chat').checked]).toEqual([false, true, true])
       expect(toggle(host, 'Pull before first chat').disabled).toBe(true)
       expect(useAppStore.getState()).toMatchObject({ gitAutoWorktree: true, gitPullBeforeChat: false, svnUpdateBeforeChat: false })
@@ -254,7 +256,7 @@ describe('SVN update before new chat', () => {
       await act(async () => button(host, 'Save VCS settings').click())
       expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
       expect(toggle(host, 'Update before new chat').checked).toBe(true)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
     } finally { act(() => root.unmount()) }
   })
 })
@@ -349,7 +351,7 @@ describe('local snapshot Git settings', () => {
       expect(toggle(host, 'Enable local Git files').disabled).toBe(false)
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(false)
       expect(toggle(host, 'Enable local Git files').checked).toBe(false)
-      expect(host.textContent).toContain('Your changes are retained')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenLastCalledWith('Could not save VCS settings.', 'Your changes are retained.')
       act(() => button(host, 'Discard').click())
       expect(toggle(host, 'Local snapshot Git for SVN').checked).toBe(true)
       expect(toggle(host, 'Enable local Git files').checked).toBe(true)

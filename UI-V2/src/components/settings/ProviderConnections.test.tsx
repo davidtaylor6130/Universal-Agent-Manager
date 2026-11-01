@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ProviderConnections } from './ProviderConnections'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
+import { reportAppFailure } from '../../utils/appFailure'
+
 import { SUPPORTED_CLI_PROVIDER_IDS } from '../../utils/providerMetadata'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -247,7 +250,7 @@ it('keeps failed changes visible and reports their error beside controls', async
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Cannot save provider MCP configuration.' })
   await click('Codex Shared setup on')
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Cannot save provider MCP configuration.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider MCP change not confirmed.', 'Cannot save provider MCP configuration.')
 })
 
 it('refreshes manually, after configuration changes and on a modest mounted interval', async () => {
@@ -275,7 +278,7 @@ it('rejects stale host replies and wrong-host mutation replies', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: old })
   await click('Codex Shared setup on')
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
-  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalled()
 })
 
 it('treats runtime structured support as authoritative for Antigravity and never chat permission as build availability', async () => {
@@ -304,7 +307,7 @@ it('retains the global UAM warning and preserves instructions during its repair'
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('UAM MCP is off')
   await act(async () => [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Enable UAM MCP')!.click())
   expect(setter).toHaveBeenCalledWith(expect.objectContaining({ uamControlEnabled: true, instructions: 'Keep instructions' }))
-  expect(host.textContent).toContain('Cannot write provider configuration.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not enable UAM MCP.', 'Cannot write provider configuration.')
 })
 
 
@@ -359,9 +362,9 @@ it('ignores structurally identical pushes and unrelated settings while retaining
     providers: state.providers.map(provider => ({ ...provider })),
   })))
   expect(vi.mocked(sendToCEF).mock.calls.length).toBe(requests)
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Save failed, retry this change.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider MCP change not confirmed.', 'Save failed, retry this change.')
   await click('Refresh provider connections')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Save failed, retry this change.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider MCP change not confirmed.', 'Save failed, retry this change.')
 })
 
 it('collapses many server columns into one count chip whose popover holds each switch', async () => {

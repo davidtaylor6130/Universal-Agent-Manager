@@ -330,9 +330,6 @@
   .uam-usage-col-stack,
   .uam-usage-stack > span,
   .uam-usage-refresh.is-busy svg,
-  .uam-limits-tokens[open] > :not(summary) {
-    animation: none;
-  }
   .uam-usage-chip,
   .uam-usage-chip-dot,
   .uam-usage-status,
@@ -375,12 +372,10 @@
 .uam-limits-updated { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); }
 .uam-limits-label { font-size: var(--fs-sm); color: var(--text-2); }
 .uam-limits-tokens { border-top: 1px solid var(--border); padding-top: var(--sp-3); }
-.uam-limits-tokens > summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); }
-.uam-limits-tokens > summary::-webkit-details-marker { display: none; }
-.uam-limits-tokens > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.uam-limits-tokens[open] > summary { margin-bottom: var(--sp-3); }
-.uam-limits-tokens[open] > :not(summary) { animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) both; }
-.uam-limits-tokens > div + div { margin-top: var(--sp-2); }
+.uam-limits-tokens .uam-disclosure__summary { font-size: var(--fs-sm); }
+.uam-limits-tokens .uam-disclosure__label { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); min-width: 0; }
+.uam-limits-tokens[data-open] .uam-disclosure__summary { margin-bottom: var(--sp-3); }
+.uam-limits-tokens .uam-disclosure__inner > div + div { margin-top: var(--sp-2); }
 .uam-limits-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--sp-4); margin: 0; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .uam-limits-facts dt { color: var(--text-3); }
 .uam-limits-facts dd { margin: 0; color: var(--text-2); }

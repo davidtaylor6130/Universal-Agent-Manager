@@ -2226,39 +2226,6 @@ button.uam-commit-check { cursor: pointer; }
 .uam-settings-page--narrow > * { max-width: none; }
 
 /* ── Memory library ─────────────────────────────────────────── */
-.uam-memory-card {
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-base) var(--ease-out-soft);
-  animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards;
-}
-.uam-memory-card:hover { border-color: var(--border-bright); background: color-mix(in srgb, var(--surface-up) 50%, var(--surface)); }
-.uam-memory-card__actions { opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }
-.uam-memory-card:hover .uam-memory-card__actions,
-.uam-memory-card:focus-within .uam-memory-card__actions { opacity: 1; }
-.uam-memory-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin-top: 8px;
-  font-size: var(--fs-xs);
-  color: var(--text-3);
-}
-.uam-memory-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--surface-up);
-  color: var(--text-2);
-  font-weight: var(--fw-medium);
-}
-.uam-memory-chip[data-confidence="high"] { background: var(--success-dim); color: color-mix(in srgb, var(--success) 72%, var(--text)); }
-.uam-memory-chip[data-confidence="medium"] { background: var(--warning-dim); color: color-mix(in srgb, var(--warning) 72%, var(--text)); }
 
 .uam-field--select { height: 34px; padding-right: 6px; cursor: pointer; }
 

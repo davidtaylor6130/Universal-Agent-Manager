@@ -217,12 +217,13 @@ describe('UsageLimits independent account allowances', () => {
       expect(gemini.textContent).not.toContain('Primary window')
       expect(gemini.textContent).not.toContain('5 hour window')
       expect(gemini.textContent).toContain('Reset time unavailable')
-      const extra = gemini.querySelector('details')!
-      expect(extra.open).toBe(false)
-      expect(extra.querySelector('summary')?.textContent).toBe('2 more model allowances')
+      const extra = gemini.querySelector<HTMLElement>('.uam-disclosure')!
+      const extraToggle = extra.querySelector('button')!
+      expect(extraToggle.getAttribute('aria-expanded')).toBe('false')
+      expect(extraToggle.textContent).toBe('2 more model allowances')
       expect(extra.querySelectorAll('[role="progressbar"]')).toHaveLength(2)
-      act(() => extra.querySelector('summary')!.click())
-      expect(extra.open).toBe(true)
+      act(() => extraToggle.click())
+      expect(extraToggle.getAttribute('aria-expanded')).toBe('true')
       expect(extra.textContent).toContain('Model C tokens')
       expect(extra.textContent).toContain('Model D requests')
       expect(extra.textContent).toContain('0% used')
@@ -374,10 +375,11 @@ describe('UsageLimits observed native consumption', () => {
       const other = observedOnly ? 'Tokens consumed in' : 'Tokens observed while attached to'
       expect(host.textContent).toContain(`${prefix} Observed native chat: 29`)
       expect(host.textContent).not.toContain(`${other} Observed native chat`)
-      const tokenDetails = host.querySelector<HTMLDetailsElement>(`[aria-label="${observedOnly ? 'Antigravity' : 'Codex'}"] details.uam-limits-tokens`)
+      const tokenDetails = host.querySelector<HTMLElement>(`[aria-label="${observedOnly ? 'Antigravity' : 'Codex'}"] .uam-limits-tokens`)
       expect(tokenDetails).not.toBeNull()
-      expect(tokenDetails!.open).toBe(false)
-      expect(tokenDetails!.querySelector('summary')?.textContent).toContain('Context and tokens')
+      const tokenToggle = tokenDetails!.querySelector('button')!
+      expect(tokenToggle.getAttribute('aria-expanded')).toBe('false')
+      expect(tokenToggle.textContent).toContain('Context and tokens')
       const facts = Object.fromEntries([...tokenDetails!.querySelectorAll('dt')].map(term => [term.textContent?.trim(), term.nextElementSibling?.textContent?.trim()]))
       expect(facts).toMatchObject({ Input: '25', Output: '4', 'Last turn': 'Unavailable' })
       expect(host.textContent).toContain('Account allowances unavailable.')

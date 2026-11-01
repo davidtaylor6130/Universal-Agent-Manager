@@ -6,7 +6,7 @@ import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
-import { Button, ProgressFill, Tooltip, cx } from '../ui'
+import { Button, Disclosure, ProgressFill, Tooltip, cx } from '../ui'
 import { SettingsSection } from '../settings/SettingsPrimitives'
 import { TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
@@ -172,7 +172,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
     {showWindowRows && <>
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
-      {modelWindows.length > 2 && <details className="uam-set-row uam-limits-tokens"><summary>{modelWindows.length - 2} more model allowance{modelWindows.length > 3 ? 's' : ''}</summary><div className="grid">{rows.slice(2).map(renderRow)}</div></details>}
+      {modelWindows.length > 2 && <Disclosure className="uam-set-row uam-limits-tokens" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid">{rows.slice(2).map(renderRow)}</div></Disclosure>}
       {limits?.individualLimit && <div className="uam-set-row uam-limit-row">
         <span className="uam-limit-row__name">Spend limit<small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small></span>
         <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
@@ -181,8 +181,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
       {limits?.spendControlReached && <p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
     </>}
     {!consumption && <p className="uam-set-row text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
-    {(context || consumption) && <details className="uam-set-row uam-limits-tokens text-xs">
-      <summary><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</summary>
+    {(context || consumption) && <Disclosure className="uam-set-row uam-limits-tokens text-xs" summary={<><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</>}>
       <div className="grid gap-3">
         {context && <div className="grid gap-1.5">
           <ProgressFill label={`${name} context usage`} value={contextPercent} className="uam-limit-row uam-set-row">
@@ -204,7 +203,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
           <p className="uam-usage-muted">{(provider === GEMINI_CLI_PROVIDER_ID || provider === OPENCODE_CLI_PROVIDER_ID || provider === ANTIGRAVITY_CLI_PROVIDER_ID) ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
         </>}
       </div>
-    </details>}
+    </Disclosure>}
   </>
   return <SettingsSection
     title={name}

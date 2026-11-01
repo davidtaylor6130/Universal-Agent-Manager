@@ -1,15 +1,16 @@
-import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, MenuSelect, RowButton, StatusDot, Switch, type StatusTone } from '../ui'
+import { Button, Disclosure, MenuSelect, StatusDot, Switch, type StatusTone } from '../ui'
+import { NumberField } from './NumberField'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
+import { reportAppFailure } from '../../utils/appFailure'
 
 export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: StatusTone; label: string }> = {
   ready: { tone: 'success', label: 'Ready' },
@@ -19,20 +20,9 @@ export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: Status
   error: { tone: 'error', label: 'Error' },
 }
 
-/** Collapsed-by-default block. Content stays mounted so saved state is always in the DOM; it is inert while closed. */
-function Disclosure({ title, summary, children }: { title: string; summary: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const id = useId()
-  return <div className="uam-rt-disclosure" data-open={open}>
-    <RowButton type="button" className="uam-rt-disclosure__toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen((current) => !current)}>
-      <ChevronRight size={14} aria-hidden />
-      <span>{title}</span>
-      <span className="uam-rt-disclosure__summary">{summary}</span>
-    </RowButton>
-    <div id={id} className="uam-rt-disclosure__body" {...(open ? {} : { inert: '' })}>
-      <div className="uam-rt-disclosure__inner">{children}</div>
-    </div>
-  </div>
+/** Collapsed remote-folder block: title and a count on the summary line. */
+function FolderDisclosure({ title, summary, children }: { title: string; summary: string; children: React.ReactNode }) {
+  return <Disclosure className="uam-rt-disclosure" summary={<><span>{title}</span><span className="uam-rt-disclosure__summary">{summary}</span></>}>{children}</Disclosure>
 }
 
 export interface ExecutionRoutingSettingsHandle { requestLeave: (next: () => void) => void }
@@ -60,7 +50,6 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const savedRef = useRef(saved)
     const [busy, setBusy] = useState(false)
     const busyRef = useRef(false)
-    const [error, setError] = useState('')
     const [exit, setExit] = useState<(() => void) | null>(null)
     const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[] | null>(null)
     const [repositoryError, setRepositoryError] = useState('')
@@ -98,7 +87,6 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         const existing = current.hosts.some((host) => host.hostId === hostId)
         return { ...current, hosts: implicitDefault ? current.hosts.filter((host) => host.hostId !== hostId) : existing ? current.hosts.map((host) => host.hostId === hostId ? next : host) : [...current.hosts, next] }
       })
-      setError('')
     }
     function confirmed(policy: RoutingHostPolicy | undefined, hostId: string, providerId: string) {
       const entry = policy?.providers.find((provider) => provider.providerId === providerId)
@@ -109,9 +97,9 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     async function submit(next?: () => void) {
       if (busyRef.current || !dirty) return
       const validation = routingConfigurationError(draft, hosts, folders)
-      if (validation) { setError(validation); return }
+      if (validation) return
       const beforeSave = useAppStore.getState().executionRouting
-      busyRef.current = true; setBusy(true); onBusyChange?.(true); setError('')
+      busyRef.current = true; setBusy(true); onBusyChange?.(true)
       try {
         await save(savePayload(draft))
         // Keep the acknowledged confirmation intent while native replaces it with connection identities.
@@ -122,7 +110,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       catch (failure) {
         const currentSaved = useAppStore.getState().executionRouting
         if (JSON.stringify(currentSaved) !== JSON.stringify(beforeSave)) setBaseline(currentSaved)
-        setError(failure instanceof Error ? failure.message : 'Routing settings could not be saved.')
+        reportAppFailure('Routing settings could not be saved.', failure instanceof Error ? failure.message : 'Try again.')
       }
       finally { busyRef.current = false; setBusy(false); onBusyChange?.(false) }
     }
@@ -143,7 +131,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       })
       setPicking('')
     }
-    const errorText = error || validationError ? <p role="alert" className="uam-rt-dialog__error">{error || validationError}</p> : null
+    const errorText = validationError ? <p role="alert" className="uam-rt-dialog__error">{validationError}</p> : null
     const footer = variant === 'dialog'
       ? <div className="uam-rt-dialog__foot">
           {errorText}
@@ -152,7 +140,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         </div>
       : <div className="flex items-center justify-end gap-2 pt-1">
           {errorText}
-          <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setBaseline(saved); setError('') }}>Discard</Button>
+          <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setBaseline(saved) }}>Discard</Button>
           <SaveButton saving={busy} disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit()}>Save routing</SaveButton>
         </div>
 
@@ -177,15 +165,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
               actions={<span className="uam-rt-status"><StatusDot tone={look.tone} size={7} />{look.label}</span>}>
               <SettingRow htmlFor={`routing-enabled-${host.id}`} title="Use this computer" description="Allow chats to start on this computer."
                 control={<Switch id={`routing-enabled-${host.id}`} hideLabel label={`Route to ${host.label}`} checked={policy?.enabled ?? false} onChange={(event) => update(host.id, (item) => ({ ...item, enabled: event.target.checked }))} />} />
-              <SettingRow htmlFor={`routing-capacity-${host.id}`} title="Concurrent sessions" description="How many chats can run here at the same time."
-                control={<input id={`routing-capacity-${host.id}`} className="uam-rv-field" style={{ width: 80, height: 32 }} type="number" min={1} max={1024} aria-label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} onChange={(event) => update(host.id, (item) => ({ ...item, maxActiveTurns: Number(event.target.value) }))} />} />
+              <SettingRow title="Concurrent sessions" description="How many chats can run here at the same time."
+                control={<NumberField label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} min={1} max={1024} onCommit={(value) => update(host.id, (item) => ({ ...item, maxActiveTurns: value }))} />} />
               {providers.filter((provider) => provider.supportsStructured !== false || provider.supportsCli !== false).map((provider) => (
                 <SettingRow key={provider.id} title={provider.name} description={`Confirm once you have signed in to ${provider.name} on this computer.`}
                   control={<Switch hideLabel label={`${provider.name} signed in on ${host.label}`} checked={confirmed(policy, host.id, provider.id)} onChange={(event) => update(host.id, (item) => ({ ...item, providers: event.target.checked ? [...item.providers.filter((entry) => entry.providerId !== provider.id), { providerId: provider.id, connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }] : item.providers.filter((entry) => entry.providerId !== provider.id) }))} />} />
               ))}
               <div className="uam-set-row">
                 {matching
-                  ? <Disclosure title="Remote folders" summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
+                  ? <FolderDisclosure title="Remote folders" summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
                       <div className="grid gap-3">
                         {localFolders.length === 0 && <p className="uam-rt-dialog__empty">Give a local folder a path first, then it can be matched here.</p>}
                         {localFolders.length > 0 && repositories === null && !repositoryError && <SettingsLoading label="Checking repositories" rows={2} />}
@@ -220,8 +208,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                           </div>
                         })}
                       </div>
-                    </Disclosure>
-                  : <Disclosure title="Remote folders" summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
+                    </FolderDisclosure>
+                  : <FolderDisclosure title="Remote folders" summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
                     <div className="grid gap-3">
                       {localFolders.length === 0 && <p className="uam-rt-dialog__empty">Give a local folder a path first, then map it here.</p>}
                       {localFolders.length > 0 && remoteFolders.length === 0 && <p className="uam-rt-dialog__empty">No folders exist on {host.label} yet, so there is nothing to map to.</p>}
@@ -233,13 +221,13 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                         </SettingsField>
                       })}
                     </div>
-                  </Disclosure>}
+                  </FolderDisclosure>}
               </div>
             </SettingsSection>
           })}
       </fieldset>
       {footer}
-      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={error || validationError} onStay={() => setExit(null)}
-        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setError(''); setExit(null); next() }} onSave={() => void submit(exit)} />}
+      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={validationError || undefined} onStay={() => setExit(null)}
+        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }} onSave={() => void submit(exit)} />}
     </>
   })

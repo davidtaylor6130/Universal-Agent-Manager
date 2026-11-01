@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Search, TriangleAlert } from 'lucide-react'
+import { Search, TriangleAlert } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button } from '../ui'
+import { Button, Disclosure } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
@@ -166,19 +166,18 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           </li>
         })}
       </ul>
-      {issueCount > 0 && <details className="uam-native-disclosure uam-native-disclosure--warning">
-        <summary><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}<ChevronRight size={14} className="uam-native-disclosure__chevron" aria-hidden /></summary>
+      {issueCount > 0 && <Disclosure className="uam-native-disclosure uam-native-disclosure--warning"
+        summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
         <ul className="uam-native-issues">{issues.map((group) => {
           const providerId = idForName(group.provider)
           return <li key={`${group.provider}:${group.reason}`}>
             <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
             <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
-            {group.items.length > 0 && <details className="uam-native-issues__ids"><summary>Show IDs</summary><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></details>}
+            {group.items.length > 0 && <Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure>}
           </li>
         })}</ul>
-      </details>}
-      <details className="uam-native-disclosure">
-        <summary>How discovery works<ChevronRight size={14} className="uam-native-disclosure__chevron" aria-hidden /></summary>
+      </Disclosure>}
+      <Disclosure className="uam-native-disclosure" summary="How discovery works">
         <ul className="uam-native-notes">
           <li>Nothing is imported until you select chats and confirm.</li>
           <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
@@ -186,7 +185,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
           {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads finished CLI chats and supported older histories. Chats that changed, are nested or are unrecognised are skipped and listed as issues.</li>}
         </ul>
-      </details>
+      </Disclosure>
     </SettingRow>
     <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </SettingsSection>

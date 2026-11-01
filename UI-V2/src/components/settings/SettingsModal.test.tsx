@@ -1036,8 +1036,8 @@ describe('SettingsModal memory settings', () => {
       await act(async () => { saveA().click() })
       expect(requests.find(r => r.action === 'saveRemoteHostOptions')?.payload.id).toBe('host-a')
       // Only Host A shows progress and is disabled; Host B's controls stay usable.
-      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
-      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host B"]')).toBeNull()
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
       expect(saveA().disabled).toBe(true)
       const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
       expect(reinstallB.disabled).toBe(false)
@@ -1452,15 +1452,14 @@ describe('SettingsModal memory settings', () => {
   it('updates the default memory selectivity level', async () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
-    const group = host.querySelector('[role="radiogroup"][aria-label="Default memory level"]') as HTMLElement
-    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced creation') as HTMLButtonElement
-    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict creation')
-
-    expect(Array.from(group.querySelectorAll('button[role="radio"]')).map((button) => button.textContent)).toEqual(['Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
-    await act(async () => { balanced.click() })
+    const defaultLevel = host.querySelector<HTMLButtonElement>('button[aria-label="Default memory level"]')!
+    expect(defaultLevel.textContent).toContain('Strict creation')
+    act(() => defaultLevel.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Off', 'Read only', 'Strict creation', 'Balanced creation', 'Remember everything'])
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Balanced creation'))!.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
-    const readOnly = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Read only')!
-    await act(async () => { readOnly.click() })
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Default memory level"]')!.click())
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Read only'))!.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'readOnly' })
     const chatPolicy = host.querySelector<HTMLButtonElement>('button[aria-label="Current chat memory policy"]')!
     act(() => chatPolicy.click())
@@ -1534,7 +1533,7 @@ describe('SettingsModal memory settings', () => {
     openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
-    const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
+    const visibility = Array.from(section.querySelectorAll<HTMLElement>('.uam-disclosure')).find((disclosure) => disclosure.querySelector('.uam-disclosure__label')?.textContent?.startsWith('Model visibility'))!
     expect(visibility).toBeTruthy()
     act(() => visibility.querySelector<HTMLInputElement>('input[aria-label="Show openai"]')!.click())
     expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }), '*')
@@ -1647,8 +1646,8 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex chat defaults"]')?.click())
     expect(host.querySelector('[aria-label="Codex provider usage"]')).toBeNull()
     expect(refresh.closest('#codex-cli-defaults-panel')).toBeNull()
-    const advanced = Array.from(host.querySelectorAll<HTMLDetailsElement>('#codex-cli-defaults-panel details')).find((details) => !details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
-    expect(advanced.open).toBe(false)
+    const advanced = Array.from(host.querySelectorAll<HTMLElement>('#codex-cli-defaults-panel .uam-disclosure')).find((disclosure) => disclosure.querySelector('.uam-disclosure__label')?.textContent === 'Advanced')!
+    expect(advanced.hasAttribute('data-open')).toBe(false)
     expect(advanced.textContent).toContain('Feature preference')
     expect(advanced.textContent).toContain('Architect + worker')
     act(() => root.unmount()); host.remove()
@@ -2466,7 +2465,7 @@ describe('SettingsModal memory settings', () => {
     const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export all chats') as HTMLButtonElement
     await act(async () => exportButton.click())
     expect(requests[0]).toMatchObject({ action: 'exportLocalChats', payload: { currentValue: '' } })
-    expect(host.textContent).toContain('Exported 2 chats to /tmp/uam-export.')
+    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats to /tmp/uam-export.', tone: 'success' })
 
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
@@ -2489,12 +2488,12 @@ describe('SettingsModal memory settings', () => {
     expect(save).not.toHaveBeenCalled()
     expect(field.value).toBe('')
     expect(host.querySelector('[aria-label="Hide C++ editor group"]')).toBeTruthy()
-    expect(host.textContent).toContain('Enter a group name.')
+    expect(failures.at(-1)?.message).toBe('Enter a group name.')
     typeName('Native sources')
     expect(save).not.toHaveBeenCalled()
     await act(async () => field.dispatchEvent(new FocusEvent('focusout',{bubbles:true})))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({editorFileAssociations:[expect.objectContaining({id:'cpp',name:'Native sources'})]}))
-    expect(host.textContent).toContain('Editor settings could not be saved.')
+    expect(failures.at(-1)?.message).toBe('Editor settings could not be saved.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
     expect(document.body.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
     expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
@@ -2631,7 +2630,7 @@ describe('SettingsModal memory settings', () => {
     act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '/Applications/Files.app'); input.dispatchEvent(new Event('input', { bubbles: true })) })
     await act(async () => Array.from(input.parentElement!.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save')!.click())
     expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
-    expect(host.textContent).toContain('File explorer could not be saved.')
+    expect(failures.at(-1)?.message).toBe('File explorer could not be saved.')
     act(() => root.unmount()); host.remove()
   })
 
@@ -2651,7 +2650,7 @@ describe('SettingsModal memory settings', () => {
     expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).map(button => button.textContent)).toEqual(['Automatic', 'Windows PowerShell 5.1', 'PowerShell 7'])
     await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find(button => button.textContent === 'PowerShell 7')!.click())
     expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ windowsPowerShell: 'pwsh' }))
-    expect(host.textContent).toContain('Terminal shell could not be saved.')
+    expect(failures.at(-1)?.message).toBe('Terminal shell could not be saved.')
     act(() => root.unmount()); host.remove()
     platform.mockRestore()
   })

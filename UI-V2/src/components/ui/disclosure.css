@@ -1,0 +1,9 @@
+.uam-disclosure__summary { display: flex; align-items: center; gap: var(--sp-2, 8px); width: 100%; padding: 6px 0; text-align: left; color: var(--text-2); font-size: var(--fs-sm); border-radius: var(--r-sm); }
+.uam-disclosure__summary:hover { color: var(--text); }
+.uam-disclosure__summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.uam-disclosure__chevron { flex: none; transition: transform var(--dur-base) var(--ease); }
+.uam-disclosure[data-open] .uam-disclosure__chevron { transform: rotate(90deg); }
+.uam-disclosure__panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-base) var(--ease); }
+.uam-disclosure[data-open] .uam-disclosure__panel { grid-template-rows: 1fr; }
+.uam-disclosure__inner { min-height: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .uam-disclosure__panel, .uam-disclosure__chevron { transition: none; } }

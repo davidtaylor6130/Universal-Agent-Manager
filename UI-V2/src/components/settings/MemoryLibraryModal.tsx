@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import { SaveButton, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
 import './settings-shell.css'
-import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, MenuSelect, Notice, RowButton, useOverlayState } from '../ui'
@@ -256,6 +256,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingDeleteEntryId, setPendingDeleteEntryId] = useState<string | null>(null)
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
+  const [viewingEntryId, setViewingEntryId] = useState<string | null>(null)
+  // Changing location always returns the pane to the list.
+  const chooseLocation = (key: string) => { setSelectedLocationKey(key); setViewingEntryId(null) }
   const draftDirty = JSON.stringify(draft) !== JSON.stringify(EMPTY_DRAFT)
   const requestLeave = useCallback((next: () => void) => {
     if (submittingRef.current) return
@@ -357,7 +360,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     if (!embedded) return null
     return memoryLibraryError
       ? <div role="alert" className="uam-memory-state">
-          <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>The memory library did not open.</p>
+          <p className="flex items-center gap-1.5 text-sm font-medium" style={{ color: 'var(--error)' }}><X size={14} aria-hidden />The memory library did not open.</p>
           <p className="text-xs" style={{ color: 'var(--text-3)' }}>{memoryLibraryError}</p>
           <div><Button size="sm" onClick={() => void openAllMemoryLibrary()}>Try again</Button></div>
         </div>
@@ -430,6 +433,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     ? groupedEntries.find((location) => location.count > 0) ?? requestedLocation
     : requestedLocation
   const visibleEntryIds = selectedLocation?.entries.map((entry) => entry.id) ?? []
+  const viewingEntry = viewingEntryId ? memoryLibraryEntries.find((entry) => entry.id === viewingEntryId) ?? null : null
   const groupedFolderIds = new Set(resourceCollections.flatMap((collection) => collection.references
     .filter((reference) => reference.type === 'workspace-folder')
     .map((reference) => reference.target)))
@@ -490,7 +494,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       type="button"
                       data-active={active}
                       aria-current={active ? 'page' : undefined}
-                      onClick={() => setSelectedLocationKey(location.key)}
+                      onClick={() => chooseLocation(location.key)}
                       className="relative z-[1] flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
                       style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
                     >
@@ -520,7 +524,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
                         {locations.map((location) => {
                           const active = location.key === selectedLocation?.key
-                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
+                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                         })}
                       </div>
                     </div>
@@ -531,7 +535,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
-                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
+                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                     })}
                   </div>
                 )}
@@ -562,7 +566,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 </div>
               </div>
             )}
-            <div className="flex items-center gap-2 mb-4">
+            {!isAdding && <div className="flex items-center gap-2 mb-4">
               <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
@@ -587,7 +591,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
                 onClick={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
               />
-            </div>
+            </div>}
 
             {memoryLibraryError && (
               <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
@@ -603,7 +607,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               {pendingExit && (
                 <div role="group" aria-label="Unsaved memory" className="space-y-4">
                   <p className="text-sm font-semibold">Save this memory before leaving?</p>
-                  {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
+                  {localError && <p role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError}</p>}
                   <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
                 </div>
               )}
@@ -698,7 +702,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       </label>
                     </div>
 
-                    {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError || memoryLibraryError}</div>}
+                    {(localError || memoryLibraryError) && <div role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError || memoryLibraryError}</div>}
                     <SaveButton
                       saving={submitting}
                       pendingLabel="Saving..."
@@ -709,6 +713,26 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       Save memory
                     </SaveButton>
               </div>
+              </div>
+            ) : viewingEntry ? (
+              <div key={viewingEntry.id} className="space-y-4 animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => setViewingEntryId(null)}><ArrowLeft size={14} aria-hidden />Back</Button>
+                  <div className="flex-1" />
+                  <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${viewingEntry.title} file`} onClick={() => void revealMemoryEntry(viewingEntry.id)} />
+                  <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${viewingEntry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(viewingEntry.id)} />
+                </div>
+                <div className="text-base font-semibold" style={{ color: 'var(--text)' }}>{viewingEntry.title}</div>
+                <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--text-3)' }}>
+                  <dt>Category</dt><dd style={{ color: 'var(--text-2)' }}>{memoryCategoryLabel(viewingEntry.category)}</dd>
+                  <dt>Confidence</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.confidence}</dd>
+                  <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>
+                  <dt>Scope</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.scope}</dd>
+                  {viewingEntry.sourceChatId && <><dt>Source chat</dt><dd style={{ color: 'var(--text-2)' }}>{chatTitleById.get(viewingEntry.sourceChatId) ?? viewingEntry.sourceChatId}</dd></>}
+                  {viewingEntry.lastObserved && <><dt>Last seen</dt><dd style={{ color: 'var(--text-2)' }} title={viewingEntry.lastObserved}>{formatObserved(viewingEntry.lastObserved)}</dd></>}
+                  <dt>File</dt><dd className="uam-store-path" style={{ color: 'var(--text-2)' }}>{viewingEntry.filePath}</dd>
+                </dl>
+                <p className="uam-store-markdown whitespace-pre-wrap">{viewingEntry.preview || 'No preview available.'}</p>
               </div>
             ) : memoryLibraryLoading ? (
               <SettingsLoading label="Loading memory library" rows={4} />
@@ -743,27 +767,20 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                             </div>
                             <div className="grid gap-2">
                               {entries.map((entry) => (
-                                <article key={entry.id} className="uam-memory-card">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{entry.title}</div>
-                                      <div className="mt-1 text-sm leading-6" style={{ color: 'var(--text-2)' }}>
-                                        {entry.preview || 'No preview available.'}
-                                      </div>
-                                    </div>
-                                    <div className="uam-memory-card__actions flex items-center gap-1">
-                                      <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
-                                      <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
-                                    </div>
-                                  </div>
-                                  <div className="uam-memory-card__meta">
-                                    <span className="uam-memory-chip" data-confidence={entry.confidence}>{entry.confidence} confidence</span>
-                                    <span>{entry.occurrenceCount} occurrence{entry.occurrenceCount === 1 ? '' : 's'}</span>
+                                <div key={entry.id} className="uam-memory-row">
+                                  <RowButton className="uam-memory-row__open" onClick={() => setViewingEntryId(entry.id)}>
+                                    <span className="uam-memory-row__title">{entry.title}</span>
+                                    <span className="uam-memory-row__summary">{entry.preview || 'No preview available.'}</span>
+                                  </RowButton>
+                                  <span className="uam-memory-row__meta">
                                     <span>{entry.scope}</span>
-                                    {entry.sourceChatId && <span title={`Source chat: ${entry.sourceChatId}`}>From “{chatTitleById.get(entry.sourceChatId) ?? entry.sourceChatId}”</span>}
-                                    {entry.lastObserved && <span title={entry.lastObserved}>Seen {formatObserved(entry.lastObserved)}</span>}
+                                    {entry.lastObserved && <span title={entry.lastObserved}>{formatObserved(entry.lastObserved)}</span>}
+                                  </span>
+                                  <div className="uam-memory-row__actions flex items-center gap-1">
+                                    <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
+                                    <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
                                   </div>
-                                </article>
+                                </div>
                               ))}
                             </div>
                           </section>

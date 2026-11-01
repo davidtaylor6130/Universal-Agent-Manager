@@ -4,6 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
+
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 const features = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
 vi.mock('../../config/buildFeatures', async importOriginal => ({ ...await importOriginal<typeof import('../../config/buildFeatures')>(), get COMPUTER_USE_ENABLED() { return features.COMPUTER_USE_ENABLED } }))
@@ -59,7 +62,7 @@ it('retains persisted Off after failed revocation and retries only the global di
   expect(toggle()?.disabled).toBe(true)
   expect(host.textContent).toContain('Cleanup pending.')
   expect(host.textContent).not.toContain('UAM grants cleared')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Runtime controls are still stopping.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Runtime controls are still stopping.', expect.any(String))
   // Pending ownership survives leaving and reopening the row.
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(button('Retry disabling')).toBeTruthy()
@@ -78,7 +81,7 @@ it('does not display Off when persistence failed and native state stayed enabled
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Failed to persist Computer Use Settings.' }).mockResolvedValueOnce(receipt(true))
   await act(async () => toggle()!.click())
   expect(toggle()?.checked).toBe(true)
-  expect(host.textContent).toContain('Failed to persist')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Failed to persist Computer Use Settings.', expect.any(String))
   expect(host.textContent).not.toContain('UAM grants cleared')
 })
 
@@ -88,7 +91,7 @@ it('keeps unknown transport outcomes distinct from cleared consent', async () =>
   expect(toggle()).toBeNull()
   expect(useAppStore.getState().computerUseEnabled).toBeUndefined()
   expect(useAppStore.getState().computerUseRevocationPending).toBeUndefined()
-  expect(host.textContent).toContain('Status is not confirmed')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Connection lost.', 'Status is not confirmed; check before trying again.')
   vi.mocked(sendToCEF).mockResolvedValueOnce(receipt(false, true))
   await act(async () => button('Check status').click())
   expect(host.textContent).toContain('Cleanup pending.')
@@ -133,7 +136,7 @@ it('serializes a captured Off request across navigation between settings surface
   await act(async () => finish({ ok: false, error: 'The owned runtime has not stopped.' }))
   expect(host.textContent).toContain('Cleanup pending.')
   expect(toggle()?.disabled).toBe(true)
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('The owned runtime has not stopped.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('The owned runtime has not stopped.', expect.any(String))
 })
 
 it('does not let an older readback clear a newer native pending observation', async () => {
@@ -174,27 +177,13 @@ it.each(['switch', 'Turn off'])('keeps On with per-chat cleanup truthful and per
   expect(sendToCEF).toHaveBeenCalledExactlyOnceWith({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } })
 })
 
-it.each(['pending', 'unknown'])('removes superseded %s error feedback after a newer native observation, including remount', async outcome => {
-  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Runtime controls are still stopping. Retry disabling.' })
-    .mockResolvedValueOnce(outcome === 'pending' ? receipt(false, true) : { ok: false, error: 'Status unavailable.' })
-  await act(async () => toggle()!.click())
-  expect(host.querySelector('[role="alert"]')).not.toBeNull()
-  await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
-  expect(host.querySelector('[role="alert"]')).not.toBeNull()
-  await act(async () => useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false, computerUseSettingsStateRevision: 2 }))
-  expect(host.textContent).toContain('Off.')
-  expect(host.querySelector('[role="alert"]')).toBeNull()
-  await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
-  expect(host.querySelector('[role="alert"]')).toBeNull()
-})
-
 it('retains failure feedback for a native push received before its failure response', async () => {
   vi.mocked(sendToCEF).mockImplementationOnce(async () => {
     useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: true, computerUseSettingsStateRevision: 2 })
     return { ok: false, error: 'Runtime controls are still stopping.' }
   }).mockResolvedValueOnce(receipt(false, true))
   await act(async () => toggle()!.click())
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Runtime controls are still stopping.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Runtime controls are still stopping.', expect.any(String))
 })
 
 it.each(['Retry disabling', 'Check status', 'Turn off'])('returns keyboard focus to the switch when %s recovery disappears', async label => {

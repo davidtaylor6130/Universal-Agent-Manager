@@ -2,8 +2,10 @@ import { act, createRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import * as bridge from '../../ipc/cefBridge'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 ;(globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver ??= class {
@@ -59,7 +61,7 @@ it('keeps a rejected save guarded and leaves only after successful retry', async
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   expect(leave).not.toHaveBeenCalled()
-  expect(document.querySelector('[role="alert"]')?.textContent).toContain('Private save rejection')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Private save rejection', expect.any(String))
   expect(host.textContent).toContain('private-AGENTS.md')
   await click('Save and leave')
   expect(save).toHaveBeenCalledTimes(2)
@@ -172,7 +174,7 @@ it('focuses Retry after a read failure and shows the defaults error when leaving
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   const dialog = document.querySelector('[role="alertdialog"]')!
-  expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Defaults could not be saved')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Defaults could not be saved', expect.any(String))
   expect(leave).not.toHaveBeenCalled()
 })
 

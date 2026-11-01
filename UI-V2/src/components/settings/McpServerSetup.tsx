@@ -3,10 +3,11 @@ import { Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 }
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, Disclosure, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, RowButton, StatusDot, Switch, Tab, Tabs, motionAllowed, scaledMs, usePresence } from '../ui'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import './provider-settings.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 
@@ -162,7 +163,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const [open, setOpen] = useState<string | null>(null)
   // Rows shown collapsing out before they are removed from the draft.
   const [removingIds, setRemovingIds] = useState<Set<string>>(() => new Set())
-  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [setup, setSetup] = useState<'choose' | 'import' | 'guided' | null>(null)
   const [importText, setImportText] = useState('')
@@ -179,30 +179,31 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   useEffect(() => { if (!dirty) { setServers(savedServers); setUamEnabled(savedUam) } }, [savedServers, savedUam])
 
   const removeServer = (id: string) => {
-    const drop = () => { setServers(list => list.filter(item => item.id !== id)); setMessage(''); setRemovingIds(ids => { const next = new Set(ids); next.delete(id); return next }) }
+    const drop = () => { setServers(list => list.filter(item => item.id !== id)); setRemovingIds(ids => { const next = new Set(ids); next.delete(id); return next }) }
     if (!motionAllowed()) { drop(); return }
     setRemovingIds(ids => new Set(ids).add(id))
     window.setTimeout(drop, scaledMs(EXIT_MS))
   }
-  const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)); setMessage('') }
+  const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)) }
   const switchView = (next: 'form' | 'json') => {
     if (next === view) return
     if (next === 'json') { setJsonText(toJsonText(servers, uamEnabled)); setView('json'); return }
-    try { const parsed = fromJsonText(jsonText, servers); setServers(parsed.servers); setUamEnabled(parsed.uamEnabled); setView('form'); setMessage('') }
-    catch (error) { setMessage((error as Error).message) }
+    try { const parsed = fromJsonText(jsonText, servers); setServers(parsed.servers); setUamEnabled(parsed.uamEnabled); setView('form') }
+    catch (error) { reportAppFailure('Could not switch to the form.', (error as Error).message) }
   }
   const readOpenCode = async () => {
     const generation = ++importGeneration.current
-    setBusy(true); onBusyChange(true); setMessage(''); setImportText(''); setImportSources([]); setImportWarnings([])
+    setBusy(true); onBusyChange(true); setImportText(''); setImportSources([]); setImportWarnings([])
     try {
       const response = await sendToCEF<{ servers: McpServerConfiguration[]; warnings: string[]; sources: string[] }>({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', ...(importPath.trim() ? { sourcePath: importPath.trim() } : {}) } })
       if (generation !== importGeneration.current) return
-      if (!response.ok || !response.data) { setMessage(response.error || 'Could not read OpenCode configuration.'); return }
+      if (!response.ok || !response.data) { reportAppFailure('Could not read OpenCode configuration.', response.error || 'Try again.'); return }
       setImportSources(response.data.sources)
       setImportWarnings(response.data.warnings)
       setImportText(response.data.servers.length ? toJsonText(response.data.servers, uamEnabled) : '')
-      setMessage(response.data.servers.length ? `Loaded ${response.data.servers.length} server${response.data.servers.length === 1 ? '' : 's'}. Review the configuration below before importing.` : 'No external MCP servers found in the configuration.')
-    } catch { if (generation === importGeneration.current) setMessage('Could not read OpenCode configuration. Try again.') }
+      if (response.data.servers.length) reportAppNotice(`Loaded ${response.data.servers.length} server${response.data.servers.length === 1 ? '' : 's'}. Review the configuration below before importing.`)
+      else reportAppNotice('No external MCP servers found in the configuration.')
+    } catch { if (generation === importGeneration.current) reportAppFailure('Could not read OpenCode configuration.', 'Try again.') }
     finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
   }
   let preparedServers = servers, preparedUam = uamEnabled
@@ -217,27 +218,27 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     if (new Set(keys).size !== keys.length) throw Error('Two servers share the same name. Rename one.')
   } catch (error) { validationError = (error as Error).message }
   const save = async () => {
-    if (setup !== null) { setMessage('Finish or cancel setup before saving.'); return }
+    // Save stays disabled while setup or validation blocks it; the button carries the reason.
+    if (setup !== null || validationError) return
     const generation = importGeneration.current
     const ownsSave = () => generation === importGeneration.current
-    if (validationError) { setMessage(validationError); return }
     const next = removingIds.size ? preparedServers.filter(item => !removingIds.has(item.id)) : preparedServers, nextUam = preparedUam
-    setBusy(true); onBusyChange(true); setMessage('')
+    setBusy(true); onBusyChange(true)
     try {
       const store = useAppStore.getState()
       const result = await store.setMcpServers(next, scoped ? scopeExecutionHostId : SETTINGS_ALL_ENVIRONMENTS)
       if (!ownsSave()) return
-      if (!result.ok) { setMessage(result.error || 'Could not save MCP servers.'); return }
+      if (!result.ok) { reportAppFailure('Could not save MCP servers.', result.error || 'Try again.'); return }
       const currentStore = useAppStore.getState()
       if (!scoped && nextUam !== currentStore.centralProviderConfiguration.uamControlEnabled) {
         const central = await currentStore.setCentralProviderConfiguration({ ...currentStore.centralProviderConfiguration, uamControlEnabled: nextUam })
         if (!ownsSave()) return
-        if (!central.ok) { setMessage(central.error || 'Servers saved, but the UAM MCP setting was not.'); return }
+        if (!central.ok) { reportAppFailure('Servers saved, but the UAM MCP setting was not.', central.error || 'Try again.'); return }
       }
       setServers(next); setUamEnabled(nextUam)
       if (view === 'json') setJsonText(toJsonText(next, nextUam))
-      setMessage(MCP_SAVED_MESSAGE)
-    } catch { if (ownsSave()) setMessage('Could not save MCP servers. Try again.') }
+      reportAppNotice(MCP_SAVED_MESSAGE, 'success')
+    } catch { if (ownsSave()) reportAppFailure('Could not save MCP servers.', 'Try again.') }
     finally { if (ownsSave()) { setBusy(false); onBusyChange(false) } }
   }
 
@@ -248,7 +249,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   </label>
   const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <Switch label={label} hideLabel checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />
   const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
-  const cancelSetup = () => { setSetup(null); setMessage(''); setImportWarnings([]) }
+  const cancelSetup = () => { setSetup(null); setImportWarnings([]) }
   const setupTitle = setup === 'choose' ? 'Add a server' : setup === 'import' ? 'Import configuration' : 'Step 1 of 2: name and connection'
   const option = (icon: ReactNode, label: string, detail: string, onClick: () => void) => <RowButton className="uam-prov-option" aria-label={label} onClick={onClick}>
     <span className="uam-prov-option__icon" aria-hidden>{icon}</span>
@@ -256,7 +257,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
   </RowButton>
   const setupBody = setup === 'choose' ? <div className="grid gap-2">
-    {option(<Download size={16} />, 'Import configuration', OPENCODE_ENABLED ? 'Bring servers over from OpenCode or pasted JSON.' : 'Bring servers over from pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') })}
+    {option(<Download size={16} />, 'Import configuration', OPENCODE_ENABLED ? 'Bring servers over from OpenCode or pasted JSON.' : 'Bring servers over from pasted JSON.', () => { setSetup('import'); setImportText(''); setImportSources([]) })}
     {option(<Wand2 size={16} />, 'Step by step', 'Answer two short questions. Best for a single new server.', () => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') })}
     {option(<ListPlus size={16} />, 'Manual form', 'Fill in every field yourself.', () => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setSetup(null) })}
     {option(<Braces size={16} />, 'Edit JSON', 'Edit the full server list as JSON.', () => { switchView('json'); setSetup(null) })}
@@ -266,14 +267,14 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
       <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read OpenCode config</Button>
     </>}
-    <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
+    <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]) }} />
     {importSources.length > 0 && <div className="text-xs break-all" style={{ color: 'var(--text-3)' }}>{importSources.map(source => <div key={source}>{source}</div>)}</div>}
     {warningNotice}
-    <Button size="sm" variant="primary" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); setMessage('Imported into the draft. Review the servers, then Save.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not import configuration.') } }}>Review import</Button>
+    <Button size="sm" variant="primary" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); reportAppNotice('Imported into the draft. Review the servers, then Save.', 'success') } catch (error) { reportAppFailure('Could not import configuration.', error instanceof Error ? error.message : 'Check the JSON and try again.') } }}>Review import</Button>
   </> : <>
     {text('Server name', guidedName, setGuidedName, 'playwright')}
     <SettingsField label="How does this server connect?"><MenuSelect label="Setup connection type" value={guidedTransport} onChange={value => setGuidedTransport(value as McpServerConfiguration['transport'])} options={[{ value: 'stdio', label: "Run a program on the agent's machine" }, { value: 'http', label: 'Connect to an HTTP URL' }, { value: 'sse', label: 'Connect to an SSE URL' }]} /></SettingsField>
-    <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setMessage('Step 2 of 2: enter the connection details below, then Save.'); }}>Next: connection details</Button>
+    <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); reportAppNotice('Step 2 of 2: enter the connection details below, then Save.'); }}>Next: connection details</Button>
   </>
 
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
@@ -281,7 +282,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       <Overlay open zIndex={60} onBackdropMouseDown={() => { if (!busy) cancelSetup() }}>
         <div role="dialog" aria-modal="true" aria-label="MCP setup" tabIndex={-1} className="uam-mcp-dialog" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!busy) cancelSetup() } }}>
           <strong className="text-sm">{setupTitle}</strong>
-          {message && <p role="status" className="uam-prov-sub">{message}</p>}
           {setupBody}
           <div className="flex justify-end"><Button size="sm" disabled={busy} onClick={cancelSetup}>Cancel setup</Button></div>
         </div>
@@ -293,7 +293,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
           ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
-          : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
+          : <Button size="sm" disabled={busy} onClick={() => setUamEnabled(true)}>Turn back on</Button>} />
       {COMPUTER_USE_ENABLED && <ComputerUseSettingRow disabled={busy} />}
     </SettingsSection>}
 
@@ -304,10 +304,10 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
         </Tabs>
-        {view === 'form' && <Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => { setSetup('choose'); setMessage('') }}>Add server</Button>}
+        {view === 'form' && <Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button>}
       </>}>
       {view === 'json' ? <div className="grid gap-2 py-3">
-        <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => { setJsonText(event.currentTarget.value); setMessage('') }} />
+        <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => setJsonText(event.currentTarget.value)} />
         <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads this machine's environment.</p>
       </div> : <>
         {servers.length === 0 && <SettingRow title="No servers yet" />}
@@ -354,8 +354,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                 <Button size="sm" className="self-start" disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>+ Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>
                 <span className="uam-set-field__hint">Typed values are saved as plain text.</span>
               </div>
-              <details className="uam-mcp-advanced"><summary className="cursor-pointer text-sm">Limit where it runs (optional)</summary>
-                <div className="grid gap-3 pt-2">
+              <Disclosure className="uam-mcp-advanced" summary="Limit where it runs (optional)">
+                <div className="grid gap-3">
                   {text('Only in this workspace', server.workspaceDirectory, workspaceDirectory => update(server.id, { workspaceDirectory }), 'Empty = every workspace')}
                   <div className="uam-set-field"><span className="uam-set-field__label">Only on this machine</span>
                     <MenuSelect label="Only on this machine" value={server.executionHostId ?? ''} disabled={busy} onChange={executionHostId => update(server.id, { executionHostId })} options={[
@@ -365,7 +365,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                     ]} />
                   </div>
                 </div>
-              </details>
+              </Disclosure>
             </div></ServerEditorCollapse>
           </SettingRow></div></div>
         })}
@@ -374,10 +374,10 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
 
     <div className="flex items-center justify-end gap-2 flex-wrap">
       <span className="uam-set-section__desc mr-auto">{setup !== null ? 'Finish or cancel setup before saving.' : 'Running chats keep their old setup until restarted.'}</span>
-      {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
+      {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button>}
       <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : undefined} title={validationError || undefined} onClick={() => void save()}>Save</Button>
     </div>
-    {setup === null && (message || validationError) && <p role="status" className="uam-prov-sub">{message || validationError}</p>}
+    {setup === null && validationError && <p role="status" className="uam-prov-sub">{validationError}</p>}
     {setup === null && warningNotice}
   </div>
 }

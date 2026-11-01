@@ -186,37 +186,6 @@ describe('ShellActionsSettings', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it.each(['notification', 'backend error'] as const)('keeps a shell %s visible and dismissible beside invalid-draft validation', async kind => {
-    const message = kind === 'notification' ? 'Shell integration needs refreshing.' : 'Could not save shell actions.'
-    const dismiss = vi.fn(async () => { useAppStore.setState({ shellActionNotification: '' }) })
-    useAppStore.setState({
-      shellActionNotification: kind === 'notification' ? message : '',
-      dismissShellActionNotification: dismiss,
-      ...(kind === 'backend error' ? { setShellActions: vi.fn(async () => false) } : {}),
-    })
-    const host = document.createElement('div'); document.body.append(host)
-    const root = createRoot(host)
-    await act(async () => root.render(<ShellActionsSettings />))
-    try {
-      act(() => addAction(host)!.click())
-      if (kind === 'backend error') await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand Review Selection"]')!.click())
-      const label = host.querySelector<HTMLInputElement>('[aria-label="Label for Review Selection"]')!
-      act(() => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, '')
-        label.dispatchEvent(new Event('input', { bubbles: true }))
-      })
-      expect(Array.from(host.querySelectorAll('[role="status"]'), status => status.textContent).join(' ')).toContain(message)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')!.click())
-      expect(dismiss).toHaveBeenCalledOnce()
-      expect(host.textContent).not.toContain(message)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')).toBeNull()
-      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
-    } finally { act(() => root.unmount()); host.remove() }
-  })
 
   it('keeps a reverted shell label clean and permits a valid new action', async () => {
     const host = document.createElement('div'); document.body.append(host)

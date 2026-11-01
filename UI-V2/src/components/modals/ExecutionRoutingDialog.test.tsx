@@ -5,6 +5,8 @@ import { ExecutionRoutingDialog, ExecutionRoutingWaitNotice } from './ExecutionR
 import { useAppStore } from '../../store/useAppStore'
 import { createExecutionRoutingSlice } from '../../store/slices/executionRoutingSlice'
 import type { Session } from '../../types/session'
+import { reportAppFailure } from '../../utils/appFailure'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const originalSave = useAppStore.getState().setExecutionRoutingSettings
@@ -27,18 +29,22 @@ describe('SSH routing controls', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } useAppStore.setState({ setExecutionRoutingSettings: originalSave, releaseExecutionRoutingReservation: originalRelease }); delete window.cefQuery })
 
-  it('requires integer capacity, maps only registered destinations on this SSH host, and keeps configuration after save failure', async () => {
+  it('clamps capacity on commit, maps only registered destinations on this SSH host, and keeps configuration after save failure', async () => {
     const save = vi.fn().mockRejectedValue(new Error('Disk full'))
     const close = vi.fn()
     useAppStore.setState({ setExecutionRoutingSettings: save })
     mount(<ExecutionRoutingDialog onClose={close} />)
     act(() => (document.body.querySelector('[aria-label="Route to Server A"]') as HTMLInputElement).click())
-    input('[aria-label="Concurrent sessions on Server A"]', '1.5')
-    const submit = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save routing')!
-    await act(async () => submit().click())
-    expect(save).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('whole number')
+    const capacity = document.body.querySelector<HTMLInputElement>('[aria-label="Concurrent sessions on Server A"]')!
+    input('[aria-label="Concurrent sessions on Server A"]', '1025')
+    act(() => capacity.focus())
+    act(() => capacity.blur())
+    expect(capacity.value).toBe('1024')
     input('[aria-label="Concurrent sessions on Server A"]', '2')
+    act(() => capacity.focus())
+    act(() => capacity.blur())
+    const submit = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save routing')!
+    expect(save).not.toHaveBeenCalled()
     const destinationTrigger = '[aria-label="Destination for Source on Server A"]'
     act(() => document.body.querySelector<HTMLButtonElement>(destinationTrigger)!.click())
     expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map((option) => option.textContent)).toEqual(["Don't route this folder", 'Destination · /remote'])
@@ -47,7 +53,7 @@ describe('SSH routing controls', () => {
     await act(async () => submit().click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ maxActiveTurns: 2, providers: [{ providerId: 'codex-cli', connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))
     expect(close).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
+    expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Routing settings could not be saved.', 'Disk full')
     expect(document.body.querySelector(destinationTrigger)?.textContent).toContain('Destination')
   })
 

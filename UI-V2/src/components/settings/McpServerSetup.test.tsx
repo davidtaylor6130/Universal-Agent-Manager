@@ -4,10 +4,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { McpServerSetup, fromJsonText, toJsonText, mergeMcpImport } from './McpServerSetup'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const buildFeatures = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
 vi.mock('../../config/buildFeatures', async importOriginal => Object.assign(buildFeatures, { ...await importOriginal<typeof import('../../config/buildFeatures')>(), COMPUTER_USE_ENABLED: true }))
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }));
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal() as Record<string, unknown>, reportAppFailure: vi.fn(), reportAppNotice: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let host: HTMLDivElement
@@ -17,7 +19,7 @@ const saveServers = vi.fn(async (servers: McpServerConfiguration[]) => { useAppS
 const saveCentral = vi.fn(async (configuration: ReturnType<typeof useAppStore.getState>['centralProviderConfiguration']) => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
 beforeEach(async () => {
   useAppStore.setState({ computerUseSettingsError: '' })
-  saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
+  saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(reportAppFailure).mockClear(); vi.mocked(reportAppNotice).mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
   useAppStore.setState({ computerUseEnabled: undefined, computerUseRevocationPending: undefined, mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
@@ -95,7 +97,7 @@ it('previews an import without saving or disabling the built-in UAM service', as
   await type(document.querySelector('textarea[aria-label="Import MCP configuration"]') as HTMLTextAreaElement, '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}')
   await click('Review import')
   expect(saveServers).not.toHaveBeenCalled()
-  expect(document.body.textContent).toContain('Imported into the draft')
+  expect(reportAppNotice).toHaveBeenCalledWith('Imported into the draft. Review the servers, then Save.', 'success')
   await click('Save')
   expect(saveServers.mock.calls[0][0]).toHaveLength(2)
   expect(saveCentral).not.toHaveBeenCalled()
@@ -106,7 +108,7 @@ it('starts guided setup with a named connection and saves only after completing 
   await click('Step by step')
   await type(document.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
   await click('Next: connection details')
-  expect(document.body.textContent).toContain('Step 2 of 2')
+  expect(reportAppNotice).toHaveBeenCalledWith('Step 2 of 2: enter the connection details below, then Save.')
   expect(saveServers).not.toHaveBeenCalled()
   await type(document.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
   await click('Save')
@@ -213,9 +215,10 @@ it.each(['import', 'json'] as const)('keeps the draft and secrets unchanged afte
     await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, text)
     await click('Save')
   }
-  const feedback = document.querySelector('p[role="status"]')
-  expect(feedback?.textContent).toContain('OAuth settings need manual configuration')
-  expect(feedback?.textContent).not.toContain('private-secret-value')
+  // Import failures are events (reported); JSON-view validation stays inline next to Save.
+  if (mode === 'import') expect(reportAppFailure).toHaveBeenLastCalledWith('Could not import configuration.', expect.stringContaining('OAuth settings need manual configuration'))
+  else expect(document.querySelector('p[role="status"]')?.textContent).toContain('OAuth settings need manual configuration')
+  expect(JSON.stringify([...vi.mocked(reportAppFailure).mock.calls, ...document.querySelectorAll('p[role="status"]')].map(item => typeof item === 'string' ? item : item.textContent ?? ''))).not.toContain('private-secret-value')
   expect(useAppStore.getState().mcpServers).toEqual([server])
   expect(saveServers).not.toHaveBeenCalled()
   expect(saveCentral).not.toHaveBeenCalled()
@@ -232,7 +235,7 @@ it('shows native source paths and warnings beside import controls and accepts a 
   expect(sendToCEF).toHaveBeenCalledWith({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', sourcePath: '/config/opencode' } })
   expect(section.textContent).toContain('/config/opencode/opencode.jsonc')
   expect(section.textContent).toContain('OAuth settings need manual configuration')
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('Loaded 1 server.')
+  expect(reportAppNotice).toHaveBeenCalledWith(expect.stringContaining('Loaded 1 server.'))
   expect(button('Review import').disabled).toBe(false)
 })
 
@@ -242,7 +245,7 @@ it('clears a previous native preview on read failure and blocks stale review', a
   expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
   await click("Read OpenCode config")
   const section = document.querySelector('[aria-label="MCP setup"]')!
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('No configuration exists')
+  expect(reportAppFailure).toHaveBeenLastCalledWith('Could not read OpenCode configuration.', expect.stringContaining('No configuration exists'))
   expect(section.textContent).not.toContain('/config/opencode.jsonc')
   expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
   expect(button('Review import').disabled).toBe(true)
@@ -253,7 +256,7 @@ it('distinguishes zero external servers and keeps warnings and source visible wi
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['legacy: executable unavailable'], requiresReview: true } })
   await click('Add server'); await click('Import configuration'); await click("Read OpenCode config")
   const section = document.querySelector('[aria-label="MCP setup"]')!
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('No external MCP servers found')
+  expect(reportAppNotice).toHaveBeenCalledWith('No external MCP servers found in the configuration.')
   expect(section.textContent).toContain('executable unavailable')
   expect(section.textContent).toContain('/config/opencode.jsonc')
   expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
@@ -283,7 +286,7 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { computerUseGloballyEnabled: true, computerUseRevocationPending: false } })
   await act(async () => finish({ ok: false, error: 'Computer Use could not be turned off.' }))
   expect(toggle.disabled).toBe(false)
-  expect(document.querySelector('[role="alert"]')?.textContent).toContain('Computer Use could not be turned off.')
+  expect(reportAppFailure).toHaveBeenLastCalledWith('Computer Use could not be turned off.', expect.any(String))
   useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false })
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
   expect(document.body.textContent).toContain('Off')

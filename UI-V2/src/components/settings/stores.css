@@ -36,3 +36,14 @@
 /* Pinned skill: a quiet filled pin; the accent appears only on hover or focus. */
 .uam-iconbtn.uam-skill-pin.is-active { background: transparent; color: var(--text-2); }
 .uam-iconbtn.uam-skill-pin.is-active:hover:not(:disabled) { color: var(--accent); }
+
+/* Memory rows: one line each. The title and summary button takes the free width; scope and date sit right, then actions. */
+.uam-memory-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; border-radius: var(--r-md); }
+.uam-memory-row:hover { background: var(--surface-up); }
+.uam-memory-row__open { display: flex; flex: 1; align-items: baseline; gap: var(--sp-3); min-width: 0; padding: var(--sp-2) var(--sp-3); text-align: left; }
+.uam-memory-row__title { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text); }
+.uam-memory-row__summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-2); }
+.uam-memory-row__meta { display: flex; flex-shrink: 0; gap: var(--sp-2); font-size: var(--fs-xs); white-space: nowrap; color: var(--text-3); }
+.uam-memory-row__actions { flex-shrink: 0; opacity: .55; transition: opacity var(--dur-fast) var(--ease); }
+.uam-memory-row:hover .uam-memory-row__actions,
+.uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; }

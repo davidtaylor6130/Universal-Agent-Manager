@@ -402,3 +402,30 @@ describe('MemoryLibraryModal all memory scope', () => {
   })
 
 })
+
+describe('MemoryLibraryModal rows and in-place view', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    useAppStore.setState({ memoryLibraryScope: null, memoryLibraryEntries: [], memoryLibraryLoading: false, memoryLibraryError: '' })
+  })
+
+  it('opens a memory in the content pane and returns with Back', () => {
+    const { host, root } = renderModal()
+    clickButton(document.body, 'Global lesson')
+    expect(document.body.textContent).toContain('Occurrences')
+    expect(document.body.querySelector('.uam-memory-row')).toBeNull()
+    clickButton(document.body, 'Back')
+    expect(document.body.querySelector('.uam-memory-row')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('hides the search toolbar while adding a memory', () => {
+    const { host, root } = renderModal()
+    expect(document.body.querySelector('input[placeholder^="Search memory"]')).not.toBeNull()
+    clickButton(document.body, 'Add memory')
+    expect(document.body.querySelector('input[placeholder^="Search memory"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+})

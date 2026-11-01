@@ -34,3 +34,4 @@ export { Overlay, Presence, usePresence, useOverlayState, motionAllowed, scaledM
 export type { OverlayProps } from './Overlay'
 export { ConfirmDialog } from './ConfirmDialog'
 export type { ConfirmDialogProps } from './ConfirmDialog'
+export { Disclosure, type DisclosureProps } from './Disclosure'

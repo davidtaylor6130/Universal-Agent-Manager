@@ -6,7 +6,7 @@ import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presenc
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
-import { reportAppNotice } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -64,8 +64,6 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [editing, setEditing] = useState<{ draft: Agent; isNew: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState<'defaults' | 'agent' | null>(null)
-  /** Failures stay beside the form; successes are reported as app notices. */
-  const [message, setMessage] = useState<{ tone: 'error'; text: string } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
   const editingOriginal = useRef<Agent | null>(null)
@@ -94,17 +92,17 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
-    setBusy(true); setSaving(save); setMessage(null)
+    setBusy(true); setSaving(save)
     try {
       const result = await action()
       if (result.ok) reportAppNotice(success, 'success')
-      else setMessage({ tone: 'error', text: result.error || 'Could not save.' })
+      else reportAppFailure(result.error || 'Could not save.', 'Your changes are kept. Try again.')
       return result.ok
     }
-    catch { setMessage({ tone: 'error', text: 'Could not save. Try again.' }); return false }
+    catch { reportAppFailure('Could not save.', 'Your changes are kept. Try again.'); return false }
     finally { setBusy(false); setSaving(null) }
   }
-  const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setEditing(next); setMessage(null) }
+  const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setEditing(next) }
   const draftId = editing ? editing.draft.id.trim().toLowerCase() : ''
   const nameError = !editing?.isNew ? '' : !draftId ? 'Enter a name.' : !AGENT_NAME.test(draftId) ? 'Use lowercase letters, numbers, - or _.' : agents.some(agent => agent.id === draftId) ? `An agent named ${draftId} already exists.` : ''
   const agentDirty = Boolean(editing && !same(editing.draft, editingOriginal.current))
@@ -127,7 +125,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     const store = useAppStore.getState()
     return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, enabled: true, instructionFiles, defaultSkills, defaultAgents, defaultAgentId })
   }, 'Saved. New and restarted chats get this setup.', 'defaults')
-  const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId); setMessage(null) }
+  const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId) }
   const dirty = defaultsDirty || agentDirty || instructionDirty
   useImperativeHandle(ref, () => ({ requestLeave(next) {
     if (busy || instructionOperation.current) return
@@ -203,7 +201,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
   const leaveDialog = pendingExit && <UnsavedChangesDialog
     title={pendingExit.scope === 'agent' ? 'Save agent changes?' : 'Save central setup changes?'}
-    busy={busy} error={pendingExit.scope === 'all' && instructionDirty && instructionEditor?.error ? instructionEditor.error : message?.tone === 'error' ? message.text : undefined}
+    busy={busy} error={pendingExit.scope === 'all' && instructionDirty && instructionEditor?.error ? instructionEditor.error : undefined}
     onStay={() => setPendingExit(null)}
     onDiscard={() => { if (pendingExit.scope === 'all') { undoDefaults(); setInstructionEditor(null) }; startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
     onSave={!nameError ? async () => {
@@ -215,7 +213,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   />
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
     {leaveDialog}
-    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} error={message?.tone === 'error' ? message.text : undefined} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
+    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions" description="Sent to every agent, not into your messages."
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
       {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." />}
@@ -258,7 +256,6 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     </SettingsSection>
 
     <div className="flex items-center justify-end gap-3">
-      {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
       <SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>
     </div>
 
@@ -320,7 +317,6 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
               </SettingsField>
             </div>
             <footer className="uam-central-dialog__foot">
-              {message && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
               {builtIn
                 ? <Button size="sm" onClick={closeEditor}>Close</Button>
                 : <>

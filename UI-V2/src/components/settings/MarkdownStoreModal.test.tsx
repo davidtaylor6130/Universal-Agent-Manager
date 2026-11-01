@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+
+vi.mock('../../utils/appFailure', async (importOriginal) => ({
+  ...(await importOriginal() as Record<string, unknown>),
+  reportAppFailure: vi.fn(),
+  reportAppNotice: vi.fn(),
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as typeof globalThis & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver ??= class {
@@ -57,6 +64,7 @@ afterEach(() => {
 
 describe('MarkdownStoreModal', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     useAppStore.setState({
       activeSessionId: 'chat-1',
       markdownStoreDirectory: '/tmp/store',
@@ -231,17 +239,17 @@ describe('MarkdownStoreModal', () => {
       editTrigger.focus()
       editTrigger.click()
     })
-    const editor = host.querySelector('[role="dialog"][aria-label="Edit skill"]') as HTMLElement
+    const editor = host.querySelector('[role="group"][aria-label="Edit skill"]') as HTMLElement
     expect(editor).toBeTruthy()
     expect(editor.contains(document.activeElement)).toBe(true)
     changeField('Entry title', 'Changed review')
     await confirmSave()
-    expect(editor.querySelector('[role="alert"]')?.textContent).toContain('Disk is read only.')
+    expect(reportAppFailure).toHaveBeenLastCalledWith('Skills action failed', 'Disk is read only.')
 
     changeField('Entry title', 'Review code')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="dialog"][aria-label="Edit skill"]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Edit skill"]')).toBeNull()
     expect(host.querySelector('[role="dialog"][aria-label="Skills"]')).toBeTruthy()
     expect(document.activeElement).toBe(editTrigger)
   })
@@ -259,11 +267,11 @@ describe('MarkdownStoreModal', () => {
     await openProviderImports()
     expect(host.textContent).toContain('Import preview')
     expect(host.textContent).toContain('Unsupported file type')
-    expect((host.querySelector('[role="dialog"][aria-label="Import skills"]') as HTMLElement).contains(document.activeElement)).toBe(true)
+    expect((host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement).contains(document.activeElement)).toBe(true)
 
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="dialog"][aria-label="Import skills"]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Import skills"]')).toBeNull()
     expect(host.querySelector('[role="dialog"][aria-label="Skills"]')).toBeTruthy()
     expect(document.activeElement).toBe(importTrigger)
 
@@ -281,8 +289,8 @@ describe('MarkdownStoreModal', () => {
     click('Add skill')
     click('Create')
 
-    expect(host.querySelector('[role="dialog"][aria-label="Create skill"]')).toBeTruthy()
-    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Create skill"]')).toBeTruthy()
+    expect(useAppStore.getState().markdownStoreError).toBe('')
   })
 
   it('clears stale edit and import errors while keeping import failures in the active preview', async () => {
@@ -298,28 +306,27 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement).click())
-    let child = host.querySelector('[role="dialog"][aria-label="Edit skill"]') as HTMLElement
+    let child = host.querySelector('[role="group"][aria-label="Edit skill"]') as HTMLElement
     expect(useAppStore.getState().markdownStoreError).toBe('')
     act(() => useAppStore.setState({ markdownStoreError: 'Edit failed.' }))
-    expect(child.querySelector('[role="alert"]')?.textContent).toContain('Edit failed.')
+    expect(reportAppFailure).toHaveBeenLastCalledWith('Skills action failed', 'Edit failed.')
     act(() => Array.from(child.querySelectorAll('button')).find((button) => button.textContent === 'Cancel')?.click())
     expect(useAppStore.getState().markdownStoreError).toBe('')
 
     act(() => useAppStore.setState({ markdownStoreError: 'Another stale error.' }))
     await openProviderImports()
-    child = host.querySelector('[role="dialog"][aria-label="Import skills"]') as HTMLElement
+    child = host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement
     expect(useAppStore.getState().markdownStoreError).toBe('')
-    expect(child.querySelector('[role="alert"]')).toBeNull()
 
     await act(async () => {
       Array.from(child.querySelectorAll('button')).find((button) => button.textContent === 'Import selected')?.click()
       await Promise.resolve()
     })
-    child = host.querySelector('[role="dialog"][aria-label="Import skills"]') as HTMLElement
-    expect(child.querySelector('[role="alert"]')?.textContent).toContain('Import failed.')
+    child = host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement
+    expect(reportAppFailure).toHaveBeenLastCalledWith('Skills action failed', 'Import failed.')
     act(() => Array.from(child.querySelectorAll('button')).find((button) => button.textContent === 'Cancel')?.click())
     expect(useAppStore.getState().markdownStoreError).toBe('')
-    expect(host.querySelector('[role="dialog"][aria-label="Import skills"]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Import skills"]')).toBeNull()
   })
 
   it('keeps a long import preview usable and shows skipped results inside it', async () => {
@@ -346,17 +353,17 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     await openProviderImports()
-    const preview = host.querySelector('[role="dialog"][aria-label="Import skills"]') as HTMLElement
+    const preview = host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement
     expect(preview).toBeTruthy()
-    expect(preview.className).toContain('max-h-[calc(100vh-2rem)]')
-    expect(preview.querySelector('[data-import-candidates]')?.className).toContain('overflow-y-auto')
+    expect(preview.className).toContain('overflow-y-auto')
+    expect(preview.querySelector('[data-import-candidates]')?.className).toContain('min-h-0')
 
     await act(async () => {
       Array.from(preview.querySelectorAll('button')).find((button) => button.textContent === 'Import selected')?.click()
       await Promise.resolve()
     })
-    expect(host.querySelector('[role="dialog"][aria-label="Import skills"]')).toBeNull()
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Already exists')
+    expect(host.querySelector('[role="group"][aria-label="Import skills"]')).toBeNull()
+    expect(reportAppNotice).toHaveBeenCalledWith('Already exists', 'info')
   })
 
   it('keeps the most recently requested import preview', async () => {
@@ -470,11 +477,11 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ markdownStoreEntries: [{ ...entry, group: 'Coding/Review/Safety', body: '# Review\n\n' + 'Long content\n'.repeat(300) }] })
     const { host } = mountSkills()
     const folders = host.querySelector('[aria-label="Skill folders"]')!
-    expect(folders.querySelectorAll('details').length).toBe(3)
-    expect(folders.querySelector('details details details')).toBeTruthy()
-    for (const details of folders.querySelectorAll('details')) {
-      expect((details.querySelector(':scope > div') as HTMLElement).style.borderLeft).toContain('var(--border)')
-      expect(details.querySelector('summary svg')).toBeTruthy()
+    expect(folders.querySelectorAll('.uam-disclosure').length).toBe(3)
+    expect(folders.querySelector('.uam-disclosure .uam-disclosure .uam-disclosure')).toBeTruthy()
+    for (const disclosure of folders.querySelectorAll('.uam-disclosure')) {
+      expect((disclosure.querySelector('.uam-disclosure__inner > div') as HTMLElement).style.borderLeft).toContain('var(--border)')
+      expect(disclosure.querySelector(':scope > button[aria-expanded="true"] svg')).toBeTruthy()
     }
     const preview = host.querySelector('[aria-label="Skill preview"]')!
     expect(preview.children[0].querySelectorAll('button').length).toBe(4)
@@ -531,7 +538,7 @@ describe('MarkdownStoreModal', () => {
     changeField('Entry Markdown body', 'New body')
     expect(button('Save').disabled).toBe(false)
     await act(async () => { button('Save').click(); await Promise.resolve() })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Disk full')
+    expect(reportAppFailure).toHaveBeenLastCalledWith('Skills action failed', 'Disk full')
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('New body')
     click('Cancel'); click('Keep editing')
     await act(async () => { button('Save').click(); await Promise.resolve() })
@@ -572,8 +579,8 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
     await openProviderImports()
     await act(async () => { button('Import selected').click(); await Promise.resolve() })
-    expect(host.querySelector('[aria-label="Import skills"]')).toBeTruthy()
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Permission denied')
+    expect(host.querySelector('[role="group"][aria-label="Import skills"]')).toBeTruthy()
+    expect(reportAppFailure).toHaveBeenCalledWith('Could not import two.md.', 'Permission denied')
     expect(host.querySelectorAll('[data-import-candidates] input').length).toBe(1)
     await act(async () => { button('Import selected').click(); await Promise.resolve() })
     expect(importEntries).toHaveBeenLastCalledWith([{ sourceProvider: 'codex', sourcePath: '/tmp/two.md', conflictAction: 'skip' }])
@@ -593,7 +600,7 @@ describe('MarkdownStoreModal', () => {
     await act(async () => { resolvePicker(null); await Promise.resolve() })
     expect(useAppStore.getState().previewMarkdownStoreImports).not.toHaveBeenCalled()
     expect(button('Import file').disabled).toBe(false)
-    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(reportAppFailure).not.toHaveBeenCalled()
   })
 
 })

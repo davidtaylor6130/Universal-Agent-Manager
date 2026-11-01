@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, RowButton, SegmentedControl, Tooltip, cx } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, RowButton, SegmentedControl, Tooltip, cx } from '../ui'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
 
@@ -364,7 +364,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               {currentModel === model && <div className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</div>}
             </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span><span className="uam-usage-model-bar col-span-2"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span></div>)}</div>}
           </section>
-          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></details>}
+          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <Disclosure className="text-xs" summary="History diagnostics"><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></Disclosure>}
         </div>}
       </div>}
     </div>

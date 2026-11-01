@@ -1,8 +1,11 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DataFolderSettingsSection } from './DataFolderSettingsSection'
+import { reportAppFailure } from '../../utils/appFailure'
+
 import { retainUnconfirmedFolderChoice, retainUnconfirmedFolderRestart, type DataFolderSettings } from './dataFolderSettings'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const initial: DataFolderSettings = { currentFolder: '/disposable/source', pendingFolder: '', revision: 'app/initial', lastOperationId: '',
@@ -68,7 +71,7 @@ describe('Application data-folder Settings', () => {
       await act(async () => button('Choose folder…').click())
       await act(async () => button('Save folder choice').click())
       expect(document.body.textContent).toContain('/occupied')
-      expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('Choose an empty folder.')
+      expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Choose an empty folder.', expect.any(String))
       expect(document.body.textContent).not.toContain('Saved folder choice')
     } finally { act(() => root.unmount()) }
   })

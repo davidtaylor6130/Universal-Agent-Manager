@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { useShallow } from 'zustand/react/shallow'
 import { Button, ConfirmDialog, Notice, SegmentedControl, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -18,7 +19,6 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   const [draft, setDraft] = useState(saved)
   const [baseline, setBaseline] = useState(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const busy = useRef(false)
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline)
@@ -30,20 +30,20 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (busy.current) return; if (dirty) setExit(() => next); else next() } }))
-  const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })); setError('') }
+  const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })) }
   const base = sanitizeGitBaseBranch(draft.gitDefaultBaseBranch)
   const validation = base === undefined ? 'Use a local branch name up to 255 UTF-8 bytes without control characters.' : ''
   const save = async () => {
     if (busy.current || !dirty || validation) return
-    busy.current = true; setSaving(true); setError('')
+    busy.current = true; setSaving(true)
     try {
-      if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { setError('Could not save VCS settings. Your changes are retained.'); return }
+      if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { reportAppFailure('Could not save VCS settings.', 'Your changes are retained.'); return }
       const current = useAppStore.getState()
       const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled,
         gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
       setDraft(accepted); setBaseline(accepted); setExit(null)
-    } catch { setError('Could not save VCS settings. Your changes are retained.') }
+    } catch { reportAppFailure('Could not save VCS settings.', 'Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
   }
   const toggle = (label: string, checked: boolean, change: (checked: boolean) => void, disabled = false) =>
@@ -67,14 +67,14 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <SettingsSection title="No VCS">
       <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
-    {(error || validation) && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error || validation}</Notice>}
+    {validation && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validation}</Notice>}
     <div className="flex justify-end gap-2">
-      <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved); setError('') }}>Discard</Button>
+      <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved) }}>Discard</Button>
       <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>
     </div>
     <ConfirmDialog open={Boolean(exit)} busy={saving} title="Discard unsaved VCS changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
       onCancel={() => setExit(null)}
-      onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setError(''); setExit(null); next?.() }}>
+      onConfirm={() => { const next = exit; setDraft(saved); setBaseline(saved); setExit(null); next?.() }}>
       Your unsaved Git, SVN and VCS changes will be lost.
     </ConfirmDialog>
   </div>

@@ -3,7 +3,10 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { useAppStore } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
+
 import type { ExecutionRoutingSettings as RoutingSettings } from '../../types/executionRouting'
+vi.mock('../../utils/appFailure', async importOriginal => ({ ...await importOriginal<typeof import('../../utils/appFailure')>(), reportAppFailure: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const originalSave = useAppStore.getState().setExecutionRoutingSettings
@@ -73,7 +76,7 @@ describe('SSH Routing settings page', () => {
       throw new Error('Disk full')
     })
     await act(async () => buttonNamed('Save routing').click())
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
+    expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Routing settings could not be saved.', 'Disk full')
     expect(buttonNamed('Save routing').disabled).toBe(false)
     expect(document.body.querySelector<HTMLInputElement>('#routing-enabled')!.checked).toBe(true)
     act(() => document.body.querySelector<HTMLInputElement>('#routing-enabled')!.click())
@@ -188,51 +191,19 @@ describe('SSH Routing settings page', () => {
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     expect(leave).toHaveBeenCalledTimes(1)
   })
-  it.each(['page', 'dialog'] as const)('keeps invalid capacity disabled and enables only valid changes in the %s', async variant => {
+  it('clamps concurrent sessions into range on blur and enables Save for the clamped draft', () => {
     const save = vi.fn(async () => {})
     useAppStore.setState({ setExecutionRoutingSettings: save })
-    mount(<ExecutionRoutingSettings variant={variant} />)
+    mount(<ExecutionRoutingSettings variant="page" />)
     const capacity = document.body.querySelector<HTMLInputElement>('[aria-label="Concurrent sessions on Server A"]')!
-    const change = (value: string) => act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(capacity, value)
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(capacity, '1025')
       capacity.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    change('1.5')
     expect(buttonNamed('Save routing').disabled).toBe(true)
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('whole number')
-    await act(async () => buttonNamed('Save routing').click())
-    expect(save).not.toHaveBeenCalled()
-    change('2')
+    act(() => capacity.focus())
+    act(() => capacity.blur())
+    expect(capacity.value).toBe('1024')
     expect(buttonNamed('Save routing').disabled).toBe(false)
-    change('1')
-    expect(buttonNamed('Save routing').disabled).toBe(true)
-    expect(document.body.querySelector('[role="alert"]')).toBeNull()
   })
-
-  it('disables only Save and leave for invalid routing and saves a corrected new draft', async () => {
-    const handle = createRef<ExecutionRoutingSettingsHandle>()
-    const leave = vi.fn()
-    const save = vi.fn(async () => {})
-    useAppStore.setState({ setExecutionRoutingSettings: save })
-    mount(<ExecutionRoutingSettings ref={handle} variant="page" />)
-    const capacity = document.body.querySelector<HTMLInputElement>('[aria-label="Concurrent sessions on Server A"]')!
-    const change = (value: string) => act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(capacity, value)
-      capacity.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    change('1025')
-    act(() => handle.current!.requestLeave(leave))
-    expect(buttonNamed('Save and leave').disabled).toBe(true)
-    expect(buttonNamed('Keep editing').disabled).toBe(false)
-    expect(buttonNamed('Discard').disabled).toBe(false)
-    expect(document.body.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain('whole number')
-    act(() => buttonNamed('Keep editing').click())
-    change('2')
-    act(() => handle.current!.requestLeave(leave))
-    expect(buttonNamed('Save and leave').disabled).toBe(false)
-    await act(async () => buttonNamed('Save and leave').click())
-    expect(save).toHaveBeenCalledOnce()
-    expect(leave).toHaveBeenCalledOnce()
-  })
-
 })

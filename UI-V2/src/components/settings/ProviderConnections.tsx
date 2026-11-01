@@ -4,6 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
+import { reportAppFailure } from '../../utils/appFailure'
 import { Check, Minus, RefreshCw, X } from 'lucide-react'
 import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { SettingRow } from './SettingsPrimitives'
@@ -47,7 +48,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const [busy, setBusy] = useState(false)
   /** The one switch whose save is in flight; only it shows the pending state. */
   const [pendingKey, setPendingKey] = useState('')
-  const [error, setError] = useState('')
   const [status, setStatus] = useState<McpStatus | null>(null)
   const [statusError, setStatusError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -70,7 +70,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     servers.map(server => [server.id, server.name, server.enabled, server.executionHostId, server.workspaceDirectory]),
     runtimeProviders.map(provider => [provider.id, provider.supportsStructured]),
   ])
-  useEffect(() => setError(''), [activeHostId])
   const validStatus = (value: McpStatus | undefined, expectedHost: string): value is McpStatus => value?.executionHostId === expectedHost && Array.isArray(value.providers)
   useEffect(() => {
     const generation = ++requestGeneration.current
@@ -88,13 +87,13 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   }, [])
   const enable = async () => {
     const save = ++latestSave.current
-    setBusy(true); busyRef.current = true; setError('')
+    setBusy(true); busyRef.current = true
     try {
       const store = useAppStore.getState()
       const result = await store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, uamControlEnabled: true })
       if (result.ok) setRefresh(value => value + 1)
-      if (!result.ok) setError(result.error || 'Could not enable UAM MCP.')
-    } catch { setError('Could not enable UAM MCP. Try again.') }
+      if (!result.ok) reportAppFailure('Could not enable UAM MCP.', result.error || 'Try again.')
+    } catch { reportAppFailure('Could not enable UAM MCP.', 'Try again.') }
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false } }
   }
   const [discoveryDraft, setDiscoveryDraft] = useState<{ host: string, value: boolean, error: string, saving: boolean } | null>(null)
@@ -103,7 +102,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     const save = ++latestSave.current
     const generation = ++requestGeneration.current
     const selectedHost = activeHostId
-    setBusy(true); busyRef.current = true; setError(''); setPendingKey(configurationKey(selectedHost, id, preference ? 'preference' : 'server', serverId))
+    setBusy(true); busyRef.current = true; setPendingKey(configurationKey(selectedHost, id, preference ? 'preference' : 'server', serverId))
     try {
       const result = await sendToCEF<McpStatus>({ action: 'setProviderMcpConfiguration', payload: { executionHostId: selectedHost, providerId: id, serverId, enabled, ...(preference ? { kind: 'preference' } : {}) } })
       if (generation !== requestGeneration.current || currentHost.current !== selectedHost) return null
@@ -111,11 +110,11 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       const actual = preference ? row?.progressiveMcpDiscoveryEnabled : serverId === 'uam-mcp' ? row?.uamControlEnabled : serverId === 'shared-setup' ? row?.sharedSetupEnabled : row?.mcpServers?.find(server => server.id === serverId)?.enabled
       if (result.ok && validStatus(result.data, selectedHost) && actual === enabled) { setStatus(result.data); return '' }
       const failure = result.error || 'The provider MCP change could not be verified. Refresh and try again.'
-      if (!preference) setError(failure)
+      if (!preference) reportAppFailure('Provider MCP change not confirmed.', failure)
       return failure
     } catch {
       const failure = 'Could not save provider MCP configuration. Try again.'
-      if (generation === requestGeneration.current && !preference) setError(failure)
+      if (generation === requestGeneration.current && !preference) reportAppFailure('Provider MCP change not confirmed.', failure)
       return generation === requestGeneration.current ? failure : null
     }
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false; setPendingKey('') } }
@@ -189,7 +188,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       </div>
     </div>
     {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
-    {error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice>}
     {statusError && <p role="status" className="uam-prov-sub">{statusError}</p>}
     {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}
     <Card flush className="uam-prov-card overflow-x-auto">

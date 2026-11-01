@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, ty
 import { createPortal } from 'react-dom'
 import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
@@ -66,7 +67,6 @@ export interface ShellActionsHandle { requestLeave(next: () => void): void }
 
 export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function ShellActionsSettings(_props, ref) {
   const savedActions = useAppStore((s) => s.shellActions)
-  const notification = useAppStore((s) => s.shellActionNotification)
   const markdownEntries = useAppStore((s) => s.markdownStoreEntries)
   const providers = useAppStore((s) => s.providers)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
@@ -76,7 +76,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [actions, setActions] = useState(savedActions)
   const [applying, setApplying] = useState(false)
   const applyingRef = useRef(false)
-  const [error, setError] = useState('')
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({})
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const groupIdBase = useId()
@@ -145,24 +144,23 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     if (applyingRef.current) return false
     const prepared = actions.map(action => ({ ...action, label: action.label.trim() }))
     if (invalidAction) {
-      setError(validationError)
       setPendingExit(null)
       revealInvalidAction()
       return false
     }
-    setError('')
     applyingRef.current = true
     setApplying(true)
     try {
       const saved = await setShellActions(prepared)
-      if (!saved) { setError(useAppStore.getState().shellActionNotification || 'Could not save shell actions.'); return false }
+      // The store's shell action notification already reaches the notifications panel on a failed save or apply.
+      if (!saved) return false
       const applied = await applyShellActions()
-      if (!applied) { setError(useAppStore.getState().shellActionNotification || 'Could not apply shell actions. Save again to retry.'); return false }
+      if (!applied) return false
       setActions(prepared)
       setAppliedActions(prepared)
       return true
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not save shell actions. Try again.')
+      reportAppFailure('Could not save shell actions.', reason instanceof Error ? reason.message : 'Try again.')
       return false
     } finally {
       applyingRef.current = false
@@ -209,7 +207,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
           <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
             <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-            {(validationError || error) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError || error}</p>}
+            {validationError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
             <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => { setPendingExit(null); revealInvalidAction() }}>Go back</Button><Button variant="primary" disabled={applying || Boolean(invalidAction)} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
           </div>
         </Overlay>
@@ -338,8 +336,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         </fieldset>
       </SettingsSection>
 
-      {validationError && validationError !== (error || notification) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
-      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--error)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14} />} label="Dismiss shell action message" onClick={() => { setError(''); void useAppStore.getState().dismissShellActionNotification() }} /></div>}
+      {validationError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
     </div>
   )
 })
