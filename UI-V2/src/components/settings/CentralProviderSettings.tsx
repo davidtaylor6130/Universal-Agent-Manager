@@ -267,7 +267,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
     <SettingsSection title="Agent store"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
-      {agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}
+      <Reveal open={agentErrors.length > 0}>{agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}</Reveal>
       <Reveal open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></Reveal>
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)

@@ -135,7 +135,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       })
       setPicking('')
     }
-    const errorText = validationError ? <p role="alert" className="uam-rt-dialog__error">{validationError}</p> : null
+    const errorText = <Reveal open={!!validationError}><p role="alert" className="uam-rt-dialog__error">{validationError}</p></Reveal>
     const footer = variant === 'dialog'
       ? <div className="uam-rt-dialog__foot">
           {errorText}

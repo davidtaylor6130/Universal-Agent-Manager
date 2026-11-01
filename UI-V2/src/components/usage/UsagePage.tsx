@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, Tooltip, cx, usePresence, Reveal } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, Swap, Tooltip, cx, usePresence, Reveal } from '../ui'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
@@ -148,7 +148,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
       <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
-    {errorNote.mounted && <p role="alert" className="flex items-start gap-1.5 text-xs uam-presence" data-state={errorNote.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}</p>}
+    <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}</p></Reveal>
     <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button>{existing && <Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button>}</div>
   </form>
 }
@@ -271,13 +271,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
       {/* ui: raw button kept — trigger of this Tooltip with the bespoke status icon and attention look; IconButton would restyle it. */}
-      {statusLines.length > 0 && <Tooltip side="bottom" align="start" label={<span className="uam-usage-status-tip">{statusLines.map((line, index) => <span key={index} className="block">{line}</span>)}</span>}>
+      <Reveal as="span" open={statusLines.length > 0}><Tooltip side="bottom" align="start" label={<span className="uam-usage-status-tip">{statusLines.map((line, index) => <span key={index} className="block">{line}</span>)}</span>}>
         <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
-      </Tooltip>}
+      </Tooltip></Reveal>
       <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
       <SegmentedControl aria-label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
       <SegmentedControl aria-label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
-      {metric !== 'limits' && <IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} />}
+      <Reveal as="span" open={metric !== 'limits'}><IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} /></Reveal>
       {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
       {metric !== 'limits' && <span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span>}
       {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
@@ -304,7 +304,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           <Reveal open={totals.totalTokens === 0 && !history.loading}><p className="uam-usage-empty">No usage recorded in this range.</p></Reveal>
           <section aria-busy={history.loading || undefined} data-indeterminate={readingPct === undefined && history.loading ? '' : undefined} className={cx('grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]', history.loading && 'uam-progress-fill')} style={history.loading && readingPct !== undefined ? { '--progress': readingPct / 100 } as CSSProperties : undefined}>
             <div className="grid content-start gap-4">
-              <div className="uam-usage-tiles">
+              <Swap swapKey={metric}><div className="uam-usage-tiles">
                 {metric === 'cost' ? <>
                   <StatTile label={partialCost ? 'Known cost' : totalBasis === 'reported' ? 'Reported cost' : totalBasis === 'mixed' ? 'Reported + estimated' : totalBasis === 'unpriced' ? 'Cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totalBasis === 'reported' ? 'Provider charges' : totalBasis === 'unpriced' ? pricingPending ? 'Prices still loading' : 'No known price' : hasReported ? 'Provider charges and API list-price estimates' : 'API list-price estimate, not a bill'} · ${totals.sessions.toLocaleString()} sessions${data.collecting ? ' · so far' : ''}`} />
                   <Reveal open={hasReported}><StatTile label="Provider-reported" value={money(totals.reportedCostUsd)} /></Reveal>
@@ -315,7 +315,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                   <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.cachedInputTokens)} tokens`} />
                   <StatTile label="Reasoning" value={percentOf(totals.reasoningTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.reasoningTokens)} tokens`} />
                 </>}
-              </div>
+              </div></Swap>
             </div>
             <div className="grid content-start gap-3">
               <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'cost' : 'tokens'}</h2>
@@ -343,7 +343,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <p className="text-xs uam-usage-muted">{new Date(data.chartStartMs ?? data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ` · ${data.chartBucketMs && data.chartBucketMs > 86400000 ? `${data.chartBucketMs / 86400000}-day` : 'Daily'} buckets use UTC` : ''}</p>
             </div>
           </section>
-          <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p>}</div>
+          <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2><Reveal open={metric === 'cost'}><p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p></Reveal></div>
             <TokenStack total={totals} height={16} labels />
             <TokenLegend total={totals} />
             <div className="grid gap-3 pt-2">

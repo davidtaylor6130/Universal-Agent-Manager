@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -197,6 +197,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
   </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
+  // ui: hand-rolled group header kept — the aria-label carries the full group path and collapse animates grid rows with visibility, which the Disclosure summary cannot express.
   const renderEntries = (entries: ActionEntry[], renderAction: (action: ShellAction) => ReactNode): ReactNode[] => entries.map((entry, index) => {
     if (!('entries' in entry)) return renderAction(entry)
     const collapsed = collapsedGroups[entry.key] ?? false
@@ -252,11 +253,11 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
             description={<span className="uam-prov-sub">{summary}</span>}
-            status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
+            status={<Reveal open={changed}><span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span></Reveal>}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-base motion-reduce:transition-none" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
-              <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
+              <IconButton size="sm" icon={<X size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
             <ActionEditor open={expanded}>
               <SettingsField label="Name">

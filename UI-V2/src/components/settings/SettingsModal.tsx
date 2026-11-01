@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
+import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -612,7 +612,7 @@ function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'verified') return `Verified by UAM${manager.verifiedAt ? ` on ${manager.verifiedAt}` : ''}`
   if (manager.status === 'untested-newer') return 'Newer than UAM’s last verified build'
   if (manager.status === 'untested') return 'Not yet verified by this UAM build'
-  if (manager.status === 'known-incompatible') return 'Known incompatible. Update before structured use.'
+  if (manager.status === 'known-incompatible') return 'Known incompatible. Update before using it in chats.'
   if (manager.status === 'unavailable') return 'Not installed or unavailable on PATH'
   if (manager.status === 'provider-managed') return 'Compatibility is managed by the provider'
   return 'Version has not been checked'
@@ -869,6 +869,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
+  // True when leaving also drops unsaved MCP changes; the editor dialog then covers both in one prompt.
+  const [editorExitMcp, setEditorExitMcp] = useState(false)
   const editorSavePending = useRef(false)
   const [editorSaving, setEditorSaving] = useState(false)
   const [themeStep, setThemeStep] = useState(0)
@@ -927,7 +929,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     requestThemeExit(() => requestSectionExit(() => {
       // MCP edits were already confirmed by requestSectionExit while on the MCP page.
       const mcpPending = mcpDraftDirty && selectedSection !== 'mcp-servers'
-      if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
+      if (editorDirty) { setEditorExitMcp(mcpPending); setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); setSettingsOpen(false) }); return }
       if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
       else setSettingsOpen(false)
     }))
@@ -1361,7 +1363,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const renderAddEditor = () => (
     <Button
       leadingIcon={<Plus size={14} />}
-      aria-label="Add editor group"
       size="sm"
       disabled={editorSaving}
       onClick={() => {
@@ -1383,6 +1384,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
   const renderThemeEditor = () => themeDraft ? (
     <Card elevation={0} className="grid gap-4 p-3">
+      <Swap swapKey={String(themeStep)}>
       {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
         <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
           <span>Name</span>
@@ -1436,6 +1438,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
       </div>}
+      </Swap>
       <div className="flex gap-2">
         {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
         {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
@@ -1599,7 +1602,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     // Load failures persist until a retry succeeds; action results are reported as app events.
     const phoneFeedback = <Reveal open={Boolean(companionLoadError)}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice></Reveal>
     return <div className="grid gap-0">
-      <SettingsSection title="Phone access">
+      <div className="uam-set-card">
         <SettingRow
           title="Enable phone access"
           description={companionSettings?.configured ? 'Connect your phone to this computer. Changes apply automatically.' : 'Not configured on this computer.'}
@@ -1631,7 +1634,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
         <Reveal open={Boolean(address)}><PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} /></Reveal>
-      </SettingsSection>
+      </div>
     </div>
   }
 
@@ -2959,7 +2962,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </Notice>
             </div></Reveal>
             <div className="w-full min-h-0 flex-1 flex flex-col">
-              {themeDraft ? <div className="overflow-y-auto">
+              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
               </div> : <>
@@ -2976,7 +2979,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
                   return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
-              </>}
+              </>}</Swap>
             </div>
           </div>
         </div>
@@ -2986,9 +2989,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         onCancel={() => setEditorExit(null)}
         onConfirm={async () => {
           const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
-          if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave?.() }
+          // With MCP changes also unsaved, saving keeps Settings open; the MCP changes are then offered on the next close.
+          if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); if (!editorExitMcp) leave?.() }
         }}>
         <p>Your file type changes have not been saved.</p>
+        {editorExitMcp && <p>MCP server changes have not been saved either. Discard drops both; Save keeps Settings open.</p>}
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(themeExit)} tone="primary" title="Save theme changes?" label="Unsaved theme changes" settingsOwned
         confirmLabel="Save theme" cancelLabel="Stay" busy={themeSaving} confirmDisabled={!themeDirty || !themeDraftValid}

@@ -1906,7 +1906,7 @@ describe('SettingsModal memory settings', () => {
     expect((host.querySelector('[aria-label="C++ file extensions"]') as HTMLInputElement).value.split(' ')).toHaveLength(8)
     expect(host.querySelector('#cpp-editor-group-panel')?.className).not.toContain('animate-fade-in')
     expect(host.querySelector('button[aria-label="Delete C++ editor group"]')).toBeTruthy()
-    expect(host.querySelector('button[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
 
     act(() => {
       root.unmount()
@@ -2294,7 +2294,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelector('[aria-label="Unsaved memory"]')).toBeTruthy()
     expect(host.querySelector('[aria-label="New memory"]')).toBeTruthy()
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')?.click())
-    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
     expect(useAppStore.getState().closeMemoryLibrary).toHaveBeenCalledTimes(1)
     act(() => root.unmount()); host.remove()
   })
@@ -2528,7 +2528,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
     act(() => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
     expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Add group')).toBeTruthy()
     expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
   })

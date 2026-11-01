@@ -5,7 +5,7 @@ import './settings-shell.css'
 import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState, Swap } from '../ui'
+import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Reveal, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState, Swap } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -556,7 +556,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     </div>
                   )
                 })}
-                {isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))) && (
+                <Reveal open={isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7)))}>
                   <div className="mt-1">
                     <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
@@ -564,7 +564,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                     })}
                   </div>
-                )}
+                </Reveal>
               </nav>
             )}
 
@@ -768,10 +768,10 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               </div>
             ) : selectedLocation ? (
               <div key={selectedLocation.key} className="space-y-4">
-                <div className="min-w-0">
+                {embedded && <div className="min-w-0">
                   <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
                   <div className="mt-0.5 text-xs truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
-                </div>
+                </div>}
                 {selectedLocation.categories.map(({ category, entries }) => (
                           <section key={`${selectedLocation.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">

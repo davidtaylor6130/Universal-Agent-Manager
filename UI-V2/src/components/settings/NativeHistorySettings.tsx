@@ -167,7 +167,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           </li>
         })}
       </ul>
-      {issueCount > 0 && <Disclosure className="uam-native-disclosure uam-native-disclosure--warning"
+      <Reveal open={issueCount > 0}><Disclosure className="uam-native-disclosure uam-native-disclosure--warning"
         summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
         <ul className="uam-native-issues">{issues.map((group) => {
           const providerId = idForName(group.provider)
@@ -177,7 +177,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
             <Reveal open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></Reveal>
           </li>
         })}</ul>
-      </Disclosure>}
+      </Disclosure></Reveal>
       <Disclosure className="uam-native-disclosure" summary="How discovery works">
         <ul className="uam-native-notes">
           <li>Nothing is imported until you select chats and confirm.</li>

@@ -173,7 +173,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const [setup, setSetup] = useState<'choose' | 'import' | 'guided' | null>(null)
   // Setup is an in-place step in Your servers; its last content stays mounted while it slides out.
   const setupPresence = usePresence(setup !== null)
-  const setupSnapshot = useRef<{ title: string; body: ReactNode } | null>(null)
+  const setupSnapshot = useRef<{ step: NonNullable<typeof setup>; title: string; body: ReactNode } | null>(null)
   const [importText, setImportText] = useState('')
   const [guidedName, setGuidedName] = useState('')
   const [guidedTransport, setGuidedTransport] = useState<McpServerConfiguration['transport']>('stdio')
@@ -293,7 +293,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setSetupHintId(server.id) }}>Next: connection details</Button>
   </>
 
-  if (setup !== null) setupSnapshot.current = { title: setupTitle, body: setupBody }
+  if (setup !== null) setupSnapshot.current = { step: setup, title: setupTitle, body: setupBody }
 
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
 
@@ -317,7 +317,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       <Swap swapKey={view}>{setupPresence.mounted && setupSnapshot.current && view === 'form' ? <div role="group" aria-label="MCP setup" tabIndex={-1} data-closing={setupPresence.closing ? 'true' : undefined}
         className="uam-skills-step grid gap-3 py-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) cancelSetup() } }}>
         <div className="flex items-center gap-2"><Button size="sm" disabled={busy} leadingIcon={<ArrowLeft size={14} aria-hidden />} onClick={cancelSetup}>Back</Button><strong className="text-sm">{setupSnapshot.current.title}</strong></div>
-        {setupSnapshot.current.body}
+        <Swap swapKey={setupSnapshot.current.step}>{setupSnapshot.current.body}</Swap>
       </div> : view === 'json' ? <div className="grid gap-2 py-3">
         <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => setJsonText(event.currentTarget.value)} />
         <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads this machine's environment.</p>
