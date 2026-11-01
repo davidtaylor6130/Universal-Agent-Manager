@@ -1,4 +1,5 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "app/agent_run_scheduler.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/message_attachment_sources.h"
@@ -2568,6 +2569,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			    workspace_root, launch_argv = std::move(launch_argv), launch_environment = std::move(launch_environment),
 			    launch_control_servers, central_native, central_instructions, configuration_provider_version](std::stop_token) mutable
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				try
 				{
 					result->argv = BuildAcpLaunchArgv(provider, launch_chat);
@@ -4070,6 +4072,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = state;
 			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{
@@ -4144,6 +4147,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				task.state = preparation;
 				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 					(void)remote::ResolveHostContext(PlatformServicesFactory::Instance().process_service,
 					    state->host, state->workspace, memory_budget, state->context, state->error, state->cancel.get_token());
@@ -4191,6 +4195,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = preparation;
 			task.worker = std::make_unique<std::jthread>([state = preparation](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{
@@ -4256,6 +4261,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = state;
 			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{

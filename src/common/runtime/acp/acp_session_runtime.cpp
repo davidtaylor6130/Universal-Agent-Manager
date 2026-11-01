@@ -1,4 +1,5 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/runtime/acp/acp_process_handoff.h"
 #include <type_traits>
@@ -1507,6 +1508,7 @@ namespace uam
 			{
 				task->worker = std::make_unique<std::jthread>([result, selected_id](std::stop_token)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { result->success = AgentDefinitionService::CaptureSelectedPrimary(result->root, result->workspace, selected_id, result->snapshot, result->error); }
 					catch (const std::exception& exception) { result->error = std::string("Agent preparation failed: ") + exception.what(); }
 					catch (...) { result->error = "Agent preparation failed."; }
@@ -4574,6 +4576,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				std::thread([task]()
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { task->loaded = ChatDomainService().LoadColdHistoryPreparation(*task->history, task->error); }
 					catch (const std::exception& error) { task->error = error.what(); }
 					catch (...) { task->error = "History preparation failed."; }
@@ -6683,6 +6686,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				finished->store(false);
 				task.worker = std::make_unique<std::jthread>([owned, result, finished, service_owner](std::stop_token)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					IPlatformProcessService& service = service_owner ? *service_owner : PlatformServicesFactory::Instance().process_service;
 					const auto retry = platform::StopStdioProcessObserved(service, *owned, std::chrono::milliseconds(0));
 					result->outcome = retry.outcome;
@@ -9138,7 +9142,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		app.pending_chat_save_tasks.emplace(chat.id, task);
 		try { app.pending_chat_save_at_by_chat_id.emplace(chat.id, GetAppTimeSeconds()); }
 		catch (...) { app.pending_chat_save_tasks.erase(chat.id); throw; }
-		try { std::thread(std::move(reader)).detach(); }
+		try { uam::platform::StartBackgroundThread(std::move(reader)).detach(); }
 		catch (...)
 		{
 			app.pending_chat_save_tasks.erase(chat.id); app.pending_chat_save_at_by_chat_id.erase(chat.id);
@@ -9193,7 +9197,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						        [ownership] { return ownership->load(std::memory_order_acquire); });
 					    });
 					input->publication = writer.get_future();
-					std::thread(std::move(writer)).detach();
+					uam::platform::StartBackgroundThread(std::move(writer)).detach();
 					return true;
 				}
 				catch (...) { input->owned->store(false, std::memory_order_release); }
@@ -9347,7 +9351,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    [ownership] { return ownership->load(std::memory_order_acquire); });
 			});
 			own->publication = worker.get_future();
-			std::thread(std::move(worker)).detach();
+			uam::platform::StartBackgroundThread(std::move(worker)).detach();
 			return true;
 		}
 		if (own->publication.valid() && own->publication.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return true;
@@ -9880,7 +9884,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						    [ownership, owner_thread]() { return std::this_thread::get_id() != owner_thread && ownership->load(std::memory_order_acquire); });
 					});
 					task->published = publisher.get_future();
-					std::thread(std::move(publisher)).detach();
+					uam::platform::StartBackgroundThread(std::move(publisher)).detach();
 					continue;
 				}
 				else
@@ -9933,7 +9937,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					return receipt;
 				});
 				task->queued_publication = queue_writer.get_future();
-				std::thread(std::move(queue_writer)).detach();
+				uam::platform::StartBackgroundThread(std::move(queue_writer)).detach();
 				continue;
 			}
 			if (!app.pending_chat_save_at_by_chat_id.contains(chat_id))
@@ -9962,7 +9966,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					return messages;
 				});
 				task->baseline = baseline.get_future();
-				std::thread(std::move(baseline)).detach();
+				uam::platform::StartBackgroundThread(std::move(baseline)).detach();
 				continue;
 			}
 			task->publication_owned = std::make_shared<std::atomic<bool>>(true);
@@ -10006,7 +10010,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return result;
 			});
 			task->prepared = worker.get_future();
-			std::thread(std::move(worker)).detach();
+			uam::platform::StartBackgroundThread(std::move(worker)).detach();
 		}
 		std::erase_if(app.pending_chat_save_tasks, [&](const auto& entry) { return !app.pending_chat_save_at_by_chat_id.contains(entry.first) &&
 		    (!entry.second || (!entry.second->owned_publication && !entry.second->empty_held_send)); });
