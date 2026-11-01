@@ -542,7 +542,7 @@ describe('UsageLimits', () => {
       expect(host.textContent).not.toContain('95% remaining')
       expect(host.textContent).not.toContain('80% used')
       expect(host.textContent).toContain('Provider-reported reset time has passed')
-      expect(host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('25')
+      expect(host.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('25')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 })

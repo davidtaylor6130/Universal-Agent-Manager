@@ -746,7 +746,7 @@ describe('SettingsModal memory settings', () => {
 
     await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
-    expect(document.body.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
+    expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()
@@ -851,7 +851,7 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { remove.click() })
     await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
-    expect(host.textContent).toContain('Any helper files on that machine were left untouched.')
+    expect(failures.at(-1)?.message).toContain('Any helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
 
     act(() => root.unmount())
@@ -2279,9 +2279,9 @@ describe('SettingsModal memory settings', () => {
     const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice input'))
     act(() => voiceSection?.click())
     expect(host.textContent).toContain('Start dictation with the microphone button in the message box.')
-    expect(host.querySelector<HTMLButtonElement>('button[role="radio"][aria-checked="true"]')?.textContent).toBe('System')
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')?.disabled).toBe(true)
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Local AI')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button[aria-pressed="true"]')?.textContent).toBe('System')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Server')?.disabled).toBe(true)
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Local AI')?.disabled).toBe(true)
     expect(host.querySelector('button[aria-label="Speech-to-text service"]')).toBeNull()
     expect(host.querySelector('input[aria-label="Voice transcription server URL"]')).toBeNull()
     expect(host.textContent).not.toContain('OpenAI-compatible server')
@@ -2470,7 +2470,7 @@ describe('SettingsModal memory settings', () => {
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(requests[1]).toMatchObject({ action: 'importLocalChats', payload: { currentValue: '/tmp/uam-export' } })
-    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 received new local IDs. One chat could not be saved.')
+    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 were given new IDs. One chat could not be saved.')
 
     act(() => root.unmount())
     host.remove()
@@ -2661,7 +2661,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     try {
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
-      const mode = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === label)!
+      const mode = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === label)!
       expect(mode('Server').disabled).toBe(true)
       expect(mode('Local AI').disabled).toBe(true)
       act(() => useAppStore.setState({ voiceInputCapabilities: { system: { supported: true, reason: '' }, server: { supported: true, reason: '' }, local: { supported: false, reason: 'Not supported' } } }))
@@ -2686,7 +2686,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     try {
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice input"]')!.click())
-      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Transcription service"] button')).find((button) => button.textContent === 'Server')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory settings"]')!.click())
       const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
       expect(dialog).toBeTruthy()
@@ -2708,17 +2708,16 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     try {
       act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')!.click())
-      const availability = () => host.querySelector<HTMLButtonElement>('button[aria-label="Codex availability"]')!
-      expect(availability().textContent).toContain('Disabled')
+      const availability = () => host.querySelector<HTMLInputElement>('input[aria-label="Codex available"]')!
+      expect(availability().checked).toBe(false)
       act(() => useAppStore.getState().setSettingsScopeHostId('lab'))
-      expect(availability().textContent).toContain('Enabled')
+      expect(availability().checked).toBe(true)
       act(() => availability().click())
-      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'Disabled')!.click())
       const saveButton = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save provider settings')!
       await act(async () => saveButton().click())
       expect(save).toHaveBeenCalledWith({ providerId: 'codex-cli', executionHostId: 'lab', enabled: false })
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not save provider settings')
-      expect(availability().textContent).toContain('Disabled')
+      expect(availability().checked).toBe(false)
       expect(saveButton().disabled).toBe(false)
       save.mockImplementation(async (request) => { useAppStore.setState((state) => ({ providerAvailability: [...state.providerAvailability, request] })); return true })
       await act(async () => saveButton().click())

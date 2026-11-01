@@ -233,7 +233,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
 
       <SettingsSection title="Actions"
         actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
-        {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add one to start chats from Finder or Explorer." />}
+        {actions.length === 0 && <p className="uam-prov-sub">No shell actions yet. Add one to start chats from Finder or Explorer.</p>}
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
         {renderEntries(groupActions(actions), (action) => {
@@ -252,7 +252,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
               <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
-            {expanded && <div className="uam-central-editor grid gap-3 sm:grid-cols-2">
+            {expanded && <div className="uam-central-editor uam-settings-presence grid gap-3 sm:grid-cols-2">
               <SettingsField label="Name">
                 <input id={actionFieldId(action.id, 'name')} aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />
               </SettingsField>
