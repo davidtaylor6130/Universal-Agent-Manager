@@ -1046,6 +1046,36 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
+  it('keeps an unsaved host option draft and its disclosure open through a busy toggle', async () => {
+    const hosts = [
+      { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
+    ]
+    useAppStore.setState({ executionHosts: hosts as never })
+    const requests: Array<{ action: string; payload: Record<string, unknown>; respond: () => void }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push({ ...parsed, respond: () => onSuccess(JSON.stringify({})) })
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const inputA = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+      const saveA = () => Array.from(inputA().form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
+      setNativeInputValue(inputA(), '/tmp/draft-AGENTS.md')
+
+      await act(async () => { saveA().click() })
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
+      expect(inputA().value).toBe('/tmp/draft-AGENTS.md')
+
+      await act(async () => { requests.find(r => r.action === 'saveRemoteHostOptions')!.respond() })
+      expect(host.querySelector('[role="progressbar"]')).toBeNull()
+      expect(inputA().value).toBe('/tmp/draft-AGENTS.md')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Memory settings')

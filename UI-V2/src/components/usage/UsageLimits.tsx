@@ -34,9 +34,8 @@ function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false
     <span className="uam-limit-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
     <Reveal open={!!(reset)}><Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip></Reveal>
   </>
-  return valid
-    ? <ProgressFill label={meterLabel} value={percent} className="uam-set-row uam-limit-row">{content}</ProgressFill>
-    : <div className="uam-set-row uam-limit-row">{content}</div>
+  // Unreadable windows keep the same element with no fill and no meter role, so the row structure never changes.
+  return <ProgressFill label={meterLabel} value={percent} active={valid} className="uam-set-row uam-limit-row">{content}</ProgressFill>
 }
 
 /** Codex Pro reports no secondary window; the 5-hour period is shown as unlimited instead. */
@@ -172,17 +171,17 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     {(loading || allowance?.status === 'loading') && <ProgressFill label={`${name} allowances`} indeterminate className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</ProgressFill>}
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
     <Reveal open={!!allowance?.error}><p className={cx('uam-set-row', allowance?.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice')}>{allowance?.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p></Reveal>
-    {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
-    {showWindowRows && <>
+    <Reveal open={!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading'}><p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p></Reveal>
+    <Reveal open={showWindowRows}><>
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
       <Reveal open={modelWindows.length > 2}><Disclosure className="uam-set-row uam-limits-tokens" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid">{rows.slice(2).map(renderRow)}</div></Disclosure></Reveal>
       <Reveal open={!!limits?.individualLimit}>{limits?.individualLimit && <ProgressFill label={`${name} spend limit usage`} value={100 - limits.individualLimit.remainingPercent} className="uam-set-row uam-limit-row">
         <span className="uam-limit-row__name">Spend limit<small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small></span>
         <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
       </ProgressFill>}</Reveal>
-      {limits?.credits && <p className="uam-set-row text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
-      {limits?.spendControlReached && <p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
-    </>}
+      <Reveal open={!!limits?.credits}>{limits?.credits && <p className="uam-set-row text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}</Reveal>
+      <Reveal open={!!limits?.spendControlReached}><p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p></Reveal>
+    </></Reveal>
     <Reveal open={!consumption}><p className="uam-set-row text-xs uam-usage-muted">Consumed tokens unavailable.</p></Reveal>
     <Reveal open={!!(context || consumption)}>{(context || consumption) && <Disclosure className="uam-set-row uam-limits-tokens text-xs" summary={<><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</>}>
       <div className="grid gap-3">

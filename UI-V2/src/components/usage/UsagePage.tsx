@@ -285,7 +285,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
       <Reveal open={metric === 'limits'}><UsageLimits executionHostId={hostId} /></Reveal>
       <Reveal open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
-        {errorNote.mounted && <Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice>}
+        {errorNote.mounted && <div className="uam-presence" data-state={errorNote.closing ? 'closed' : 'open'}><Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
@@ -347,7 +347,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
             <TokenStack total={totals} height={16} labels />
             <TokenLegend total={totals} />
             <div className="grid gap-3 pt-2">
-              {providerRows.length > 0 && <table className="uam-usage-providers text-xs" aria-label="By provider">
+              <Reveal open={providerRows.length > 0}><table className="uam-usage-providers text-xs" aria-label="By provider">
                 <colgroup><col className="uam-usage-col-name" /><col /><col className="uam-usage-col-tokens" /><col className="uam-usage-col-cost" /></colgroup>
                 <thead className="sr-only"><tr><th scope="col">Provider</th><th scope="col">Token mix</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
                 <tbody>{providerRows.map(({ provider, state }) => <tr key={provider.providerId} data-state={state}>
@@ -358,7 +358,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                     <td><span className="uam-usage-cost-cell"><span className="tabular-nums">{costText(provider)}</span><CostBasis totals={provider} focusable pending={pricingPending} /></span></td>
                   </> : <td colSpan={3} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
                 </tr>)}</tbody>
-              </table>}
+              </table></Reveal>
               <Reveal open={idleProviders.length > 0}><p className="text-xs uam-usage-muted">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p></Reveal>
               <Reveal open={visibleProviders.length === 0}><p className="text-xs uam-usage-muted">All providers are filtered out.</p></Reveal>
             </div>

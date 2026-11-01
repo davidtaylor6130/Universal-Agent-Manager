@@ -7,7 +7,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, usePresence, Reveal } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -130,12 +130,24 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   const [pendingDeleteActionId, setPendingDeleteActionId] = useState('')
+  const [removingActionIds, setRemovingActionIds] = useState<Set<string>>(() => new Set())
   const pendingDeleteAction = actions.find((action) => action.id === pendingDeleteActionId)
 
   useEffect(() => {
     if (!dirtyRef.current && !applyingRef.current) { setActions(savedActions); setAppliedActions(savedActions) }
   }, [savedActions])
   useEffect(() => { void refreshMarkdownStore() }, [refreshMarkdownStore])
+
+  // Row slides out through its exit length before it is removed from state.
+  const removeAction = (id: string) => {
+    const drop = () => {
+      setActions((current) => current.filter((item) => item.id !== id))
+      setRemovingActionIds((current) => { const next = new Set(current); next.delete(id); return next })
+    }
+    if (!motionAllowed()) return drop()
+    setRemovingActionIds((current) => new Set(current).add(id))
+    window.setTimeout(drop, scaledMs(EXIT_MS))
+  }
 
   const update = (id: string, patch: Partial<ShellAction>) => {
     setActions((current) => current.map((action) => action.id === id ? { ...action, ...patch } : action))
@@ -231,8 +243,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
       <ConfirmDialog open={Boolean(pendingDeleteAction)} title="Delete shell action?" label="Delete shell action" confirmLabel="Delete action"
         onCancel={() => setPendingDeleteActionId('')}
         onConfirm={() => {
-          const id = pendingDeleteActionId
-          setActions((current) => current.filter((item) => item.id !== id))
+          removeAction(pendingDeleteActionId)
           setPendingDeleteActionId('')
         }}>
         Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.
@@ -250,7 +261,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const expanded = expandedActions[action.id] ?? false
           const changed = JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id))
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
-          return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
+          return <div key={action.id} className="uam-presence" data-state={removingActionIds.has(action.id) ? 'closed' : 'open'}><SettingRow icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
             description={<span className="uam-prov-sub">{summary}</span>}
             status={<Reveal open={changed}><span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span></Reveal>}
@@ -341,7 +352,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                 />
               </SettingsField></Reveal>
             </ActionEditor>
-          </SettingRow>
+          </SettingRow></div>
         })}
         </fieldset>
       </SettingsSection>

@@ -10,14 +10,17 @@ export interface ProgressFillProps {
   max?: number
   /** No percentage is known: the fill sweeps. Also implied when value is missing. */
   indeterminate?: boolean
+  /** False keeps the same element (so children never remount) with no fill and no progress role. Default true. */
+  active?: boolean
   className?: string
   children?: ReactNode
 }
 
 /** The item doing the work is the progress track: its background fills in --accent-dim and text stays on top. */
-export function ProgressFill({ label, value, max = 100, indeterminate = false, className, children }: ProgressFillProps) {
+export function ProgressFill({ label, value, max = 100, indeterminate = false, active = true, className, children }: ProgressFillProps) {
   const pct = !indeterminate && typeof value === 'number' && Number.isFinite(value) && max > 0 ? Math.min(max, Math.max(0, value)) : undefined
   const busy = pct === undefined
+  if (!active) return <div className={className}>{children}</div>
   return (
     <div
       role="progressbar"

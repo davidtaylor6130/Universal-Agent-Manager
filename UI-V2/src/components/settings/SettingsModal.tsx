@@ -183,7 +183,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
       } />
       <Reveal open={draft.mode === 'server'} className="grid gap-3 p-3">
         {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
-          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'Read from this environment variable.' : undefined}>
+          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`}>
             <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
           </SettingsField>)}
       </Reveal>
@@ -321,9 +321,9 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       if (!busy && dirty && !instructionError && !textError) onSave({ instructionFile, instructionText: textDirty ? inlineText : undefined, startupEnabled, cliUpdatesAsAdmin })
     }}>
       <SettingRow
-        title="Start runner at login"
+        title="Start helper at login"
         status={startupStatus}
-        control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
+        control={<Switch hideLabel name="startupEnabled" label="Start helper at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
       {host.platform === 'linux' && (
         <SettingRow
@@ -1440,8 +1440,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </div>}
       </Swap>
       <div className="flex gap-2">
-        {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-        {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
+        <Reveal open={themeStep > 0}><Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button></Reveal>
+        <Swap swapKey={themeStep < 2 ? 'next' : 'save'}>{themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}</Swap>
         <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
       </div>
     </Card>
@@ -1690,7 +1690,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           title="Allow UAM Control requests"
           description={activeUamControlSupported
             ? 'Agent requests appear in the chat for approval.'
-            : 'Supported local structured chats only.'}
+            : 'Available only for supported local chats.'}
           control={
             <Switch
               hideLabel
@@ -2478,7 +2478,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </>
                 }
               >
-                {manager.running ? <ProgressFill label={`${providerName} CLI task running`} indeterminate>{rows}</ProgressFill> : rows}
+                <ProgressFill label={`${providerName} CLI task running`} indeterminate active={manager.running}>{rows}</ProgressFill>
               </SettingsSection>
             )
           })}
@@ -2532,7 +2532,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <div className="grid gap-0">
           {COMPUTER_USE_ENABLED && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</p>}
 
-          {remoteBusy ? <ProgressFill label="Remote host setup running" indeterminate>{addHostSection}</ProgressFill> : addHostSection}
+          <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy}>{addHostSection}</ProgressFill>
           <SettingsSection title="Configured hosts">
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
             {remoteHosts.map((host) => (
@@ -2545,7 +2545,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     {host.runnerStatus === 'ready' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }} /> : host.runnerStatus === 'error' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }} /> : <StatusDot tone="neutral" />}
                     <span>{host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus}</span>
-                    <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
+                    <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
                   </span>
                 )}
                 control={(
@@ -2569,7 +2569,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       </div>
                     </Disclosure>
                   )
-                  return isRemoteHostBusy(host.id) ? <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate>{options}</ProgressFill> : options
+                  return <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate active={isRemoteHostBusy(host.id)}>{options}</ProgressFill>
                 })()}
               </SettingRow>
             ))}
@@ -2762,7 +2762,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'editors') {
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Open with">
+          <SettingsSection title="File types" actions={renderAddEditor()}>
             <SettingRow
               title="Default editor"
               description="Opens files outside every file type group."
@@ -2772,9 +2772,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
               )}
             />
-          </SettingsSection>
-
-          <SettingsSection title="File types" actions={renderAddEditor()}>
             <div ref={editorMenuRef}>
               {editorAssociationsDraft.map((association) => {
                 const groupName = association.name.trim() || 'File group'

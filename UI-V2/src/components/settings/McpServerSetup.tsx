@@ -297,14 +297,14 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
 
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
 
-    {view === 'form' && !scoped && <SettingsSection title="Built in">
-      <SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
+    <Reveal open={view === 'form' && !scoped}><SettingsSection title="Built in">
+      <Swap swapKey={String(uamEnabled)}><SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
           ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
-          : <Button size="sm" disabled={busy} onClick={() => setUamEnabled(true)}>Turn back on</Button>} />
+          : <Button size="sm" disabled={busy} onClick={() => setUamEnabled(true)}>Turn back on</Button>} /></Swap>
       {COMPUTER_USE_ENABLED && <ComputerUseSettingRow disabled={busy} />}
-    </SettingsSection>}
+    </SettingsSection></Reveal>
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
       actions={<>
@@ -312,7 +312,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
         </Tabs>
-        {view === 'form' && <Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button>}
+        <Reveal as="span" open={view === 'form'}><Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button></Reveal>
       </>}>
       <Swap swapKey={view}>{setupPresence.mounted && setupSnapshot.current && view === 'form' ? <div role="group" aria-label="MCP setup" tabIndex={-1} data-closing={setupPresence.closing ? 'true' : undefined}
         className="uam-skills-step grid gap-3 py-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) cancelSetup() } }}>
