@@ -178,7 +178,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
             options={voiceModes.map((option) => ({ value: option.id, label: option.label, disabled: capabilities?.[option.id]?.supported !== true }))}
             onChange={(mode) => edit({ ...draft, mode })} />
           {/* Visible reasons: a disabled radio cannot show its own tooltip. */}
-          {unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}
+          <Reveal open={unavailableVoiceReasons.length > 0}>{unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}</Reveal>
         </div>
       } />
       <Reveal open={draft.mode === 'server'} className="grid gap-3 p-3">
@@ -1763,7 +1763,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const settingsScope = hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const effectiveProviderSettingsHostId = scopeValue === SETTINGS_ALL_ENVIRONMENTS ? 'local' : scopeValue
-  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (!mcpSaving) requestSectionExit(() => setSettingsScopeHostId(hostId)) }} /> : null
+  const scopeBar = <Reveal open={scopeBarVisible}><SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (!mcpSaving) requestSectionExit(() => setSettingsScopeHostId(hostId)) }} /></Reveal>
   // A pending CLI install or open version menu belongs to the computer it was started for.
   useEffect(() => {
     setPendingCliInstall(null)
@@ -2131,7 +2131,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         </Reveal>
                         <Reveal open={!refreshFailed}>
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? <ProgressFill label={`Refreshing ${providerName} models`} indeterminate>Refreshing models…</ProgressFill> : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}
+                            <ProgressFill label={`Refreshing ${providerName} models`} indeterminate active={modelsLoading}>{modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}</ProgressFill>
                           </span>
                         </Reveal>
                       </div>
@@ -2462,7 +2462,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             return (
               <SettingsSection
                 key={manager.providerId}
-                title={providerName}
+                title={scopedProviderId ? 'CLI version' : providerName}
                 actions={
                   <>
                     <StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>

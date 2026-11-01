@@ -344,7 +344,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
               <Reveal open={setupHintId === server.id}><p className="uam-set-field__hint">Enter the connection details, then Save.</p></Reveal>
               {text('Name', server.name, name => update(server.id, { name }), 'playwright')}
               <SettingsField label="Connection type" hint={server.transport === 'stdio' ? 'Runs on the same computer as the agent.' : undefined}><MenuSelect label="Connection type" value={server.transport} disabled={busy} onChange={value => update(server.id, { transport: value as McpServerConfiguration['transport'] })} options={[{ value: 'stdio', label: 'Local program' }, { value: 'http', label: 'Remote URL (HTTP)' }, { value: 'sse', label: 'Remote URL (SSE, older servers)' }]} /></SettingsField>
-              {server.transport === 'stdio' ? <>
+              <Swap swapKey={server.transport}>{server.transport === 'stdio' ? <>
                 {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', SSH_ENABLED ? 'Full path. Over SSH, the path on the remote machine.' : 'Full path.')}
                 <SettingsField label="Arguments" hint="One value per box, no quotes.">
                   {server.args.map((arg, index) => <div key={index} className="flex gap-2 uam-presence" data-state={removingRows.has(`${server.id}|arg|${index}`) ? 'closed' : 'open'}>
@@ -353,14 +353,14 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                   </div>)}
                   <Button size="sm" className="self-start" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>Add argument</Button>
                                   </SettingsField>
-              </> : text('URL', server.url, url => update(server.id, { url }), 'http://mcp.example.com:9001/mcp', SSH_ENABLED ? 'http:// or https://. Over SSH, localhost is the remote machine.' : 'http:// or https://.')}
+              </> : text('URL', server.url, url => update(server.id, { url }), 'http://mcp.example.com:9001/mcp', SSH_ENABLED ? 'http:// or https://. Over SSH, localhost is the remote machine.' : 'http:// or https://.')}</Swap>
               <SettingsField label={server.transport === 'stdio' ? 'Environment variables' : 'Headers'} hint="Typed values are saved as plain text.">
                 {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center uam-presence" data-state={removingRows.has(`${server.id}|ref|${index}`) ? 'closed' : 'open'}>
                   <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
                   <div className="w-36 shrink-0"><MenuSelect label={`Value source ${index + 1}`} value={ref.value !== undefined ? 'value' : 'variable'} disabled={busy} onChange={value => { const literal = value === 'value'; setRefs(refs.map((item, i) => i === index ? { name: item.name, environmentVariable: '', ...(literal ? { value: '' } : {}) } : item)) }} options={[{ value: 'value', label: 'Literal value' }, { value: 'variable', label: 'From variable' }]} /></div>
-                  {ref.value !== undefined
+                  <Swap className="flex-1 min-w-0" swapKey={ref.value !== undefined ? 'value' : 'variable'}>{ref.value !== undefined
                     ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://mcp.example.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
-                    : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}
+                    : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}</Swap>
                   <IconButton size="sm" disabled={busy} icon={<Trash2 size={13} />} label={`Remove variable ${index + 1}`} variant="danger" onClick={() => removeRow(`${server.id}|ref|${index}`, () => setServers(list => list.map(item => item.id === server.id ? (item.transport === 'stdio' ? { ...item, environment: item.environment.filter((_, i) => i !== index) } : { ...item, headers: item.headers.filter((_, i) => i !== index) }) : item)))} />
                 </div>)}
                 <Button size="sm" className="self-start" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>

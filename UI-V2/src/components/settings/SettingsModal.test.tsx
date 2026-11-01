@@ -1502,7 +1502,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     // Provider pages show the CLI controls flat, without a disclosure toggle.
-    expect(host.querySelector('section[aria-label="Codex"]')).toBeTruthy()
+    expect(host.querySelector('section[aria-label="CLI version"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Show Codex CLI version settings"]')).toBeNull()
 
     expect(host.textContent).toContain('0.123.0')

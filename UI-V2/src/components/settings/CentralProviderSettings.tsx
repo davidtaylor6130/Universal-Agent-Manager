@@ -233,9 +233,9 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
           <Reveal open={shownEditor.loading}><SettingsLoading label="Opening instruction file" rows={3} /></Reveal>
           <Reveal open={!shownEditor.loading} className="grid gap-3"><>
             <Reveal open={!!(shownEditor.error)}><Notice key={shownEditor.error} tone="error" dismissLabel="Dismiss">{shownEditor.error}</Notice></Reveal>
-            {!shownEditor.readFailed && <SettingsField label={fileName(path)}>
+            <Reveal open={!shownEditor.readFailed}><SettingsField label={fileName(path)}>
               <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={shownEditor.content} onChange={event => setInstructionEditor({ ...shownEditor, content: event.currentTarget.value })} />
-            </SettingsField>}
+            </SettingsField></Reveal>
             <div className="flex justify-end gap-2">
               <Button size="sm" disabled={busy} onClick={() => setInstructionEditor(null)}>{instructionDirty ? 'Discard file changes' : 'Close file'}</Button>
               <Reveal open={shownEditor.readFailed}><Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button></Reveal>

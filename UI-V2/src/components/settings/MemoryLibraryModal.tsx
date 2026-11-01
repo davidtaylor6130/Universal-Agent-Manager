@@ -377,11 +377,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   if (!memoryLibraryScope) {
     if (!embedded) return null
     return memoryLibraryError
-      ? <div role="alert" className="uam-memory-state">
-          <p className="flex items-center gap-1.5 text-sm font-medium" style={{ color: 'var(--error)' }}><X size={14} aria-hidden />The memory library did not open.</p>
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>{memoryLibraryError}</p>
-          <div><Button size="sm" onClick={() => void openAllMemoryLibrary()}>Try again</Button></div>
-        </div>
+      ? <Notice tone="error" dismissible={false} dismissLabel="Dismiss" title="The memory library did not open."
+          actions={<Button size="sm" onClick={() => void openAllMemoryLibrary()}>Try again</Button>}>{memoryLibraryError}</Notice>
       : <SettingsLoading label="Loading memory library" rows={3} />
   }
 

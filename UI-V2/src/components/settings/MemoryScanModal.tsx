@@ -101,8 +101,10 @@ export function MemoryScanModal() {
                       {candidate.title}
                       {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
                     </span>}
-                    description={`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}
-                    control={<Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />}
+                    control={<>
+                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>{`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}</span>
+                      <Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />
+                    </>}
                   />
                 )
               })}

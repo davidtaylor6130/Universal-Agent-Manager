@@ -96,9 +96,9 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
     status={<span id={statusId} role="status" aria-live="polite">{status}</span>}
     control={COMPUTER_USE_ENABLED && <div ref={controls} className="flex flex-wrap items-center justify-end gap-2">
-      {known && <Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
+      <Reveal open={known} as="span"><Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}
-        onChange={event => void change(event.currentTarget.checked, event.currentTarget)} />}
+        onChange={event => void change(event.currentTarget.checked, event.currentTarget)} /></Reveal>
       <Reveal open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></Reveal>
       <Reveal open={!known}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button></Reveal>
     </div>}>
