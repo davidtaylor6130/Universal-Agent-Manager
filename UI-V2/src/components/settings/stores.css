@@ -18,9 +18,6 @@
 @keyframes uam-skills-step-in { from { transform: translateX(100%); opacity: 0; } }
 .uam-skills-step[data-closing] { animation: uam-skills-step-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
 @keyframes uam-skills-step-out { to { transform: translateX(100%); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .uam-skills-library, .uam-skills-step, .uam-memory-row__actions, .uam-memory-exit, .uam-memory-form, .uam-memory-toolbar, .uam-memory-row { transition: none; animation: none; } }
-[data-motion="off"] .uam-skills-library, [data-motion="off"] .uam-skills-step, [data-motion="off"] .uam-memory-row__actions, [data-motion="off"] .uam-memory-exit, [data-motion="off"] .uam-memory-form, [data-motion="off"] .uam-memory-toolbar, [data-motion="off"] .uam-memory-row { transition: none; animation: none; }
-
 .uam-store-path { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
 /* Preview body: readable measure, comfortable leading. */
@@ -52,4 +49,13 @@
 
 /* Skills dialog panel: the Overlay supplies the backdrop; this is the panel's edge and elevation. */
 .uam-skills-dialog { border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
+
+/* Reduced motion and Motion Off: last in the file so they win ties with the animated rules above (same-specificity later rules would otherwise override them). Covers the [data-closing] and [data-state="closed"] exit variants. */
+@media (prefers-reduced-motion: reduce) {
+  .uam-skills-library, .uam-skills-step, .uam-skills-step[data-closing], .uam-memory-row__actions, .uam-memory-exit, .uam-memory-exit[data-state="closed"],
+  .uam-memory-form, .uam-memory-form[data-state="closed"], .uam-memory-toolbar, .uam-memory-toolbar[data-state="closed"], .uam-memory-row, .uam-memory-row[data-state="closed"] { transition: none; animation: none; }
+}
+[data-motion="off"] .uam-skills-library, [data-motion="off"] .uam-skills-step, [data-motion="off"] .uam-skills-step[data-closing], [data-motion="off"] .uam-memory-row__actions,
+[data-motion="off"] .uam-memory-exit, [data-motion="off"] .uam-memory-exit[data-state="closed"], [data-motion="off"] .uam-memory-form, [data-motion="off"] .uam-memory-form[data-state="closed"],
+[data-motion="off"] .uam-memory-toolbar, [data-motion="off"] .uam-memory-toolbar[data-state="closed"], [data-motion="off"] .uam-memory-row, [data-motion="off"] .uam-memory-row[data-state="closed"] { transition: none; animation: none; }
 

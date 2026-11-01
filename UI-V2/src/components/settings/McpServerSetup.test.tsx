@@ -290,7 +290,7 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false })
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
   expect(document.body.textContent).toContain('Off')
-  expect(document.body.textContent).toContain('Off. UAM grants cleared.')
+  expect(document.body.textContent).toContain('Off. Chat access cleared.')
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {

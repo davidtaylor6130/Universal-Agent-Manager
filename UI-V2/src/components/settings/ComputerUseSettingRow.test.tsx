@@ -51,7 +51,7 @@ it('waits for authoritative enablement and keeps target approval explicit', asyn
   await act(async () => finish(receipt(true)))
   expect(toggle()?.checked).toBe(true)
   expect(toggle()?.disabled).toBe(false)
-  expect(host.textContent).toContain('Each chat still needs an approved target.')
+  expect(host.textContent).toContain('Each chat still needs you to choose the window it can control.')
 })
 
 it('retains persisted Off after failed revocation and retries only the global disable', async () => {
@@ -61,7 +61,7 @@ it('retains persisted Off after failed revocation and retries only the global di
   expect(toggle()?.checked).toBe(false)
   expect(toggle()?.disabled).toBe(true)
   expect(host.textContent).toContain('Cleanup pending.')
-  expect(host.textContent).not.toContain('UAM grants cleared')
+  expect(host.textContent).not.toContain('Chat access cleared')
   expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Runtime controls are still stopping.', expect.any(String))
   // Pending ownership survives leaving and reopening the row.
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
@@ -82,7 +82,7 @@ it('does not display Off when persistence failed and native state stayed enabled
   await act(async () => toggle()!.click())
   expect(toggle()?.checked).toBe(true)
   expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Failed to persist Computer Use Settings.', expect.any(String))
-  expect(host.textContent).not.toContain('UAM grants cleared')
+  expect(host.textContent).not.toContain('Chat access cleared')
 })
 
 it('keeps unknown transport outcomes distinct from cleared consent', async () => {
@@ -102,7 +102,7 @@ it('does not treat an old backend missing cleanup state as confirmed Off', async
   vi.mocked(sendToCEF).mockResolvedValue({ ok: true, data: { computerUseGloballyEnabled: false } })
   await act(async () => button('Check status').click())
   expect(toggle()).toBeNull()
-  expect(host.textContent).not.toContain('UAM grants cleared')
+  expect(host.textContent).not.toContain('Chat access cleared')
 })
 
 it('allows a global Off request while state is unknown without offering enablement', async () => {
@@ -129,7 +129,7 @@ it('serializes a captured Off request across navigation between settings surface
   expect(sendToCEF).toHaveBeenCalledExactlyOnceWith({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } })
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(toggle()?.disabled).toBe(true)
-  expect(host.textContent).toContain('Turning off and clearing UAM grants…')
+  expect(host.textContent).toContain('Turning off and clearing chat access…')
   await act(async () => toggle()!.click())
   expect(sendToCEF).toHaveBeenCalledTimes(1)
   vi.mocked(sendToCEF).mockResolvedValueOnce(receipt(false, true))

@@ -218,7 +218,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             : computerUseRevocationPending && computerUseEnabled === true ? "On. Chat controls are still stopping. Turn off for all chats to retry cleanup."
             : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
             : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
-            : computerUseEnabled ? 'Available. Each chat needs an approved target.' : 'Off. Turn Computer Use on in Computer Use settings.'
+            : computerUseEnabled ? 'Available. Each chat still needs you to choose the window it can control.' : 'Off. Turn Computer Use on in Computer Use settings.'
           // ui: raw buttons kept — provider name cell and shared-setup tick/cross cell are table cells with bespoke overview styling.
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>

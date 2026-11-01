@@ -85,13 +85,13 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   }
 
   const status = !COMPUTER_USE_ENABLED ? 'Unavailable in this build'
-    : busy === 'disable' ? 'Turning off and clearing UAM grants…'
+    : busy === 'disable' ? 'Turning off and clearing chat access…'
     : busy === 'enable' ? 'Turning on…'
     : busy === 'check' ? 'Checking status…'
     : pending && enabled === true ? "On. A chat's controls are still stopping. Turn off for all chats to retry cleanup."
     : pending ? known ? 'Off. Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Status not confirmed.'
     : !known ? 'Status not confirmed.'
-    : enabled ? 'On. Each chat still needs an approved target.' : 'Off. UAM grants cleared.'
+    : enabled ? 'On. Each chat still needs you to choose the window it can control.' : 'Off. Chat access cleared.'
 
   return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
     status={<span id={statusId} role="status" aria-live="polite">{status}</span>}

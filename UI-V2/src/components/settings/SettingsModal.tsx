@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
+import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -616,6 +616,58 @@ function versionStatusText(manager: CliVersionProviderState) {
   if (manager.status === 'unavailable') return 'Not installed or unavailable on PATH'
   if (manager.status === 'provider-managed') return 'Compatibility is managed by the provider'
   return 'Version has not been checked'
+}
+
+/**
+ * Keyed list rows: added rows slide in (uam-presence), removed rows hold their last content for the exit length
+ * while they slide out, and reordered rows glide to their new place (FLIP). Reduced motion and Motion Off change at once.
+ */
+export function AnimatedRows<T>({ items, keyOf, render }: { items: T[]; keyOf: (item: T) => string; render: (item: T) => ReactNode }) {
+  const [held, setHeld] = useState<{ key: string; item: T; exiting: boolean }[]>(() => items.map((item) => ({ key: keyOf(item), item, exiting: false })))
+  const keys = items.map(keyOf)
+  const order = keys.join('\n')
+  const exitingKeys = held.filter((row) => row.exiting).map((row) => row.key).join('\n')
+  const current = new Map(items.map((item) => [keyOf(item), item]))
+  const nodes = useRef(new Map<string, HTMLDivElement>())
+  const tops = useRef(new Map<string, number>())
+
+  useEffect(() => {
+    setHeld((prev) => {
+      const animate = motionAllowed()
+      const next = prev.map((row) => ({ ...row, exiting: !keys.includes(row.key) })).filter((row) => animate || !row.exiting)
+      keys.forEach((key, index) => {
+        if (!next.some((row) => row.key === key)) next.splice(index, 0, { key, item: items[index], exiting: false })
+      })
+      return next
+    })
+    // ponytail: keys-only dependency; item content is read live from `current` at render.
+  }, [order])
+
+  useEffect(() => {
+    if (!exitingKeys) return
+    const timer = window.setTimeout(() => setHeld((prev) => prev.filter((row) => !row.exiting)), scaledMs(EXIT_MS))
+    return () => window.clearTimeout(timer)
+  }, [exitingKeys])
+
+  useLayoutEffect(() => {
+    const before = tops.current
+    const animate = motionAllowed()
+    nodes.current.forEach((node, key) => {
+      const previous = before.get(key)
+      if (previous === undefined || !animate || typeof node.animate !== 'function') return
+      const delta = previous - node.offsetTop
+      if (delta) node.animate([{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(180), easing: getComputedStyle(node).getPropertyValue('--ease').trim() || 'ease' })
+    })
+    tops.current = new Map([...nodes.current].map(([key, node]) => [key, node.offsetTop]))
+  })
+
+  return <>{held.map((row) => <div
+    key={row.key}
+    ref={(node) => { if (node) nodes.current.set(row.key, node); else nodes.current.delete(row.key) }}
+    className="uam-presence"
+    data-state={row.exiting ? 'closed' : 'open'}
+    aria-hidden={row.exiting || undefined}
+  >{render(current.get(row.key) ?? row.item)}</div>)}</>
 }
 
 function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, progress, togglePosition = 'left', alwaysOpen = false }: {
@@ -1738,14 +1790,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
         <Reveal open={computerUseApps.length === 0}><SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." /></Reveal>
-        {computerUseApps.map((app) => {
+        <AnimatedRows items={computerUseApps} keyOf={(app) => `${app.identityKind}:${app.identity}`} render={(app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
-            key={`${app.identityKind}:${app.identity}`}
             title={<span title={app.identity}>{app.name}</span>}
             control={<Switch hideLabel label={app.name} checked={allowed} disabled={computerUseSaveBusy} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} />}
           />
-        })}
+        }} />
       </SettingsSection>
     </div>
   }
@@ -2250,11 +2301,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <Reveal open={favoriteUamAgentIds.length === 0}>
               <SettingRow title="No custom favourites" description="The cycle is Build, then Plan." />
             </Reveal>
-            {favoriteUamAgentIds.map((agentId, index) => {
+            <AnimatedRows items={favoriteUamAgentIds} keyOf={(agentId) => agentId} render={(agentId) => {
+              const index = favoriteUamAgentIds.indexOf(agentId)
               const available = activeUamAgents.some((agent) => agent.id === agentId)
               return (
                 <SettingRow
-                  key={agentId}
                   icon={<GripVertical size={14} aria-hidden />}
                   title={<span className="font-mono">{agentId}</span>}
                   status={available ? undefined : <><StatusDot tone="warning" /> Unavailable in this workspace</>}
@@ -2268,7 +2319,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   }
                 />
               )
-            })}
+            }} />
           </SettingsSection>
 
           {AGENT_IMPORT_PROVIDER_OPTIONS.length > 0 && <SettingsSection title="Import from a provider">
@@ -2773,13 +2824,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               )}
             />
             <div ref={editorMenuRef}>
-              {editorAssociationsDraft.map((association) => {
+              <AnimatedRows items={editorAssociationsDraft} keyOf={(association) => association.id} render={(association) => {
                 const groupName = association.name.trim() || 'File group'
                 const expanded = expandedEditorGroups[association.id] ?? false
                 const panelId = `${association.id}-editor-group-panel`
                 return (
                   <SettingRow
-                    key={association.id}
                     icon={<IconButton size="sm" icon={<ChevronRight size={14} style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform var(--dur-fast) var(--ease)' }} />} label={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`} aria-expanded={expanded} aria-controls={panelId} onClick={() => toggleEditorGroup(association.id)} />}
                     title={groupName}
                     description={<span className="font-mono">{extensionsText(association) || 'No extensions set'}</span>}
@@ -2833,7 +2883,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     </Reveal>
                   </SettingRow>
                 )
-              })}
+              }} />
               <Reveal open={editorAssociationsDraft.length === 0}><SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." /></Reveal>
             </div>
           </SettingsSection>

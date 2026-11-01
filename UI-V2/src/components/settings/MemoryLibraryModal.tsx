@@ -537,20 +537,21 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     const location = groupedEntries.find((group) => group.key === `folder:${reference.target}`)
                     return location ? [location] : []
                   })
-                  if (locations.length === 0) return null
                   return (
-                    <div key={collection.id} className="mt-1">
-                      <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold" style={{ color: 'var(--text-2)' }}>
-                        <Library size={13} aria-hidden />
-                        <span className="truncate">{collection.name}</span>
+                    <Reveal key={collection.id} open={locations.length > 0}>
+                      <div className="mt-1">
+                        <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold" style={{ color: 'var(--text-2)' }}>
+                          <Library size={13} aria-hidden />
+                          <span className="truncate">{collection.name}</span>
+                        </div>
+                        <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
+                          {locations.map((location) => {
+                            const active = location.key === selectedLocation?.key
+                            return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
+                          })}
+                        </div>
                       </div>
-                      <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
-                        {locations.map((location) => {
-                          const active = location.key === selectedLocation?.key
-                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
-                        })}
-                      </div>
-                    </div>
+                    </Reveal>
                   )
                 })}
                 <Reveal open={isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7)))}>

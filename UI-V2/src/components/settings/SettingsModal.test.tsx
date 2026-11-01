@@ -2582,7 +2582,7 @@ describe('SettingsModal memory settings', () => {
       expect(host.textContent).toContain('Cleanup pending.')
       const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry disabling')!
       await act(async () => retry.click())
-      expect(host.textContent).toContain('Off. UAM grants cleared.')
+      expect(host.textContent).toContain('Off. Chat access cleared.')
       expect(toggle().disabled).toBe(false)
       await act(async () => toggle().click())
       expect(toggle().checked).toBe(true)

@@ -164,7 +164,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           const count = current ? current.errors.filter((message) => message.startsWith(`${name} `)).length : 0
           return <li key={id} className="uam-native-scope__chip" data-issues={count > 0 || undefined}>
             <ProviderLogo providerId={id} size={14} />{name}
-            {count > 0 && <><span className="uam-native-scope__count" aria-hidden>{count}</span><span className="sr-only">, {count} {count === 1 ? 'issue' : 'issues'}</span></>}
+            <Reveal as="span" open={count > 0}><span className="uam-native-scope__count" aria-hidden>{count}</span><span className="sr-only">, {count} {count === 1 ? 'issue' : 'issues'}</span></Reveal>
           </li>
         })}
       </ul>

@@ -333,7 +333,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           // Wrapper replaces the row's sibling separators, so the separator moves onto it.
           return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
             style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 'var(--sp-3)' } : undefined}>
-          <div className="uam-prov-collapse__inner"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
+          <div className="uam-prov-collapse__inner uam-presence"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
             status={scope}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
