@@ -164,7 +164,7 @@ describe('separate Git and SVN sections', () => {
       expect(git.querySelector('[aria-label="Default local Git base branch"]')).not.toBeNull()
       expect(git.querySelector('[role="group"][aria-label="Port method"]')).not.toBeNull()
       for (const label of ['Enable SVN', 'Update before new chat']) expect(svn.contains(toggle(host, label)), label).toBe(true)
-      expect(svn.textContent).toContain('SVN branch and merge defaults are not supported.')
+      expect(svn.textContent).not.toContain('branch and merge defaults')
       expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(7)
       expect(Array.from(host.querySelectorAll('button')).filter((control) => control.textContent === 'Enabled' || control.textContent === 'Disabled')).toHaveLength(0)
       expect([toggle(host, 'Enable Git'), toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), toggle(host, 'Enable SVN'), toggle(host, 'Update before new chat')].map((control) => control.checked))

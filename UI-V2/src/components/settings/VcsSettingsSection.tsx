@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, Notice, SegmentedControl, Switch } from '../ui'
+import { Button, ConfirmDialog, Notice, SegmentedControl, Switch, usePresence } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
@@ -33,6 +33,9 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })) }
   const base = sanitizeGitBaseBranch(draft.gitDefaultBaseBranch)
   const validation = base === undefined ? 'Use a local branch name up to 255 UTF-8 bytes without control characters.' : ''
+  const validationNotice = usePresence(Boolean(validation))
+  const shownValidation = useRef(validation)
+  if (validation) shownValidation.current = validation
   const save = async () => {
     if (busy.current || !dirty || validation) return
     busy.current = true; setSaving(true)
@@ -59,7 +62,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
           onChange={(method) => edit({ gitPortMethod: method })} />} />
       <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={toggle('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
     </SettingsSection>
-    <SettingsSection title="SVN" description="SVN branch and merge defaults are not supported.">
+    <SettingsSection title="SVN">
       <SettingRow title="Enable SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
       <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
@@ -67,7 +70,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <SettingsSection title="No VCS">
       <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
-    {validation && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validation}</Notice>}
+    {validationNotice.mounted && <div className="uam-settings-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
     <div className="flex justify-end gap-2">
       <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved) }}>Discard</Button>
       <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>

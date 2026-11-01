@@ -25,7 +25,7 @@ beforeEach(async () => {
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove() })
-const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!
+const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text || item.querySelector('.uam-btn__label')?.textContent === text || item.getAttribute('aria-label') === text)!
 async function click(text: string) { await act(async () => button(text).click()) }
 async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -62,7 +62,7 @@ it('adds a server through the form and blocks a relative program path', async ()
   await click('Save')
   expect(document.body.textContent).toContain('program path must be a full path')
   await type(inputs()[1], '/opt/docs/server')
-  await click('+ Add argument')
+  await click('Add argument')
   await type(document.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
   await click('Save')
   expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', transport: 'stdio', command: '/opt/docs/server', args: ['--stdio'] })
@@ -108,7 +108,7 @@ it('starts guided setup with a named connection and saves only after completing 
   await click('Step by step')
   await type(document.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
   await click('Next: connection details')
-  expect(reportAppNotice).toHaveBeenCalledWith('Step 2 of 2: enter the connection details below, then Save.')
+  expect(document.body.textContent).toContain('Enter the connection details, then Save.')
   expect(saveServers).not.toHaveBeenCalled()
   await type(document.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
   await click('Save')
@@ -151,7 +151,7 @@ it.each(['import', 'json', 'manual'] as const)('preserves intentional empty argu
     const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
     await type(inputs[0], 'empty'); await type(inputs[1], '/opt/mcp/tool')
     for (const [index, arg] of args.entries()) {
-      await click('+ Add argument')
+      await click('Add argument')
       await type(document.querySelector<HTMLInputElement>(`[aria-label="Argument ${index + 1}"]`)!, arg)
     }
   }
@@ -440,7 +440,7 @@ it.each([
   const area = document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
   const original = area.value
   await type(area, invalid)
-  expect(button('Save').disabled).toBe(true)
+  expect(button('Save').getAttribute('aria-disabled')).toBe('true')
   expect(document.body.textContent).toContain(detail)
   await click('Save')
   expect(saveServers).not.toHaveBeenCalled()
@@ -457,7 +457,7 @@ it('disables same-scope duplicate names until the new server is corrected', asyn
   const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
   await type(inputs[0], 'playwright')
   await type(inputs[1], '/opt/docs/server')
-  expect(button('Save').disabled).toBe(true)
+  expect(button('Save').getAttribute('aria-disabled')).toBe('true')
   expect(document.body.textContent).toContain('Two servers share the same name')
   await type(inputs[0], 'docs')
   expect(button('Save').disabled).toBe(false)

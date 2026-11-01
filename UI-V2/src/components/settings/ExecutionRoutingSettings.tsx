@@ -3,7 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, Disclosure, MenuSelect, StatusDot, Switch, type StatusTone } from '../ui'
+import { Button, Disclosure, MenuSelect, StatusDot, Switch, usePresence, type StatusTone } from '../ui'
 import { NumberField } from './NumberField'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -54,6 +54,10 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[] | null>(null)
     const [repositoryError, setRepositoryError] = useState('')
     const [picking, setPicking] = useState('')
+  const pickPresence = usePresence(picking !== '')
+  const lastPicking = useRef('')
+  if (picking) lastPicking.current = picking
+  const shownPicking = picking || lastPicking.current
     const matching = saved.repositoryMatching === true
     const dirty = JSON.stringify(savePayload(draft)) !== JSON.stringify(savePayload(baseline))
     const validationError = routingConfigurationError(draft, hosts, folders)
@@ -145,8 +149,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         </div>
 
     return <>
-      <fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-4 m-0 p-0 border-0'}>
-        <SettingsSection title="Automatic routing" description="Where new chats start when you do not pick a computer.">
+      <fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
+        <SettingsSection title="Automatic routing">
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
         </SettingsSection>
@@ -163,7 +167,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             return <SettingsSection key={host.id} title={host.label}
               description={<span className="uam-rt-alias">{host.sshAlias}</span>}
               actions={<span className="uam-rt-status"><StatusDot tone={look.tone} size={7} />{look.label}</span>}>
-              <SettingRow htmlFor={`routing-enabled-${host.id}`} title="Use this computer" description="Allow chats to start on this computer."
+              <SettingRow htmlFor={`routing-enabled-${host.id}`} title="Use this computer"
                 control={<Switch id={`routing-enabled-${host.id}`} hideLabel label={`Route to ${host.label}`} checked={policy?.enabled ?? false} onChange={(event) => update(host.id, (item) => ({ ...item, enabled: event.target.checked }))} />} />
               <SettingRow title="Concurrent sessions" description="How many chats can run here at the same time."
                 control={<NumberField label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} min={1} max={1024} onCommit={(value) => update(host.id, (item) => ({ ...item, maxActiveTurns: value }))} />} />
@@ -183,24 +187,22 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                           const { override, automatic } = resolveRow(policy, source, host.id)
                           const target = override ? override.directory : automatic
                           const pickId = `${host.id}:${source.id}`
-                          return <div key={source.id} className="uam-rt-workspace">
-                            <div className="uam-rt-workspace__head">
-                              <span className="uam-rt-workspace__name">{source.name}</span>
-                              {repository
-                                ? <span className="uam-rt-alias" title={repository.identity}>{shortRepositoryIdentity(repository.identity)}</span>
-                                : <span className="uam-rt-workspace__none">No repository detected</span>}
-                            </div>
+                          return <div key={source.id} className="uam-rt-folder-row">
+                            <span className="uam-rt-workspace__name">{source.name}</span>
+                            {repository
+                              ? <span className="uam-rt-alias" title={repository.identity}>{shortRepositoryIdentity(repository.identity)}</span>
+                              : <span className="uam-rt-workspace__none">No repository detected</span>}
                             <div className="uam-rt-match">
                               <StatusDot tone={target ? (override ? 'info' : 'success') : 'warning'} size={7} />
                               {target
                                 ? <span className="uam-rt-match__text">{override ? 'Chosen folder' : 'Matched by repository'} <span className="uam-rt-alias">{target}</span></span>
                                 : <span className="uam-rt-match__text uam-rt-match__text--muted">No matching checkout</span>}
-                              <span className="uam-rt-match__actions">
-                                {override && <Button variant="ghost" size="sm" onClick={() => setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: '', useAutomaticMatch: true })}>Use automatic match</Button>}
-                                <Button variant="ghost" size="sm" disabled={remoteFolders.length === 0} onClick={() => setPicking(picking === pickId ? '' : pickId)}>Choose folder…</Button>
-                              </span>
                             </div>
-                            {picking === pickId && <div className="uam-rt-pick">
+                            <span className="uam-rt-match__actions">
+                              {override && <Button variant="ghost" size="sm" onClick={() => setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: '', useAutomaticMatch: true })}>Use automatic match</Button>}
+                              <Button variant="ghost" size="sm" disabled={remoteFolders.length === 0} onClick={() => setPicking(picking === pickId ? '' : pickId)}>Choose folder…</Button>
+                            </span>
+                            {pickPresence.mounted && shownPicking === pickId && <div className="uam-rt-pick uam-settings-presence" data-state={pickPresence.closing ? 'closed' : 'open'}>
                               <MenuSelect label={`Choose folder for ${source.name} on ${host.label}`} value={override?.id ?? ''} onChange={(value) => { if (value) setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: value }) }}
                                 options={[{ value: '', label: 'Choose a folder' }, ...remoteFolders.map((folder) => ({ value: folder.id, label: `${folder.name} · ${folder.directory}` }))]} />
                               <Button variant="ghost" size="sm" onClick={() => setPicking('')}>Cancel</Button>

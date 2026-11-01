@@ -774,7 +774,7 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    const customChoice = document.body.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1]
+    const customChoice = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')).find((button) => button.textContent === 'Custom folder')!
     act(() => customChoice.click())
     const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
@@ -813,7 +813,7 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    act(() => document.body.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1].click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')).find((button) => button.textContent === 'Custom folder')!.click())
     const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, '../outside')
@@ -2338,7 +2338,7 @@ describe('SettingsModal memory settings', () => {
 
     act(() => createButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
 
-    expect(host.querySelector('[role="radiogroup"][aria-label="Theme base"]')).toBeTruthy()
+    expect(host.querySelector('[role="group"][aria-label="Theme base"]')).toBeTruthy()
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next')?.click())
     const backgroundInput = host.querySelector('input[aria-label="Background color"]') as HTMLInputElement | null
     expect(backgroundInput).toBeTruthy()

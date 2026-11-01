@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { createRequestId, isCompanionContext, sendToCEF, type CEFRequest, type CEFResponse } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, Tooltip } from '../ui'
+import { Button, ConfirmDialog, Tooltip, usePresence } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { observesFolderChoice, parseDataFolderSettings, readUnconfirmedFolderChoice, retainUnconfirmedFolderChoice,
@@ -104,6 +104,16 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
     } catch { if (alive.current) { setRestartConfirmation(false); fail('The restart outcome is unknown. Reopen the application before trying again.') } }
     finally { finish() }
   }
+  // Each note keeps its last text while it fades out, so exit animations never blank the copy.
+  const pendingRow = usePresence(Boolean(settings?.pendingFolder))
+  const shownPending = useRef('')
+  if (settings?.pendingFolder) shownPending.current = settings.pendingFolder
+  const unconfirmedNote = usePresence(Boolean(unconfirmed))
+  const shownUnconfirmed = useRef(unconfirmed)
+  if (unconfirmed) shownUnconfirmed.current = unconfirmed
+  const restartNote = usePresence(Boolean(restartAttempt))
+  const shownRestart = useRef(restartAttempt)
+  if (restartAttempt) shownRestart.current = restartAttempt
   if (companion) return <SettingsSection title="Application data folder"><SettingRow title="Desktop folder choice" description="Change the data folder on the main computer." /></SettingsSection>
   if (!settings && busy) return <SettingsLoading label="Loading application data folder" rows={1} />
   const blocked = busy || !settings?.canChange || Boolean(unconfirmed) || Boolean(restartAttempt)
@@ -112,15 +122,15 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
       control={<Button size="sm" disabled={blocked || Boolean(settings.pendingFolder)} onClick={() => void choose()}>Choose folder…</Button>}>
       <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{settings.currentFolder}</p>
     </SettingRow>}
-    {settings?.pendingFolder && <SettingRow title={settings.transitionState === 'publicationUnknown' ? 'Unconfirmed folder choice' : 'Saved folder choice'}
+    {pendingRow.mounted && <div className="uam-settings-presence" data-state={pendingRow.closing ? 'closed' : 'open'}><SettingRow title={settings?.transitionState === 'publicationUnknown' ? 'Unconfirmed folder choice' : 'Saved folder choice'}
       description="Your current folder remains in use."
       control={<div className="flex flex-wrap gap-2"><Button size="sm" disabled={blocked} onClick={() => void change('cancelDataFolderChoice')}>Cancel folder change</Button>
-        <Tooltip label="Restart is available after the folder change is validated"><span className="inline-flex"><Button size="sm" disabled={blocked || !settings.restartReady} onClick={() => setRestartConfirmation(true)}>Restart to use folder</Button></span></Tooltip></div>}>
-      <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{settings.pendingFolder}</p>
-    </SettingRow>}
+        <Tooltip label="Restart is available after the folder change is validated"><span className="inline-flex"><Button size="sm" disabled={blocked || !settings?.restartReady} onClick={() => setRestartConfirmation(true)}>Restart to use folder</Button></span></Tooltip></div>}>
+      <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{shownPending.current}</p>
+    </SettingRow></div>}
     {settings && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>{settings.message}</p>}
-    {unconfirmed && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>Unconfirmed {unconfirmed.action === 'chooseDataFolder' ? 'folder choice' : 'cancellation'}{unconfirmed.folder ? `: ${unconfirmed.folder}` : ''}. The request may have reached UAM. Refresh its state before making another change.</p>}
-    {restartAttempt && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>Restart requested for {restartAttempt.folder}. This does not confirm migration. Folder changes remain held until the application reopens.</p>}
+    {unconfirmedNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={unconfirmedNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Unconfirmed {shownUnconfirmed.current?.action === 'chooseDataFolder' ? 'folder choice' : 'cancellation'}{shownUnconfirmed.current?.folder ? `: ${shownUnconfirmed.current.folder}` : ''}. The request may have reached UAM. Refresh its state before making another change.</p>}
+    {restartNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={restartNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Restart requested for {shownRestart.current?.folder}. This does not confirm migration. Folder changes remain held until the application reopens.</p>}
     <ConfirmDialog open={Boolean(candidate)} title="Save this data-folder choice?" tone="primary" confirmLabel="Save folder choice" busy={busy}
       onCancel={() => { if (!busyRef.current) setCandidate('') }} onConfirm={() => { if (!unconfirmed) void change('chooseDataFolder') }}>
       <p className="break-all">{candidate}</p>

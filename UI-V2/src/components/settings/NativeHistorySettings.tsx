@@ -52,7 +52,7 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')) }
     else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
-  return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
+  return <SettingRow title="Import filters" description="Skipped sessions are never offered or imported." status="Chats already in UAM are not changed.">
     <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
       <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
@@ -113,7 +113,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
       if (!current || !mounted.current || request !== cacheRequest.current) return
       const data = response.ok ? parseStartupNativeImportPage(response.data) : null
       if (!data || data.generation !== status.generation) {
-        reportAppFailure('Native history discovery results could not be read.', response.error || 'Reopen Chat Data to retry.')
+        reportAppFailure('Native history discovery results could not be read.', response.error || 'Reopen chat data to retry.')
         return
       }
       setPage(data)
@@ -170,7 +170,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
         summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
         <ul className="uam-native-issues">{issues.map((group) => {
           const providerId = idForName(group.provider)
-          return <li key={`${group.provider}:${group.reason}`}>
+          return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
             <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
             <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
             {group.items.length > 0 && <Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure>}

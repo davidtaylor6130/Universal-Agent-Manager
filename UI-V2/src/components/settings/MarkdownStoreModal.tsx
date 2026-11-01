@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Disclosure, IconButton, MenuSelect, RowButton, Switch, useOverlayState } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, RowButton, SegmentedControl, Switch } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -20,7 +20,6 @@ const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
 
 /** Skills uses the same store actions in Settings and in the standalone library. Add, import and edit steps replace the list inside this dialog. */
 export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } = {}) {
-  const overlayState = useOverlayState()
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const entries = useAppStore(useShallow((s) => s.markdownStoreEntries))
@@ -317,42 +316,43 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   const childTitle = editing ? (editing === 'new' ? 'Create skill' : 'Edit skill') : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'
   // The add, import and editor steps replace the library list inside this dialog; they never stack a second dialog.
-  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className={`flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto py-4 outline-none${embedded ? '' : ' px-5'}`}>
+  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className={`uam-reveal flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto py-4 outline-none${embedded ? '' : ' px-5'}`}>
     {editing ? <>
       <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
-        <div className="flex items-center justify-between"><strong className="text-sm">{editing === 'new' ? 'New entry' : 'Edit entry'}</strong><Button variant="secondary" size="sm" onClick={() => setShowEditorPreview((value) => !value)}>{showEditorPreview ? 'Edit Markdown' : 'Preview Markdown'}</Button></div>
+        <div className="flex justify-end"><SegmentedControl aria-label="Entry view" options={[{ value: 'edit', label: 'Edit' }, { value: 'preview', label: 'Preview' }]} value={showEditorPreview ? 'preview' : 'edit'} onChange={(value) => setShowEditorPreview(value === 'preview')} /></div>
         <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="uam-field text-sm" />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="uam-field text-sm" /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group, for example Coding / Safety" className="uam-field text-sm" /></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><input aria-label="Entry maker" value={draft.maker} onChange={(event) => setDraft({ ...draft, maker: event.target.value })} placeholder="Maker" className="uam-field text-sm" /><input aria-label="Entry group" value={draft.group} onChange={(event) => setDraft({ ...draft, group: event.target.value })} placeholder="Group" className="uam-field text-sm" /></div>
         <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="uam-field text-sm" />
-        {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="text-sm resize-vertical" style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontFamily: 'var(--font-mono)' }} />}
+        {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="uam-field text-sm resize-vertical font-mono" />}
       </fieldset>
-      {confirmation ? <div ref={confirmationRef} role="group" aria-label={confirmation === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} className="p-3" style={{ border: '1px solid var(--border-bright)' }}>
-        <strong role="alert" className="text-sm">{confirmation === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}</strong>
-        {confirmation === 'overwrite' && <p className="text-xs mt-1">This replaces the saved entry.</p>}
-        <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
-          {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
-        </div>
+      {confirmation ? <div ref={confirmationRef} role="group" aria-label={confirmation === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} className="uam-reveal">
+        <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={confirmation === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}
+          actions={<>
+            <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
+            {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
+          </>}>
+          {confirmation === 'overwrite' && 'This replaces the saved entry.'}
+        </Notice>
       </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
     </> : imports.length ? <>
       <strong className="text-sm shrink-0">Import preview</strong>
-      <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <div key={candidate.id} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
+      <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <div key={candidate.id} title={candidate.sourcePath} className="uam-reveal flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} description={candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
-          {candidate.validationError && <span className="block" style={{ color: 'var(--error)' }}>{candidate.validationError}</span>}
+          <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
+          {candidate.validationError && <span className="flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{candidate.validationError}</span>}
         </div>
         {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label={`Collision action for ${candidate.title}`} disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip existing' }, { value: 'replace', label: 'Replace existing' }, { value: 'separate', label: 'Keep separate' }]} /></div>}
       </div>)}</div>
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
-      <div className="flex items-center justify-between"><strong>{addView === 'provider' ? 'Import from provider' : 'Add skill'}</strong><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
-      {addView === 'choose' ? <div aria-label="Add skill choices" className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 112px), 1fr))' }}>
+      <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
+      {addView === 'choose' ? <div aria-label="Add skill choices" className="flex flex-wrap gap-2">
         {[
-          { label: 'Create', icon: <Plus size={24} />, action: beginNew },
-          { label: 'Import from provider', icon: <Download size={24} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
-          { label: 'Import file', icon: <FileInput size={24} />, action: () => void chooseImport('file') },
-          { label: 'Import folder', icon: <FolderInput size={24} />, action: () => void chooseImport('folder') },
-        ].map((choice) => <Button key={choice.label} aria-label={choice.label} leadingIcon={choice.icon} disabled={previewing} onClick={choice.action} style={{ aspectRatio: '1 / 1', height: 'auto', flexDirection: 'column', whiteSpace: 'normal', padding: 8 }}>{choice.label}</Button>)}
+          { label: 'Create', icon: <Plus size={14} />, action: beginNew },
+          { label: 'Import from provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
+          { label: 'Import file', icon: <FileInput size={14} />, action: () => void chooseImport('file') },
+          { label: 'Import folder', icon: <FolderInput size={14} />, action: () => void chooseImport('folder') },
+        ].map((choice) => <Button key={choice.label} size="sm" aria-label={choice.label} leadingIcon={choice.icon} disabled={previewing} onClick={choice.action}>{choice.label}</Button>)}
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
         <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>
@@ -369,11 +369,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           {loading ? <SettingsLoading label="Loading skills" rows={5} /> : filtered.length === 0 ? (search.trim() || filter !== 'all'
             ? <p className="px-1 text-sm" style={{ color: 'var(--text-2)' }}>No skills match this view.</p>
             : visibleError ? null
-            : <div className="uam-store-empty">
-              <FileText size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
-              <div className="uam-store-empty__title">No skills yet</div>
-              <div className="uam-store-empty__desc">Create one, or import from a provider or file.</div>
-              <div className="uam-store-empty__action"><Button size="sm" onClick={openAddChoices}>Add skill</Button></div>
+            : <div className="grid justify-items-start gap-2 px-1 py-2">
+              <p className="text-sm" style={{ color: 'var(--text-3)' }}>No skills yet.</p>
+              <Button size="sm" onClick={openAddChoices}>Add skill</Button>
             </div>) : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}
         </div>
       </div>
@@ -392,16 +390,13 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
             </div>
           </div>
           <div key={selected.filePath} className="uam-reveal flex-1 min-h-0 overflow-auto px-5 py-4" style={{ overflowWrap: 'anywhere' }}><div className="uam-store-markdown"><MarkdownContent content={selected.body ?? selected.preview} /></div></div>
-        </> : <div className="uam-store-empty flex-1">
-          <FileText size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
-          <div className="text-sm">Select a skill to preview it.</div>
-        </div>}
+        </> : <p className="flex-1 px-5 py-4 text-sm" style={{ color: 'var(--text-3)' }}>Select a skill to preview it.</p>}
       </section>
     </div>
   </div>
 
-  return <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'uam-overlay uam-overlay--dim fixed inset-0 z-50 flex items-center justify-center p-4'} data-state={embedded ? undefined : overlayState}>
-    <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)', ...(embedded ? {} : { border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }) }}>
+  // Overlay has no attribute passthrough, so the dialog role stays on the panel.
+  const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
       {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
       <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}>
         <div className="uam-set-card">
@@ -414,7 +409,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </div>
       </div>
       <div className={`shrink-0 flex flex-wrap items-center gap-2 py-3${embedded ? '' : ' px-5'}`} style={{ borderBottom: '1px solid var(--border)' }}>
-        <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 px-2.5" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', height: 32 }}>
+        <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 px-2.5">
           <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
           <input type="search" aria-label="Search Skills" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: 0, outline: 'none', boxShadow: 'none' }} />
         </label>
@@ -424,18 +419,14 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
         <IconButton ref={addTriggerRef} className={markdownStoreDirectory && !entries.length ? 'uam-store-add--primary' : undefined} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={openAddChoices} />
       </div>
-      {!markdownStoreDirectory ? <div className="flex-1 min-h-0 flex flex-col py-4">
-        <div className="uam-store-card uam-store-empty flex-1">
-          <FolderOpen size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
-          <div className="uam-store-empty__title">Choose a skills folder</div>
-          <div className="uam-store-empty__desc">Skills are plain Markdown files kept in one folder. Pick where yours should live.</div>
-          <div className="uam-store-empty__action"><Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button></div>
-        </div>
+      {!markdownStoreDirectory ? <div className="grid justify-items-start gap-2 px-1 py-4">
+        <p className="text-sm" style={{ color: 'var(--text-3)' }}>Choose a skills folder to get started.</p>
+        <Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button>
       </div> : <div className={`flex-1 min-h-0 flex flex-col${embedded ? '' : ' px-5'}`} style={childOpen ? { display: 'none' } : undefined}>{library}</div>}
       {/* Hidden, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
       {childOpen && childPanel}
     </div>
-  </div>
+  return embedded ? <div className="h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">{panel}</div> : <Overlay open zIndex={50}>{panel}</Overlay>
 }
 
 /** Slash-separated groups are folders; pinning continues to use the persisted favorite flag. */
@@ -460,7 +451,7 @@ function SkillFolders({ entries, selectedPath, onSelect, onPin }: { entries: Mar
         <div className="ml-3 pl-2" style={{ borderLeft: '1px solid var(--border)' }}>{renderFolder(folder)}</div>
       </Disclosure>)}
       {node.entries.map((entry) => <div key={entry.filePath} className="uam-skill-row flex min-w-0 items-center gap-2" data-selected={entry.filePath === selectedPath}>
-        <RowButton type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, color: 'var(--text)', padding: 0 }}>
+        <RowButton type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left">
           <span className="flex min-w-0 flex-1 items-center gap-1.5"><span className="shrink-0 inline-flex" aria-hidden style={{ color: 'var(--text-3)' }}>{entry.sourceProvider ? <ProviderLogo providerId={normalizeCliProviderIdAlias(entry.sourceProvider)} size={13} /> : <FileText size={13} />}</span><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</span>
           <span className="ml-auto min-w-0 max-w-[45%] truncate text-xs" style={{ color: 'var(--text-3)' }}>{[entry.maker, entry.review || entry.preview].filter(Boolean).join(' · ')}</span>
         </RowButton>

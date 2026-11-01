@@ -162,7 +162,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     </button>
   }
   // ui: raw button kept — read-only overview tick/cross cell (role=checkbox); the overview cells are not restyled.
-  const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
+  const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available === undefined ? <Minus size={13}/> : available ? <Check size={13}/> : <X size={13}/>}</button>
   const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
   /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
@@ -179,7 +179,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const draftPresence = usePresence(!!draft?.error)
   // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
   useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
-  return <div className="space-y-3">
+  return <div className="grid gap-6">
     <div className="flex items-center gap-2 flex-wrap">
       <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
       <div className="ml-auto flex gap-1">

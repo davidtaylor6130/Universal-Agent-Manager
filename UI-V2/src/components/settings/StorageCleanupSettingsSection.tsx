@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, SegmentedControl, Switch } from '../ui'
+import { Button, ConfirmDialog, SegmentedControl, Switch, usePresence } from '../ui'
 import { NumberField } from './NumberField'
 import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
@@ -37,6 +37,8 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
   const days = (value: string, minimum: number) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) >= minimum && Number(value) <= 3650
   const worktreeValid = days(draft.worktree, 1)
   const storageValid = days(draft.logs, 0) && (!draft.periodic || days(draft.cache, 1))
+  const worktreeAlert = usePresence(!worktreeValid)
+  const storageAlert = usePresence(!storageValid)
   const save = async (group: 'worktree' | 'storage') => {
     if (busy.current || (group === 'worktree' ? !worktreeDirty || !worktreeValid : !storageDirty || !storageValid)) return
     busy.current = true; setSaving(group)
@@ -65,14 +67,14 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     <SettingsSection title="Worktrees">
       <SettingRow title="Worktree cleanup" description="Removes old worktrees only after safety checks." control={<Switch hideLabel label="Worktree cleanup" checked={draft.enabled} disabled={Boolean(saving)} onChange={(event) => edit({ enabled: event.currentTarget.checked })} />} />
       <SettingRow title="Worktree age" description="Branches and commits are kept." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)} />
-      {!worktreeValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
+      {worktreeAlert.mounted && <p role="alert" className="px-3 text-xs uam-settings-presence" data-state={worktreeAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button><SaveButton saving={saving === 'worktree'} disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>Save worktree settings</SaveButton></div>
     </SettingsSection>
     <SettingsSection title="Logs and cache">
       <SettingRow title="Backup log retention" description="Current logs are kept. 0 keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
       <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
       <SettingRow title="Cache interval" description="Starts counting without clearing at once." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)} />
-      {!storageValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
+      {storageAlert.mounted && <p role="alert" className="px-3 text-xs uam-settings-presence" data-state={storageAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button><SaveButton saving={saving === 'storage'} disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>Save backup and cache policy</SaveButton></div>
     </SettingsSection>
     <ConfirmDialog open={Boolean(exit)} title="Discard unsaved cleanup changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"

@@ -2,10 +2,10 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffec
 import { SaveButton, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
 import './settings-shell.css'
-import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, Notice, RowButton, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Overlay, RowButton, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -211,6 +211,9 @@ function buildMemoryLocationGroups(
 
 export interface MemoryLibraryHandle { requestLeave(next: () => void): void }
 
+// Location rows: colour follows the active state here instead of inline styles.
+const LOCATION_ROW_CLASS = 'relative z-[1] flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-2)] transition-colors duration-150 data-[active=true]:text-[var(--text)]'
+
 export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: boolean }>(function MemoryLibraryModal({ embedded = false }, ref) {
   const liveScope = useAppStore((s) => s.memoryLibraryScope)
   const liveEntries = useAppStore(useShallow((s) => s.memoryLibraryEntries))
@@ -415,7 +418,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     }
 
     if (!ok) {
-      setLocalError(useAppStore.getState().memoryLibraryError || 'Could not save memory. Try again.')
+      // A store error is already shown in the Notice; only fall back to local copy when there is none.
+      setLocalError(useAppStore.getState().memoryLibraryError ? '' : 'Could not save memory. Try again.')
       return false
     }
 
@@ -438,22 +442,15 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     .filter((reference) => reference.type === 'workspace-folder')
     .map((reference) => reference.target)))
 
-  return (
-    <div
-      ref={libraryRef}
-      className={embedded ? "h-full min-h-0" : "uam-overlay uam-overlay--dim fixed inset-0 z-50 flex items-center justify-center"}
-      data-state={embedded ? undefined : overlayState}
-      onClick={(event) => {
-        if (!embedded && event.target === event.currentTarget) requestClose()
-      }}
-    >
+  const panel = (
       <div
+        ref={libraryRef}
         role={embedded ? "region" : "dialog"}
         aria-modal={embedded ? undefined : true}
         aria-label={memoryTitle}
         tabIndex={-1}
-        className={embedded ? "flex flex-col min-h-0 h-full" : "rounded-2xl shadow-2xl w-full max-w-6xl mx-4 overflow-hidden flex flex-col"}
-        style={embedded ? { minHeight: 0 } : { background: 'var(--surface)', border: '1px solid var(--border-bright)', height: 'min(780px, calc(100vh - 2rem))' }}
+        className={embedded ? "flex flex-col min-h-0 h-full" : "flex w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border-bright)] bg-[var(--surface)] shadow-[var(--elev-3)] h-[min(780px,calc(100vh-2rem))]"}
+        style={embedded ? { minHeight: 0 } : undefined}
       >
         {!embedded && <div
           className="flex items-center justify-between px-5 py-4"
@@ -495,14 +492,11 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       data-active={active}
                       aria-current={active ? 'page' : undefined}
                       onClick={() => chooseLocation(location.key)}
-                      className="relative z-[1] flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition-colors duration-150"
-                      style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}
+                      title={location.rootPath}
+                      className={LOCATION_ROW_CLASS}
                     >
                       <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium">{location.label}</span>
-                        <span className="block truncate text-xs" style={{ color: 'var(--text-3)' }}>{location.rootPath}</span>
-                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium">{location.label}</span>
                       <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
                     </RowButton>
                   )
@@ -517,14 +511,13 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   return (
                     <div key={collection.id} className="mt-1">
                       <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold" style={{ color: 'var(--text-2)' }}>
-                        <ChevronDown size={13} aria-hidden className="transition-transform duration-150" />
                         <Library size={13} aria-hidden />
                         <span className="truncate">{collection.name}</span>
                       </div>
                       <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
                         {locations.map((location) => {
                           const active = location.key === selectedLocation?.key
-                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
+                          return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                         })}
                       </div>
                     </div>
@@ -535,7 +528,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
-                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left relative z-[1] transition-colors duration-150" data-active={active} style={{ background: 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
+                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
                     })}
                   </div>
                 )}
@@ -547,27 +540,27 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
             {pendingDelete && (
-              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <p className="text-sm font-semibold">Delete memory entry?</p>
-                <p className="text-sm" style={{ color: 'var(--text-2)' }}>This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.</p>
-                <div className="flex justify-end gap-2">
+              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="uam-reveal mb-4">
+                <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
                   <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
                   <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id); setPendingDeleteEntryId(null) }}>Delete memory</Button>
-                </div>
+                </>}>
+                  This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.
+                </Notice>
               </div>
             )}
             {pendingMassDeleteEntryIds && (
-              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} className="space-y-3 rounded-md p-3 mb-4" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-                <p className="text-sm font-semibold">{hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}</p>
-                <p className="text-sm" style={{ color: 'var(--text-2)' }}>This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.</p>
-                <div className="flex justify-end gap-2">
+              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} className="uam-reveal mb-4">
+                <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'} actions={<>
                   <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
                   <Button variant="danger" onClick={() => { void deleteMemoryEntries(pendingMassDeleteEntryIds); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
-                </div>
+                </>}>
+                  This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
+                </Notice>
               </div>
             )}
             {!isAdding && <div className="flex items-center gap-2 mb-4">
-              <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 bg-[var(--surface-up)] border border-[var(--border)]">
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
                 aria-label="Search memory library"
@@ -577,8 +570,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   setSearchQuery(value)
                 }}
                 placeholder="Search memory"
-                className="w-full py-2 text-sm outline-none"
-                style={{ background: 'transparent', color: 'var(--text)', border: 0 }}
+                className="w-full bg-transparent py-2 text-sm text-[var(--text)] outline-none"
               />
               </label>
               {!isAllMemory && <IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/>}
@@ -602,12 +594,13 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
             {isAdding ? (
               <div role="group" aria-label="New memory" className="space-y-3">
-              <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New memory</h3><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
+              <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
               {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
               {pendingExit && (
                 <div role="group" aria-label="Unsaved memory" className="space-y-4">
                   <p className="text-sm font-semibold">Save this memory before leaving?</p>
                   {localError && <p role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError}</p>}
+                  {/* Store errors show once, in the Notice above; localError only holds failures the store did not report. */}
                   <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
                 </div>
               )}
@@ -702,7 +695,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       </label>
                     </div>
 
-                    {(localError || memoryLibraryError) && <div role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError || memoryLibraryError}</div>}
+                    {localError && <div role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError}</div>}
                     <SaveButton
                       saving={submitting}
                       pendingLabel="Saving..."
@@ -715,7 +708,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               </div>
               </div>
             ) : viewingEntry ? (
-              <div key={viewingEntry.id} className="space-y-4 animate-fade-in">
+              <div key={viewingEntry.id} className="space-y-4 uam-reveal">
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="ghost" onClick={() => setViewingEntryId(null)}><ArrowLeft size={14} aria-hidden />Back</Button>
                   <div className="flex-1" />
@@ -727,7 +720,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   <dt>Category</dt><dd style={{ color: 'var(--text-2)' }}>{memoryCategoryLabel(viewingEntry.category)}</dd>
                   <dt>Confidence</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.confidence}</dd>
                   <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>
-                  <dt>Scope</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.scope}</dd>
+                  <dt>Scope</dt><dd style={{ color: 'var(--text-2)' }}>{memoryLocationLabel(viewingEntry, memoryLibraryScope)}</dd>
                   {viewingEntry.sourceChatId && <><dt>Source chat</dt><dd style={{ color: 'var(--text-2)' }}>{chatTitleById.get(viewingEntry.sourceChatId) ?? viewingEntry.sourceChatId}</dd></>}
                   {viewingEntry.lastObserved && <><dt>Last seen</dt><dd style={{ color: 'var(--text-2)' }} title={viewingEntry.lastObserved}>{formatObserved(viewingEntry.lastObserved)}</dd></>}
                   <dt>File</dt><dd className="uam-store-path" style={{ color: 'var(--text-2)' }}>{viewingEntry.filePath}</dd>
@@ -737,20 +730,12 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             ) : memoryLibraryLoading ? (
               <SettingsLoading label="Loading memory library" rows={4} />
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
-              memoryLibraryError ? null : <div className="uam-store-card uam-store-empty">
-                {hasSearchQuery
-                  ? <SearchX size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
-                  : <FolderOpen size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />}
-                <div className="uam-store-empty__title">
-                  {hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
-                </div>
-                <div className="uam-store-empty__desc">
-                  {hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
-                </div>
-                {!hasSearchQuery && <div className="uam-store-empty__action"><Button variant="primary" size="sm" onClick={() => {setLocalError(''); setIsAdding(true)}}>Add memory</Button></div>}
+              memoryLibraryError ? null : <div className="grid justify-items-start gap-3">
+                <p className="text-sm" style={{ color: 'var(--text-3)' }}>{hasSearchQuery ? 'No memory matches this search.' : 'No memory saved here yet.'}</p>
+                {!hasSearchQuery && <Button variant="primary" size="sm" onClick={() => {setLocalError(''); setIsAdding(true)}}>Add memory</Button>}
               </div>
             ) : selectedLocation ? (
-              <div key={selectedLocation.key} className="space-y-4 animate-fade-in">
+              <div key={selectedLocation.key} className="space-y-4 uam-reveal">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
                   <div className="mt-0.5 text-xs truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
@@ -773,7 +758,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                                     <span className="uam-memory-row__summary">{entry.preview || 'No preview available.'}</span>
                                   </RowButton>
                                   <span className="uam-memory-row__meta">
-                                    <span>{entry.scope}</span>
+                                    <span>{memoryLocationLabel(entry, memoryLibraryScope)}</span>
                                     {entry.lastObserved && <span title={entry.lastObserved}>{formatObserved(entry.lastObserved)}</span>}
                                   </span>
                                   <div className="uam-memory-row__actions flex items-center gap-1">
@@ -790,6 +775,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           </div>
         </div>
       </div>
-    </div>
   )
+  // Embedded in Settings it sits in the page; standalone it is an Overlay dialog.
+  return embedded
+    ? <div className="h-full min-h-0">{panel}</div>
+    : <Overlay open zIndex={50} onBackdropMouseDown={requestClose}>{panel}</Overlay>
 })

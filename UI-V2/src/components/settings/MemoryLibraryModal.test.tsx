@@ -141,7 +141,7 @@ describe('MemoryLibraryModal all memory scope', () => {
   it('separates memory locations into a navigation rail', () => {
     const { host, root } = renderModal()
 
-    expect(host.textContent).toContain('All memory')
+    expect(document.body.textContent).toContain('All memory')
     const locations = document.body.querySelector('nav[aria-label="Memory locations"]') as HTMLElement
     expect(locations).toBeTruthy()
     expect(document.body.textContent).toContain('Global memory')
@@ -272,7 +272,7 @@ describe('MemoryLibraryModal all memory scope', () => {
     expect(document.body.textContent).toContain('General')
     expect(document.body.textContent).toContain('Local lesson')
     expect(document.body.textContent).toContain('Local failure')
-    expect(host.textContent).not.toContain('Global lesson')
+    expect(document.body.textContent).not.toContain('Global lesson')
     expect(document.body.querySelector('nav[aria-label="Memory locations"] button[aria-current="page"]')?.textContent).toContain('General')
 
     act(() => {
@@ -309,7 +309,6 @@ describe('MemoryLibraryModal all memory scope', () => {
     changeInput(searchInput, 'nothing-matches-this')
 
     expect(document.body.textContent).toContain('No memory matches this search')
-    expect(document.body.textContent).toContain('Try another term or clear the search.')
     expect(document.body.textContent).not.toContain('No memory saved here yet')
 
     act(() => root.unmount())

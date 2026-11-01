@@ -18,7 +18,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -56,7 +56,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
+import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -123,16 +123,6 @@ function PresencePanel({ open, id, className, children }: { open: boolean; id?: 
   return <div id={id} className={cx('uam-settings-presence', className)} data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
 }
 
-function selectPolicyWithArrowKeys(event: ReactKeyboardEvent<HTMLDivElement>) {
-  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
-  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'))
-  if (!buttons.length) return
-  const index = Math.max(0, buttons.indexOf(document.activeElement as HTMLButtonElement))
-  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-    : (index + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
-  event.preventDefault(); buttons[next].focus(); buttons[next].click()
-}
-
 interface SettingsDraftHandle { requestLeave: (next: () => void) => void }
 
 const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputControls(_props, ref) {
@@ -192,12 +182,9 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     <SettingsSection title="Dictation">
       <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
         <div className="grid justify-items-end gap-1">
-          <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
-            {voiceModes.map((option) =>
-              <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
-                disabled={saving || capabilities?.[option.id]?.supported !== true}
-                onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
-          </div>
+          <SegmentedControl aria-label="Transcription service" value={draft.mode} disabled={saving}
+            options={voiceModes.map((option) => ({ value: option.id, label: option.label, disabled: capabilities?.[option.id]?.supported !== true }))}
+            onChange={(mode) => edit({ ...draft, mode })} />
           {/* Visible reasons: a disabled radio cannot show its own tooltip. */}
           {unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}
         </div>
@@ -254,9 +241,8 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
   }
   return <>
     {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
-        control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
-          options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
-          onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
+        control={<Switch hideLabel label={`${providerShortName(provider, provider.id)} available`} checked={draft[provider.id]} disabled={saving}
+          onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })); setError('') }} />} />)}
       {error && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice></div>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
@@ -350,7 +336,6 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
     }}>
       <SettingRow
         title="Start runner at login"
-        description="Starts the helper when you sign in."
         status={startupStatus}
         control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
@@ -362,7 +347,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         />
       )}
       <SettingsField label="Host instructions" htmlFor={`remote-host-instructions-${host.id}`} hint={textHint}>
-        <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full font-mono" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
+        <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
         {textError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span>}
         {inlineText !== null && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div>}
       </SettingsField>
@@ -370,9 +355,10 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
       </SettingsField>
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
+        {saveReason && (textError || instructionError) && <span id={`remote-host-save-reason-${host.id}`} className="mr-auto text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span>}
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
-        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} title={saveReason}>Save host options</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} aria-describedby={textError || instructionError ? `remote-host-save-reason-${host.id}` : undefined}>Save host options</Button>
       </div>
     </form>
   )
@@ -1020,8 +1006,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return
     }
     const text = result.status === 'complete'
-      ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}.`
-      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} received new local IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
+      ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
+      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
     if (result.status === 'complete') reportAppNotice(text, 'success')
     else reportAppFailure(text, 'Check the chat data folder and try again.')
   }
@@ -1042,12 +1028,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     setRemoteHostBusy(host.id, true)
     setRemoteMessage(null)
-	setRemoteCustomDirectory(Boolean(host.runnerDirectory))
-	setRemoteDirectory(host.runnerDirectory || 'uam-helper')
+    setRemoteCustomDirectory(Boolean(host.runnerDirectory))
+    setRemoteDirectory(host.runnerDirectory || 'uam-helper')
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
-      setRemoteMessage({ tone: 'error', text: response.error || 'The remote setup preview could not be created.' })
+      reportAppFailure(response.error || 'The remote setup preview could not be created.', 'Check the SSH alias and try again.')
       return
     }
     setRemotePreview(response.data)
@@ -1055,18 +1041,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
   const installRemoteHost = async () => {
     if (!remotePreview || isRemoteHostBusy(remotePreview.host.id)) return
-	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
-	if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
+    const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
+    if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
     setRemoteHostBusy(remotePreview.host.id, true)
     setRemoteMessage({ tone: 'info', text: 'Connecting, verifying the copied helper, and starting the runner…' })
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
     setRemoteHostBusy(remotePreview.host.id, false)
+    setRemoteMessage(null)
     if (!response.ok) {
       setRemotePreview(null)
-      setRemoteMessage({ tone: 'error', text: response.error || 'Remote helper setup failed.' })
+      reportAppFailure(response.error || 'Remote helper setup failed.', 'Check the SSH connection and try again.')
       return
     }
-    setRemoteMessage({ tone: 'success', text: `${remotePreview.host.label} is ready.` })
+    reportAppNotice(`${remotePreview.host.label} is ready.`, 'success')
     setRemotePreview(null)
     setRemoteAlias('')
     setRemoteLabel('')
@@ -1078,7 +1065,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     // instructionText is omitted unless changed, so the backend keeps the saved text.
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? { tone: 'success', text: `${host.label} options saved.` } : { tone: 'error', text: response.error || 'SSH host options could not be saved.' })
+    if (response.ok) reportAppNotice(`${host.label} options saved.`, 'success')
+    else reportAppFailure(response.error || 'SSH host options could not be saved.', 'Try again.')
   }
 
   const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
@@ -1086,7 +1074,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteHostBusy(host.id, true)
     void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
       setRemoteHostBusy(host.id, false)
-      setRemoteMessage(response.ok ? { tone: 'success', text: `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` } : { tone: 'error', text: response.error || 'Host instruction file could not be read.' })
+      if (response.ok) reportAppNotice(`Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.`, 'success')
+      else reportAppFailure(response.error || 'Host instruction file could not be read.', 'Check the instruction file path and try again.')
     })
   }
 
@@ -1096,7 +1085,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    setRemoteMessage(response.ok ? { tone: 'success', text: `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` } : { tone: 'error', text: response.error || 'Remote host removal failed.' })
+    if (response.ok) reportAppNotice(`${host.label} was removed from UAM. Any helper files on that machine were left untouched.`, 'success')
+    else reportAppFailure(response.error || 'Remote host removal failed.', 'Try again.')
   }
 
   useEffect(() => {
@@ -1138,10 +1128,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setOpenCliVersionMenu(null)
         return
       }
-	  if (remotePreview) {
-		if (!remoteBusy) setRemotePreview(null)
-		return
-	  }
+      if (remotePreview) {
+    if (!remoteBusy) setRemotePreview(null)
+    return
+      }
       if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
       requestClose()
     }
@@ -1441,25 +1431,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     </label>
                     <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                       <legend>Base</legend>
-                      <div role="radiogroup" aria-label="Theme base" className="grid grid-cols-2 gap-1 rounded-md p-1" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                        {(['dark', 'light'] as const).map((base) => {
-                          // ui: raw button kept — role=radio inside a radiogroup; SegmentedControl exposes aria-pressed, not radio semantics.
-                          const selected = themeDraft.base === base
-                          return (
-                            <button
-                              key={base}
-                              type="button"
-                              role="radio"
-                              aria-checked={selected}
-                              onClick={() => setThemeDraft({ ...themeDraft, base })}
-                              className="rounded px-2 py-1 capitalize transition-colors duration-150"
-                              style={{ background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--text)' : 'var(--text-2)' }}
-                            >
-                              {base}
-                            </button>
-                          )
-                        })}
-                      </div>
+                      <SegmentedControl aria-label="Theme base" value={themeDraft.base} disabled={themeSaving}
+                        options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+                        onChange={(base) => setThemeDraft({ ...themeDraft, base })} />
                     </fieldset>
                   </div>}
                   {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -1999,7 +1973,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         ? memoryModelOptions(reviewerProvider, reviewerProvider.id, permissionReviewerModelId, reviewerAcp?.availableModels)
         : []
       return (
-        <div className="space-y-4">
+        <div className="grid gap-0">
           {!scopedProviderId && <SettingsSection title="Chats">
             <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
@@ -2035,8 +2009,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </>}
           </SettingsSection>}
           {scopedProviderId && <SettingsSection title="Chat defaults">
-            <div className="grid gap-4">
-              <div className="space-y-3">
+            <div className="grid gap-0">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
@@ -2048,6 +2021,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
+                  const refreshFailed = Boolean(modelRefreshError && !modelsLoading)
                   const modelOptions = buildModelOptions(providerAcp, defaults.modelId, provider, provider.id, true)
                   const reviewerModelOptions = buildModelOptions(providerAcp, defaults.reviewerModelId || defaults.modelId, provider, provider.id, true)
                   const liveReasoningOptions = buildProviderReasoningOptions(provider.id, providerAcp, defaults.modelId, defaults.reasoningEffort)
@@ -2087,7 +2061,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           <Disclosure summary={<span className="flex min-w-0 flex-1 items-center justify-between gap-2"><span>Model visibility</span><span style={{ color: 'var(--text-3)' }}>{(defaults.hiddenProviderIds?.length ?? 0) + (defaults.hiddenModelIds?.length ?? 0) ? [visibilityGroups.length && defaults.hiddenProviderIds?.length ? `${defaults.hiddenProviderIds.length} providers` : '', defaults.hiddenModelIds?.length ? `${defaults.hiddenModelIds.length} models` : ''].filter(Boolean).join(', ') + ' hidden' : 'All shown'}</span></span>}>
                             <div className="grid gap-1">
                               {!visibilityGroups.length && modelOptions.filter((option) => option.id).map((option) => (
-                                <div key={option.id} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--bg)' }}>
+                                <div key={option.id} className="flex items-center justify-between gap-2 py-1.5" style={{ borderTop: '1px solid var(--border)' }}>
                                   <span className="truncate" style={{ color: defaults.hiddenModelIds?.includes(option.id) ? 'var(--text-3)' : 'var(--text)' }}>{option.label}</span>
                                   <Switch hideLabel label={option.label} checked={!defaults.hiddenModelIds?.includes(option.id)} onChange={() => toggleVisibility('hiddenModelIds', option.id)} />
                                 </div>
@@ -2098,7 +2072,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 const shownCount = groupModels.filter((option) => !defaults.hiddenModelIds?.includes(option.id)).length
                                 return (
                                   // ui: the group switch cannot sit inside the disclosure button, so it is a sibling of the Disclosure.
-                                  <div key={group} className="flex items-center gap-2 rounded-md px-2 py-1.5" style={{ background: 'var(--bg)' }}>
+                                  <div key={group} className="flex items-center gap-2 py-1.5" style={{ borderTop: '1px solid var(--border)' }}>
                                     <Switch hideLabel label={`Show ${group}`} checked={groupShown} onChange={() => toggleVisibility('hiddenProviderIds', group)} />
                                     <Disclosure className="min-w-0 flex-1" summary={<span className="flex min-w-0 flex-1 items-center gap-2"><span className="min-w-0 flex-1 truncate font-medium" style={{ color: groupShown ? 'var(--text)' : 'var(--text-3)' }}>{group}</span><span style={{ color: 'var(--text-3)' }}>{groupShown ? `${shownCount}/${groupModels.length}` : 'hidden'}</span></span>}>
                                       <div className="grid gap-0.5 pb-1.5 pl-6 pr-2" style={{ opacity: groupShown ? 1 : 0.5 }}>
@@ -2229,7 +2203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             />
                           </div>
                         </Disclosure>
-                        {modelRefreshError && !modelsLoading ? (
+                        <PresencePanel open={refreshFailed}>
                           <Notice
                             key={`${provider.id}:${providerWorkspace}:${modelRefreshError}`}
                             tone="error"
@@ -2238,23 +2212,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           >
                             {modelRefreshError}
                           </Notice>
-                        ) : (
+                        </PresencePanel>
+                        {!refreshFailed && (
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? 'Model catalog available' : 'Using provider defaults; refresh to discover models'}
+                            {modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}
                           </span>
                         )}
                       </div>
                     </ProviderDisclosureCard>
                   )
                 })}
-              </div>
             </div>
           </SettingsSection>}
         </div>
       )
     }
 
-    if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') return <div className="space-y-4">{renderPhoneAccess()}</div>
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') return <div className="grid gap-0">{renderPhoneAccess()}</div>
 
     if (selectedSection === 'agents') {
       const selectableCustomAgents = activeUamAgents
@@ -2308,7 +2282,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportBusy(false)
       }
       return (
-        <div className="space-y-4">
+        <div className="grid gap-0">
           <SettingsSection
             title="Agent cycle"
             actions={
@@ -2427,7 +2401,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div className="grid gap-3">
                   <SettingRow
                     title={agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
-                    description={agentImportPreview.mode || 'unknown mode'}
+                    description={agentImportPreview.mode || 'Unknown mode'}
                   />
                   {agentImportPreview.securityFields.length > 0 && (
                     <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</Notice>
@@ -2475,7 +2449,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       </div>
                       {agentImportPreview.ignoredFields.length > 0 && (
                         <SettingRow
-                          title="I understand the listed provider-only fields will not be copied."
+                          title="Omit listed fields"
+                          description="Copies the rest of the agent. Listed fields are not copied."
                           control={<Switch hideLabel label="Acknowledge omitted provider fields" checked={agentImportAcknowledged} onChange={(event) => setAgentImportAcknowledged(event.target.checked)} />}
                         />
                       )}
@@ -2502,7 +2477,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'cli-version') {
       const managers = (effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId)
       return (
-        <div ref={cliVersionMenuRef} className="grid gap-3">
+        <div ref={cliVersionMenuRef} className="grid gap-0">
           {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">Choose a computer above to manage its CLI version.</Notice>}
           {managers.length === 0 && <Notice tone="info" dismissible={false} dismissLabel="Dismiss">No CLI installation information is available. Check the provider on this host.</Notice>}
           {managers.map((manager) => {
@@ -2601,10 +2576,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
       return (
-        <div className="space-y-4">
-          {COMPUTER_USE_ENABLED && <Disclosure summary="Remote Computer Use is off">
-            <p className="text-xs" style={{ color: 'var(--text-3)' }}>Remote chats can't see or control the screen.</p>
-          </Disclosure>}
+        <div className="grid gap-0">
+          {COMPUTER_USE_ENABLED && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</p>}
 
           <SettingsSection
             title="Add a host"
@@ -3012,7 +2985,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <NativeHistorySettings onFiltersDirtyChange={setImportFiltersDirty} />
           <SettingsSection title="Chat bundle">
             <SettingRow
-              title="Export all chats"
+              title="Export"
               description="Writes to a new or empty folder."
               status={chatDataFolder ? <span className="break-all font-mono">Last folder: {chatDataFolder}</span> : undefined}
               control={
@@ -3028,7 +3001,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             <SettingRow
-              title="Import a chat bundle"
+              title="Import"
               description="Clashing chats are copied with new IDs."
               control={
                 <Button
@@ -3107,7 +3080,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const header = <div className="uam-settings-page-header w-full">
                   <div key={selectedSection} className="uam-reveal min-w-0">
                     <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
-                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="uam-settings-page-header__description">{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
                   </div>
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
@@ -3157,24 +3129,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   			  <p>Uses your existing SSH login, copies the matching helper, checks its SHA-256, and starts it. Unsupported systems stop before copying.</p>
   			  <fieldset className="grid gap-2">
   				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
-  				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
-  				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
-  				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
-  				</label>
-  				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
-  				  <label className="flex cursor-pointer items-start gap-2">
-  					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
-  					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
-  				  </label>
-  				  <div className="ml-6">
-  					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field mt-2 w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
-  					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-  					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
-  					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-  				  </div>
-  				</div>
+  				<SegmentedControl
+  				  aria-label="Install location"
+  				  value={remoteCustomDirectory ? 'custom' : 'private'}
+  				  disabled={remoteBusy}
+  				  onChange={(value) => setRemoteCustomDirectory(value === 'custom')}
+  				  options={[{ value: 'private', label: 'Recommended location' }, { value: 'custom', label: 'Custom folder' }]}
+  				/>
+  				{!remoteCustomDirectory && <span className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span>}
+  				{remoteCustomDirectory && <div className="grid gap-1">
+  				  <input aria-label="Remote helper folder" aria-invalid={Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
+  				  <span id="remote-helper-folder-help" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+  				  {remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
+  				  {!remoteDirectoryValidation && <span className="block break-all font-mono text-[length:var(--fs-xs)]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
+  				</div>}
   			  </fieldset>
-  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
+  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[length:var(--fs-xs)]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
             </div>
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>

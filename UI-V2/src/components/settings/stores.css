@@ -47,3 +47,6 @@
 .uam-memory-row__actions { flex-shrink: 0; opacity: .55; transition: opacity var(--dur-fast) var(--ease); }
 .uam-memory-row:hover .uam-memory-row__actions,
 .uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; }
+
+/* Skills dialog panel: the Overlay supplies the backdrop; this is the panel's edge and elevation. */
+.uam-skills-dialog { border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }

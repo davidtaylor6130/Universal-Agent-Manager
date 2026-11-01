@@ -216,7 +216,7 @@ describe('MarkdownStoreModal', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(group, 'Coding / Review')
       group.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview Markdown')?.click())
+    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview')?.click())
     expect(host.textContent).toContain('Find regressions')
 
     await confirmSave()
@@ -447,7 +447,7 @@ describe('MarkdownStoreModal', () => {
 
   })
 
-  it('embeds the library, loads real store data, and keeps Add as four square choices', async () => {
+  it('embeds the library, loads real store data, and keeps Add as four choices', async () => {
     const { host } = mountSkills(true)
     await act(async () => { await Promise.resolve() })
     expect(useAppStore.getState().refreshMarkdownStore).toHaveBeenCalledTimes(1)
@@ -461,10 +461,9 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
     click('Add skill')
     const choices = host.querySelector('[aria-label="Add skill choices"]') as HTMLElement
-    expect(choices.style.gridTemplateColumns).toContain('auto-fit')
+    expect(choices.className).toContain('flex-wrap')
     expect(Array.from(choices.querySelectorAll('button')).map((item) => item.textContent)).toEqual(['Create', 'Import from provider', 'Import file', 'Import folder'])
     for (const choice of choices.querySelectorAll('button')) {
-      expect(choice.style.aspectRatio).toBe('1 / 1')
       expect(choice.querySelector('svg')).toBeTruthy()
     }
     expect(escape().defaultPrevented).toBe(true)

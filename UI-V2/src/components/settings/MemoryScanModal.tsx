@@ -4,6 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, Overlay, Switch, useOverlayState } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
+import { providerMetadataForId } from '../../utils/providerMetadata'
 import { SettingRow, SettingsLoading } from './SettingsPrimitives'
 import './provider-settings.css'
 
@@ -55,10 +56,7 @@ export function MemoryScanModal() {
         className="uam-scan-dialog uam-mcp-dialog"
       >
         <div className="uam-scan-head">
-          <div className="min-w-0">
-            <div className="uam-scan-title">Scan current chats</div>
-            <div className="uam-prov-sub">Add durable memory from existing chat history. Only the chats you select are read.</div>
-          </div>
+          <div className="uam-scan-title min-w-0">Scan current chats</div>
           <IconButton
             icon={<X size={16} />}
             label="Close scan modal"
@@ -86,27 +84,31 @@ export function MemoryScanModal() {
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />
           ) : memoryScanCandidates.length === 0 ? (
-            <div className="uam-store-empty">
-              <div className="uam-store-empty__desc">No eligible chats are available to scan right now.</div>
-            </div>
+            <p className="text-sm" style={{ color: 'var(--text-3)' }}>No eligible chats are available to scan right now.</p>
           ) : (
             <div className="uam-set-card">
               {memoryScanCandidates.map((candidate) => {
                 const selected = selectedMemoryScanChatIds.includes(candidate.chatId)
+                const providerName = providerMetadataForId(candidate.providerId).name
                 return (
                   <SettingRow
                     key={candidate.chatId}
-                    title={<span className="uam-scan-title-row">
+                    title={<span
+                      className="uam-scan-title-row"
+                      title={`${providerName} · Last scanned ${candidate.memoryLastProcessedAt || 'not yet'}`}
+                    >
                       {candidate.title}
                       {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
                     </span>}
                     description={`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}
-                    status={<span>Provider <span className="uam-prov-detail">{candidate.providerId}</span> · Last scanned {candidate.memoryLastProcessedAt || 'never'}</span>}
                     control={<Switch hideLabel label={`Include ${candidate.title}`} checked={selected} disabled={memoryScanRunning} onChange={() => toggleMemoryScanChat(candidate.chatId)} />}
                   />
                 )
               })}
             </div>
+          )}
+          {!memoryScanLoading && memoryScanCandidates.length > 0 && (
+            <p className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
           )}
         </div>
 
@@ -122,6 +124,7 @@ export function MemoryScanModal() {
           <Button
             variant="primary"
             size="sm"
+            loading={memoryScanRunning}
             onClick={() => void startMemoryScan()}
             disabled={memoryScanRunning || selectedMemoryScanChatIds.length === 0}
           >
