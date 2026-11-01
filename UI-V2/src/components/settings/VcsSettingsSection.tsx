@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { useShallow } from 'zustand/react/shallow'
 import { Button, ConfirmDialog, Notice, SegmentedControl, Switch, usePresence } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
-import { reportAppFailure } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -46,6 +46,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
         gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
       setDraft(accepted); setBaseline(accepted); setExit(null)
+      reportAppNotice('VCS settings saved.', 'success')
     } catch { reportAppFailure('Could not save VCS settings.', 'Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
   }

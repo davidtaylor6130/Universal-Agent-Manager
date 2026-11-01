@@ -226,14 +226,15 @@
   color: var(--text);
   opacity: 0;
   transform: translateX(-50%);
+  translate: 0 4px;
   pointer-events: none;
-  transition: opacity var(--dur-fast) var(--ease-out-soft);
+  transition: opacity var(--dur-fast) var(--ease-out-soft), translate var(--dur-fast) var(--ease-out-soft);
 }
 .uam-usage-col.is-start .uam-usage-col-tip { left: 0; transform: none; }
 .uam-usage-col.is-end .uam-usage-col-tip { left: auto; right: 0; transform: none; }
 .uam-usage-col.is-high .uam-usage-col-tip { bottom: auto; top: 2px; }
 .uam-usage-col:hover .uam-usage-col-tip,
-.uam-usage-col:focus-visible .uam-usage-col-tip { opacity: 1; }
+.uam-usage-col:focus-visible .uam-usage-col-tip { opacity: 1; translate: 0 0; }
 .uam-usage-tip-head { color: var(--text-2); }
 .uam-usage-tip-head b { font-weight: 600; color: var(--text); }
 .uam-usage-tip-row { display: flex; align-items: center; gap: 6px; }

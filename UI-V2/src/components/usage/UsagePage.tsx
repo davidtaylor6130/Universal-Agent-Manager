@@ -7,6 +7,7 @@ import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GE
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, Disclosure, IconButton, MenuSelect, RowButton, SegmentedControl, Tooltip, cx, usePresence } from '../ui'
+import { reportAppNotice } from '../../utils/appFailure'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
 
@@ -118,7 +119,6 @@ function StatTile({ label, value, sub, title }: { label: string; value: string; 
   </div>
 }
 
-/** Segmented choice whose active highlight is one element that glides (translateX + width) to the pressed option. */
 const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`
 
 function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; prices: UsagePriceOverride[]; onSave: (prices: UsagePriceOverride[]) => void; onClose: () => void }) {
@@ -136,7 +136,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
       if (next.length >= 200) { setError('Up to 200 model prices can be saved. Remove an unused override first.'); return }
       next.push({ providerId: model.providerId, modelId: model.modelId, speed: model.speed, inputPerMillion: values[0], cachedInputPerMillion: values[1], cacheWritePerMillion: values[2], outputPerMillion: values[3] })
     }
-    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose() } catch { setError('Could not save prices on this device. Your previous prices were kept.') }
+    try { window.localStorage.setItem(PRICE_KEY, JSON.stringify(next)); onSave(next); onClose(); reportAppNotice(remove ? 'Price override removed.' : 'Model prices saved.', 'success') } catch { setError('Could not save prices on this device. Your previous prices were kept.') }
   }
   return <form className="grid gap-3 py-4" aria-label={`Prices for ${model.modelId}`} onSubmit={event => { event.preventDefault(); save() }}>
     <p className="text-xs">USD per million tokens. Blank rates stay unknown. These estimates do not change provider billing.</p>
@@ -373,7 +373,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <RowButton className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><Tooltip label={model.modelId}><span className="truncate">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
               </RowButton>
-              <PresenceBlock open={currentModel === model} className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</PresenceBlock>
+              <PresenceBlock open={currentModel === model} className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button><PresenceBlock open={editingPrice}><PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} /></PresenceBlock></PresenceBlock>
             </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,12rem)_auto] items-center gap-x-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="uam-usage-model-bar"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span><span className="tabular-nums">{amount(period)}</span></div>)}</div>}
           </section>
           {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <Disclosure className="text-xs" summary="History diagnostics"><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></Disclosure>}

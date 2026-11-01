@@ -273,7 +273,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   </> : <>
     {text('Server name', guidedName, setGuidedName, 'playwright')}
     <SettingsField label="How does this server connect?"><MenuSelect label="Setup connection type" value={guidedTransport} onChange={value => setGuidedTransport(value as McpServerConfiguration['transport'])} options={[{ value: 'stdio', label: "Run a program on the agent's machine" }, { value: 'http', label: 'Connect to an HTTP URL' }, { value: 'sse', label: 'Connect to an SSE URL' }]} /></SettingsField>
-    <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setSetupHintId(server.id); }}>Next: connection details</Button>
+    <Button variant="primary" size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setSetupHintId(server.id) }}>Next: connection details</Button>
   </>
 
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
@@ -318,12 +318,12 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           const scope = [server.workspaceDirectory ? 'Selected workspace' : 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
           // Wrapper replaces the row's sibling separators, so the separator moves onto it.
           return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
-            style={{ opacity: removing ? 0 : 1, transition: 'opacity var(--dur-exit) var(--ease)', ...(index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 14 } : {}) }}>
+            style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 14 } : undefined}>
           <div className="uam-prov-collapse__inner"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
             status={scope}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
-              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} aria-hidden className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${serverName}` : `Edit ${serverName}`} onClick={() => setOpen(expanded ? null : server.id)} />
+              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} aria-hidden style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--dur-fast) var(--ease)' }} />} label={expanded ? `Collapse ${serverName}` : `Edit ${serverName}`} onClick={() => setOpen(expanded ? null : server.id)} />
               <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy || removing} onClick={() => removeServer(server.id)} />
             </>}>
             <ServerEditorCollapse open={expanded}><div className="uam-prov-enter grid gap-3 pb-1">

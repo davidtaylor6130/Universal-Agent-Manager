@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, RowButton, SegmentedControl, Switch } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, RowButton, SegmentedControl, Switch, usePresence } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -68,6 +68,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const editorTriggerRef = useRef<HTMLElement | null>(null)
   const addTriggerRef = useRef<HTMLButtonElement | null>(null)
   const childOpen = Boolean(editing || addView || imports.length)
+  // The step stays mounted while it slides out to the right; the snapshot keeps its last content during that exit.
+  const stepPresence = usePresence(childOpen, 180)
+  const childSnapshot = useRef<ReactElement | null>(null)
   const openAddChoices = () => { editorTriggerRef.current = addTriggerRef.current; resetError(); setAddView('choose') }
   const previousChildOpenRef = useRef(false)
   const visibleError = error || operationError
@@ -316,7 +319,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   const childTitle = editing ? (editing === 'new' ? 'Create skill' : 'Edit skill') : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'
   // The add, import and editor steps replace the library list inside this dialog; they never stack a second dialog.
-  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className={`uam-reveal flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto py-4 outline-none${embedded ? '' : ' px-5'}`}>
+  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className={`uam-skills-step flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto py-4 outline-none${embedded ? '' : ' px-5'}`}>
     {editing ? <>
       <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="flex justify-end"><SegmentedControl aria-label="Entry view" options={[{ value: 'edit', label: 'Edit' }, { value: 'preview', label: 'Preview' }]} value={showEditorPreview ? 'preview' : 'edit'} onChange={(value) => setShowEditorPreview(value === 'preview')} /></div>
@@ -335,7 +338,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </Notice>
       </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
     </> : imports.length ? <>
-      <strong className="text-sm shrink-0">Import preview</strong>
+      <div className="uam-set-section__title shrink-0 px-1">Import preview</div>
       <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <div key={candidate.id} title={candidate.sourcePath} className="uam-reveal flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
@@ -395,6 +398,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     </div>
   </div>
 
+  if (childOpen) childSnapshot.current = childPanel
+  const exitProps: Record<string, string | true | undefined> = stepPresence.closing ? { 'data-closing': 'true', inert: '', 'aria-hidden': 'true' } : {}
+
   // Overlay has no attribute passthrough, so the dialog role stays on the panel.
   const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
       {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
@@ -419,12 +425,15 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
         <IconButton ref={addTriggerRef} className={markdownStoreDirectory && !entries.length ? 'uam-store-add--primary' : undefined} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={openAddChoices} />
       </div>
+      {/* Stage: the library and the step share one area, so the step slides over the library. */}
+      <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
       {!markdownStoreDirectory ? <div className="grid justify-items-start gap-2 px-1 py-4">
         <p className="text-sm" style={{ color: 'var(--text-3)' }}>Choose a skills folder to get started.</p>
         <Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button>
-      </div> : <div className={`flex-1 min-h-0 flex flex-col${embedded ? '' : ' px-5'}`} style={childOpen ? { display: 'none' } : undefined}>{library}</div>}
-      {/* Hidden, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
-      {childOpen && childPanel}
+      </div> : <div className={`uam-skills-library flex-1 min-h-0 flex flex-col${embedded ? '' : ' px-5'}`} data-away={childOpen || undefined} aria-hidden={childOpen || undefined} {...(childOpen ? { inert: '' } : {})}>{library}</div>}
+      {/* Slides out, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
+      {stepPresence.mounted && childSnapshot.current && cloneElement(childSnapshot.current, exitProps)}
+      </div>
     </div>
   return embedded ? <div className="h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">{panel}</div> : <Overlay open zIndex={50}>{panel}</Overlay>
 }

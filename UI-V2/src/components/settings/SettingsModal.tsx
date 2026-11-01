@@ -15,7 +15,6 @@ import { McpServerSetup } from './McpServerSetup'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
-import { NumberField } from './NumberField'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
@@ -29,7 +28,7 @@ import {
   type AcpModel,
   type EditorFileAssociation,
   type MemoryWorkerBinding,
-    type ProviderChatDefaults,
+  type ProviderChatDefaults,
   type ProviderAgentImportPreview,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
@@ -55,7 +54,7 @@ import { sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
 import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
@@ -206,7 +205,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
   </>
 })
 
-const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers: Provider[]; hostId: string; hostLabel: string }>(function ProviderAvailabilityControls({ providers, hostId, hostLabel }, ref) {
+const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers: Provider[]; hostId: string }>(function ProviderAvailabilityControls({ providers, hostId }, ref) {
   const overrides = useAppStore((state) => state.providerAvailability)
   const saveSettings = useAppStore((state) => state.setProviderAvailability)
   const saved = Object.fromEntries(providers.map((provider) => [provider.id, overrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true]))
@@ -274,10 +273,6 @@ function latestLocalProviderSession(sessions: Session[], providerId: string, exe
     if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
     return latest
   }, undefined)
-}
-
-function cliActionErrorKey(providerId: string, executionHostId: string) {
-  return `${executionHostId || 'local'}:${providerId}`
 }
 
 // Mirrors the backend rule: the host instruction file is empty or an absolute path on that host.
@@ -409,10 +404,6 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
   ]
 }
 
-function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string) {
-  return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
-}
-
 type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
@@ -456,7 +447,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'shell-actions', label: 'Shell actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
-    { id: 'about', label: 'About', icon: Info },
+  { id: 'about', label: 'About', icon: Info },
 ]
 
 // Retired pages that now live inside another page; old ids still resolve (search, deep links).
@@ -471,17 +462,6 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
 ]
-const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
-  appearance: 'Theme, sidebar, how agent activity is shown, and fonts.',
-  defaults: 'Default provider and permission reviewer for new chats.',
-  'voice-input': 'Dictation for the message box.',
-  'cli-version': 'Installed provider CLIs and their versions.',
-  ...(SSH_ENABLED ? { 'remote-hosts': 'Computers that can run workspaces over SSH.', routing: 'Which computers run new chats and which remote folders they use.' } : {}),
-  'mcp-servers': 'Model Context Protocol servers available to agents.',
-  ...(MOBILE_COMPANION_ENABLED ? { phone: 'Use Universal Agent Manager from your phone on the same network.' } : {}),
-}
-
-
 const PROVIDER_SEARCH_TERMS = [CODEX_ENABLED && 'codex', GEMINI_ENABLED && 'gemini', CLAUDE_ENABLED && 'claude', COPILOT_ENABLED && 'copilot', OPENCODE_ENABLED && 'opencode'].filter(Boolean).join(' ')
 /** Native agent files UAM can import, in menu order; only providers in this build. */
 const AGENT_IMPORT_PROVIDER_OPTIONS = [
@@ -828,15 +808,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [mcpSaving, setMcpSaving] = useState(false)
   const [computerUseStatus, setComputerUseStatus] = useState<{ screenRecording: { available: boolean; error: string }; accessibility: { available: boolean; error: string } } | null>(null)
   const [computerUseApps, setComputerUseApps] = useState<Array<{ identityKind: ComputerUseAllowedApplication['identityKind']; identity: string; name: string }>>([])
-  const [computerUseMessage, setComputerUseMessage] = useState('')
   const [computerUseBusy, setComputerUseBusy] = useState(false)
   const [computerUseSaveBusy, setComputerUseSaveBusy] = useState(false)
   const [companionSettings, setCompanionSettings] = useState<PhoneAccessStatus | null>(null)
   const [companionBusy, setCompanionBusy] = useState(false)
   const companionInFlight = useRef(false)
-  const [companionMessage, setCompanionMessage] = useState('')
   const [companionLoadError, setCompanionLoadError] = useState('')
-  const [companionNotice, setCompanionNotice] = useState('')
   const [companionBusyAction, setCompanionBusyAction] = useState('')
   const [companionCopy, setCompanionCopy] = useState<{ kind: 'token' | 'url'; ok: boolean } | null>(null)
   const companionCopyTimer = useRef<number | undefined>(undefined)
@@ -907,7 +884,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
-  const [cliActionError, setCliActionError] = useState<Record<string, string>>({})
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [themeMessage, setThemeMessage] = useState<StatusMessage | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
@@ -952,9 +928,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => {
     if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
-    window.addEventListener('beforeunload',guard)
-    return () => window.removeEventListener('beforeunload',guard)
-  }, [themeDirty,mcpDraftDirty,editorDirty,importFiltersDirty])
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty])
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
@@ -1129,8 +1105,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         return
       }
       if (remotePreview) {
-    if (!remoteBusy) setRemotePreview(null)
-    return
+        if (!remoteBusy) setRemotePreview(null)
+        return
       }
       if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
       requestClose()
@@ -1162,7 +1138,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => {
     setDefaultEditorDraft(defaultEditorPresetId)
   }, [defaultEditorPresetId])
-
 
   useEffect(() => {
     if (activeSessionId) void refreshUamAgents(activeSessionId)
@@ -1346,7 +1321,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       }
       setThemeDraft(null)
       setTheme(saved.id)
-      setThemeMessage({ tone: 'success', text: 'Theme saved.' })
+      reportAppNotice('Theme saved.', 'success')
       return true
     } catch {
       setThemeMessage({ tone: 'error', text: 'Theme could not be saved. Try again.' })
@@ -1362,7 +1337,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setThemeSaving(true)
     try {
       const deleted = await deleteCustomTheme(selectedCustomTheme.id)
-      setThemeMessage(deleted ? { tone: 'success', text: 'Theme deleted.' } : { tone: 'error', text: 'Theme could not be deleted.' })
+      if (deleted) reportAppNotice('Theme deleted.', 'success')
+      else setThemeMessage({ tone: 'error', text: 'Theme could not be deleted.' })
       if (deleted) setThemeDraft(null)
       return deleted
     } catch { setThemeMessage({ tone: 'error', text: 'Theme could not be deleted. Try again.' }); return false }
@@ -1377,7 +1353,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
-      setThemeMessage({ tone: 'success', text: 'Theme imported.' })
+      reportAppNotice('Theme imported.', 'success')
     } catch {
       setThemeMessage({ tone: 'error', text: 'Theme import failed. Choose a valid UAM theme JSON file.' })
     }
@@ -1390,133 +1366,130 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     anchor.download = `${selectedCustomTheme.id.slice('custom:'.length)}.json`
     anchor.click()
     URL.revokeObjectURL(url)
-    setThemeMessage({ tone: 'success', text: 'Theme exported.' })
+    reportAppNotice('Theme exported.', 'success')
   }
 
   const renderAddEditor = () => (
-              <Button
-                leadingIcon={<Plus size={14} />}
-                aria-label="Add editor group"
-                size="sm"
-                disabled={editorSaving}
-                onClick={() => {
-                  const id = `editor-group-${Date.now()}`
-                  const nextAssociations = [
-                    ...editorAssociationsDraft,
-                    {
-                      id,
-                      name: 'Files',
-                      extensions: ['.txt'],
-                      editorPresetId: defaultEditorDraft,
-                    },
-                  ]
-                  setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
-                  saveEditorSettings(nextAssociations)
-                }}
-              >Add group</Button>
+    <Button
+      leadingIcon={<Plus size={14} />}
+      aria-label="Add editor group"
+      size="sm"
+      disabled={editorSaving}
+      onClick={() => {
+        const id = `editor-group-${Date.now()}`
+        const nextAssociations = [
+          ...editorAssociationsDraft,
+          {
+            id,
+            name: 'Files',
+            extensions: ['.txt'],
+            editorPresetId: defaultEditorDraft,
+          },
+        ]
+        setExpandedEditorGroups((current) => ({ ...current, [id]: true }))
+        saveEditorSettings(nextAssociations)
+      }}
+    >Add group</Button>
   )
 
   const renderThemeEditor = () => themeDraft ? (
-<Card elevation={0} className="grid gap-4 p-3">
-                  {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      <span>Name</span>
-                      <input
-                        aria-label="Theme name"
-                        value={themeDraft.name}
-                        maxLength={64}
-                        onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
-                        className="uam-field w-full"
-                      />
-                    </label>
-                    <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                      <legend>Base</legend>
-                      <SegmentedControl aria-label="Theme base" value={themeDraft.base} disabled={themeSaving}
-                        options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
-                        onChange={(base) => setThemeDraft({ ...themeDraft, base })} />
-                    </fieldset>
-                  </div>}
-                  {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
-                    {THEME_COLOR_FIELDS.map(({ key, label }) => (
-                      <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                        <span>{label}</span>
-                        <span className="flex items-center gap-2">
-                          <span
-                            aria-hidden="true"
-                            className="h-5 w-5 rounded-full transition-transform duration-150 hover:scale-110"
-                            style={{ background: themeDraft.colors[key], border: '1px solid var(--border)' }}
-                          />
-                          <input
-                            type="text"
-                            inputMode="text"
-                            aria-label={`${label} color`}
-                            value={themeDraft.colors[key]}
-                            maxLength={7}
-                            pattern="#[0-9A-Fa-f]{6}"
-                            spellCheck={false}
-                            aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
-                            aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
-                            onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
-                            className="uam-field w-24 font-mono uppercase"
-                          />
-                        </span>
-                      </label>
-                    ))}
-                  </div>}
-                  {!themeDraftValid && (
-                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss"><span id="theme-color-format-error">Every color must use #RRGGBB format.</span></Notice>
-                  )}
-                  {themeStep === 2 && <div className="grid gap-3">
-                    <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
-                  </div>}
-                  <div className="flex gap-2">
-                    {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
-                    <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
-                  </div>
-                </Card>
+    <Card elevation={0} className="grid gap-4 p-3">
+      {themeStep === 0 && <div className="grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+          <span>Name</span>
+          <input
+            aria-label="Theme name"
+            value={themeDraft.name}
+            maxLength={64}
+            onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
+            className="uam-field w-full"
+          />
+        </label>
+        <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+          <legend>Base</legend>
+          <SegmentedControl aria-label="Theme base" value={themeDraft.base} disabled={themeSaving}
+            options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+            onChange={(base) => setThemeDraft({ ...themeDraft, base })} />
+        </fieldset>
+      </div>}
+      {themeStep === 1 && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {/* CEF native popup controls crash on macOS 26; keep theme editing in-app. */}
+        {THEME_COLOR_FIELDS.map(({ key, label }) => (
+          <label key={key} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+            <span>{label}</span>
+            <span className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className="h-5 w-5 rounded-full"
+                style={{ background: themeDraft.colors[key], border: '1px solid var(--border)' }}
+              />
+              <input
+                type="text"
+                inputMode="text"
+                aria-label={`${label} color`}
+                value={themeDraft.colors[key]}
+                maxLength={7}
+                pattern="#[0-9A-Fa-f]{6}"
+                spellCheck={false}
+                aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
+                aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
+                onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
+                className="uam-field w-24 font-mono uppercase"
+              />
+            </span>
+          </label>
+        ))}
+      </div>}
+      {!themeDraftValid && (
+        <Notice tone="error" dismissible={false} dismissLabel="Dismiss"><span id="theme-color-format-error">Every color must use #RRGGBB format.</span></Notice>
+      )}
+      {themeStep === 2 && <div className="grid gap-3">
+        <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
+      </div>}
+      <div className="flex gap-2">
+        {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
+        {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <SaveButton saving={themeSaving} disabled={!themeDirty || !themeDraftValid || themeSaving} onClick={() => void saveThemeDraft()}>Save theme</SaveButton>}
+        <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
+      </div>
+    </Card>
   ) : null
 
   const checkComputerUsePermissions = async () => {
     setComputerUseBusy(true)
-    setComputerUseMessage(`Checking ${computerUseOsLabel} permissions…`)
     const response = await sendToCEF<{ screenRecording?: { available?: boolean; error?: string }; accessibility?: { available?: boolean; error?: string } }>({ action: 'checkComputerUsePermissions' })
     setComputerUseBusy(false)
-    if (!response.ok) { setComputerUseMessage(response.error || `Could not check ${computerUseOsLabel} permissions.`); return }
+    if (!response.ok) { reportAppFailure(response.error || `Could not check ${computerUseOsLabel} permissions.`, 'Try again.'); return }
     setComputerUseStatus({
       screenRecording: { available: Boolean(response.data?.screenRecording?.available), error: response.data?.screenRecording?.error || '' },
       accessibility: { available: Boolean(response.data?.accessibility?.available), error: response.data?.accessibility?.error || '' },
     })
-    setComputerUseMessage('Permission check complete.')
   }
   const requestComputerUsePermission = async (permission: 'screenRecording' | 'accessibility') => {
     setComputerUseBusy(true)
     const response = await sendToCEF<{ granted?: boolean; openSettingsRequired?: boolean }>({ action: 'requestComputerUsePermission', payload: { permission } })
     if (!response.ok) {
       setComputerUseBusy(false)
-      setComputerUseMessage(response.error || 'Could not request this permission.')
+      reportAppFailure(response.error || 'Could not request this permission.', 'Try again.')
       return
     }
     if (response.data?.granted) {
       setComputerUseBusy(false)
-      setComputerUseMessage(`${permission === 'screenRecording' ? 'Screen Recording' : 'Accessibility'} permission is already granted.`)
+      reportAppNotice(`${permission === 'screenRecording' ? 'Screen Recording' : 'Accessibility'} permission is already granted.`, 'success')
       return
     }
     const settingsResponse = await sendToCEF<{ opened?: boolean; error?: string }>({ action: 'openComputerUseSystemSettings', payload: { permission } })
     setComputerUseBusy(false)
-    setComputerUseMessage(settingsResponse.ok && settingsResponse.data?.opened !== false
-      ? `Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`
-      : settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`)
+    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`)
+    else reportAppFailure(settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`, 'Open the settings manually, then re-check.')
   }
   const openComputerUseSystemSettings = async (permission: 'screenRecording' | 'accessibility') => {
     const response = await sendToCEF({ action: 'openComputerUseSystemSettings', payload: { permission } })
-    if (!response.ok) setComputerUseMessage(response.error || `Could not open ${computerUseOsLabel} settings.`)
+    if (!response.ok) reportAppFailure(response.error || `Could not open ${computerUseOsLabel} settings.`, 'Try again.')
   }
   const loadComputerUseApplications = async () => {
     const response = await sendToCEF<{ applications?: Array<{ identityKind?: string; identity?: string; name?: string }> }>({ action: 'listComputerUseApplications' })
-    if (!response.ok) { setComputerUseMessage(response.error || 'Could not list applications.'); return }
+    if (!response.ok) { reportAppFailure(response.error || 'Could not list applications.', 'Try again.'); return }
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
   const adoptCompanionStatus = (next: PhoneAccessStatus) => {
@@ -1544,13 +1517,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction(action === 'repairCompanionLanAddress' ? `${action}:${payload.address}` : action)
-    setCompanionMessage('')
-    setCompanionNotice('')
     try {
       const response = await sendToCEF<PhoneAccessStatus>({ action, payload })
-      if (!response.ok || !response.data) { setCompanionMessage(response.error || 'Could not update phone access.'); return }
+      if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not update phone access.', 'Try again.'); return }
       adoptCompanionStatus(response.data)
-    } catch { setCompanionMessage('Could not update phone access. Try again.') }
+    } catch { reportAppFailure('Could not update phone access.', 'Try again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
   }
   const setCompanionEnabled = (enabled: boolean) => changeCompanion('setCompanionEnabled', { enabled })
@@ -1559,13 +1530,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction('restartApplication')
-    setCompanionMessage('')
-    setCompanionNotice('')
     try {
       const response = await sendToCEF({ action: 'restartApplication' })
-      if (!response.ok) setCompanionMessage(response.error || 'Could not restart Universal Agent Manager. Close and open it again.')
-      else setCompanionNotice('Restarting Universal Agent Manager…')
-    } catch { setCompanionMessage('Could not restart Universal Agent Manager. Close and open it again.') }
+      if (!response.ok) reportAppFailure(response.error || 'Could not restart Universal Agent Manager.', 'Close and open it again.')
+      else reportAppNotice('Restarting Universal Agent Manager…')
+    } catch { reportAppFailure('Could not restart Universal Agent Manager.', 'Close and open it again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
   }
   const copyCompanion = async (kind: 'token' | 'url') => {
@@ -1573,23 +1542,21 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     companionInFlight.current = true
     setCompanionBusy(true)
     setCompanionBusyAction(`copy:${kind}`)
-    setCompanionMessage('')
-    setCompanionNotice('')
     let ok = false
     try {
       let text = companionSettings?.effectiveUrl ?? ''
       if (kind === 'token') {
         const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
         if (!response.ok || !response.data?.token) {
-          setCompanionMessage(response.error || 'Phone access token is unavailable.')
+          reportAppFailure(response.error || 'Phone access token is unavailable.', 'Try again.')
           return
         }
         text = response.data.token
       }
       // CEF blocks navigator.clipboard here; route through the native bridge helper.
       ok = await copyTextToClipboard(text, document)
-      if (!ok) setCompanionMessage(`Could not copy the phone access ${kind}.`)
-    } catch { setCompanionMessage(`Could not copy the phone access ${kind}. Try again.`) }
+      if (!ok) reportAppFailure(`Could not copy the phone access ${kind}.`, 'Try again.')
+    } catch { reportAppFailure(`Could not copy the phone access ${kind}.`, 'Try again.') }
     finally {
       companionInFlight.current = false
       setCompanionBusy(false)
@@ -1601,8 +1568,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   useEffect(() => {
     if (!MOBILE_COMPANION_ENABLED || selectedSection !== 'phone') return
-    setCompanionMessage('')
-    setCompanionNotice('')
     setCompanionCopy(null)
     let disposed = false
     let timer: number | undefined
@@ -1623,7 +1588,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { allowlistEnabled, allowedApplications } })
       if (!response.ok) {
         useAppStore.setState(previous)
-        setComputerUseMessage(response.error || 'Could not save Computer Use settings.')
+        reportAppFailure(response.error || 'Could not save Computer Use settings.', 'Try again.')
       }
     } finally {
       computerUseSaveInFlight.current = false
@@ -1642,11 +1607,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     let configuredHost = ''
     try { configuredHost = new URL(address).hostname } catch { /* No configured address. */ }
     const repairAddresses = configuredHost && configuredHost !== '127.0.0.1' && /^\d+\.\d+\.\d+\.\d+$/.test(configuredHost) && !currentAddresses.includes(configuredHost) ? currentAddresses : []
-    const phoneFeedback = (companionLoadError || companionMessage || companionNotice) ? <>
-      {companionLoadError && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice>}
-      {companionMessage && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionMessage}</Notice>}
-      {companionNotice && <p role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>{companionNotice}</p>}
-    </> : null
+    // Load failures persist until a retry succeeds; action results are reported as app events.
+    const phoneFeedback = companionLoadError ? <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{companionLoadError}</Notice> : null
     return <div className="grid gap-0">
       <SettingsSection title="Phone access">
         <SettingRow
@@ -1724,9 +1686,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 onChange={(value) => {
                   if (!activeSession) return
                   setComputerUseBusy(true)
-                  setComputerUseMessage('')
                   void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
-                    if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
+                    if (!result.ok) reportAppFailure(result.error || 'Could not change the Computer Use backend.', 'Try again.')
                   }).finally(() => setComputerUseBusy(false))
                 }}
               />
@@ -1748,10 +1709,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               onChange={(event) => {
                 if (!activeSession) return
                 setComputerUseBusy(true)
-                setComputerUseMessage('')
                 void setSessionUamControlEnabled(activeSession.id, event.target.checked)
                   .then((result) => {
-                    if (!result) setComputerUseMessage('Could not change UAM Control. Stop the active session first, then try again.')
+                    if (!result) reportAppFailure('Could not change UAM Control.', 'Stop the active session first, then try again.')
                   })
                   .finally(() => setComputerUseBusy(false))
               }}
@@ -1775,7 +1735,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void requestComputerUsePermission(permission)}>{state?.available ? 'Re-request' : 'Request'} {label}</Button>
           </div>}
         />)}
-        {computerUseMessage && <p role="status" className="px-0 py-2 text-xs" style={{ color: 'var(--text-2)' }}>{computerUseMessage}</p>}
       </SettingsSection>
       <SettingsSection
         title="Allowed targets"
@@ -1821,11 +1780,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} hostLabel={effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find((host) => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId} />
+    const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} />
     if (selectedSection === 'provider-summary') return <div className="grid"><SettingsSection title="Provider availability">{availability()}</SettingsSection><ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid"><SettingsSection title="CLI and availability">{availability([providerId])}{renderSectionContent('cli-version', providerId)}</SettingsSection>{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+      return <div className="grid">{availability([providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -2008,7 +1967,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   )} />
             </>}
           </SettingsSection>}
-          {scopedProviderId && <SettingsSection title="Chat defaults">
+          {scopedProviderId && <div>
             <div className="grid gap-0">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
@@ -2223,7 +2182,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   )
                 })}
             </div>
-          </SettingsSection>}
+          </div>}
         </div>
       )
     }
@@ -2483,11 +2442,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           {managers.map((manager) => {
             const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
             const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
-            const actionErrorKey = cliActionErrorKey(manager.providerId, manager.executionHostId || effectiveProviderSettingsHostId)
             const installHostName = manager.executionHostId && manager.executionHostId !== 'local'
               ? manager.executionHostName || executionHosts.find((host) => host.id === manager.executionHostId)?.label || manager.executionHostId
               : 'this computer'
-            const issues = [...cliVersionIssues(manager), ...(cliActionError[actionErrorKey] ? [cliActionError[actionErrorKey]] : [])]
+            const issues = cliVersionIssues(manager)
             const requestInstall = (version: string) => {
               setOpenCliVersionMenu(null)
               setPendingCliInstall({providerId:manager.providerId,providerName,version})
@@ -2506,9 +2464,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         <Button size="sm" disabled={manager.running} onClick={async () => {
                           const pending = pendingCliInstall
                           setPendingCliInstall(null)
-                          setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                          try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
-                          catch { setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
+                          try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) reportAppFailure('Installation could not start.', 'Check provider output.') }
+                          catch { reportAppFailure('Installation could not start.', 'Check provider output.') }
                         }}>Install version</Button>
                       </div>
                     }
@@ -2550,9 +2507,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   <>
                     <StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>
                     <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
-                      setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                      try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
-                      catch { setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
+                      try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) reportAppFailure('Version check could not start.', 'Try again.') }
+                      catch { reportAppFailure('Version check could not start.', 'Try again.') }
                     }}/>
                     {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
                     {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
@@ -3102,22 +3058,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         }}>
         <p>Your file type changes have not been saved.</p>
       </ConfirmDialog>
-      <Presence open={Boolean(themeExit)}>
-        {themeExit && <Overlay open zIndex={80}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save theme changes?</div>
-            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
-              <p>Your theme edits have not been saved.</p>
-              <StatusMessage message={themeMessage} />
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
-              <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
-            </div>
-          </div>
-        </Overlay>}
-      </Presence>
+      <ConfirmDialog open={Boolean(themeExit)} tone="primary" title="Save theme changes?" label="Unsaved theme changes" settingsOwned
+        confirmLabel="Save theme" cancelLabel="Stay" busy={themeSaving} confirmDisabled={!themeDirty || !themeDraftValid}
+        error={themeMessage?.tone === 'error' ? themeMessage.text : undefined}
+        secondaryAction={{ label: 'Discard', onClick: () => { const next = themeExit; setThemeDraft(null); setThemeExit(null); next?.() } }}
+        onCancel={() => setThemeExit(null)}
+        onConfirm={async () => { if (await saveThemeDraft()) { const next = themeExit; setThemeExit(null); next?.() } }}>
+        <p>Your theme edits have not been saved.</p>
+      </ConfirmDialog>
       {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
         {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>

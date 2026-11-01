@@ -205,7 +205,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
   if (!agentsLoaded) return <SettingsLoading label="Loading agents" rows={3} />
 
-  const leaveDialog = pendingExit && <UnsavedChangesDialog
+  const leaveDialog = <Presence open={pendingExit !== null}>{pendingExit && <UnsavedChangesDialog
     title="Save central setup changes?"
     busy={busy} error={instructionDirty && instructionEditor?.error ? instructionEditor.error : undefined}
     onStay={() => setPendingExit(null)}
@@ -216,7 +216,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       if (agentDirty && !await saveAgent()) return
       const next = pendingExit.next; setPendingExit(null); next()
     } : undefined}
-  />
+  />}</Presence>
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
     {leaveDialog}
     <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>

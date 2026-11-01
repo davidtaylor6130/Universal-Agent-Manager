@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Search, TriangleAlert } from 'lucide-react'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { reportAppFailure } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
 import { Button, Disclosure } from '../ui'
@@ -49,7 +49,7 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     const excludedDirectories = ruleLines(directories)
     const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories })
     setSaving(false)
-    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')) }
+    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')); reportAppNotice('Import filters saved.', 'success') }
     else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
   return <SettingRow title="Import filters" description="Skipped sessions are never offered or imported." status="Chats already in UAM are not changed.">

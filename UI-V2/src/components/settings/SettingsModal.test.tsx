@@ -340,16 +340,15 @@ describe('SettingsModal memory settings', () => {
       expect(retry.textContent).toBe('Retrying…')
       expect(retry.disabled).toBe(true)
       await act(async () => rejectRetry!())
-      const error = host.querySelector('[role="alert"]')!
-      expect(error.textContent).toContain('Phone access retry failed.')
-      expect(error.closest('.uam-set-row')?.textContent).toContain('Retry phone access')
+      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(host.textContent).toContain('Retry phone access')
       await act(async () => vi.advanceTimersByTimeAsync(1500))
       expect(loads).toBe(3)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Phone access retry failed.')
+      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat defaults"]')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
       await act(async () => {})
-      expect(host.textContent).not.toContain('Phone access retry failed.')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
     } finally {
       act(() => root.unmount()); host.remove(); vi.useRealTimers()
     }
@@ -417,7 +416,7 @@ describe('SettingsModal memory settings', () => {
       act(() => toggle.click())
       expect(mutations).toBe(0)
       await act(async () => rejectCopy(new Error('Copy fixture rejected')))
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not copy the phone access token.')
+      expect(failures.at(-1)?.message).toContain('Could not copy the phone access token.')
       expect(copyToken.disabled).toBe(false)
       expect(toggle.disabled).toBe(false)
       await act(async () => toggle.click())
@@ -644,7 +643,7 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
-  it('keeps CLI action errors scoped to the host where they occurred', async () => {
+  it('reports CLI action failures as app failures instead of inline notices', async () => {
     const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
     useAppStore.setState(state => ({
       executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
@@ -655,8 +654,7 @@ describe('SettingsModal memory settings', () => {
     openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
-    expect(host.textContent).toContain('Version check could not start.')
-    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
+    expect(failures.at(-1)?.message).toBe('Version check could not start.')
     expect(host.textContent).not.toContain('Version check could not start.')
     act(() => root.unmount()); host.remove()
   })
@@ -1477,7 +1475,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
     // Provider pages show the CLI controls flat, without a disclosure toggle.
-    expect(host.querySelector('section[aria-label="CLI and availability"]')).toBeTruthy()
+    expect(host.querySelector('section[aria-label="Codex"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Show Codex CLI version settings"]')).toBeNull()
 
     expect(host.textContent).toContain('0.123.0')
@@ -2609,7 +2607,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Denied')
     expect(host.textContent).not.toContain('Accessibility request granted')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
-    expect(host.textContent).toContain('Permission is not granted. Opened')
+    expect(failures.at(-1)?.message).toContain('Permission is not granted. Opened')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
     // Granted permissions offer no request button.
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)

@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Button, ConfirmDialog, SegmentedControl, Switch, usePresence } from '../ui'
 import { NumberField } from './NumberField'
 import { useAppStore } from '../../store/useAppStore'
-import { reportAppFailure } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { SaveButton, SettingRow, SettingsSection } from './SettingsPrimitives'
 
 export interface StorageCleanupSettingsSectionHandle { requestLeave: (next: () => void) => void }
@@ -52,6 +52,7 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
       const patch = group === 'worktree' ? { enabled: accepted.worktreeCleanupEnabled, worktree: String(accepted.worktreeRetentionDays) }
         : { logs: String(accepted.backupLogRetentionDays), cache: String(accepted.httpCacheClearIntervalDays), periodic: accepted.httpCacheClearIntervalDays > 0 }
       setDraft((value) => ({ ...value, ...patch })); setBaseline((value) => ({ ...value, ...patch }))
+      reportAppNotice(group === 'worktree' ? 'Worktree settings saved.' : 'Backup and cache policy saved.', 'success')
     } catch { reportAppFailure('Could not save cleanup policy.', 'Your changes are retained.') }
     finally { busy.current = false; setSaving(null) }
   }

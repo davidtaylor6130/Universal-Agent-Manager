@@ -471,6 +471,26 @@ describe('MarkdownStoreModal', () => {
     expect(document.activeElement).toBe(button('Add skill'))
   })
 
+  it('slides the library out inert while a step is open, keeping it mounted', async () => {
+    const { host } = mountSkills(true)
+    await act(async () => { await Promise.resolve() })
+    const library = host.querySelector('.uam-skills-library') as HTMLElement
+    const search = host.querySelector('[aria-label="Search Skills"]')
+    expect(library.hasAttribute('data-away')).toBe(false)
+    expect(library.hasAttribute('inert')).toBe(false)
+    click('Add skill')
+    expect(library.hasAttribute('data-away')).toBe(true)
+    expect(library.hasAttribute('inert')).toBe(true)
+    expect(library.getAttribute('aria-hidden')).toBe('true')
+    expect(host.querySelector('.uam-skills-library')).toBe(library)
+    expect(host.querySelector('[aria-label="Search Skills"]')).toBe(search)
+    expect(host.querySelector('.uam-skills-step')).toBeTruthy()
+    expect(escape().defaultPrevented).toBe(true)
+    expect(library.hasAttribute('data-away')).toBe(false)
+    expect(library.hasAttribute('inert')).toBe(false)
+    expect(document.activeElement).toBe(button('Add skill'))
+  })
+
   it('renders subfolder lines and keeps all four preview actions outside long content', () => {
     const entry = useAppStore.getState().markdownStoreEntries[0]
     useAppStore.setState({ markdownStoreEntries: [{ ...entry, group: 'Coding/Review/Safety', body: '# Review\n\n' + 'Long content\n'.repeat(300) }] })

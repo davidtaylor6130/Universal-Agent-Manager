@@ -8,7 +8,7 @@ import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
 import { Button, Disclosure, ProgressFill, Tooltip, cx } from '../ui'
 import { SettingsSection } from '../settings/SettingsPrimitives'
-import { TriangleAlert, X } from 'lucide-react'
+import { LoaderCircle, TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
 
@@ -135,7 +135,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
       </div>
       {executionHostId === 'local' && <Button size="sm" variant="secondary" onClick={account.refresh} disabled={account.coolingDown} loading={account.refreshing || account.requestingRefresh}>Refresh allowances</Button>}
     </div>
-    {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly</p>}
+    {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly.</p>}
     {account.error && <p role="status" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
     <div className="grid">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
@@ -166,17 +166,17 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     ? <UnlimitedRow key={row.id} label={row.label} />
     : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} />
   const body = <>
-    {(loading || allowance?.status === 'loading') && <p role="status" className="uam-set-row text-xs uam-usage-muted animate-pulse">Reading allowances…</p>}
+    {(loading || allowance?.status === 'loading') && <p role="status" className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</p>}
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
     {allowance?.error && <p className={cx('uam-set-row', allowance.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice')}>{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
     {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
     {showWindowRows && <>
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
       {modelWindows.length > 2 && <Disclosure className="uam-set-row uam-limits-tokens" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid">{rows.slice(2).map(renderRow)}</div></Disclosure>}
-      {limits?.individualLimit && <div className="uam-set-row uam-limit-row">
+      {limits?.individualLimit && <ProgressFill label={`${name} spend limit usage`} value={100 - limits.individualLimit.remainingPercent} className="uam-set-row uam-limit-row">
         <span className="uam-limit-row__name">Spend limit<small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small></span>
         <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
-      </div>}
+      </ProgressFill>}
       {limits?.credits && <p className="uam-set-row text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
       {limits?.spendControlReached && <p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
     </>}

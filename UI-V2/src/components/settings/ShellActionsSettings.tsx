@@ -7,7 +7,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, RowButton, StatusDot, Switch } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence, RowButton, StatusDot, Switch, usePresence } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -25,6 +25,13 @@ function newAction(): ShellAction {
     enabled: true,
     openWorkspace: true,
   }
+}
+
+/** Per-row editor: stays mounted for the exit length so it animates out instead of popping away. */
+function ActionEditor({ open, children }: { open: boolean; children: ReactNode }) {
+  const presence = usePresence(open)
+  if (!presence.mounted) return null
+  return <div className="uam-central-editor uam-settings-presence grid gap-3 sm:grid-cols-2" data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
 }
 
 function groupPathText(action: ShellAction) {
@@ -186,11 +193,11 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     return <div key={`group:${entry.key}`} style={{ borderTop: index ? '1px solid var(--border)' : undefined, borderBottom: next && !('entries' in next) ? '1px solid var(--border)' : undefined }}>
       <RowButton type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
         className="flex w-full items-center gap-1.5 py-2 text-left" style={{ minHeight: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
-        <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-150 motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
+        <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-base motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
         <span className="uam-set-section__title min-w-0 truncate">{entry.path.length ? entry.path[entry.path.length - 1] : 'Ungrouped'}</span>
         <span className="ml-auto text-xs tabular-nums">{entry.count}</span>
       </RowButton>
-      <div className="grid transition-[grid-template-rows,visibility] duration-150 motion-reduce:transition-none" style={{ gridTemplateRows: collapsed ? '0fr' : '1fr', visibility: collapsed ? 'hidden' : 'visible' }}>
+      <div className="grid transition-[grid-template-rows,visibility] duration-base motion-reduce:transition-none" style={{ gridTemplateRows: collapsed ? '0fr' : '1fr', visibility: collapsed ? 'hidden' : 'visible' }}>
         <div style={{ minHeight: 0, overflow: 'hidden' }}>
           <div id={id} role="group" aria-label={label} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>
             {renderEntries(entry.entries, renderAction)}
@@ -249,10 +256,10 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
             status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
+              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-base motion-reduce:transition-none" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
               <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
-            {expanded && <div className="uam-central-editor uam-settings-presence grid gap-3 sm:grid-cols-2">
+            <ActionEditor open={expanded}>
               <SettingsField label="Name">
                 <input id={actionFieldId(action.id, 'name')} aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />
               </SettingsField>
@@ -330,7 +337,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   ]}
                 />
               </SettingsField></div>}
-            </div>}
+            </ActionEditor>
           </SettingRow>
         })}
         </fieldset>

@@ -8,6 +8,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, MenuSelect, Notice, Overlay, RowButton, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
+import { reportAppNotice } from '../../utils/appFailure'
 
 const MEMORY_CATEGORIES = [
   'Failures/AI_Failures',
@@ -212,7 +213,7 @@ function buildMemoryLocationGroups(
 export interface MemoryLibraryHandle { requestLeave(next: () => void): void }
 
 // Location rows: colour follows the active state here instead of inline styles.
-const LOCATION_ROW_CLASS = 'relative z-[1] flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-2)] transition-colors duration-150 data-[active=true]:text-[var(--text)]'
+const LOCATION_ROW_CLASS = 'relative z-[1] flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-2)] transition-colors duration-[var(--dur-fast)] data-[active=true]:text-[var(--text)]'
 
 export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: boolean }>(function MemoryLibraryModal({ embedded = false }, ref) {
   const liveScope = useAppStore((s) => s.memoryLibraryScope)
@@ -423,6 +424,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       return false
     }
 
+    reportAppNotice(`Saved “${saveDraft.title}”.`, 'success')
     setDraft(EMPTY_DRAFT)
     setIsAdding(false)
     return true
@@ -543,7 +545,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="uam-reveal mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
                   <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id); setPendingDeleteEntryId(null) }}>Delete memory</Button>
+                  <Button variant="danger" onClick={() => { void deleteMemoryEntry(pendingDelete.id).then((ok) => { if (ok) reportAppNotice(`Deleted “${pendingDelete.title}”.`, 'success') }); setPendingDeleteEntryId(null) }}>Delete memory</Button>
                 </>}>
                   This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.
                 </Notice>
@@ -553,7 +555,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} className="uam-reveal mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'} actions={<>
                   <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { void deleteMemoryEntries(pendingMassDeleteEntryIds); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
+                  <Button variant="danger" onClick={() => { const count = pendingMassDeleteCount; void deleteMemoryEntries(pendingMassDeleteEntryIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') }); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
                 </>}>
                   This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
                 </Notice>
@@ -746,7 +748,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                               <div className="uam-set-section__title" style={{ color: 'var(--text-3)' }}>
                                 {memoryCategoryLabel(category)}
                               </div>
-                              <div className="text-[11px] tabular-nums rounded-full px-2 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)' }}>
+                              <div className="text-xs tabular-nums rounded-full px-2 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)' }}>
                                 {entries.length}
                               </div>
                             </div>

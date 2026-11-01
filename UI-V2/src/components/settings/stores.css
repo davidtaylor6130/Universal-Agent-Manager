@@ -4,29 +4,20 @@
 .uam-search-field.uam-store-search:focus-within { box-shadow: none; }
 .uam-search-field.uam-store-search:has(input:focus-visible) { box-shadow: var(--focus-ring); }
 
-/* Centred empty state (no folder, no skills, no selection, no memories). */
-.uam-store-empty {
-  display: grid;
-  justify-items: center;
-  align-content: center;
-  gap: var(--sp-2);
-  min-height: 0;
-  padding: var(--sp-6) var(--sp-4);
-  text-align: center;
-  color: var(--text-3);
-}
-.uam-store-empty__icon { color: var(--text-3); opacity: .85; }
-.uam-store-empty__title { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text-2); }
-.uam-store-empty__desc { max-width: 38ch; font-size: var(--fs-sm); line-height: 1.5; color: var(--text-3); }
-.uam-store-empty__action { margin-top: var(--sp-2); }
-.uam-store-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-up); }
-
 /* Add is the one primary action only while the library is empty. */
 .uam-iconbtn.uam-store-add--primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
 .uam-iconbtn.uam-store-add--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--on-accent); }
 
 /* Long sidebar and folder labels: one line, full text on hover. */
 .uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* Add, import and edit steps: the library slides out left, the step slides in from the right. Stays mounted. */
+.uam-skills-library { transition: transform var(--dur-base) var(--ease), opacity var(--dur-base) var(--ease); }
+.uam-skills-library[data-away] { position: absolute; inset: 0; transform: translateX(-100%); opacity: 0; }
+.uam-skills-step { animation: uam-skills-step-in var(--dur-base) var(--ease) backwards; }
+@keyframes uam-skills-step-in { from { transform: translateX(100%); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-skills-library, .uam-skills-step { transition: none; animation: none; } }
+[data-motion="off"] .uam-skills-library, [data-motion="off"] .uam-skills-step { transition: none; animation: none; }
 
 .uam-store-path { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
@@ -44,9 +35,9 @@
 .uam-memory-row__title { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text); }
 .uam-memory-row__summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-2); }
 .uam-memory-row__meta { display: flex; flex-shrink: 0; gap: var(--sp-2); font-size: var(--fs-xs); white-space: nowrap; color: var(--text-3); }
-.uam-memory-row__actions { flex-shrink: 0; opacity: .55; transition: opacity var(--dur-fast) var(--ease); }
+.uam-memory-row__actions { flex-shrink: 0; opacity: .55; transform: translateX(var(--sp-1)); transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
 .uam-memory-row:hover .uam-memory-row__actions,
-.uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; }
+.uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; transform: none; }
 
 /* Skills dialog panel: the Overlay supplies the backdrop; this is the panel's edge and elevation. */
 .uam-skills-dialog { border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
