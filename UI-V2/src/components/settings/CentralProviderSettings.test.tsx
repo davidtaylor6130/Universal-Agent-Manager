@@ -246,7 +246,7 @@ it('retains a draft when its file is removed from the saved configuration', asyn
   await act(async () => saveFile().click())
   expect(send.mock.calls.some(([request]) => request.action === 'saveCentralInstructionFile')).toBe(false)
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file contents"]')!.value).toBe('Retain me')
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('no longer in Central Setup')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('no longer in central setup')
 })
 
 it('disables clean custom agent Save and enables only changed drafts', async () => {

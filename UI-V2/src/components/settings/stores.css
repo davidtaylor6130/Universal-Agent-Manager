@@ -43,6 +43,7 @@
 .uam-memory-exit[data-state="closed"] { animation: uam-memory-exit-out var(--dur-fast) var(--ease) forwards; }
 @keyframes uam-memory-exit-in { from { opacity: 0; transform: translateY(var(--sp-2)); } }
 @keyframes uam-memory-exit-out { to { opacity: 0; transform: translateY(var(--sp-2)); } }
+.uam-memory-form, .uam-memory-toolbar { animation: uam-memory-exit-in var(--dur-base) var(--ease) backwards; }
 .uam-memory-form[data-state="closed"], .uam-memory-toolbar[data-state="closed"] { animation: uam-memory-exit-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 .uam-memory-row[data-state="closed"] { animation: uam-memory-row-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 @keyframes uam-memory-row-out { to { opacity: 0; transform: translateX(calc(var(--sp-3) * -1)); } }

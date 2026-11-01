@@ -411,7 +411,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   // Overlay has no attribute passthrough, so the dialog role stays on the panel.
   const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
-      {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
+      {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close skills" onClick={close} /></div>}
       <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}>
         <div className="uam-set-card">
           <SettingRow
@@ -425,12 +425,12 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div className={`shrink-0 flex flex-wrap items-center gap-2 py-3${embedded ? '' : ' px-5'}`} style={{ borderBottom: '1px solid var(--border)' }}>
         <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 px-2.5">
           <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
-          <input type="search" aria-label="Search Skills" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: 0, outline: 'none', boxShadow: 'none' }} />
+          <input type="search" aria-label="Search skills" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: 0, outline: 'none', boxShadow: 'none' }} />
         </label>
         <div className="w-40 shrink-0">
-          <MenuSelect label="Filter Skills" value={filter} onChange={setFilter} options={filterOptions} />
+          <MenuSelect label="Filter skills" value={filter} onChange={setFilter} options={filterOptions} />
         </div>
-        <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
+        <IconButton icon={<RefreshCw size={15} />} label="Refresh skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
         <IconButton ref={addTriggerRef} className={markdownStoreDirectory && !entries.length ? 'uam-store-add--primary' : undefined} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={openAddChoices} />
       </div>
       {/* Stage: the library and the step share one area, so the step slides over the library. */}

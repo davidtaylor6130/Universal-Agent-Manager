@@ -100,7 +100,7 @@ describe('MarkdownStoreModal', () => {
     expect(dialog.querySelector('.overflow-y-auto')).toBeTruthy()
     expect(create.textContent).toBe('')
 
-    const search = host.querySelector('input[aria-label="Search Skills"]') as HTMLInputElement
+    const search = host.querySelector('input[aria-label="Search skills"]') as HTMLInputElement
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
       valueSetter?.call(search, 'regressions')
@@ -123,7 +123,7 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Review code'))?.click())
-    const search = host.querySelector('input[aria-label="Search Skills"]') as HTMLInputElement
+    const search = host.querySelector('input[aria-label="Search skills"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, 'Release notes')
       search.dispatchEvent(new Event('input', { bubbles: true }))
@@ -166,7 +166,7 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     const pickFilter = (option: string) => {
-      act(() => (host.querySelector('button[role="combobox"][aria-label="Filter Skills"]') as HTMLButtonElement).click())
+      act(() => (host.querySelector('button[role="combobox"][aria-label="Filter skills"]') as HTMLButtonElement).click())
       act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent === option)!.click())
     }
     pickFilter('Pinned')
@@ -455,8 +455,8 @@ describe('MarkdownStoreModal', () => {
     expect(region.hasAttribute('aria-modal')).toBe(false)
     expect(region.className).toContain('min-h-0')
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Close Skills"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Search Skills"]')?.closest('.uam-search-field')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Close skills"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Search skills"]')?.closest('.uam-search-field')).toBeTruthy()
     expect(escape().defaultPrevented).toBe(false)
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
     click('Add skill')
@@ -475,7 +475,7 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills(true)
     await act(async () => { await Promise.resolve() })
     const library = host.querySelector('.uam-skills-library') as HTMLElement
-    const search = host.querySelector('[aria-label="Search Skills"]')
+    const search = host.querySelector('[aria-label="Search skills"]')
     expect(library.hasAttribute('data-away')).toBe(false)
     expect(library.hasAttribute('inert')).toBe(false)
     click('Add skill')
@@ -483,7 +483,7 @@ describe('MarkdownStoreModal', () => {
     expect(library.hasAttribute('inert')).toBe(true)
     expect(library.getAttribute('aria-hidden')).toBe('true')
     expect(host.querySelector('.uam-skills-library')).toBe(library)
-    expect(host.querySelector('[aria-label="Search Skills"]')).toBe(search)
+    expect(host.querySelector('[aria-label="Search skills"]')).toBe(search)
     expect(host.querySelector('.uam-skills-step')).toBeTruthy()
     expect(escape().defaultPrevented).toBe(true)
     expect(library.hasAttribute('data-away')).toBe(false)

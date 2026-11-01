@@ -149,7 +149,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
       <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
     <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}</p></Reveal>
-    <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button>{existing && <Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button>}</div>
+    <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button><Reveal as="span" open={!!existing}><Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button></Reveal></div>
   </form>
 }
 
@@ -279,7 +279,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       <SegmentedControl aria-label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
       <Reveal as="span" open={metric !== 'limits'}><IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} /></Reveal>
       {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
-      {metric !== 'limits' && <span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span>}
+      <Reveal as="span" open={metric !== 'limits'}><span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span></Reveal>
       {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
@@ -298,7 +298,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <ProviderLogo providerId={provider.providerId} size={14} />
               <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
               {off ? <X size={12} aria-hidden /> : <Check size={12} aria-hidden />}
-              <Tooltip label={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}><span className="uam-usage-chip-value tabular-nums">{providerValue(provider)}</span></Tooltip>
+              <Tooltip label={provider.available ? `${provider.files} history files` : 'Usage history unavailable'}><span className="uam-usage-chip-value tabular-nums">{providerValue(provider)}</span></Tooltip>
             </button>
           })}</div>
           <Reveal open={totals.totalTokens === 0 && !history.loading}><p className="uam-usage-empty">No usage recorded in this range.</p></Reveal>

@@ -509,7 +509,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               borderRight: '1px solid var(--border)',
             }}
           >
-            {groupedEntries.length > 0 && (
+            <Reveal open={groupedEntries.length > 0}>
               <nav ref={locationNavRef} aria-label="Memory locations" className="uam-settings-nav grid gap-1 min-w-0">
                 {locationIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${locationIndicator.top}px)`, height: locationIndicator.height }} />}
                 <div className="uam-set-section__title px-2" style={{ color: 'var(--text-3)' }}>Locations</div>
@@ -563,7 +563,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   </div>
                 </Reveal>
               </nav>
-            )}
+            </Reveal>
 
           </aside>
 

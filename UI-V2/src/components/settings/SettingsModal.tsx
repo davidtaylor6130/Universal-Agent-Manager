@@ -250,7 +250,7 @@ interface MemoryModelOption {
 const PERMISSION_DEFAULT_OPTIONS: MemoryModelOption[] = [
   { id: 'off', label: 'Ask every time', detail: 'Leave every permission request for you.' },
   { id: 'acceptEdits', label: 'Accept edits', detail: 'Approve workspace file edits; ask for everything else.' },
-  { id: 'aiReview', label: 'AI Review', detail: 'An AI reviewer decides. Failures and doubts return to you.' },
+  { id: 'aiReview', label: 'AI review', detail: 'An AI reviewer decides. Failures and doubts return to you.' },
   { id: 'yolo', label: 'YOLO', detail: 'Approve every permission request once.' },
 ]
 
@@ -1658,7 +1658,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       <SettingsSection title="Control method">
         <ComputerUseSettingRow />
         <SettingRow
-          title="Computer Use backend"
+          title="Computer use backend"
           description={activeSession
             ? activeSession.computerUseEnabled
               ? 'Turn Computer Use off in this chat first.'

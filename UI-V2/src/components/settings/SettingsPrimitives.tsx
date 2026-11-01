@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Tooltip, cx } from '../ui'
+import { Button, Reveal, Tooltip, cx } from '../ui'
 import type { ButtonProps } from '../ui'
 import './settings-shell.css'
 import './settings-motion.css'
@@ -93,7 +93,7 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
           {description && <Tooltip label={typeof description === 'string' ? description : undefined}><div id={descriptionId} className="uam-set-row__desc">{description}</div></Tooltip>}
-          {status && <div id={statusId} className="uam-set-row__status">{status}</div>}
+          <Reveal open={Boolean(status)} id={statusId} className="uam-set-row__status">{status}</Reveal>
         </div>
         {control && <div ref={controlRef} className="uam-set-row__control">{control}</div>}
       </div>

@@ -187,7 +187,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     if (busy || instructionOperation.current || !instructionEditor || !instructionDirty) return false
     const draft = instructionEditor
     if (!useAppStore.getState().centralProviderConfiguration.instructionFiles.includes(draft.path)) {
-      setInstructionEditor({ ...draft, error: 'This file is no longer in Central Setup. Your changes are retained.' })
+      setInstructionEditor({ ...draft, error: 'This file is no longer in central setup. Your changes are retained.' })
       return false
     }
     const request = ++instructionRequest.current

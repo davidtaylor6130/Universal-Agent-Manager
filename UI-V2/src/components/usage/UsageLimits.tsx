@@ -168,7 +168,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     ? <UnlimitedRow key={row.id} label={row.label} />
     : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} />
   const body = <>
-    {(loading || allowance?.status === 'loading') && <ProgressFill label={`${name} allowances`} indeterminate className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</ProgressFill>}
+    <Reveal open={!!(loading || allowance?.status === 'loading')}><ProgressFill label={`${name} allowances`} indeterminate className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</ProgressFill></Reveal>
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
     <Reveal open={!!allowance?.error}><p className={cx('uam-set-row', allowance?.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice')}>{allowance?.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p></Reveal>
     <Reveal open={!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading'}><p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p></Reveal>
