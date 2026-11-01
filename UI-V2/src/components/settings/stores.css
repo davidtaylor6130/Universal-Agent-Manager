@@ -16,8 +16,8 @@
 .uam-skills-library[data-away] { position: absolute; inset: 0; transform: translateX(-100%); opacity: 0; }
 .uam-skills-step { animation: uam-skills-step-in var(--dur-base) var(--ease) backwards; }
 @keyframes uam-skills-step-in { from { transform: translateX(100%); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .uam-skills-library, .uam-skills-step { transition: none; animation: none; } }
-[data-motion="off"] .uam-skills-library, [data-motion="off"] .uam-skills-step { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) { .uam-skills-library, .uam-skills-step, .uam-memory-row__actions, .uam-memory-exit { transition: none; animation: none; } }
+[data-motion="off"] .uam-skills-library, [data-motion="off"] .uam-skills-step, [data-motion="off"] .uam-memory-row__actions, [data-motion="off"] .uam-memory-exit { transition: none; animation: none; }
 
 .uam-store-path { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
@@ -36,6 +36,11 @@
 .uam-memory-row__summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-2); }
 .uam-memory-row__meta { display: flex; flex-shrink: 0; gap: var(--sp-2); font-size: var(--fs-xs); white-space: nowrap; color: var(--text-3); }
 .uam-memory-row__actions { flex-shrink: 0; opacity: .55; transform: translateX(var(--sp-1)); transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+/* Unsaved-memory prompt: fades and rises in, and reverses on leave. */
+.uam-memory-exit { animation: uam-memory-exit-in var(--dur-base) var(--ease) backwards; }
+.uam-memory-exit[data-state="closed"] { animation: uam-memory-exit-out var(--dur-fast) var(--ease) forwards; }
+@keyframes uam-memory-exit-in { from { opacity: 0; transform: translateY(var(--sp-2)); } }
+@keyframes uam-memory-exit-out { to { opacity: 0; transform: translateY(var(--sp-2)); } }
 .uam-memory-row:hover .uam-memory-row__actions,
 .uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; transform: none; }
 

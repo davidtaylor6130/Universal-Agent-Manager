@@ -55,7 +55,7 @@ import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Switch, ViewportMenu, cx, motionAllowed, usePresence } from '../ui'
+import { Button, Card, ConfirmDialog, Disclosure, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Switch, ViewportMenu, cx, motionAllowed, scaledMs, usePresence } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -134,7 +134,6 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
   const saveSettings = useAppStore((state) => state.setVoiceInputSettings)
   const [draft, setDraft] = useState<VoiceInputSettingsRequest>(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
   const draftRef = useRef(draft)
@@ -143,7 +142,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     if (JSON.stringify(draftRef.current) === JSON.stringify(savedRef.current)) { setDraft(saved); draftRef.current = saved }
     savedRef.current = saved
   }, [saved])
-  const edit = (next: VoiceInputSettingsRequest) => { draftRef.current = next; setDraft(next); setError('') }
+  const edit = (next: VoiceInputSettingsRequest) => { draftRef.current = next; setDraft(next) }
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -161,15 +160,15 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     : valid.voiceInputApiKeyEnv === undefined ? 'Enter an environment variable name, or leave it empty.' : ''
   const save = async (next?: () => void) => {
     if (saving || !supported || validationError) return
-    setSaving(true); setError('')
+    setSaving(true)
     try {
       // Server configuration remains a draft until the native save succeeds.
       const payload = draft.mode === 'server' ? draft : { mode: draft.mode }
-      if (!await saveSettings(payload)) { setError('Could not save voice settings. Try again.'); return }
+      if (!await saveSettings(payload)) { reportAppFailure('Could not save voice settings.', 'Try again.'); return }
       const current = useAppStore.getState()
       edit({ mode: current.voiceInputMode ?? draft.mode, serverBaseUrl: current.voiceInputServerBaseUrl ?? '', serverEndpoint: current.voiceInputServerEndpoint ?? '/v1/audio/transcriptions', serverModel: current.voiceInputServerModel ?? 'whisper-1', apiKeyEnv: current.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY' })
       if (next) { setExit(null); next() }
-    } catch { setError('Could not save voice settings. Try again.') }
+    } catch { reportAppFailure('Could not save voice settings.', 'Try again.') }
     finally { setSaving(false) }
   }
   const voiceModes = [{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const
@@ -194,13 +193,13 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
             <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
           </SettingsField>)}
       </div>}
-      {(error || validationError) && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error || validationError}</Notice></div>}
+      {validationError && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validationError}</Notice></div>}
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
       </div>
     </SettingsSection>
-    {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
+    {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={validationError} onStay={() => setExit(null)}
       onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}
   </>
 })
@@ -211,7 +210,6 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
   const saved = Object.fromEntries(providers.map((provider) => [provider.id, overrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true]))
   const [draft, setDraft] = useState(saved)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [exit, setExit] = useState<(() => void) | null>(null)
   const dirty = providers.some((provider) => draft[provider.id] !== saved[provider.id])
   const previousSaved = useRef(saved)
@@ -228,24 +226,23 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
   useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (saving) return; if (dirty) setExit(() => next); else next() } }))
   const save = async (next?: () => void) => {
     if (saving) return
-    setSaving(true); setError('')
+    setSaving(true)
     try {
       const results = await Promise.all(providers.filter((provider) => draft[provider.id] !== saved[provider.id]).map((provider) => saveSettings({ providerId: provider.id, executionHostId: hostId, enabled: draft[provider.id] })))
-      if (results.some((ok) => !ok)) { setError('Could not save provider settings. Try again.'); return }
+      if (results.some((ok) => !ok)) { reportAppFailure('Could not save provider settings.', 'Try again.'); return }
       const currentOverrides = useAppStore.getState().providerAvailability
       setDraft(Object.fromEntries(providers.map((provider) => [provider.id, currentOverrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true])))
       if (next) { setExit(null); next() }
-    } catch { setError('Could not save provider settings. Try again.') }
+    } catch { reportAppFailure('Could not save provider settings.', 'Try again.') }
     finally { setSaving(false) }
   }
   return <>
     {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
         control={<Switch hideLabel label={`${providerShortName(provider, provider.id)} available`} checked={draft[provider.id]} disabled={saving}
-          onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })); setError('') }} />} />)}
-      {error && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{error}</Notice></div>}
-      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
+          onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })) }} />} />)}
+      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
-    {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
+    {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
   </>
 })
 
@@ -259,7 +256,7 @@ interface MemoryModelOption {
 const PERMISSION_DEFAULT_OPTIONS: MemoryModelOption[] = [
   { id: 'off', label: 'Ask every time', detail: 'Leave every permission request for you.' },
   { id: 'acceptEdits', label: 'Accept edits', detail: 'Approve workspace file edits; ask for everything else.' },
-  { id: 'aiReview', label: 'AI Review', detail: 'Use the configured isolated reviewer; failures and uncertainty return to you.' },
+  { id: 'aiReview', label: 'AI Review', detail: 'An AI reviewer decides. Failures and doubts return to you.' },
   { id: 'yolo', label: 'YOLO', detail: 'Approve every permission request once.' },
 ]
 
@@ -346,7 +343,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         {textError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span>}
         {inlineText !== null && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div>}
       </SettingsField>
-      <SettingsField label="Legacy instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
+      <SettingsField label="Instruction file (fallback)" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
       </SettingsField>
@@ -543,6 +540,7 @@ const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
 // Shared surface for settings dialogs: title, body, then actions right-aligned with the primary last.
 const SETTINGS_DIALOG_STYLE = { background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }
 
+// ponytail: matches the 120ms leave animation in settings-shell.css; scaled by Motion speed at use.
 const PAGE_EXIT_MS = 120
 /**
  * Cross-fades settings pages. The previous page stays mounted for its 120ms fade-out
@@ -559,7 +557,7 @@ function SettingsPageSwap({ pageKey, className, children }: { pageKey: string; c
   useEffect(() => { committed.current = { key: pageKey, node: children } })
   useEffect(() => {
     if (!leaving) return
-    const timer = window.setTimeout(() => setLeaving(null), PAGE_EXIT_MS)
+    const timer = window.setTimeout(() => setLeaving(null), scaledMs(PAGE_EXIT_MS))
     return () => window.clearTimeout(timer)
   }, [leaving])
   return (
@@ -885,7 +883,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
-  const [themeMessage, setThemeMessage] = useState<StatusMessage | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
@@ -1299,7 +1296,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       colors: { ...(source?.colors ?? BUILT_IN_THEME_COLORS[base]) },
     })
     setThemeStep(0)
-    setThemeMessage(null)
   }
   const cloneCurrentTheme = () => {
     if (selectedCustomTheme) {
@@ -1316,7 +1312,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try {
       const saved = await saveCustomTheme(themeDraft)
       if (!saved) {
-        setThemeMessage({ tone: 'error', text: 'Theme could not be saved. Check its name and colors.' })
+        reportAppFailure('Theme could not be saved.', 'Check its name and colors.')
         return false
       }
       setThemeDraft(null)
@@ -1324,7 +1320,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       reportAppNotice('Theme saved.', 'success')
       return true
     } catch {
-      setThemeMessage({ tone: 'error', text: 'Theme could not be saved. Try again.' })
+      reportAppFailure('Theme could not be saved.', 'Try again.')
       return false
     } finally {
       themeSaveInFlightRef.current = false
@@ -1338,10 +1334,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     try {
       const deleted = await deleteCustomTheme(selectedCustomTheme.id)
       if (deleted) reportAppNotice('Theme deleted.', 'success')
-      else setThemeMessage({ tone: 'error', text: 'Theme could not be deleted.' })
+      else reportAppFailure('Theme could not be deleted.', 'Try again.')
       if (deleted) setThemeDraft(null)
       return deleted
-    } catch { setThemeMessage({ tone: 'error', text: 'Theme could not be deleted. Try again.' }); return false }
+    } catch { reportAppFailure('Theme could not be deleted.', 'Try again.'); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const importThemeFile = async (file?: File) => {
@@ -1355,7 +1351,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setThemeDraft(null)
       reportAppNotice('Theme imported.', 'success')
     } catch {
-      setThemeMessage({ tone: 'error', text: 'Theme import failed. Choose a valid UAM theme JSON file.' })
+      reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
     }
   }
   const exportSelectedTheme = () => {
@@ -1618,9 +1614,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void setCompanionEnabled(event.target.checked)} />}
         />
         <SettingRow
-          title={companionLoadError ? 'Phone access needs attention' : !companionSettings ? 'Checking phone access…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating phone access…' : failed ? 'Phone access needs attention' : 'Phone access is off'}
-          description={companionLoadError ? 'Retry to check phone access on this computer.' : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network') || (ready ? 'Scan the pairing code in the Universal Agent Manager iPhone app.' : 'Enable phone access to connect your iPhone.')}
-          status={<span role="status" aria-live="polite" style={{ color: failed ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating phone access…' : undefined}</span>}
+          title="Connection"
+          description={companionLoadError ? 'Retry to check phone access on this computer.' : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
+          status={<span role="status" aria-live="polite" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             {(failed || companionLoadError) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button>}
             {(failed || companionSettings?.restartRequired) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button>}
@@ -1828,7 +1824,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       onClick={() => {
                         setThemeDraft(null)
                         setTheme(choice.value)
-                        setThemeMessage(null)
                       }}
                       className="uam-theme-tile"
                     >
@@ -1850,7 +1845,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div className="flex flex-wrap justify-end gap-1">
                   <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
                   <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
-                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage(null) } else cloneCurrentTheme() }}/>
+                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0) } else cloneCurrentTheme() }}/>
                   <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
                   <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
                   <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
@@ -1868,9 +1863,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   />
                 </div>
               }
-            >
-              <StatusMessage message={themeMessage} />
-            </SettingRow>
+            />
           </SettingsSection>
           <SettingsSection title="Chats">
             <SettingRow
@@ -2050,111 +2043,79 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             </div>
                           </Disclosure>
                         )}
-                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
-                          <div className="grid gap-1">
-                            <span className="uam-set-field__label">Model</span>
-                            {renderDefaultsMenu(
-                              `${provider.id}:model`,
-                              defaults.modelId,
-                              `${providerName} default model`,
-                              modelOptions,
-                              (modelId) => updateProviderDefaults(provider.id, {
-                                ...defaults,
-                                modelId,
-                                reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
-                              })
-                            )}
-                          </div>
-                          {reasoningOptions.length > 0 && (
-                            <div className="grid gap-1">
-                              <span className="uam-set-field__label">Reasoning</span>
-                              {renderDefaultsMenu(
-                                `${provider.id}:reasoning`,
-                                defaults.reasoningEffort,
-                                `${providerName} default reasoning`,
-                                reasoningOptions,
-                                (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
-                              )}
-                            </div>
-                          )}
-                          {caps.hasServiceTier && speedOptions.length > 0 && (
-                            <div className="grid gap-1">
-                              <span className="uam-set-field__label">Speed</span>
-                              {renderDefaultsMenu(
-                                `${provider.id}:speed`,
-                                defaults.serviceTier,
-                                `${providerName} default speed`,
-                                speedOptions,
-                                (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid gap-2" style={{gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))"}}>
-                          <div className="grid gap-1">
-							<span className="uam-set-field__label">Provider mode</span>
-                            {renderDefaultsMenu(
-                              `${provider.id}:mode`,
-                              defaults.approvalMode,
-							  `${providerName} default provider mode`,
-                              modeOptions,
-                              (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
-                            )}
-                          </div>
-
-                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <span className="uam-set-field__label">Permissions</span>
-                            {caps.structuredPermissionControl === 'uam'
-                              ? renderDefaultsMenu(
-                                  `${provider.id}:permissions`,
-                                  defaults.commandSafetyTier,
-                                  `${providerName} default permissions`,
-                                  PERMISSION_DEFAULT_OPTIONS.filter((option) => option.id !== 'acceptEdits' || caps.hasAcceptEditsMode),
-                                  (commandSafetyTier) => {
-                                    const nextDefaults = { ...defaults, commandSafetyTier: commandSafetyTier as ProviderChatDefaults['commandSafetyTier'] }
-                                    if (commandSafetyTier === 'yolo' && defaults.commandSafetyTier !== 'yolo') {
-                                      setPendingDefaultYolo({ providerId: provider.id, providerName, defaults: nextDefaults })
-                                      return
-                                    }
-                                    updateProviderDefaults(provider.id, nextDefaults)
-                                  }
-                                )
-                              : <div style={{ color: 'var(--text-3)' }}>Provider managed</div>}
-                          </div>
-                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <span className="uam-set-field__label">Memory</span>
-                            <MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
-                              options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
-                              onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
-                                [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
-                                  memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
-                              } }, settingsScope))} />
-                            
-                          </div>
-                        </div>
+                        <SettingRow title="Model" control={renderDefaultsMenu(
+                          `${provider.id}:model`,
+                          defaults.modelId,
+                          `${providerName} default model`,
+                          modelOptions,
+                          (modelId) => updateProviderDefaults(provider.id, {
+                            ...defaults,
+                            modelId,
+                            reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
+                          })
+                        )} />
+                        {reasoningOptions.length > 0 && <SettingRow title="Reasoning" control={renderDefaultsMenu(
+                          `${provider.id}:reasoning`,
+                          defaults.reasoningEffort,
+                          `${providerName} default reasoning`,
+                          reasoningOptions,
+                          (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
+                        )} />}
+                        {caps.hasServiceTier && speedOptions.length > 0 && <SettingRow title="Speed" control={renderDefaultsMenu(
+                          `${provider.id}:speed`,
+                          defaults.serviceTier,
+                          `${providerName} default speed`,
+                          speedOptions,
+                          (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
+                        )} />}
+                        <SettingRow title="Provider mode" control={renderDefaultsMenu(
+                          `${provider.id}:mode`,
+                          defaults.approvalMode,
+                          `${providerName} default provider mode`,
+                          modeOptions,
+                          (approvalMode) => updateProviderDefaults(provider.id, { ...defaults, approvalMode })
+                        )} />
+                        <SettingRow title="Permissions" control={caps.structuredPermissionControl === 'uam'
+                          ? renderDefaultsMenu(
+                              `${provider.id}:permissions`,
+                              defaults.commandSafetyTier,
+                              `${providerName} default permissions`,
+                              PERMISSION_DEFAULT_OPTIONS.filter((option) => option.id !== 'acceptEdits' || caps.hasAcceptEditsMode),
+                              (commandSafetyTier) => {
+                                const nextDefaults = { ...defaults, commandSafetyTier: commandSafetyTier as ProviderChatDefaults['commandSafetyTier'] }
+                                if (commandSafetyTier === 'yolo' && defaults.commandSafetyTier !== 'yolo') {
+                                  setPendingDefaultYolo({ providerId: provider.id, providerName, defaults: nextDefaults })
+                                  return
+                                }
+                                updateProviderDefaults(provider.id, nextDefaults)
+                              }
+                            )
+                          : <span style={{ color: 'var(--text-3)' }}>Provider managed</span>} />
+                        <SettingRow title="Memory" control={<MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
+                          options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
+                          onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
+                            [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
+                              memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
+                          } }, settingsScope))} />} />
                         <Disclosure summary="Advanced">
                           <div className="grid gap-3">
-                            <SettingsField label="Feature preference">
-                              {renderDefaultsMenu(
-                                `${provider.id}:feature-preference`,
-                                defaults.featurePreference ?? 'uam',
-                                `${providerName} feature preference`,
-                                [
-                                  { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and approvals.' },
-                                  { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
-                                ],
-                                (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
-                              )}
-                            </SettingsField>
-                            <SettingsField label="Goal reviewer model" hint="Used for architecture and read-only review.">
-                              {renderDefaultsMenu(
-                                `${provider.id}:goal-reviewer`,
-                                defaults.reviewerModelId || defaults.modelId,
-                                `${providerName} goal reviewer model`,
-                                reviewerModelOptions,
-                                (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
-                              )}
-                            </SettingsField>
+                            <SettingRow title="Feature preference" control={renderDefaultsMenu(
+                              `${provider.id}:feature-preference`,
+                              defaults.featurePreference ?? 'uam',
+                              `${providerName} feature preference`,
+                              [
+                                { id: 'uam', label: 'Prefer UAM', detail: 'Use UAM agents, reviewed goals, and approvals.' },
+                                { id: 'provider', label: `Prefer ${providerName}`, detail: 'Use provider-native features when available.' },
+                              ],
+                              (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
+                            )} />
+                            <SettingRow title="Goal reviewer model" description="Used for architecture and read-only review." control={renderDefaultsMenu(
+                              `${provider.id}:goal-reviewer`,
+                              defaults.reviewerModelId || defaults.modelId,
+                              `${providerName} goal reviewer model`,
+                              reviewerModelOptions,
+                              (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
+                            )} />
                             <SettingRow
                               title="Architect + worker"
                               description="Reviewer plans and checks each step; the model implements it."
@@ -2511,7 +2472,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       catch { reportAppFailure('Version check could not start.', 'Try again.') }
                     }}/>
                     {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
-                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
+                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--r-md)'}}>
                       <MenuItem label={`Download recommended${manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}`} disabled={!manager.preferredVersion} onSelect={() => requestInstall(manager.preferredVersion)} />
                       <MenuItem label="Download latest" onSelect={() => requestInstall('latest')} />
                     </ViewportMenu>}
@@ -2527,7 +2488,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
-    if (SSH_ENABLED && selectedSection === 'routing') return <ExecutionRoutingSettings ref={routingRef} variant="page" />
+    if (SSH_ENABLED && selectedSection === 'routing') return <ExecutionRoutingSettings ref={routingRef} variant="page" onAddComputer={() => changeSection('remote-hosts')} />
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
@@ -2771,14 +2732,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[10000, 25000, 50000, 100000, 200000, 500000].map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
           <SettingRow
             title="Maximum iterations"
-            description="Loops a goal may run before it stops (1–200)."
-            control={
-              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
-                <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations}</output>
-                <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations >= 200} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.min(200, goalMaxLoopIterations + 1) })} />
-              </div>
-            }
+            description="Loops a goal may run before it stops."
+            control={<MenuSelect label="Maximum goal loop iterations" value={String(goalMaxLoopIterations)} options={Array.from({ length: 200 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} onChange={(value) => void setMemorySettings({ goalMaxLoopIterations: Number(value) })} />}
           />
           <SettingRow
             title="Provider setup timeout"
@@ -2995,7 +2950,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       <div ref={dialogRef} role="region" aria-label="Settings" tabIndex={-1} className="w-full h-full min-h-0 flex flex-col overflow-hidden">
         <div className="grid flex-1 min-h-0" style={{gridTemplateColumns:'200px minmax(0,1fr)'}}>
           <aside className="min-h-0 flex flex-col px-3 py-3" style={{borderRight:'1px solid var(--border)',background:'var(--sidebar-bg)'}}>
-            <Button size="sm" variant="ghost" className="self-start mb-5" style={{paddingInline:8}} aria-label="Back to chats" leadingIcon={<ArrowLeft size={15} aria-hidden/>} disabled={mcpSaving || editorSaving || remoteBusy || themeSaving} onClick={requestClose}>Back to chats</Button>
+            <Button size="sm" variant="ghost" className="self-start mb-5" style={{paddingInline:'var(--sp-2)'}} aria-label="Back to chats" leadingIcon={<ArrowLeft size={15} aria-hidden/>} disabled={mcpSaving || editorSaving || remoteBusy || themeSaving} onClick={requestClose}>Back to chats</Button>
             <h1 className="text-lg font-semibold px-2 mb-3">Settings</h1>
             <div className="uam-search-field flex items-center gap-2 px-2 rounded-md mb-5" style={{border:'1px solid var(--border)',background:'var(--surface)'}}>
               <Search size={14} aria-hidden style={{color:'var(--text-3)',flexShrink:0}}/>
@@ -3006,7 +2961,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
               {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
               {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
-                <h2 className="px-2 mb-1 text-xs font-medium" style={{color:'var(--text-3)'}}>{group.label}</h2>
+                <h2 className="px-2 mb-1 text-[length:var(--fs-xs)] font-semibold uppercase tracking-[0.08em]" style={{color:'var(--text-3)'}}>{group.label}</h2>
                 {group.sections.map(id => {
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
                   const active = selectedSection === section.id
@@ -3029,7 +2984,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-                <StatusMessage message={themeMessage} className="text-xs mt-3" />
               </div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
@@ -3060,13 +3014,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(themeExit)} tone="primary" title="Save theme changes?" label="Unsaved theme changes" settingsOwned
         confirmLabel="Save theme" cancelLabel="Stay" busy={themeSaving} confirmDisabled={!themeDirty || !themeDraftValid}
-        error={themeMessage?.tone === 'error' ? themeMessage.text : undefined}
         secondaryAction={{ label: 'Discard', onClick: () => { const next = themeExit; setThemeDraft(null); setThemeExit(null); next?.() } }}
         onCancel={() => setThemeExit(null)}
         onConfirm={async () => { if (await saveThemeDraft()) { const next = themeExit; setThemeExit(null); next?.() } }}>
         <p>Your theme edits have not been saved.</p>
       </ConfirmDialog>
       {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
+        {/* ponytail: accepted exception (audit 3071). This dialog keeps its own panel: the SSH helper preview needs a wider body and a scrollable pre block that the shared ConfirmDialog surface does not provide. */}
         {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5">
@@ -3109,7 +3063,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
         confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
-        error={(pendingDelete?.kind === 'theme' && themeMessage?.tone === 'error' ? themeMessage.text : undefined) || undefined}
         onCancel={() => setPendingDelete(null)}
         onConfirm={async () => {
           if (!pendingDelete) return

@@ -81,6 +81,7 @@ export function MemoryScanModal() {
             </div>
           </div>
 
+          <div key={memoryScanLoading ? 'loading' : memoryScanCandidates.length === 0 ? 'empty' : 'list'} className="uam-reveal">
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />
           ) : memoryScanCandidates.length === 0 ? (
@@ -95,7 +96,7 @@ export function MemoryScanModal() {
                     key={candidate.chatId}
                     title={<span
                       className="uam-scan-title-row"
-                      title={`${providerName} · Last scanned ${candidate.memoryLastProcessedAt || 'not yet'}`}
+                      title={`${providerName} · ${candidate.memoryLastProcessedAt ? `Last scanned ${candidate.memoryLastProcessedAt}` : 'Not scanned yet'}`}
                     >
                       {candidate.title}
                       {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
@@ -107,8 +108,9 @@ export function MemoryScanModal() {
               })}
             </div>
           )}
+          </div>
           {!memoryScanLoading && memoryScanCandidates.length > 0 && (
-            <p className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
+            <p className="uam-reveal text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
           )}
         </div>
 

@@ -344,7 +344,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
           {candidate.validationError && <span className="flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{candidate.validationError}</span>}
         </div>
-        {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label={`Collision action for ${candidate.title}`} disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip existing' }, { value: 'replace', label: 'Replace existing' }, { value: 'separate', label: 'Keep separate' }]} /></div>}
+        {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label="If a skill with this name exists" disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip' }, { value: 'replace', label: 'Replace' }, { value: 'separate', label: 'Keep both' }]} /></div>}
       </div>)}</div>
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
@@ -360,7 +360,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
         <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>
       </>}
-      {previewing && <p role="status" className="text-xs">Reading skills...</p>}
+      {previewing && <p role="status" className="uam-reveal text-xs">Reading skills...</p>}
     </>}
   </div>
 

@@ -174,7 +174,7 @@ describe('ShellActionsSettings', () => {
       expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
       act(() => ref.current?.requestLeave(leave))
       expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
-      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
+      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Keep editing')!.click())
       expect(document.activeElement?.getAttribute('aria-label')).toBe('Label for Review Selection')
       const control = host.querySelector<HTMLButtonElement>(`[aria-label="${_label === 'input' ? 'Input type' : 'Action'} for Review Selection"]`)!
       act(() => control.click())
@@ -358,7 +358,7 @@ describe('ShellActionsSettings', () => {
         expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
         expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')?.textContent).toContain('Each action needs a label')
-        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
+        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Keep editing')!.click())
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')).toBeNull()
         expect(leave).not.toHaveBeenCalled()
         expect(collapsed(group(host, 'Code'))).toBe(false)

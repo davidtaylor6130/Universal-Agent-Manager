@@ -156,7 +156,7 @@ describe('separate Git and SVN sections', () => {
     const { host, root } = mount()
     try {
       const sections = Array.from(host.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))
-      expect(sections).toEqual(['Git', 'SVN', 'No VCS'])
+      expect(sections).toEqual(['Git', 'SVN'])
       expect(host.querySelector('[aria-label="Git and SVN"]')).toBeNull()
       const git = host.querySelector<HTMLElement>('section[aria-label="Git"]')!
       const svn = host.querySelector<HTMLElement>('section[aria-label="SVN"]')!
@@ -263,10 +263,10 @@ describe('SVN update before new chat', () => {
 
 
 describe('local snapshot Git settings', () => {
-  it('places snapshot controls under SVN and No VCS', () => {
+  it('places snapshot controls under SVN and local Git files under Git', () => {
     const { host, root } = mount()
     try {
-      const section = host.querySelector<HTMLElement>('section[aria-label="No VCS"]')
+      const section = host.querySelector<HTMLElement>('section[aria-label="Git"]')
       expect(section).not.toBeNull()
       expect(host.querySelector('section[aria-label="SVN"]')!.contains(toggle(host, 'Local snapshot Git for SVN'))).toBe(true)
       expect(section!.contains(toggle(host, 'Local snapshot Git for SVN'))).toBe(false)

@@ -91,7 +91,7 @@
 /* Settings page cross-fade (SettingsPageSwap): the outgoing page fades out over 120ms; the layout never moves. */
 .uam-settings-swap { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .uam-settings-swap > .uam-settings-page { flex: 1 1 auto; min-height: 0; }
-.uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave 120ms var(--ease) forwards; }
+.uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave var(--dur-fast) var(--ease) forwards; }
 @keyframes uam-settings-leave { to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
 :root[data-motion="off"] .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; }

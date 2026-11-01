@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, type UsageProviderId } from '../../services/usageHistory'
 import type { AcpContextUsage, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
@@ -6,7 +6,7 @@ import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
-import { Button, Disclosure, ProgressFill, Tooltip, cx } from '../ui'
+import { Button, Disclosure, ProgressFill, Tooltip, cx, usePresence } from '../ui'
 import { SettingsSection } from '../settings/SettingsPrimitives'
 import { LoaderCircle, TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
@@ -97,6 +97,9 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
   const sessions = useAppStore(state => state.sessions)
   const bindings = useAppStore(state => state.acpBindingBySessionId)
   const account = useProviderAllowances(executionHostId)
+  const errorNote = usePresence(Boolean(account.error))
+  const shownError = useRef(account.error)
+  if (account.error) shownError.current = account.error
   const overrides = useAppStore(state => state.providerAvailability)
   const providers = useMemo(() => USAGE_PROVIDERS.filter(provider => !providerDisabledOn(overrides, provider, executionHostId)), [overrides, executionHostId])
   // Re-enabling reconfigures the native reader; read again now rather than showing its empty row until the next poll.
@@ -136,7 +139,7 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
       {executionHostId === 'local' && <Button size="sm" variant="secondary" onClick={account.refresh} disabled={account.coolingDown} loading={account.refreshing || account.requestingRefresh}>Refresh allowances</Button>}
     </div>
     {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly.</p>}
-    {account.error && <p role="status" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{account.error}{account.data ? ' Showing the last snapshot.' : ''}</p>}
+    {errorNote.mounted && <p role="status" data-state={errorNote.closing ? 'closed' : 'open'} className="flex items-start gap-1.5 text-xs uam-usage-presence" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}{account.data ? ' Showing the last snapshot.' : ''}</p>}
     <div className="grid">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
 }
@@ -166,7 +169,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     ? <UnlimitedRow key={row.id} label={row.label} />
     : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} />
   const body = <>
-    {(loading || allowance?.status === 'loading') && <p role="status" className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</p>}
+    {(loading || allowance?.status === 'loading') && <ProgressFill label={`${name} allowances`} indeterminate className="uam-set-row flex items-center gap-1.5 text-xs uam-usage-muted"><LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />Reading allowances…</ProgressFill>}
     {/* An unsupported feed is an honest neutral state; only failed reads use the warning tone. */}
     {allowance?.error && <p className={cx('uam-set-row', allowance.status === 'unavailable' ? 'text-xs uam-usage-muted' : 'uam-limits-notice')}>{allowance.error}{hasAllowance ? ' Showing cached allowances.' : ''}</p>}
     {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
@@ -188,8 +191,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
             <span className="uam-limit-row__name">Context</span>
             <span className="uam-limit-row__value tabular-nums">{context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens</span>
           </ProgressFill>
-          {now - context.usage.updatedAt >= 300000 && <p className="uam-usage-muted" title={context.title || 'chat'}>Cached snapshot</p>}
-        </div>}
+                  </div>}
         {consumption && <>
           <ConsumptionStack total={consumption.usage.total} />
           <dl className="uam-limits-facts">
@@ -200,7 +202,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
             {consumption.usage.total.reasoningOutputTokens > 0 && <><dt>Reasoning</dt><dd>{consumption.usage.total.reasoningOutputTokens.toLocaleString()}</dd></>}
             <dt>Last turn</dt><dd>{consumption.usage.last ? consumption.usage.last.totalTokens.toLocaleString() : 'Unavailable'}</dd>
           </dl>
-          <p className="uam-usage-muted">{(provider === GEMINI_CLI_PROVIDER_ID || provider === OPENCODE_CLI_PROVIDER_ID || provider === ANTIGRAVITY_CLI_PROVIDER_ID) ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+          <p className="uam-usage-muted">{(provider === GEMINI_CLI_PROVIDER_ID || provider === OPENCODE_CLI_PROVIDER_ID || provider === ANTIGRAVITY_CLI_PROVIDER_ID) ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!hasAllowance && (!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000) ? ' · Cached snapshot' : ''}</p>
         </>}
       </div>
     </Disclosure>}

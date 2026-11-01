@@ -442,7 +442,7 @@ describe('SettingsModal memory settings', () => {
       const repairs = rows.filter(row => row.querySelector('.uam-set-row__title')?.textContent === 'Network address changed')
       expect(repairs).toHaveLength(1)
       const repair = repairs[0]
-      const status = rows.find(row => row.querySelector('.uam-set-row__title')?.textContent === 'Phone access needs attention')!
+      const status = rows.find(row => row.querySelector('.uam-set-row__title')?.textContent === 'Connection')!
       expect(status.nextElementSibling).toBe(repair)
       expect(host.textContent).not.toContain('LAN')
       expect(repair.querySelectorAll('button')).toHaveLength(2)
@@ -1406,20 +1406,17 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     openGoalLoopsSection(host)
-    const decrease = host.querySelector('button[aria-label="Decrease maximum goal loop iterations"]') as HTMLButtonElement
-    const output = host.querySelector('output[aria-label="Maximum goal loop iterations"]')
+    const iterations = host.querySelector<HTMLButtonElement>('button[aria-label="Maximum goal loop iterations"]')
     const outputCeiling = host.querySelector<HTMLButtonElement>('button[aria-label="Provider turn output ceiling"]')
-    expect(decrease).toBeTruthy()
-    expect(output?.textContent).toBe('200')
+    expect(iterations?.textContent).toContain('200')
     expect(outputCeiling?.textContent).toContain('1 GiB')
     expect(host.querySelector('select[aria-label="Provider turn output ceiling"]')).toBeNull()
     expect(host.querySelector('input[type="number"]')).toBeNull()
 
-    act(() => {
-      decrease.click()
-    })
-
-    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 199 })
+    act(() => iterations?.click())
+    const ninetyNine = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.trim() === '99')
+    act(() => ninetyNine?.click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalMaxLoopIterations: 99 })
 
     act(() => {
       outputCeiling?.click()
@@ -2527,7 +2524,7 @@ describe('SettingsModal memory settings', () => {
     const confirmation = document.body.querySelector('[aria-label="Unsaved theme changes"]')!
     expect(confirmation).toBeTruthy()
     await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!.click())
-    expect(host.textContent).toContain('Theme could not be saved.')
+    expect(failures.some((failure) => JSON.stringify(failure).includes('Theme could not be saved.'))).toBe(true)
     expect(host.querySelector('[aria-label="Theme name"]')).toBeTruthy()
     act(() => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
     expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
@@ -2714,7 +2711,7 @@ describe('SettingsModal memory settings', () => {
       const saveButton = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save provider settings')!
       await act(async () => saveButton().click())
       expect(save).toHaveBeenCalledWith({ providerId: 'codex-cli', executionHostId: 'lab', enabled: false })
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not save provider settings')
+      expect(failures.some((failure) => JSON.stringify(failure).includes('Could not save provider settings'))).toBe(true)
       expect(availability().checked).toBe(false)
       expect(saveButton().disabled).toBe(false)
       save.mockImplementation(async (request) => { useAppStore.setState((state) => ({ providerAvailability: [...state.providerAvailability, request] })); return true })

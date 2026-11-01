@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
-import { ArrowLeft, Check, Info, RefreshCw, SlidersHorizontal, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, Check, Info, RefreshCw, SlidersHorizontal, X } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageCostBasis, usageWindow, type UsageCostBasis, type UsageProvider, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, Disclosure, IconButton, MenuSelect, RowButton, SegmentedControl, Tooltip, cx, usePresence } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, Tooltip, cx, usePresence } from '../ui'
 import { reportAppNotice } from '../../utils/appFailure'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
@@ -268,6 +268,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || metric === 'cost' && !pricingPending && partialCost || data.coverage?.some(machine => machine.status !== 'ready')))
   const statusLines = [...notes, ...coverage]
   const errorNote = usePresence(Boolean(history.error))
+  const readingPct = data && data.collecting && data.filesTotal > 0 ? Math.min(100, data.filesChecked / data.filesTotal * 100) : undefined
   const shownError = useRef(history.error)
   if (history.error) shownError.current = history.error
   return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
@@ -290,7 +291,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
       {metric === 'limits' ? <UsageLimits executionHostId={hostId} /> : <div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
-        {errorNote.mounted && <div role="alert" data-state={errorNote.closing ? 'closed' : 'open'} className="flex flex-wrap items-center gap-3 text-xs uam-usage-presence" style={{ color: 'var(--error)' }}><span className="flex items-center gap-1.5"><TriangleAlert size={13} className="shrink-0" aria-hidden />{shownError.current}</span>{shownAt && !history.kept && ` Showing figures from ${shownAt}.`}<Button size="sm" onClick={refresh}>Retry</Button></div>}
+        {errorNote.mounted && <Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
@@ -306,13 +307,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <Tooltip label={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}><span className="uam-usage-chip-value tabular-nums">{providerValue(provider)}</span></Tooltip>
             </button>
           })}</div>
-          {totals.totalTokens === 0 && !history.loading && <p className="uam-usage-empty">No usage recorded in this range.</p>}
-          <section className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+          <PresenceBlock open={totals.totalTokens === 0 && !history.loading}><p className="uam-usage-empty">No usage recorded in this range.</p></PresenceBlock>
+          <section aria-busy={history.loading || undefined} data-indeterminate={readingPct === undefined && history.loading ? '' : undefined} className={cx('grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]', history.loading && 'uam-progress-fill')} style={history.loading && readingPct !== undefined ? { '--progress': readingPct / 100 } as CSSProperties : undefined}>
             <div className="grid content-start gap-4">
               <div className="uam-usage-tiles">
                 {metric === 'cost' ? <>
                   <StatTile label={partialCost ? 'Known cost' : totalBasis === 'reported' ? 'Reported cost' : totalBasis === 'mixed' ? 'Reported + estimated' : totalBasis === 'unpriced' ? 'Cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totalBasis === 'reported' ? 'Provider charges' : totalBasis === 'unpriced' ? pricingPending ? 'Prices still loading' : 'No known price' : hasReported ? 'Provider charges and API list-price estimates' : 'API list-price estimate, not a bill'} · ${totals.sessions.toLocaleString()} sessions${data.collecting ? ' · so far' : ''}`} />
-                  {hasReported && <StatTile label="Reported" value={money(totals.reportedCostUsd)} sub="Provider-reported" />}
+                  {hasReported && <StatTile label="Provider-reported" value={money(totals.reportedCostUsd)} />}
                   {hasReported && <StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" />}
                   {(!hasReported || totals.unpricedTokens > 0) && !(pricingPending && totalBasis === 'unpriced') && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub={pricingPending && totals.unpricedTokens > 0 ? 'Awaiting prices' : 'No known price'} />}
                 </> : <>
@@ -351,8 +352,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : pricingPending ? 'Pricing…' : 'Unknown'}</p>}</div>
             <TokenStack total={totals} height={16} labels />
             <TokenLegend total={totals} />
-            <div className="grid gap-3 pt-2"><h3 className="uam-usage-label" id={providerHeadingId}>By provider</h3>
-              {providerRows.length > 0 && <table className="uam-usage-providers text-xs" aria-labelledby={providerHeadingId}>
+            <div className="grid gap-3 pt-2">
+              {providerRows.length > 0 && <table className="uam-usage-providers text-xs" aria-label="By provider">
                 <colgroup><col className="uam-usage-col-name" /><col /><col className="uam-usage-col-tokens" /><col className="uam-usage-col-cost" /></colgroup>
                 <thead className="sr-only"><tr><th scope="col">Provider</th><th scope="col">Token mix</th><th scope="col">Tokens</th><th scope="col">Cost</th></tr></thead>
                 <tbody>{providerRows.map(({ provider, state }) => <tr key={provider.providerId} data-state={state}>
@@ -370,7 +371,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           </section>
           <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><SegmentedControl aria-label="Usage breakdown" value={breakdown} options={[{ value: 'model', label: 'Models' }, { value: 'time', label: 'Time' }]} onChange={setBreakdown} /></div>
             {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
-              <RowButton className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
+              <RowButton className="uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><Tooltip label={model.modelId}><span className="truncate">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
               </RowButton>
               <PresenceBlock open={currentModel === model} className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button><PresenceBlock open={editingPrice}><PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} /></PresenceBlock></PresenceBlock>

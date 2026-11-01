@@ -37,8 +37,8 @@ function savePayload(settings: RoutingSettings) {
  * SSH routing configuration, shared by the New chat dialog ("dialog") and the Settings page ("page").
  * The dialog closes on Cancel or a successful save; the page keeps Discard/Save and guards leaving with unsaved edits.
  */
-export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void }>(
-  function ExecutionRoutingSettings({ variant, onClose, onBusyChange }, ref) {
+export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void; onAddComputer?: () => void }>(
+  function ExecutionRoutingSettings({ variant, onClose, onBusyChange, onAddComputer }, ref) {
     const saved = useAppStore((state) => state.executionRouting)
     const hosts = useAppStore((state) => state.executionHosts)
     const folders = useAppStore((state) => state.folders)
@@ -149,15 +149,18 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         </div>
 
     return <>
-      <fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
+      {!(variant === 'dialog' && exit) && <><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
         <SettingsSection title="Automatic routing">
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
         </SettingsSection>
 
         {sshHosts.length === 0
-          ? <SettingsSection title="Computers" description="SSH computers you allow to run chats.">
-              <p className="uam-rt-dialog__empty">No SSH computers yet. Add one to allow it here.</p>
+          ? <SettingsSection title="Computers">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="uam-rt-dialog__empty">No SSH computers yet.</p>
+                {onAddComputer && <Button size="sm" onClick={onAddComputer}>Add computer</Button>}
+              </div>
             </SettingsSection>
           : sshHosts.map((host) => {
             const policy = draft.hosts.find((item) => item.hostId === host.id)
@@ -228,8 +231,21 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </SettingsSection>
           })}
       </fieldset>
-      {footer}
-      <Presence open={exit !== null}>{exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={validationError || undefined} onStay={() => setExit(null)}
-        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }} onSave={() => void submit(exit)} />}</Presence>
+      {footer}</>}
+      {/* The dialog never opens a second dialog: leaving with unsaved edits is an in-place step in the same panel. */}
+      {variant === 'dialog' && exit
+        ? <div className="uam-rt-dialog__body uam-settings-presence" role="group" aria-label="Unsaved routing settings" data-state="open">
+            <p className="m-0 text-sm font-semibold">Unsaved routing settings</p>
+            <p className="m-0 text-sm" style={{ color: 'var(--text-2)' }}>Your changes have not been saved.</p>
+            {validationError && <p role="alert" className="uam-rt-dialog__error">{validationError}</p>}
+            <div className="uam-rt-dialog__foot">
+              <Button variant="ghost" size="md" disabled={busy} onClick={() => setExit(null)}>Keep editing</Button>
+              <Button variant="secondary" size="md" disabled={busy} onClick={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }}>Discard</Button>
+              <SaveButton size="md" saving={busy} disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(exit)}>Save and leave</SaveButton>
+            </div>
+          </div>
+        : null}
+      {variant === 'page' && <Presence open={exit !== null}>{exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={validationError || undefined} onStay={() => setExit(null)}
+        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }} onSave={() => void submit(exit)} />}</Presence>}
     </>
   })

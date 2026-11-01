@@ -62,14 +62,12 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
           options={[{ value: 'patch', label: 'Patch' }, { value: 'merge', label: 'Merge' }, { value: 'squash', label: 'Squash' }]}
           onChange={(method) => edit({ gitPortMethod: method })} />} />
       <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={toggle('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
+      <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
     <SettingsSection title="SVN">
       <SettingRow title="Enable SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
       <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
-    </SettingsSection>
-    <SettingsSection title="No VCS">
-      <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }))} />
     </SettingsSection>
     {validationNotice.mounted && <div className="uam-settings-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
     <div className="flex justify-end gap-2">

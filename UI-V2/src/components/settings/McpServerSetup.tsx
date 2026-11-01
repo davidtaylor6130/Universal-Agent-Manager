@@ -13,7 +13,7 @@ import { isSshHost } from '../../utils/remoteWorkspace'
 
 type Reference = McpServerConfiguration['environment'][number]
 
-const MCP_SAVED_MESSAGE = 'Saved. Running chats keep their old setup until restarted.'
+const MCP_SAVED_MESSAGE = 'MCP servers saved.'
 
 /** Grid-rows collapse for a server editor; keeps the last open content mounted while it closes. */
 function ServerEditorCollapse({ open, children }: { open: boolean; children: ReactNode }) {
@@ -318,7 +318,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           const scope = [server.workspaceDirectory ? 'Selected workspace' : 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
           // Wrapper replaces the row's sibling separators, so the separator moves onto it.
           return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
-            style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 14 } : undefined}>
+            style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 'var(--sp-3)' } : undefined}>
           <div className="uam-prov-collapse__inner"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
             status={scope}
             control={<>
@@ -376,7 +376,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button>}
       <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</Button>
     </div>
-    {setup === null && validationError && <p role="status" className="uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p>}
+    {setup === null && validationError && <p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p>}
     {setup === null && warningNotice}
   </div>
 }

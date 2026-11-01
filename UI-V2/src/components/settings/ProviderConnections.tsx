@@ -177,6 +177,11 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const hostLabel = activeHostId === 'local' ? 'this computer' : hosts.find(item => item.id === activeHostId)?.label || activeHostId
   const progressiveSaving = draft?.saving === true
   const draftPresence = usePresence(!!draft?.error)
+  // Each status line keeps its last text while it fades out.
+  const statusNote = usePresence(Boolean(statusError))
+  const shownStatusError = useRef(statusError)
+  if (statusError) shownStatusError.current = statusError
+  const checkingNote = usePresence(!status && !statusError)
   // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
   useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
   return <div className="grid gap-6">
@@ -188,8 +193,8 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       </div>
     </div>
     {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
-    {statusError && <p role="status" className="uam-prov-sub">{statusError}</p>}
-    {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}
+    {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">{shownStatusError.current}</p>}
+    {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">Checking connections…</p>}
     <Card flush className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
         <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
@@ -253,7 +258,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
       return <ViewportMenu ref={menuRef} anchorRef={menuAnchor} align="end" role="dialog" aria-label={`${metadata.shortName} MCP servers`} data-state={menuPresence.closing ? 'closed' : 'open'}
         className="uam-prov-pop" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuId(null); menuAnchor.current?.focus() } }}>
-        <div className="uam-prov-label px-1 pb-1">MCP servers for {metadata.shortName}</div>
         {servers.map(server => {
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">

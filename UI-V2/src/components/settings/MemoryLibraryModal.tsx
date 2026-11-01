@@ -5,10 +5,10 @@ import './settings-shell.css'
 import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, Notice, Overlay, RowButton, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Overlay, RowButton, usePresence, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
-import { reportAppNotice } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const MEMORY_CATEGORIES = [
   'Failures/AI_Failures',
@@ -246,7 +246,9 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [searchQuery, setSearchQuery] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
-  const [localError, setLocalError] = useState('')
+  const exitPrompt = usePresence(Boolean(pendingExit))
+  const lastPendingExit = useRef<(() => void) | null>(null)
+  if (pendingExit) lastPendingExit.current = pendingExit
   const libraryRef = useRef<HTMLDivElement>(null)
   const openAllMemoryLibrary = useAppStore(s => s.openAllMemoryLibrary)
   useEffect(() => {
@@ -394,7 +396,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       return false
     }
 
-    setLocalError('')
     submittingRef.current = true
     setSubmitting(true)
     const saveDraft: MemoryEntryDraft = {
@@ -409,18 +410,19 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       saveDraft.targetFolderId = ''
     }
     let ok = false
+    let failure = ''
     try {
       ok = await createMemoryEntry(saveDraft)
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : 'Could not save memory. Try again.')
+      failure = error instanceof Error ? error.message : ''
     } finally {
       submittingRef.current = false
       setSubmitting(false)
     }
 
     if (!ok) {
-      // A store error is already shown in the Notice; only fall back to local copy when there is none.
-      setLocalError(useAppStore.getState().memoryLibraryError ? '' : 'Could not save memory. Try again.')
+      // A store error is already shown in the Notice above; report only failures the store did not hold.
+      if (!useAppStore.getState().memoryLibraryError) reportAppFailure('Could not save memory.', failure || 'Try again.')
       return false
     }
 
@@ -577,7 +579,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               </label>
               {!isAllMemory && <IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/>}
               <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}/>
-              <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => {setLocalError(''); setIsAdding(true)}}/>
+              <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => setIsAdding(true)}/>
               <IconButton
                 variant="danger"
                 icon={<Trash2 size={15} />}
@@ -598,12 +600,10 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               <div role="group" aria-label="New memory" className="space-y-3">
               <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
               {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
-              {pendingExit && (
-                <div role="group" aria-label="Unsaved memory" className="space-y-4">
+              {exitPrompt.mounted && (
+                <div role="group" aria-label="Unsaved memory" data-state={exitPrompt.closing ? 'closed' : 'open'} className="uam-memory-exit space-y-4">
                   <p className="text-sm font-semibold">Save this memory before leaving?</p>
-                  {localError && <p role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError}</p>}
-                  {/* Store errors show once, in the Notice above; localError only holds failures the store did not report. */}
-                  <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+                  <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=lastPendingExit.current; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next?.()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = lastPendingExit.current; setPendingExit(null); next?.()} }}>Save and leave</Button></div>
                 </div>
               )}
               <div hidden={Boolean(pendingExit)} className="space-y-3">
@@ -697,7 +697,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                       </label>
                     </div>
 
-                    {localError && <div role="alert" className="flex items-center gap-1.5 text-xs" style={{color:'var(--error)'}}><X size={12} aria-hidden />{localError}</div>}
                     <SaveButton
                       saving={submitting}
                       pendingLabel="Saving..."
@@ -734,7 +733,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
               memoryLibraryError ? null : <div className="grid justify-items-start gap-3">
                 <p className="text-sm" style={{ color: 'var(--text-3)' }}>{hasSearchQuery ? 'No memory matches this search.' : 'No memory saved here yet.'}</p>
-                {!hasSearchQuery && <Button variant="primary" size="sm" onClick={() => {setLocalError(''); setIsAdding(true)}}>Add memory</Button>}
+                {!hasSearchQuery && <Button variant="primary" size="sm" onClick={() => setIsAdding(true)}>Add memory</Button>}
               </div>
             ) : selectedLocation ? (
               <div key={selectedLocation.key} className="space-y-4 uam-reveal">

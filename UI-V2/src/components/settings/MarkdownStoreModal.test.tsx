@@ -276,8 +276,8 @@ describe('MarkdownStoreModal', () => {
     expect(document.activeElement).toBe(importTrigger)
 
     await openProviderImports()
-    act(() => (host.querySelector('button[role="combobox"][aria-label="Collision action for Review code"]') as HTMLButtonElement).click())
-    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent === 'Keep separate')!.click())
+    act(() => (host.querySelector('button[role="combobox"][aria-label="If a skill with this name exists"]') as HTMLButtonElement).click())
+    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent === 'Keep both')!.click())
     await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import selected')?.click(); await new Promise((resolve) => setTimeout(resolve, 0)) })
     expect(importEntries).toHaveBeenCalledWith([{ sourceProvider: 'codex', sourcePath: '/tmp/source.md', conflictAction: 'separate' }])
   })

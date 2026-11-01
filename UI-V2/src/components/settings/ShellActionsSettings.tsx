@@ -210,15 +210,10 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   return (
     <div className="grid gap-6">
       {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      <Presence open={Boolean(pendingExit)}>
-        <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
-          <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
-            <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-            {validationError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
-            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => { setPendingExit(null); revealInvalidAction() }}>Go back</Button><Button variant="primary" disabled={applying || Boolean(invalidAction)} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
-          </div>
-        </Overlay>
-      </Presence>
+      <Presence open={Boolean(pendingExit)}>{pendingExit && <UnsavedChangesDialog title="Save shell action changes?" label="Unsaved shell actions" busy={applying} saveDisabled={Boolean(invalidAction)} error={validationError || undefined}
+        onStay={() => { setPendingExit(null); revealInvalidAction() }}
+        onDiscard={() => { const next = pendingExit; setActions(appliedActions); setPendingExit(null); next() }}
+        onSave={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }} />}</Presence>
       <Presence open={Boolean(newGroupActionId)}>
         <Overlay open zIndex={80}>
           <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; moveToGroup(newGroupActionId, parseGroupPath(newGroupName)); setNewGroupActionId('') }}>

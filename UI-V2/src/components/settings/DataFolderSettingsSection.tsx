@@ -120,25 +120,25 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
   return <SettingsSection title="Application data folder" actions={<Button size="sm" disabled={busy} onClick={() => void refresh()}>Refresh folder state</Button>}>
     {settings && <SettingRow title="Current folder" description={settings.externalOverride ? 'Set by the startup environment.' : 'Chats and application history are stored here.'}
       control={<Button size="sm" disabled={blocked || Boolean(settings.pendingFolder)} onClick={() => void choose()}>Choose folder…</Button>}>
-      <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{settings.currentFolder}</p>
+      <p className="text-sm break-all" style={{ color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{settings.currentFolder}</p>
     </SettingRow>}
     {pendingRow.mounted && <div className="uam-settings-presence" data-state={pendingRow.closing ? 'closed' : 'open'}><SettingRow title={settings?.transitionState === 'publicationUnknown' ? 'Unconfirmed folder choice' : 'Saved folder choice'}
       description="Your current folder remains in use."
       control={<div className="flex flex-wrap gap-2"><Button size="sm" disabled={blocked} onClick={() => void change('cancelDataFolderChoice')}>Cancel folder change</Button>
         <Tooltip label="Restart is available after the folder change is validated"><span className="inline-flex"><Button size="sm" disabled={blocked || !settings?.restartReady} onClick={() => setRestartConfirmation(true)}>Restart to use folder</Button></span></Tooltip></div>}>
-      <p className="text-sm break-all" style={{ color: 'var(--text-2)' }}>{shownPending.current}</p>
+      <p className="text-sm break-all" style={{ color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{shownPending.current}</p>
     </SettingRow></div>}
     {settings && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>{settings.message}</p>}
     {unconfirmedNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={unconfirmedNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Unconfirmed {shownUnconfirmed.current?.action === 'chooseDataFolder' ? 'folder choice' : 'cancellation'}{shownUnconfirmed.current?.folder ? `: ${shownUnconfirmed.current.folder}` : ''}. The request may have reached UAM. Refresh its state before making another change.</p>}
     {restartNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={restartNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Restart requested for {shownRestart.current?.folder}. This does not confirm migration. Folder changes remain held until the application reopens.</p>}
     <ConfirmDialog open={Boolean(candidate)} title="Save this data-folder choice?" tone="primary" confirmLabel="Save folder choice" busy={busy}
       onCancel={() => { if (!busyRef.current) setCandidate('') }} onConfirm={() => { if (!unconfirmed) void change('chooseDataFolder') }}>
-      <p className="break-all">{candidate}</p>
-      <p className="mt-2">This saves a pending choice. Your current folder remains in use. Restart-to-apply becomes available only when native validation permits the guarded transfer.</p>
+      <p className="break-all" style={{ fontFamily: 'var(--font-mono)' }}>{candidate}</p>
+      <p className="mt-2">This saves a pending choice. Your current folder remains in use. Restart becomes available once the folder is checked and can be moved safely.</p>
     </ConfirmDialog>
     <ConfirmDialog open={restartConfirmation} title="Restart to use this folder?" tone="primary" confirmLabel="Restart and transfer" busy={busy}
       onCancel={() => { if (!busyRef.current) setRestartConfirmation(false) }} onConfirm={() => void restart()}>
-      <p className="break-all">From: {settings?.currentFolder}</p><p className="mt-2 break-all">To: {settings?.pendingFolder}</p>
+      <p className="break-all" style={{ fontFamily: 'var(--font-mono)' }}>From: {settings?.currentFolder}</p><p className="mt-2 break-all" style={{ fontFamily: 'var(--font-mono)' }}>To: {settings?.pendingFolder}</p>
       <p className="mt-2">UAM must stop all writers, own both folders and verify the copy before using the destination. The original profile stays retained for recovery. Unconfirmed ownership or publication holds the transition.</p>
     </ConfirmDialog>
   </SettingsSection>

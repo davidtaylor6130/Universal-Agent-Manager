@@ -290,15 +290,15 @@
 .uam-usage-body { transition: opacity var(--dur-base) var(--ease-out-soft); }
 .uam-usage-body[data-kept] { opacity: 0.5; transition-delay: 250ms; }
 
-.uam-usage-model-row.uam-btn {
+.uam-usage-model-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px 16px;
-  width: 100%;
+  grid-template-columns: minmax(0, 1fr) minmax(4rem, 12rem) auto;
+  align-items: center;
+  gap: 0 16px;
   padding: 10px 0;
   text-align: left;
+  color: var(--text-2);
 }
-.uam-usage-model-row.uam-btn { grid-template-columns: minmax(0, 1fr) minmax(4rem, 12rem) auto; align-items: center; gap: 0 16px; }
 .uam-usage-model-bar { display: block; min-width: 0; }
 
 /* Notes and editors that appear or disappear fade in and out; usePresence drives data-state. */
