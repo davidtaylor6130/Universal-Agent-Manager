@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "common/platform/background_thread_priority.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -46,8 +47,11 @@ UAM_TEST(BackgroundWorkerThreadRunsBelowSpawningUiThread)
 	const int ui_rank = CurrentThreadPriorityRank();
 	int worker_rank = ui_rank;
 	uam::platform::StartBackgroundThread([&worker_rank]() { worker_rank = CurrentThreadPriorityRank(); }).join();
-#if defined(__APPLE__) || defined(_WIN32)
+#if defined(_WIN32)
 	UAM_ASSERT(worker_rank < ui_rank);
+#elif defined(__APPLE__)
+	// A parent already at or below utility is never raised.
+	UAM_ASSERT(worker_rank < ui_rank || ui_rank <= static_cast<int>(QOS_CLASS_UTILITY) * 100);
 #else
 	// A host already at nice >= 10 is never raised, so only require the background floor.
 	UAM_ASSERT(worker_rank <= ui_rank);
@@ -57,22 +61,80 @@ UAM_TEST(BackgroundWorkerThreadRunsBelowSpawningUiThread)
 	UAM_ASSERT_EQ(CurrentThreadPriorityRank(), ui_rank);
 }
 
-UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
+namespace
 {
-	// Force/shutdown barriers block the UI on the save publication, baseline, prepare and queue
-	// futures, and stop workers serve a user stop, so none of them may be lowered (#647).
-	// ponytail: source scan, replace with a priority probe if these workers gain an injection seam.
-	const std::filesystem::path root = UAM_TEST_SOURCE_DIR;
-	for (const char* relative : {"src/common/runtime/acp/acp_session_runtime.cpp", "src/app/chat_lifecycle_service.cpp"})
+	std::string ReadSource(const char* relative)
 	{
-		std::ifstream input(root / relative);
-		UAM_ASSERT(input.good());
+		std::ifstream input(std::filesystem::path(UAM_TEST_SOURCE_DIR) / relative);
 		std::stringstream text;
 		text << input.rdbuf();
-		UAM_ASSERT(text.str().find("StartBackgroundThread(") == std::string::npos);
-		const std::size_t stop = text.str().find("StopStdioProcessObserved(service, *owned");
-		if (stop == std::string::npos) continue;
-		const std::size_t lowered = text.str().rfind("LowerCurrentThreadToBackgroundPriority", stop);
-		UAM_ASSERT(lowered == std::string::npos || stop - lowered > 400);
+		return text.str();
+	}
+
+	// Returns the body of the lambda whose capture list starts at or after `from` (brace matched).
+	std::string LambdaBodyAfter(const std::string& text, std::size_t from)
+	{
+		std::size_t open = text.find('{', from);
+		if (open == std::string::npos) return {};
+		int depth = 0;
+		for (std::size_t at = open; at < text.size(); ++at)
+		{
+			if (text[at] == '{') ++depth;
+			else if (text[at] == '}' && --depth == 0) return text.substr(open, at - open + 1);
+		}
+		return {};
+	}
+
+	// Body of the worker lambda that contains `at`, found from the nearest preceding thread spawn.
+	std::string EnclosingWorker(const std::string& text, std::size_t at)
+	{
+		const std::size_t jthread = text.rfind("std::jthread>(", at);
+		const std::size_t thread = text.rfind("std::thread(", at);
+		std::size_t spawn = jthread == std::string::npos ? thread : thread == std::string::npos ? jthread : std::max(jthread, thread);
+		return spawn == std::string::npos ? std::string{} : LambdaBodyAfter(text, spawn);
+	}
+
+	constexpr const char* kLower = "LowerCurrentThreadToBackgroundPriority";
+}
+
+UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
+{
+	// Force/shutdown/exit barriers block the UI on chat-save and terminal-media workers, and stop
+	// workers serve a user stop, so none of them may be lowered (#647).
+	// ponytail: source scan, replace with a priority probe if these workers gain an injection seam.
+	const std::string runtime = ReadSource("src/common/runtime/acp/acp_session_runtime.cpp");
+	const std::string lifecycle = ReadSource("src/app/chat_lifecycle_service.cpp");
+	const std::string orchestration = ReadSource("src/app/runtime_orchestration_services.cpp");
+	UAM_ASSERT(!runtime.empty() && !lifecycle.empty() && !orchestration.empty());
+
+	UAM_ASSERT(runtime.find("StartBackgroundThread(") == std::string::npos);
+	UAM_ASSERT(lifecycle.find("StartBackgroundThread(") == std::string::npos);
+	UAM_ASSERT(lifecycle.find(kLower) == std::string::npos);
+
+	// Only agent preparation and cold-history preparation may lower themselves in the runtime.
+	int lowered = 0;
+	for (std::size_t at = runtime.find(kLower); at != std::string::npos; at = runtime.find(kLower, at + 1))
+	{
+		const std::string worker = EnclosingWorker(runtime, at);
+		UAM_ASSERT(worker.find("CaptureSelectedPrimary") != std::string::npos || worker.find("LoadColdHistoryPreparation") != std::string::npos);
+		++lowered;
+	}
+	UAM_ASSERT_EQ(lowered, 2);
+
+	int stops = 0;
+	for (std::size_t at = runtime.find("StopStdioProcessObserved(service, *owned"); at != std::string::npos;
+	     at = runtime.find("StopStdioProcessObserved(service, *owned", at + 1), ++stops)
+	{
+		const std::string worker = EnclosingWorker(runtime, at);
+		UAM_ASSERT(!worker.empty() && worker.find(kLower) == std::string::npos);
+	}
+	UAM_ASSERT(stops >= 2);
+
+	for (const char* phase : {"TerminalMediaPhase::Preparing, std::memory_order_release", "TerminalMediaPhase::Finishing, std::memory_order_release"})
+	{
+		const std::size_t at = orchestration.find(phase);
+		UAM_ASSERT(at != std::string::npos);
+		const std::string worker = LambdaBodyAfter(orchestration, orchestration.find("std::thread(", at));
+		UAM_ASSERT(!worker.empty() && worker.find(kLower) == std::string::npos);
 	}
 }

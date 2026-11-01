@@ -2527,7 +2527,6 @@ namespace
 		{
 			worker = std::thread([work]
 			{
-				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				try
 				{
 					const auto stop = work->cancellation.get_token();
@@ -2620,7 +2619,6 @@ namespace
 		{
 			worker = std::thread([work]
 			{
-				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				try
 				{
 					std::string acknowledgement_error;

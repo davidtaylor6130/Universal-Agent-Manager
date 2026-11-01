@@ -25,6 +25,9 @@ namespace uam::platform
 #if defined(__APPLE__)
 		// Utility at minimum relative priority stays below a utility-clamped UI thread
 		// (taskpolicy -c utility) without the I/O throttling of QOS_CLASS_BACKGROUND.
+		// Never raise a parent already at or below utility (for example a background-clamped host).
+		const qos_class_t current = qos_class_self();
+		if (current != QOS_CLASS_UNSPECIFIED && current <= QOS_CLASS_UTILITY) return;
 		(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, QOS_MIN_RELATIVE_PRIORITY);
 #elif defined(_WIN32)
 		(void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
