@@ -40,7 +40,7 @@ export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onC
           </span>
         </Tooltip>
       </div>
-      {hint.mounted && <p className="text-xs uam-settings-presence" data-state={hint.closing ? 'closed' : 'open'} style={{ color: 'var(--text-3)' }}>{hintText || lastHint.current}</p>}
+      {hint.mounted && <p className="text-xs uam-presence" data-state={hint.closing ? 'closed' : 'open'} style={{ color: 'var(--text-3)' }}>{hintText || lastHint.current}</p>}
     </div>
   )
 }

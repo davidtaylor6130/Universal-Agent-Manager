@@ -20,6 +20,9 @@ Import from `components/ui` (index.ts):
 - Notice (tone; one row: tone icon, semibold title with the message inline, optional `actions` and dismiss; `details` is the only collapsible part, a Details disclosure for long logs or output, collapsed by default; no header, divider or chevron otherwise)
 - Switch
 - ProgressFill (wraps the item doing the work: `label`, `value` 0-100 for a determinate fill, or `indeterminate` (implied when no value) for a sweep; sets role progressbar with aria-valuenow/min/max, or aria-busy when indeterminate. Rows that also hold controls cannot be a progressbar, so they take the `uam-progress-fill` class with `data-indeterminate`, `role="group"` and `aria-busy`. Styling lives in `index.css`; see [visual style](visual-style.md#quantities).)
+- Disclosure (replaces native `<details>`: `summary`, `children`, `defaultOpen` or controlled `open`/`onOpenChange`; the panel slides open from its summary and closes back into it.)
+- Reveal (wraps any conditional content: `open`, `as` div or span; enters from slightly below and leaves back the same way, keeping its last children on screen through the exit. Use it instead of a bare `cond && …`.)
+- Swap (keyed cross-slide for content replaced in place, such as list and detail panes or Form/JSON views: outgoing slides out left while incoming slides in from the right.)
 - Overlay
 - ConfirmDialog (optional cancel label, middle secondary action, and `dismissible={false}` for a choice that Escape or the backdrop must not answer)
 - MenuItem (icon, label, detail with `detailLayout` inline|stacked, `trailing` pill, shortcut, `selected` for a checkable menuitemradio, `checked` for a menuitemcheckbox, danger, disabled with `disabledReason` or `nativeDisabled`; ref and attribute passthrough; menus, context menus and the command palette)

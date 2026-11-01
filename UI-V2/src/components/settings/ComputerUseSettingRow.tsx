@@ -2,9 +2,9 @@ import { useId, useLayoutEffect, useRef } from 'react'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Switch } from '../ui'
+import { Button, Switch, Reveal } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
-import { SettingRow, SettingsPresence } from './SettingsPrimitives'
+import { SettingRow } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
 type ComputerUseObservation = ComputerUseSettings & { revision?: number }
@@ -99,8 +99,8 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       {known && <Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}
         onChange={event => void change(event.currentTarget.checked, event.currentTarget)} />}
-      <SettingsPresence open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></SettingsPresence>
-      <SettingsPresence open={!known}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button></SettingsPresence>
+      <Reveal open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></Reveal>
+      <Reveal open={!known}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button></Reveal>
     </div>}>
   </SettingRow>
 }

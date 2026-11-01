@@ -5,11 +5,10 @@ import './settings-shell.css'
 import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState } from '../ui'
+import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState, Swap } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
-import { KeyedSwap } from './KeyedSwap'
 
 const MEMORY_CATEGORIES = [
   'Failures/AI_Failures',
@@ -574,7 +573,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
             {deletePresence.mounted && deleteShown && (
-              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" data-state={deletePresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out mb-4">
+              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" data-state={deletePresence.closing ? 'closed' : 'open'} className="uam-presence mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
                   <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
                   <Button variant="danger" onClick={() => { const entry = deleteShown; setPendingDeleteEntryId(null); void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') }) }}>Delete memory</Button>
@@ -584,7 +583,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               </div>
             )}
             {massDeletePresence.mounted && (
-              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} data-state={massDeletePresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out mb-4">
+              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} data-state={massDeletePresence.closing ? 'closed' : 'open'} className="uam-presence mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'} actions={<>
                   <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
                   <Button variant="danger" onClick={() => { const count = pendingMassDeleteCount; void deleteMemoryEntries(massDeleteIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') }); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
@@ -620,7 +619,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             </div>}
 
             {errorPresence.mounted && (
-              <div data-state={errorPresence.closing ? 'closed' : 'open'} className="uam-presence-out">
+              <div data-state={errorPresence.closing ? 'closed' : 'open'} className="uam-presence">
                 <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
                   actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
                   {lastError.current}
@@ -629,7 +628,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             )}
 
             {addPresence.mounted ? (
-              <div role="group" aria-label="New memory" data-state={addPresence.closing ? 'closed' : 'open'} className="space-y-3 uam-reveal uam-presence-out">
+              <div role="group" aria-label="New memory" data-state={addPresence.closing ? 'closed' : 'open'} className="space-y-3 uam-presence">
               <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
               {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
               {exitPrompt.mounted && (
@@ -740,7 +739,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     </SaveButton>
               </div>
               </div>
-            ) : <KeyedSwap swapKey={viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`}>{viewingEntry ? (
+            ) : <Swap swapKey={viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`}>{viewingEntry ? (
               <div key={viewingEntry.id} className="space-y-4">
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="ghost" onClick={() => setViewingEntryId(null)}><ArrowLeft size={14} aria-hidden />Back</Button>
@@ -804,7 +803,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                           </section>
                         ))}
               </div>
-            ) : null}</KeyedSwap>}
+            ) : null}</Swap>}
           </div>
         </div>
       </div>

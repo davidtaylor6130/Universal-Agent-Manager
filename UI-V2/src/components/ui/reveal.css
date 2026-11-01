@@ -1,0 +1,17 @@
+/* Shared conditional motion for Reveal (.uam-presence) and Swap (.uam-swap). Timing from --dur-* / --ease* tokens. */
+.uam-presence { animation: uam-presence-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-presence[data-state="closed"] { animation: uam-presence-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-presence-in { from { opacity: 0; transform: translateY(var(--sp-1)); } }
+@keyframes uam-presence-out { to { opacity: 0; transform: translateY(var(--sp-1)); } }
+@media (prefers-reduced-motion: reduce) { .uam-presence, .uam-presence[data-state="closed"] { animation: none; } }
+[data-motion="off"] .uam-presence, [data-motion="off"] .uam-presence[data-state="closed"] { animation: none; }
+
+/* Keyed swaps: the outgoing content slides out to the left while the incoming slides in from the right. */
+.uam-swap { display: grid; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; overflow-x: clip; }
+.uam-swap > * { grid-area: 1 / 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.uam-swap__in { animation: uam-swap-in var(--dur-base) var(--ease) backwards; }
+.uam-swap__out { pointer-events: none; animation: uam-swap-out var(--dur-exit) var(--ease) forwards; }
+@keyframes uam-swap-in { from { opacity: 0; transform: translateX(var(--sp-4)); } }
+@keyframes uam-swap-out { to { opacity: 0; transform: translateX(calc(var(--sp-4) * -1)); } }
+@media (prefers-reduced-motion: reduce) { .uam-swap__in, .uam-swap__out { animation: none; } }
+[data-motion="off"] .uam-swap__in, [data-motion="off"] .uam-swap__out { animation: none; }

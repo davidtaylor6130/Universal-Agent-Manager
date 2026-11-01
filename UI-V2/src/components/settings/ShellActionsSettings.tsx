@@ -7,9 +7,9 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, usePresence, Reveal } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
-import { SaveButton, SettingRow, SettingsField, SettingsSection, SettingsPresence } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
 function newAction(): ShellAction {
   const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -31,14 +31,14 @@ function newAction(): ShellAction {
 function ActionEditor({ open, children }: { open: boolean; children: ReactNode }) {
   const presence = usePresence(open)
   if (!presence.mounted) return null
-  return <div className="uam-central-editor uam-settings-presence grid gap-3 sm:grid-cols-2" data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
+  return <div className="uam-central-editor uam-presence grid gap-3 sm:grid-cols-2" data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
 }
 
 /** Name field that slides open under the Group control, so creating a group never stacks a second dialog. */
 function NewGroupForm({ open, value, onChange, onSubmit, onCancel }: { open: boolean; value: string; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void }) {
   const presence = usePresence(open)
   if (!presence.mounted) return null
-  return <form aria-label="New group" className="uam-settings-presence flex items-center gap-2" data-state={presence.closing ? 'closed' : 'open'}
+  return <form aria-label="New group" className="uam-presence flex items-center gap-2" data-state={presence.closing ? 'closed' : 'open'}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel() } }}
     onSubmit={event => { event.preventDefault(); if (parseGroupPath(value).length) onSubmit() }}>
     <input autoFocus aria-label="Group name" placeholder="Group name" value={value} onChange={event => onChange(event.target.value)} className="uam-field min-w-0 flex-1" />
@@ -193,7 +193,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     ...markdownEntries.map(entry => entry.group || ''),
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
   const toolbar = <div className="flex items-center gap-2">
-    <SettingsPresence open={dirty}><StatusIndicator issues={['Unsaved shell action changes']} /></SettingsPresence>
+    <Reveal open={dirty}><StatusIndicator issues={['Unsaved shell action changes']} /></Reveal>
     <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
   </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
@@ -239,7 +239,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
 
       <SettingsSection title="Actions"
         actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
-        <SettingsPresence open={actions.length === 0}><p className="uam-prov-sub">No shell actions yet. Add one to start chats from Finder or Explorer.</p></SettingsPresence>
+        <Reveal open={actions.length === 0}><p className="uam-prov-sub">No shell actions yet. Add one to start chats from Finder or Explorer.</p></Reveal>
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
         {renderEntries(groupActions(actions), (action) => {
@@ -328,7 +328,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   ]}
                 />
               </SettingsField>
-              <SettingsPresence open={!action.openWorkspace} className="sm:col-span-2"><SettingsField label="Skill">
+              <Reveal open={!action.openWorkspace} className="sm:col-span-2"><SettingsField label="Skill">
                 <MenuSelect
                   label={`Skill for ${action.label}`}
                   value={action.skillPath}
@@ -338,14 +338,14 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                     ...markdownEntries.map((entry) => ({ value: entry.filePath, label: entry.title, icon: <BookOpen size={15} /> })),
                   ]}
                 />
-              </SettingsField></SettingsPresence>
+              </SettingsField></Reveal>
             </ActionEditor>
           </SettingRow>
         })}
         </fieldset>
       </SettingsSection>
 
-      <SettingsPresence open={!!(validationError)}><p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p></SettingsPresence>
+      <Reveal open={!!(validationError)}><p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p></Reveal>
     </div>
   )
 })

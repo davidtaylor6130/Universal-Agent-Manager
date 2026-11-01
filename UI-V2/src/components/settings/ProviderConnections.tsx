@@ -6,8 +6,8 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { Check, Minus, RefreshCw, X } from 'lucide-react'
-import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
-import { SettingRow, SettingsPresence } from './SettingsPrimitives'
+import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone, Reveal } from '../ui'
+import { SettingRow } from './SettingsPrimitives'
 import './provider-settings.css'
 import './provider-overview.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
@@ -192,9 +192,9 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
       </div>
     </div>
-    <SettingsPresence open={!central.uamControlEnabled}><Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice></SettingsPresence>
-    {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">{shownStatusError.current}</p>}
-    {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">Checking connections…</p>}
+    <Reveal open={!central.uamControlEnabled}><Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice></Reveal>
+    {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">{shownStatusError.current}</p>}
+    {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">Checking connections…</p>}
     <Card flush className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
         <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
@@ -245,7 +245,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
       control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
         disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
-      {draftPresence.mounted && <div className="flex gap-1 uam-settings-presence" data-state={draftPresence.closing ? 'closed' : 'open'}>
+      {draftPresence.mounted && <div className="flex gap-1 uam-presence" data-state={draftPresence.closing ? 'closed' : 'open'}>
         <Button size="sm" disabled={progressiveSaving || !draft} onClick={() => { if (draft) void saveDiscovery(draft.value) }}>Retry</Button>
         <Button size="sm" variant="ghost" disabled={progressiveSaving} onClick={() => { setDiscoveryDraft(null); document.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.focus() }}>Discard</Button>
       </div>}

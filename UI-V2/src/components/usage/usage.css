@@ -301,15 +301,6 @@
 }
 .uam-usage-model-bar { display: block; min-width: 0; }
 
-/* Notes and editors that appear or disappear fade in and out; usePresence drives data-state. */
-.uam-usage-presence { animation: uam-usage-presence-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-usage-presence[data-state="closed"] { animation: uam-usage-presence-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-@keyframes uam-usage-presence-in { from { opacity: 0; transform: translateY(4px); } }
-@keyframes uam-usage-presence-out { to { opacity: 0; transform: translateY(-4px); } }
-@media (prefers-reduced-motion: reduce) {
-  .uam-usage-presence, .uam-usage-presence[data-state="closed"] { animation: none; }
-}
-
 .uam-usage-skeleton {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));

@@ -69,7 +69,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
       <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }))} />
     </SettingsSection>
-    {validationNotice.mounted && <div className="uam-settings-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
+    {validationNotice.mounted && <div className="uam-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
     <div className="flex justify-end gap-2">
       <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved) }}>Discard</Button>
       <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>

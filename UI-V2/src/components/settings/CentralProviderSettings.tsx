@@ -2,8 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Bot, FileText, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, usePresence } from '../ui'
-import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection, SettingsPresence } from './SettingsPrimitives'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, usePresence, Reveal } from '../ui'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -222,42 +222,42 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
-      <SettingsPresence open={instructionFiles.length === 0}><SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." /></SettingsPresence>
+      <Reveal open={instructionFiles.length === 0}><SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." /></Reveal>
       {instructionFiles.map(path => <SettingRow key={path} icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
         control={<>
           <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${fileName(path)}`} disabled={busy || instructionDirty || !saved.instructionFiles.includes(path)} onClick={event => { instructionTrigger.current = event.currentTarget; void openInstructionFile(path) }} />
           <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />
         </>}>
-        {instructionPresence.mounted && shownEditor?.path === path && <div className="uam-central-editor uam-settings-presence grid gap-3" data-state={instructionPresence.closing ? 'closed' : 'open'}>
-          <SettingsPresence open={shownEditor.loading}><SettingsLoading label="Opening instruction file" rows={3} /></SettingsPresence>
-          <SettingsPresence open={!shownEditor.loading} className="grid gap-3"><>
-            <SettingsPresence open={!!(shownEditor.error)}><Notice key={shownEditor.error} tone="error" dismissLabel="Dismiss">{shownEditor.error}</Notice></SettingsPresence>
+        {instructionPresence.mounted && shownEditor?.path === path && <div className="uam-central-editor uam-presence grid gap-3" data-state={instructionPresence.closing ? 'closed' : 'open'}>
+          <Reveal open={shownEditor.loading}><SettingsLoading label="Opening instruction file" rows={3} /></Reveal>
+          <Reveal open={!shownEditor.loading} className="grid gap-3"><>
+            <Reveal open={!!(shownEditor.error)}><Notice key={shownEditor.error} tone="error" dismissLabel="Dismiss">{shownEditor.error}</Notice></Reveal>
             {!shownEditor.readFailed && <SettingsField label={fileName(path)}>
               <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={shownEditor.content} onChange={event => setInstructionEditor({ ...shownEditor, content: event.currentTarget.value })} />
             </SettingsField>}
             <div className="flex justify-end gap-2">
               <Button size="sm" disabled={busy} onClick={() => setInstructionEditor(null)}>{instructionDirty ? 'Discard file changes' : 'Close file'}</Button>
-              <SettingsPresence open={shownEditor.readFailed}><Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button></SettingsPresence>
+              <Reveal open={shownEditor.readFailed}><Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button></Reveal>
               <Button size="sm" variant="primary" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
             </div>
-          </></SettingsPresence>
+          </></Reveal>
         </div>}
       </SettingRow>)}
-      <SettingsPresence open={!!(saved.instructions)}><SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." /></SettingsPresence>
+      <Reveal open={!!(saved.instructions)}><SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." /></Reveal>
     </SettingsSection>
 
     <SettingsSection title="Defaults">
       <SettingRow title="Default agent for new chats"
         control={<MenuSelect label="Default agent for new chats" value={defaultAgentId} disabled={busy} options={defaultAgentChoices} onChange={setDefaultAgentId} />} />
-      <SettingsPresence open={skills.length === 0}><p className="uam-prov-sub">No skills yet. Add skills in the Skills page first.</p></SettingsPresence>
-      <SettingsPresence open={skills.length > 0}><SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen.'}
+      <Reveal open={skills.length === 0}><p className="uam-prov-sub">No skills yet. Add skills in the Skills page first.</p></Reveal>
+      <Reveal open={skills.length > 0}><SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen.'}
           control={<ChipAdd label="skill" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}>
-          <SettingsPresence open={defaultSkills.length > 0}><ChipList label="default skills" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} /></SettingsPresence>
-        </SettingRow></SettingsPresence>
+          <Reveal open={defaultSkills.length > 0}><ChipList label="default skills" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} /></Reveal>
+        </SettingRow></Reveal>
       <SettingRow title="Agents on every provider" description={defaultAgents.length ? undefined : 'None chosen.'}
         control={<ChipAdd label="agent" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />}>
-        <SettingsPresence open={defaultAgents.length > 0}><ChipList label="default agents" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} /></SettingsPresence>
+        <Reveal open={defaultAgents.length > 0}><ChipList label="default agents" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} /></Reveal>
       </SettingRow>
     </SettingsSection>
 
@@ -268,7 +268,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     <SettingsSection title="Agent store"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
       {agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}
-      <SettingsPresence open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></SettingsPresence>
+      <Reveal open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></Reveal>
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)
         return <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />}
@@ -314,7 +314,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
               </div>
               <SettingsField label="Skills for this agent">
                 <div className="grid gap-2">
-                  <SettingsPresence open={draft.skills.length > 0}><ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} /></SettingsPresence>
+                  <Reveal open={draft.skills.length > 0}><ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} /></Reveal>
                   <ChipAdd label="skill" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} />
                 </div>
               </SettingsField>
@@ -323,19 +323,19 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
               </SettingsField>
             </div>
             <footer className="uam-central-dialog__foot">
-              <SettingsPresence open={builtIn} className="flex items-center justify-end gap-2">
+              <Reveal open={builtIn} className="flex items-center justify-end gap-2">
                 <Button size="sm" onClick={closeEditor}>Close</Button>
-              </SettingsPresence>
-              <SettingsPresence open={!builtIn && agentExitPrompt} className="flex min-w-0 flex-1 items-center justify-end gap-2">
+              </Reveal>
+              <Reveal open={!builtIn && agentExitPrompt} className="flex min-w-0 flex-1 items-center justify-end gap-2">
                 <p className="mr-auto text-sm" role="status">Save agent changes? Your changes have not been saved.</p>
                 <Button size="sm" onClick={() => setAgentExitPrompt(false)}>Keep editing</Button>
                 <Button size="sm" variant="secondary" onClick={() => startEditing(null)}>Discard</Button>
                 <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
-              </SettingsPresence>
-              <SettingsPresence open={!builtIn && !agentExitPrompt} className="flex items-center justify-end gap-2">
+              </Reveal>
+              <Reveal open={!builtIn && !agentExitPrompt} className="flex items-center justify-end gap-2">
                 <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
                 <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
-              </SettingsPresence>
+              </Reveal>
             </footer>
           </div>
         })()}

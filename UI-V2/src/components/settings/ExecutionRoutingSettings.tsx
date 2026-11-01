@@ -3,9 +3,9 @@ import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { Button, MenuSelect, Presence, StatusDot, Switch, usePresence, type StatusTone } from '../ui'
+import { Button, MenuSelect, Presence, StatusDot, Switch, usePresence, type StatusTone, Reveal } from '../ui'
 import { NumberField } from './NumberField'
-import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsPresence, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
@@ -149,21 +149,21 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         </div>
 
     return <>
-      <SettingsPresence open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-6"><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
+      <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-6"><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
         <SettingsSection title="Automatic routing">
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
         </SettingsSection>
 
-        <SettingsPresence open={sshHosts.length === 0}>
+        <Reveal open={sshHosts.length === 0}>
           <SettingsSection title="Computers">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="uam-rt-dialog__empty">No SSH computers yet.</p>
-                <SettingsPresence open={!!(onAddComputer)}><Button size="sm" onClick={onAddComputer}>Add computer</Button></SettingsPresence>
+                <Reveal open={!!(onAddComputer)}><Button size="sm" onClick={onAddComputer}>Add computer</Button></Reveal>
               </div>
           </SettingsSection>
-        </SettingsPresence>
-        <SettingsPresence open={sshHosts.length > 0} className="grid min-w-0 gap-6">{sshHosts.map((host) => {
+        </Reveal>
+        <Reveal open={sshHosts.length > 0} className="grid min-w-0 gap-6">{sshHosts.map((host) => {
             const policy = draft.hosts.find((item) => item.hostId === host.id)
             const look = RUNNER_STATUS[host.runnerStatus]
             const mapped = localFolders.filter((source) => policy?.workspaceMappings.some((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)).length
@@ -179,11 +179,11 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                 <SettingRow key={provider.id} title={provider.name} description={`Confirm once you have signed in to ${provider.name} on this computer.`}
                   control={<Switch hideLabel label={`${provider.name} signed in on ${host.label}`} checked={confirmed(policy, host.id, provider.id)} onChange={(event) => update(host.id, (item) => ({ ...item, providers: event.target.checked ? [...item.providers.filter((entry) => entry.providerId !== provider.id), { providerId: provider.id, connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }] : item.providers.filter((entry) => entry.providerId !== provider.id) }))} />} />
               ))}
-                <SettingsPresence open={matching}><FolderRow summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
+                <Reveal open={matching}><FolderRow summary={`${localFolders.filter((source) => { const row = resolveRow(policy, source, host.id); return row.override || row.automatic }).length} of ${localFolders.length} matched`}>
                       <div className="grid gap-3">
-                        <SettingsPresence open={localFolders.length === 0}><p className="uam-rt-dialog__empty">Give a local folder a path first, then it can be matched here.</p></SettingsPresence>
-                        <SettingsPresence open={localFolders.length > 0 && repositories === null && !repositoryError}><SettingsLoading label="Checking repositories" rows={2} /></SettingsPresence>
-                        <SettingsPresence open={!!(repositoryError)}><p className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand below.</p></SettingsPresence>
+                        <Reveal open={localFolders.length === 0}><p className="uam-rt-dialog__empty">Give a local folder a path first, then it can be matched here.</p></Reveal>
+                        <Reveal open={localFolders.length > 0 && repositories === null && !repositoryError}><SettingsLoading label="Checking repositories" rows={2} /></Reveal>
+                        <Reveal open={!!(repositoryError)}><p className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand below.</p></Reveal>
                         {localFolders.map((source) => {
                           const repository = repositoryOf(source.id)?.repository
                           const { override, automatic } = resolveRow(policy, source, host.id)
@@ -201,10 +201,10 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                                 : <span className="uam-rt-match__text uam-rt-match__text--muted">No matching checkout</span>}
                             </div>
                             <span className="uam-rt-match__actions">
-                              <SettingsPresence open={!!(override)}><Button variant="ghost" size="sm" onClick={() => setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: '', useAutomaticMatch: true })}>Use automatic match</Button></SettingsPresence>
+                              <Reveal open={!!(override)}><Button variant="ghost" size="sm" onClick={() => setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: '', useAutomaticMatch: true })}>Use automatic match</Button></Reveal>
                               <Button variant="ghost" size="sm" disabled={remoteFolders.length === 0} onClick={() => setPicking(picking === pickId ? '' : pickId)}>Choose folder…</Button>
                             </span>
-                            {pickPresence.mounted && shownPicking === pickId && <div className="uam-rt-pick uam-settings-presence" data-state={pickPresence.closing ? 'closed' : 'open'}>
+                            {pickPresence.mounted && shownPicking === pickId && <div className="uam-rt-pick uam-presence" data-state={pickPresence.closing ? 'closed' : 'open'}>
                               <MenuSelect label={`Choose folder for ${source.name} on ${host.label}`} value={override?.id ?? ''} onChange={(value) => { if (value) setWorkspaceMapping(host.id, source, { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: value }) }}
                                 options={[{ value: '', label: 'Choose a folder' }, ...remoteFolders.map((folder) => ({ value: folder.id, label: `${folder.name} · ${folder.directory}` }))]} />
                               <Button variant="ghost" size="sm" onClick={() => setPicking('')}>Cancel</Button>
@@ -212,11 +212,11 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                           </div>
                         })}
                       </div>
-                    </FolderRow></SettingsPresence>
-                <SettingsPresence open={!matching}><FolderRow summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
+                    </FolderRow></Reveal>
+                <Reveal open={!matching}><FolderRow summary={localFolders.length ? `${mapped} of ${localFolders.length} mapped` : 'No folders'}>
                     <div className="grid gap-3">
-                      <SettingsPresence open={localFolders.length === 0}><p className="uam-rt-dialog__empty">Give a local folder a path first, then map it here.</p></SettingsPresence>
-                      <SettingsPresence open={localFolders.length > 0 && remoteFolders.length === 0}><p className="uam-rt-dialog__empty">No folders exist on {host.label} yet, so there is nothing to map to.</p></SettingsPresence>
+                      <Reveal open={localFolders.length === 0}><p className="uam-rt-dialog__empty">Give a local folder a path first, then map it here.</p></Reveal>
+                      <Reveal open={localFolders.length > 0 && remoteFolders.length === 0}><p className="uam-rt-dialog__empty">No folders exist on {host.label} yet, so there is nothing to map to.</p></Reveal>
                       {localFolders.map((source) => {
                         const id = `routing-map-${host.id}-${source.id}`
                         return <SettingsField key={source.id} label={source.name} htmlFor={id} hint={<span className="uam-rt-alias">{source.directory}</span>}>
@@ -225,24 +225,24 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
                         </SettingsField>
                       })}
                     </div>
-                  </FolderRow></SettingsPresence>
+                  </FolderRow></Reveal>
             </SettingsSection>
-          })}</SettingsPresence>
+          })}</Reveal>
       </fieldset>
-      {footer}</SettingsPresence>
+      {footer}</Reveal>
       {/* The dialog never opens a second dialog: leaving with unsaved edits is an in-place step in the same panel. */}
-      <SettingsPresence open={variant === 'dialog' && exit !== null} className="uam-rt-dialog__body">
+      <Reveal open={variant === 'dialog' && exit !== null} className="uam-rt-dialog__body">
         {exit && <div role="group" aria-label="Unsaved routing settings">
             <p className="m-0 text-sm font-semibold">Unsaved routing settings</p>
             <p className="m-0 text-sm" style={{ color: 'var(--text-2)' }}>Your changes have not been saved.</p>
-            <SettingsPresence open={!!(validationError)}><p role="alert" className="uam-rt-dialog__error">{validationError}</p></SettingsPresence>
+            <Reveal open={!!(validationError)}><p role="alert" className="uam-rt-dialog__error">{validationError}</p></Reveal>
             <div className="uam-rt-dialog__foot">
               <Button variant="ghost" size="md" disabled={busy} onClick={() => setExit(null)}>Keep editing</Button>
               <Button variant="secondary" size="md" disabled={busy} onClick={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }}>Discard</Button>
               <SaveButton size="md" saving={busy} disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(exit)}>Save and leave</SaveButton>
             </div>
           </div>}
-      </SettingsPresence>
+      </Reveal>
       {variant === 'page' && <Presence open={exit !== null}>{exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={validationError || undefined} onStay={() => setExit(null)}
         onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setExit(null); next() }} onSave={() => void submit(exit)} />}</Presence>}
     </>

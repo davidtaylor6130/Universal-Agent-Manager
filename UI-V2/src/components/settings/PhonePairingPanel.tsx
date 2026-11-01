@@ -84,7 +84,7 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
       {busy ? 'Loading…' : payload ? 'Hide pairing code' : 'Show pairing code'}
     </Button>}
   >
-    {qrPresence.mounted && <div className="flex flex-col items-start gap-2 py-2 uam-settings-presence" data-state={qrPresence.closing ? 'closed' : 'open'}>
+    {qrPresence.mounted && <div className="flex flex-col items-start gap-2 py-2 uam-presence" data-state={qrPresence.closing ? 'closed' : 'open'}>
       <QRCodeSVG value={shownPayload.current} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
       <p className="text-xs" style={{ color: 'var(--text-2)' }}>This code grants access to Universal Agent Manager. It hides after two minutes; hiding does not revoke existing connections.</p>
     </div>}

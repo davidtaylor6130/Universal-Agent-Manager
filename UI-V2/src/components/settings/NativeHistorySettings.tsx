@@ -5,10 +5,10 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { parseStartupNativeImportPage, sanitizeStartupNativeImportStatus, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, normalizeCliProviderIdAlias, providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, Disclosure, usePresence } from '../ui'
+import { Button, Disclosure, usePresence, Reveal } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
-import { SaveButton, SettingRow, SettingsField, SettingsSection, SettingsPresence } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
 // Title rules ignore case, so case variants are one rule; folder rules keep case for POSIX paths.
 const ruleLines = (text: string, foldCase = false) => {
@@ -154,7 +154,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
-        {reviewPresence.mounted && <Button className="uam-settings-presence" data-state={reviewPresence.closing ? 'closed' : 'open'} size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
+        {reviewPresence.mounted && <Button className="uam-presence" data-state={reviewPresence.closing ? 'closed' : 'open'} size="sm" variant="secondary" disabled={requesting || companion} onClick={() => useAppStore.getState().openStartupNativeImportReview()}>Review histories</Button>}
         <Button size="sm" variant="secondary" data-native-history-discovery disabled={requesting || active || companion} leadingIcon={<Search size={14} />} aria-busy={requesting || status.phase === 'scanning' || undefined} onClick={() => void discover()}>Discover histories</Button>
       </div>}>
       <ul className="uam-native-scope" aria-label={providerScope ? `Reads ${providerScope} native history stores for this user.` : 'Reads native history stores supported by this desktop build.'}>
@@ -174,7 +174,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
             <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
             <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
-            <SettingsPresence open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></SettingsPresence>
+            <Reveal open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></Reveal>
           </li>
         })}</ul>
       </Disclosure>}

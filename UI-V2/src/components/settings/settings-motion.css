@@ -13,14 +13,5 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-settings-motion,
   .uam-settings-motion .uam-settings-page,
-  .uam-settings-motion .uam-settings-page-header .uam-reveal,
-  .uam-settings-presence,
-  .uam-settings-presence[data-state="closed"] { animation: none; }
-}
-
-/* Presence wrappers: enter with the reveal, exit with the same fade as overlays (usePresence drives data-state). */
-.uam-settings-presence { animation: uam-settings-enter var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-settings-presence[data-state="closed"] { animation: uam-settings-exit var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-@keyframes uam-settings-exit {
-  to { opacity: 0; transform: translateY(-4px); }
+  .uam-settings-motion .uam-settings-page-header .uam-reveal { animation: none; }
 }
