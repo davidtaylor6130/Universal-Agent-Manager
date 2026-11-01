@@ -230,3 +230,11 @@ Claude pre-input native identity remains a verification gap: normal initializati
 ## Managed child provider silence
 
 A local OpenCode Plan child stayed running for 8m53s until cancelled: its local model server sent no response headers for 300 seconds, OpenCode retried natively and ACP reported no progress. The recorded "model does not support reasoning" entry came from OpenCode's separate title agent on its small model, and UAM sent no reasoning effort. UAM's managed-run deadline and turn inactivity limit are both 30 minutes. Decide whether managed children need a shorter no-output threshold or a visible provider-waiting state; no UAM change is made until decided.
+
+## Native mid-turn steering (OpenCode)
+
+**Open question, #371.** UAM has not wired native steering for OpenCode. Whether OpenCode applies a prompt posted to a busy session at its next step is unverified; until it is checked, Steer interrupts the turn and sends the steer first once it settles. The [OpenCode checklist](providers/opencode/opencode.md) records this limit.
+
+## Native mid-turn steering (Claude Code)
+
+**Open question, #371.** Not yet investigated. Stream-json accepts extra user messages mid-turn, but whether Claude Code acknowledges each message individually, which steer confirmation would need, is unconfirmed; until then Steer interrupts the turn and sends the steer first once it settles. The [Claude Code checklist](providers/claude-code/claude-code.md) records this limit.
