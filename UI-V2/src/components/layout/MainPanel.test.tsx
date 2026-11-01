@@ -1127,6 +1127,36 @@ describe('MainPanel', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('keeps a visible background pane live while its turn appends messages', () => {
+    const loadSessionMessages = vi.fn()
+    useAppStore.setState((state) => ({
+      sessions: [
+        state.sessions[0],
+        { ...state.sessions[0], id: 'chat-2', name: 'Background chat', messageCount: 2 },
+      ],
+      messages: { 'chat-1': [], 'chat-2': [] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2', processing: true, turnSerial: 1 },
+      },
+      loadSessionMessages,
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+    loadSessionMessages.mockClear()
+
+    act(() => useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, messageCount: 4 } : session),
+    })))
+
+    expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2')).toEqual([['chat-2', true]])
+
+    act(() => root.unmount())
+    host.remove()
+  })
   it('returns from a temporary side chat in the current pane without stopping either runtime', async () => {
     const parent = useAppStore.getState().sessions[0]
     const side = { ...parent, id: 'side-1', temporaryParentChatId: parent.id, name: 'Side chat' }
