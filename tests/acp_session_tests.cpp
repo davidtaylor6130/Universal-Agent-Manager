@@ -1214,6 +1214,86 @@ UAM_TEST(AcpRemoteInputReceiptSettlesSendingWhileTurnStreams)
 	UAM_ASSERT(session.pending_remote_delivery_input_ids.empty());
 }
 
+UAM_TEST(AcpRemoteDeliveryRecordsInputIdsAndReceiptSettlesOnlyThoseRows)
+{
+	// #628 real path: DeliverPreparedPrompt records the delivered rows' native input IDs (v3 only).
+	for (const int protocol : {3, 2})
+	{
+		TempDir temp("uam-acp-remote-delivery-input-ids");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.git_enabled = app.settings.git_auto_worktree = false;
+		app.settings.provider_chat_defaults["gemini-cli"].feature_preference = "provider";
+		ExecutionHost host;
+		host.id = "ssh-628"; host.transport = "ssh"; host.platform = "linux";
+		host.ssh_alias = "unused-628"; host.runner_status = "ready"; host.runner_protocol_version = protocol;
+		app.settings.execution_hosts = {host};
+		ChatSession chat;
+		chat.id = "remote-delivery-input-ids";
+		chat.provider_id = "gemini-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = "/private/workspace-628";
+		chat.approval_mode.clear();
+		chat.memory_enabled = false;
+		chat.messages_loaded = true;
+		Message with_id{.role = MessageRole::User, .content = "first", .acp_prompt_not_sent = true};
+		with_id.native_input_id = "input-628";
+		Message without_id{.role = MessageRole::User, .content = "second", .acp_prompt_not_sent = true};
+		chat.messages = {with_id, without_id};
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "gemini-acp";
+		session.session_id = "warm-628";
+		session.current_mode_id = "default";
+		session.process_execution_host_id = host.id;
+		session.remote_runner_protocol_version = protocol;
+		session.remote_output_delivery_token = "token-628";
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, StdioCatArgv(), &error));
+		session.running = session.session_ready = session.initialized = true;
+		session.processing = true;
+		session.queued_prompt = "first\n\nsecond";
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 1;
+		app.acp_sessions.push_back(std::move(owned));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (session.prompt_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+			std::this_thread::yield();
+		}
+		if (session.prompt_request_id == 0)
+			throw TestFailure("protocol " + std::to_string(protocol) + " not delivered: " + session.last_error);
+		ChatSession& live = app.chats.front();
+		if (protocol >= 3)
+		{
+			UAM_ASSERT_EQ(session.pending_remote_delivery_input_ids, std::vector<std::string>{"input-628"});
+			UAM_ASSERT(!live.remote_prompt_delivery_id.empty());
+			session.stdout_buffer = std::string(uam::remote::kRemoteInputReceiptPrefix) + "token-628 " + live.remote_prompt_delivery_id + "\n";
+			UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(app, session, live, nullptr, 1), std::size_t{1});
+		}
+		else
+		{
+			UAM_ASSERT(live.remote_prompt_delivery_id.empty());
+			session.pending_remote_input_receipt_id = "any";
+		}
+		UAM_ASSERT(protocol >= 3 || session.pending_remote_delivery_input_ids.empty());
+		(void)uam::acp_detail::DrainStdout(app, session, live, nullptr);
+		UAM_ASSERT_EQ(live.messages[0].input_write_completed, protocol >= 3);
+		UAM_ASSERT(!live.messages[1].input_write_completed);
+		UAM_ASSERT(session.pending_remote_delivery_input_ids.empty());
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+	}
+}
+
 UAM_TEST(AcpRemoteInputReceiptKeepsReplayPayloadWhenChatSaveFails)
 {
 	TempDir temp("uam-acp-input-receipt-save-failure");

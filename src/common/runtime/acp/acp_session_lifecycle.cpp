@@ -1580,6 +1580,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.observed_process_exit_code = -1;
 	session.remote_runner_protocol_version = 0;
 	session.pending_remote_input_receipt_id.clear();
+	session.pending_remote_delivery_input_ids.clear();
 	session.remote_consumed_stderr_cursor = 0;
 	session.assistant_replay_prefixes.clear();
 	session.load_history_replay_updates.clear();
@@ -3605,6 +3606,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			session.pending_remote_delivery_input_ids.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
 			session.last_error =
