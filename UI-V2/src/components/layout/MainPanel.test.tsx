@@ -1145,17 +1145,19 @@ describe('MainPanel', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    act(() => root.render(<MainPanel />))
-    loadSessionMessages.mockClear()
+    try {
+      act(() => root.render(<MainPanel />))
+      loadSessionMessages.mockClear()
 
-    act(() => useAppStore.setState((state) => ({
-      sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, messageCount: 4 } : session),
-    })))
+      act(() => useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, messageCount: 4 } : session),
+      })))
 
-    expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2')).toEqual([['chat-2', true]])
-
-    act(() => root.unmount())
-    host.remove()
+      expect(loadSessionMessages.mock.calls.filter((call) => call[0] === 'chat-2')).toEqual([['chat-2', true]])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
   it('returns from a temporary side chat in the current pane without stopping either runtime', async () => {
     const parent = useAppStore.getState().sessions[0]
