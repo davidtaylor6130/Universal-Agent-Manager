@@ -9,6 +9,7 @@ import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, RowButton, mo
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { KeyedSwap } from './KeyedSwap'
 
 const MEMORY_CATEGORIES = [
   'Failures/AI_Failures',
@@ -267,6 +268,14 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
   const [viewingEntryId, setViewingEntryId] = useState<string | null>(null)
+  const addPresence = usePresence(isAdding)
+  const deletePresence = usePresence(Boolean(pendingDeleteEntryId))
+  const massDeletePresence = usePresence(Boolean(pendingMassDeleteEntryIds))
+  const errorPresence = usePresence(Boolean(memoryLibraryError))
+  // Confirmations and the error keep their last content mounted while they animate out.
+  const lastDeleteEntry = useRef<MemoryEntry | null>(null)
+  const lastMassDeleteIds = useRef<string[]>([])
+  const lastError = useRef('')
   // Changing location always returns the pane to the list.
   const chooseLocation = (key: string) => { setSelectedLocationKey(key); setViewingEntryId(null) }
   const draftDirty = JSON.stringify(draft) !== JSON.stringify(EMPTY_DRAFT)
@@ -449,7 +458,12 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   }
 
   const pendingDelete = memoryLibraryEntries.find((entry) => entry.id === pendingDeleteEntryId) ?? null
-  const pendingMassDeleteCount = pendingMassDeleteEntryIds?.length ?? 0
+  if (pendingDelete) lastDeleteEntry.current = pendingDelete
+  const deleteShown = pendingDelete ?? lastDeleteEntry.current
+  if (pendingMassDeleteEntryIds) lastMassDeleteIds.current = pendingMassDeleteEntryIds
+  const massDeleteIds = lastMassDeleteIds.current
+  const pendingMassDeleteCount = massDeleteIds.length
+  if (memoryLibraryError) lastError.current = memoryLibraryError
   const hasSearchQuery = searchQuery.trim().length > 0
   const massDeleteLabel = hasSearchQuery ? 'Delete matches' : 'Delete all'
   const requestedLocation = groupedEntries.find((location) => location.key === selectedLocationKey) ?? groupedEntries[0]
@@ -559,21 +573,21 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
-            {pendingDelete && (
-              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" className="uam-reveal mb-4">
+            {deletePresence.mounted && deleteShown && (
+              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" data-state={deletePresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
                   <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { const entry = pendingDelete; setPendingDeleteEntryId(null); void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') }) }}>Delete memory</Button>
+                  <Button variant="danger" onClick={() => { const entry = deleteShown; setPendingDeleteEntryId(null); void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') }) }}>Delete memory</Button>
                 </>}>
-                  This permanently deletes "{pendingDelete.title}" and its file. This cannot be undone.
+                  This permanently deletes "{deleteShown.title}" and its file. This cannot be undone.
                 </Notice>
               </div>
             )}
-            {pendingMassDeleteEntryIds && (
-              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} className="uam-reveal mb-4">
+            {massDeletePresence.mounted && (
+              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} data-state={massDeletePresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out mb-4">
                 <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'} actions={<>
                   <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { const count = pendingMassDeleteCount; void deleteMemoryEntries(pendingMassDeleteEntryIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') }); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
+                  <Button variant="danger" onClick={() => { const count = pendingMassDeleteCount; void deleteMemoryEntries(massDeleteIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') }); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
                 </>}>
                   This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
                 </Notice>
@@ -605,15 +619,17 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               />
             </div>}
 
-            {memoryLibraryError && (
-              <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
-                actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
-                {memoryLibraryError}
-              </Notice>
+            {errorPresence.mounted && (
+              <div data-state={errorPresence.closing ? 'closed' : 'open'} className="uam-presence-out">
+                <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
+                  actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
+                  {lastError.current}
+                </Notice>
+              </div>
             )}
 
-            {isAdding ? (
-              <div role="group" aria-label="New memory" className="space-y-3 uam-reveal">
+            {addPresence.mounted ? (
+              <div role="group" aria-label="New memory" data-state={addPresence.closing ? 'closed' : 'open'} className="space-y-3 uam-reveal uam-presence-out">
               <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
               {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
               {exitPrompt.mounted && (
@@ -724,8 +740,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                     </SaveButton>
               </div>
               </div>
-            ) : viewingEntry ? (
-              <div key={viewingEntry.id} className="space-y-4 uam-reveal">
+            ) : <KeyedSwap swapKey={viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`}>{viewingEntry ? (
+              <div key={viewingEntry.id} className="space-y-4">
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="ghost" onClick={() => setViewingEntryId(null)}><ArrowLeft size={14} aria-hidden />Back</Button>
                   <div className="flex-1" />
@@ -752,7 +768,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 {!hasSearchQuery && <Button variant="primary" size="sm" onClick={() => setIsAdding(true)}>Add memory</Button>}
               </div>
             ) : selectedLocation ? (
-              <div key={selectedLocation.key} className="space-y-4 uam-reveal">
+              <div key={selectedLocation.key} className="space-y-4">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
                   <div className="mt-0.5 text-xs truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
@@ -788,7 +804,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                           </section>
                         ))}
               </div>
-            ) : null}
+            ) : null}</KeyedSwap>}
           </div>
         </div>
       </div>

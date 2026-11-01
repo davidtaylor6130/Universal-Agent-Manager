@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { createRequestId, isCompanionContext, sendToCEF, type CEFRequest, type CEFResponse } from '../../ipc/cefBridge'
 import { Button, ConfirmDialog, Tooltip, usePresence } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
-import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
+import { SettingRow, SettingsLoading, SettingsSection, SettingsPresence } from './SettingsPrimitives'
 import { observesFolderChoice, parseDataFolderSettings, readUnconfirmedFolderChoice, retainUnconfirmedFolderChoice,
   readUnconfirmedFolderRestart, retainUnconfirmedFolderRestart,
   type DataFolderSettings, type UnconfirmedFolderChoice } from './dataFolderSettings'
@@ -128,7 +128,7 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
         <Tooltip label="Restart is available after the folder change is validated"><span className="inline-flex"><Button size="sm" disabled={blocked || !settings?.restartReady} onClick={() => setRestartConfirmation(true)}>Restart to use folder</Button></span></Tooltip></div>}>
       <p className="text-sm break-all" style={{ color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>{shownPending.current}</p>
     </SettingRow></div>}
-    {settings && <p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>{settings.message}</p>}
+    <SettingsPresence open={!!(settings)}><p role="status" aria-live="polite" className="p-3 text-xs" style={{ color: 'var(--text-2)' }}>{settings?.message}</p></SettingsPresence>
     {unconfirmedNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={unconfirmedNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Unconfirmed {shownUnconfirmed.current?.action === 'chooseDataFolder' ? 'folder choice' : 'cancellation'}{shownUnconfirmed.current?.folder ? `: ${shownUnconfirmed.current.folder}` : ''}. The request may have reached UAM. Refresh its state before making another change.</p>}
     {restartNote.mounted && <p role="status" aria-live="polite" className="p-3 text-xs uam-settings-presence" data-state={restartNote.closing ? 'closed' : 'open'} style={{ color: 'var(--text-2)' }}>Restart requested for {shownRestart.current?.folder}. This does not confirm migration. Folder changes remain held until the application reopens.</p>}
     <ConfirmDialog open={Boolean(candidate)} title="Save this data-folder choice?" tone="primary" confirmLabel="Save folder choice" busy={busy}

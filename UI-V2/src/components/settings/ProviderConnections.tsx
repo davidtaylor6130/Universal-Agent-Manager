@@ -7,7 +7,7 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { Check, Minus, RefreshCw, X } from 'lucide-react'
 import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone } from '../ui'
-import { SettingRow } from './SettingsPrimitives'
+import { SettingRow, SettingsPresence } from './SettingsPrimitives'
 import './provider-settings.css'
 import './provider-overview.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
@@ -192,7 +192,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
       </div>
     </div>
-    {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
+    <SettingsPresence open={!central.uamControlEnabled}><Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice></SettingsPresence>
     {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">{shownStatusError.current}</p>}
     {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-settings-presence">Checking connections…</p>}
     <Card flush className="uam-prov-card overflow-x-auto">

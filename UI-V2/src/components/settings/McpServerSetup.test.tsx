@@ -362,7 +362,7 @@ it('clears earlier read warnings only on a new read or Cancel setup', async () =
   await click("Read OpenCode config")
   expect(document.body.textContent).not.toContain('first: manual setup required')
   expect(document.body.textContent).toContain('second: executable unavailable')
-  await click('Cancel setup')
+  await click('Back')
   expect(document.querySelector('[aria-label="Import warnings"]')).toBeNull()
 })
 

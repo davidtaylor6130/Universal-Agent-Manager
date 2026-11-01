@@ -6,6 +6,7 @@ import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
+import { KeyedSwap } from './KeyedSwap'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
@@ -70,6 +71,12 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const childOpen = Boolean(editing || addView || imports.length)
   // The step stays mounted while it slides out to the right; the snapshot keeps its last content during that exit.
   const stepPresence = usePresence(childOpen)
+  // Confirmation and preview lines swap in place; the last confirmation stays readable while it animates out.
+  const confirmPresence = usePresence(Boolean(confirmation))
+  const idleActionsPresence = usePresence(!confirmation)
+  const previewPresence = usePresence(previewing)
+  const lastConfirmation = useRef<'discard' | 'overwrite' | null>(null)
+  if (confirmation) lastConfirmation.current = confirmation
   const childSnapshot = useRef<ReactElement | null>(null)
   const openAddChoices = () => { editorTriggerRef.current = addTriggerRef.current; resetError(); setAddView('choose') }
   const previousChildOpenRef = useRef(false)
@@ -328,15 +335,16 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         <input aria-label="Entry summary" value={draft.review} onChange={(event) => setDraft({ ...draft, review: event.target.value })} placeholder="Summary" className="uam-field text-sm" />
         {showEditorPreview ? <div className="min-h-48 rounded-md p-3" style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}><MarkdownContent content={draft.body || '_Nothing to preview._'} /></div> : <textarea aria-label="Entry Markdown body" value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Markdown body" rows={10} className="uam-field text-sm resize-vertical font-mono" />}
       </fieldset>
-      {confirmation ? <div ref={confirmationRef} role="group" aria-label={confirmation === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} className="uam-reveal">
-        <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={confirmation === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}
+      {confirmPresence.mounted && <div ref={confirmationRef} role="group" aria-label={lastConfirmation.current === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} data-state={confirmPresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out">
+        <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={lastConfirmation.current === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}
           actions={<>
             <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
-            {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
+            {lastConfirmation.current === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
           </>}>
-          {confirmation === 'overwrite' && 'This replaces the saved entry.'}
+          {lastConfirmation.current === 'overwrite' && 'This replaces the saved entry.'}
         </Notice>
-      </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
+      </div>}
+      {idleActionsPresence.mounted && <div className="flex justify-end gap-2 uam-reveal uam-presence-out" data-state={idleActionsPresence.closing ? 'closed' : 'open'}><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
     </> : imports.length ? <>
       <div className="uam-set-section__title shrink-0 px-1">Import preview</div>
       <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <div key={candidate.id} title={candidate.sourcePath} className="uam-reveal flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
@@ -349,7 +357,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
       <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
-      {addView === 'choose' ? <div aria-label="Add skill choices" className="flex flex-wrap gap-2">
+      <KeyedSwap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="flex flex-wrap gap-2">
         {[
           { label: 'Create', icon: <Plus size={14} />, action: beginNew },
           { label: 'Import from provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
@@ -359,8 +367,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
         <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>
-      </>}
-      {previewing && <p role="status" className="uam-reveal text-xs">Reading skills...</p>}
+      </>}</KeyedSwap>
+      {previewPresence.mounted && <p role="status" data-state={previewPresence.closing ? 'closed' : 'open'} className="uam-reveal uam-presence-out text-xs">Reading skills...</p>}
     </>}
   </div>
 
@@ -379,7 +387,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </div>
       </div>
       <section aria-label="Skill preview" className="uam-skill-preview flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {selected ? <>
+        <KeyedSwap swapKey={selected ? selected.filePath : ''} className="shrink-0">{selected ? <>
           <div className="shrink-0 flex items-center justify-between gap-2 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
             <div className="min-w-0 flex-1">
               <h3 className="truncate text-sm font-semibold">{selected.title}</h3>
@@ -392,8 +400,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
               <IconButton size="sm" icon={<FolderOpen size={14} />} label="Reveal file" onClick={() => void runAction(() => revealEntry(selected), 'Could not reveal the skill file.')} />
             </div>
           </div>
-          <div key={selected.filePath} className="uam-reveal flex-1 min-h-0 overflow-auto px-5 py-4" style={{ overflowWrap: 'anywhere' }}><div className="uam-store-markdown"><MarkdownContent content={selected.body ?? selected.preview} /></div></div>
-        </> : <p className="flex-1 px-5 py-4 text-sm" style={{ color: 'var(--text-3)' }}>Select a skill to preview it.</p>}
+        </> : null}</KeyedSwap>
+        <KeyedSwap swapKey={selected ? selected.filePath : ''} className="flex-1 min-h-0 overflow-auto">{selected ?           <div className="flex-1 min-h-0 overflow-auto px-5 py-4" style={{ overflowWrap: 'anywhere' }}><div className="uam-store-markdown"><MarkdownContent content={selected.body ?? selected.preview} /></div></div>
+        : <p className="flex-1 px-5 py-4 text-sm" style={{ color: 'var(--text-3)' }}>Select a skill to preview it.</p>}</KeyedSwap>
       </section>
     </div>
   </div>

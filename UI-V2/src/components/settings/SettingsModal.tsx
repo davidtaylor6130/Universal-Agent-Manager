@@ -15,6 +15,7 @@ import { McpServerSetup } from './McpServerSetup'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+import { NumberField } from './NumberField'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
@@ -115,11 +116,14 @@ function StatusMessage({ message, className = 'text-xs' }: { message: StatusMess
   </div>
 }
 
-/** Keeps a disclosure panel mounted for its exit animation. */
-function PresencePanel({ open, id, className, children }: { open: boolean; id?: string; className?: string; children: ReactNode }) {
+/** Keeps content mounted for its exit animation; while closing it shows the last open children, so callers need not gate them. */
+function PresencePanel({ open, id, className, as = 'div', children }: { open: boolean; id?: string; className?: string; as?: 'div' | 'span'; children: ReactNode }) {
   const presence = usePresence(open)
+  const lastChildren = useRef(children)
+  if (open) lastChildren.current = children
   if (!presence.mounted) return null
-  return <div id={id} className={cx('uam-settings-presence', className)} data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
+  const Tag = as
+  return <Tag id={id} className={cx('uam-settings-presence', as === 'span' && 'inline-flex', className)} data-state={presence.closing ? 'closed' : 'open'}>{open ? children : lastChildren.current}</Tag>
 }
 
 interface SettingsDraftHandle { requestLeave: (next: () => void) => void }
@@ -187,20 +191,20 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
           {unavailableVoiceReasons.map((reason, index) => <p key={index} className="text-xs" style={{ color: 'var(--text-3)' }}>{reason}</p>)}
         </div>
       } />
-      {draft.mode === 'server' && <div className="grid gap-3 p-3">
+      <PresencePanel open={draft.mode === 'server'} className="grid gap-3 p-3">
         {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
           <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'Read from this environment variable.' : undefined}>
             <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
           </SettingsField>)}
-      </div>}
-      {validationError && <div className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validationError}</Notice></div>}
+      </PresencePanel>
+      <PresencePanel open={Boolean(validationError)} className="px-3"><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{validationError}</Notice></PresencePanel>
       <div className="flex justify-end gap-2 p-3">
         <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>Save voice settings</SaveButton>
       </div>
     </SettingsSection>
-    {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={validationError} onStay={() => setExit(null)}
-      onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}
+    <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={validationError} onStay={() => setExit(null)}
+      onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}</Presence>
   </>
 })
 
@@ -242,7 +246,7 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
           onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })) }} />} />)}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
-    {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
+    <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}</Presence>
   </>
 })
 
@@ -309,11 +313,11 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
   const startupStatus = applied ? (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <StatusDot tone={applied === 'enabled' ? 'success' : applied === 'failed' ? 'error' : applied === 'pending' ? 'info' : 'neutral'} pulse={applied === 'pending'} />
-      {applied === 'enabled' && <span>Starts automatically</span>}
-      {applied === 'disabled' && <span>Doesn't start automatically</span>}
-      {applied === 'pending' && <span>Applying…</span>}
-      {applied === 'failed' && <span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={12} aria-hidden />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
-      {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
+      <PresencePanel as="span" open={applied === 'enabled'}><span>Starts automatically</span></PresencePanel>
+      <PresencePanel as="span" open={applied === 'disabled'}><span>Doesn't start automatically</span></PresencePanel>
+      <PresencePanel as="span" open={applied === 'pending'}><span>Applying…</span></PresencePanel>
+      <PresencePanel as="span" open={applied === 'failed'}><span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={12} aria-hidden />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span></PresencePanel>
+      <PresencePanel as="span" open={startupMismatch}><span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span></PresencePanel>
     </span>
   ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · starts with your login session`
   const textHint = inlineText === null
@@ -340,15 +344,15 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       )}
       <SettingsField label="Host instructions" htmlFor={`remote-host-instructions-${host.id}`} hint={textHint}>
         <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
-        {textError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span>}
-        {inlineText !== null && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div>}
+        <PresencePanel open={Boolean(textError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span></PresencePanel>
+        <PresencePanel open={inlineText !== null}><div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div></PresencePanel>
       </SettingsField>
       <SettingsField label="Instruction file (fallback)" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
-        {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
+        <PresencePanel open={Boolean(instructionError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span></PresencePanel>
       </SettingsField>
       <div className="flex items-center justify-end gap-2">
-        {saveReason && (textError || instructionError) && <span id={`remote-host-save-reason-${host.id}`} className="mr-auto text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span>}
+        <PresencePanel as="span" open={Boolean(textError || instructionError)} className="mr-auto"><span id={`remote-host-save-reason-${host.id}`} className="text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span></PresencePanel>
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
         <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} aria-describedby={textError || instructionError ? `remote-host-save-reason-${host.id}` : undefined}>Save host options</Button>
       </div>
@@ -1017,7 +1021,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
     if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
     setRemoteHostBusy(remotePreview.host.id, true)
-    setRemoteMessage({ tone: 'info', text: 'Connecting, verifying the copied helper, and starting the runner…' })
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
     setRemoteHostBusy(remotePreview.host.id, false)
     setRemoteMessage(null)
@@ -1436,9 +1439,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </label>
         ))}
       </div>}
-      {!themeDraftValid && (
+      <PresencePanel open={!themeDraftValid}>
         <Notice tone="error" dismissible={false} dismissLabel="Dismiss"><span id="theme-color-format-error">Every color must use #RRGGBB format.</span></Notice>
-      )}
+      </PresencePanel>
       {themeStep === 2 && <div className="grid gap-3">
         <div className="text-sm">{themeDraft.name} · {themeDraft.base}</div>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{THEME_COLOR_FIELDS.map(({key,label}) => <div key={key} className="flex items-center gap-2 text-xs"><span aria-hidden className="w-4 h-4 border" style={{background:themeDraft.colors[key]}}/>{label}</div>)}</div>
@@ -1618,26 +1621,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           description={companionLoadError ? undefined : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
           status={<span role="status" aria-live="polite" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
-            {(failed || companionLoadError) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button>}
-            {(failed || companionSettings?.restartRequired) && <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button>}
+            <PresencePanel open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></PresencePanel>
+            <PresencePanel open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></PresencePanel>
           </div>}
         >{phoneFeedback}</SettingRow>
         <PresencePanel open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
           control={<div className="flex flex-wrap gap-2">{repairAddresses.map(localAddress => <Button key={localAddress} size="sm" variant="secondary" disabled={companionBusy} onClick={() => void changeCompanion('repairCompanionLanAddress', { address: localAddress })}>{companionBusyAction === `repairCompanionLanAddress:${localAddress}` ? 'Repairing…' : `Use ${localAddress}`}</Button>)}</div>} />}</PresencePanel>
-        {address && <SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
+        <PresencePanel open={Boolean(address)}><SettingRow title={ready ? 'Phone address' : 'Configured phone address'} description={!ready ? 'Available when phone access is ready.' : undefined}
           control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={!ready || companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}>
           <code className="block truncate font-mono text-xs" title={address} style={{ color: 'var(--text-2)' }}>{ready ? companionSettings?.effectiveUrl : address}</code>
-        </SettingRow>}
-        {typeof companionSettings?.allowKeychainPrompts === 'boolean' && <SettingRow
+        </SettingRow></PresencePanel>
+        <PresencePanel open={typeof companionSettings?.allowKeychainPrompts === 'boolean'}><SettingRow
           title="Allow Keychain prompts from phone"
           description="When on, phone refreshes can show the macOS Keychain dialog on this computer. When off, they never do."
           status={companionBusyAction === 'setCompanionKeychainPrompts' ? <span role="status" aria-live="polite" style={{ color: 'var(--text-2)' }}>Saving…</span> : undefined}
-          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings.allowKeychainPrompts}
-            disabled={!companionSettings.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
-        />}
+          control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings?.allowKeychainPrompts === true}
+            disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
+        /></PresencePanel>
         <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
-        {address && <PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} />}
+        <PresencePanel open={Boolean(address)}><PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} /></PresencePanel>
       </SettingsSection>
     </div>
   }
@@ -1939,7 +1942,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }, settingsScope),
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
-            {settingsScope === SETTINGS_ALL_ENVIRONMENTS && <>
+            <PresencePanel open={settingsScope === SETTINGS_ALL_ENVIRONMENTS}>
               <SettingRow title="Reviewer provider" description="AI approves routine requests; unsure ones come to you." control={renderDefaultsMenu(
                     'permission-reviewer-provider',
                     permissionReviewerProviderId,
@@ -1958,7 +1961,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
                     (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
                   )} />
-            </>}
+            </PresencePanel>
           </SettingsSection>}
           {scopedProviderId && <div>
             <div className="grid gap-0">
@@ -2007,9 +2010,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       actions={provider.supportsStructured === false ? undefined : <IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void (effectiveProviderSettingsHostId === 'local' ? discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace) : discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace, effectiveProviderSettingsHostId))} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
-                        {provider.supportsStructured === false && <p>Terminal only. Models are managed in the CLI.</p>}
-                        {!modelOptions.some(option => option.id) && provider.supportsStructured !== false && <p>Visibility appears once models are discovered.</p>}
-                        {modelOptions.some((option) => option.id) && (
+                        <PresencePanel open={provider.supportsStructured === false}><p>Terminal only. Models are managed in the CLI.</p></PresencePanel>
+                        <PresencePanel open={!modelOptions.some(option => option.id) && provider.supportsStructured !== false}><p>Visibility appears once models are discovered.</p></PresencePanel>
+                        <PresencePanel open={modelOptions.some((option) => option.id)}>
                           <Disclosure summary={<span className="flex min-w-0 flex-1 items-center justify-between gap-2"><span>Model visibility</span><span style={{ color: 'var(--text-3)' }}>{(defaults.hiddenProviderIds?.length ?? 0) + (defaults.hiddenModelIds?.length ?? 0) ? [visibilityGroups.length && defaults.hiddenProviderIds?.length ? `${defaults.hiddenProviderIds.length} providers` : '', defaults.hiddenModelIds?.length ? `${defaults.hiddenModelIds.length} models` : ''].filter(Boolean).join(', ') + ' hidden' : 'All shown'}</span></span>}>
                             <div className="grid gap-1">
                               {!visibilityGroups.length && modelOptions.filter((option) => option.id).map((option) => (
@@ -2042,8 +2045,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               <div className="px-1 pt-1" style={{ color: 'var(--text-3)' }}>Hidden models stay available in existing chats.</div>
                             </div>
                           </Disclosure>
-                        )}
-                        <SettingRow title="Model" control={renderDefaultsMenu(
+                        </PresencePanel>
+                        <SettingRow title="Model"control={renderDefaultsMenu(
                           `${provider.id}:model`,
                           defaults.modelId,
                           `${providerName} default model`,
@@ -2054,20 +2057,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             reasoningEffort: reasoningEffortForModel(providerAcp, modelId, defaults.reasoningEffort),
                           })
                         )} />
-                        {reasoningOptions.length > 0 && <SettingRow title="Reasoning" control={renderDefaultsMenu(
+                        <PresencePanel open={reasoningOptions.length > 0}><SettingRow title="Reasoning" control={renderDefaultsMenu(
                           `${provider.id}:reasoning`,
                           defaults.reasoningEffort,
                           `${providerName} default reasoning`,
                           reasoningOptions,
                           (reasoningEffort) => updateProviderDefaults(provider.id, { ...defaults, reasoningEffort })
-                        )} />}
-                        {caps.hasServiceTier && speedOptions.length > 0 && <SettingRow title="Speed" control={renderDefaultsMenu(
+                        )} /></PresencePanel>
+                        <PresencePanel open={caps.hasServiceTier && speedOptions.length > 0}><SettingRow title="Speed" control={renderDefaultsMenu(
                           `${provider.id}:speed`,
                           defaults.serviceTier,
                           `${providerName} default speed`,
                           speedOptions,
                           (serviceTier) => updateProviderDefaults(provider.id, { ...defaults, serviceTier })
-                        )} />}
+                        )} /></PresencePanel>
                         <SettingRow title="Provider mode" control={renderDefaultsMenu(
                           `${provider.id}:mode`,
                           defaults.approvalMode,
@@ -2133,11 +2136,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             {modelRefreshError}
                           </Notice>
                         </PresencePanel>
-                        {!refreshFailed && (
+                        <PresencePanel open={!refreshFailed}>
                           <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
                             {modelsLoading ? <ProgressFill label={`Refreshing ${providerName} models`} indeterminate>Refreshing models…</ProgressFill> : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}
                           </span>
-                        )}
+                        </PresencePanel>
                       </div>
                     </ProviderDisclosureCard>
                   )
@@ -2324,14 +2327,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     title={agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
                     description={agentImportPreview.mode || 'Unknown mode'}
                   />
-                  {agentImportPreview.securityFields.length > 0 && (
+                  <PresencePanel open={agentImportPreview.securityFields.length > 0}>
                     <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</Notice>
-                  )}
-                  {agentImportPreview.ignoredFields.length > 0 && (
+                  </PresencePanel>
+                  <PresencePanel open={agentImportPreview.ignoredFields.length > 0}>
                     <Notice tone="warning" dismissible={false} dismissLabel="Dismiss">Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</Notice>
-                  )}
-                  {agentImportPreview.error && <Notice tone="error" dismissible={false} dismissLabel="Dismiss">{agentImportPreview.error}</Notice>}
-                  {agentImportPreview.supported && (
+                  </PresencePanel>
+                  <PresencePanel open={Boolean(agentImportPreview.error)}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{agentImportPreview.error}</Notice></PresencePanel>
+                  <PresencePanel open={agentImportPreview.supported}>
                     <>
                       <SettingsField label="UAM agent ID" htmlFor="agent-import-id">
                         <input
@@ -2368,13 +2371,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           />
                         </SettingsField>
                       </div>
-                      {agentImportPreview.ignoredFields.length > 0 && (
+                      <PresencePanel open={agentImportPreview.ignoredFields.length > 0}>
                         <SettingRow
                           title="Omit listed fields"
                           description="Copies the rest of the agent. Listed fields are not copied."
                           control={<Switch hideLabel label="Acknowledge omitted provider fields" checked={agentImportAcknowledged} onChange={(event) => setAgentImportAcknowledged(event.target.checked)} />}
                         />
-                      )}
+                      </PresencePanel>
                       <div className="flex justify-end">
                         <Button
                           size="sm"
@@ -2385,7 +2388,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         >Import agent</Button>
                       </div>
                     </>
-                  )}
+                  </PresencePanel>
                 </>
               )}
               </PresencePanel>
@@ -2435,14 +2438,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   />
                 </div>}
                 </PresencePanel>
-                {(manager.lastCommand || manager.lastOutput) && (
+                <PresencePanel open={Boolean(manager.lastCommand || manager.lastOutput)}>
                   <Disclosure summary="Last command output">
                     <div className="grid gap-2">
-                      {manager.lastCommand && (
+                      <PresencePanel open={Boolean(manager.lastCommand)}>
                         <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
                           {manager.lastCommand}
                         </code>
-                      )}
+                      </PresencePanel>
                       <pre
                         className="leading-5 overflow-auto rounded-lg px-3 py-2"
                         style={{
@@ -2460,7 +2463,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       </pre>
                     </div>
                   </Disclosure>
-                )}
+                </PresencePanel>
               </>
             )
             return (
@@ -2474,7 +2477,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) reportAppFailure('Version check could not start.', 'Try again.') }
                       catch { reportAppFailure('Version check could not start.', 'Try again.') }
                     }}/>
-                    {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
+                    <PresencePanel open={manager.canInstall !== false}><IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/></PresencePanel>
                     {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--r-md)'}}>
                       <MenuItem label={`Download recommended${manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}`} disabled={!manager.preferredVersion} onSelect={() => requestInstall(manager.preferredVersion)} />
                       <MenuItem label="Download latest" onSelect={() => requestInstall('latest')} />
@@ -2529,7 +2532,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   />
                 </SettingsField>
               </div>
-              <StatusMessage message={remoteMessage} />
+              <PresencePanel open={Boolean(remoteMessage)}><StatusMessage message={remoteMessage} /></PresencePanel>
             </SettingsSection>
       )
       return (
@@ -2549,7 +2552,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     {host.runnerStatus === 'ready' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }} /> : host.runnerStatus === 'error' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }} /> : <StatusDot tone="neutral" />}
                     <span>{host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus}</span>
-                    {(host.runnerVersion || host.platform) && <span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span>}
+                    <PresencePanel as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></PresencePanel>
                   </span>
                 )}
                 control={(
@@ -2610,36 +2613,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <SettingRow
               title="Idle delay (seconds)"
               description="Idle time before a chat's memory is processed."
-              htmlFor="memory-idle-delay"
               control={
-                <input
-                  id="memory-idle-delay"
-                  type="number"
-                  className="uam-field"
-                  style={{ width: 120 }}
-                  min={MIN_MEMORY_IDLE_DELAY_SECONDS}
-                  max={MAX_MEMORY_IDLE_DELAY_SECONDS}
-                  value={memoryIdleDelaySeconds}
-                  onChange={(event) => void setMemorySettings({ memoryIdleDelaySeconds: Number(event.currentTarget.value) })}
-                />
+                <NumberField label="Idle delay (seconds)" value={memoryIdleDelaySeconds} min={MIN_MEMORY_IDLE_DELAY_SECONDS} max={MAX_MEMORY_IDLE_DELAY_SECONDS} unit="seconds"
+                  onCommit={(value) => void setMemorySettings({ memoryIdleDelaySeconds: value })} />
               }
             />
             <SettingRow
               title="Recall budget (bytes)"
               description="Most saved memory added to each prompt."
-              htmlFor="memory-recall-budget"
               control={
-                <input
-                  id="memory-recall-budget"
-                  type="number"
-                  className="uam-field"
-                  style={{ width: 120 }}
-                  min={MIN_MEMORY_RECALL_BUDGET_BYTES}
-                  max={MAX_MEMORY_RECALL_BUDGET_BYTES}
-                  step={256}
-                  value={memoryRecallBudgetBytes}
-                  onChange={(event) => void setMemorySettings({ memoryRecallBudgetBytes: Number(event.currentTarget.value) })}
-                />
+                <NumberField label="Recall budget (bytes)" value={memoryRecallBudgetBytes} min={MIN_MEMORY_RECALL_BUDGET_BYTES} max={MAX_MEMORY_RECALL_BUDGET_BYTES} step={256} unit="bytes"
+                  onCommit={(value) => void setMemorySettings({ memoryRecallBudgetBytes: value })} />
               }
             />
           </SettingsSection>
@@ -2675,11 +2659,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </div>
             <PresencePanel open={Boolean(memoryLastStatus)}><SettingRow title="Last run" description={memoryLastStatus || undefined} /></PresencePanel>
 
-            {hasWorkerLog && (
+            <PresencePanel open={hasWorkerLog}>
               <Disclosure className="mt-3 text-xs" summary={<span style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</span>}>
                 <div style={{ color: 'var(--text-2)' }}>
-                {memoryActivity.lastWorkerStatus && <p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p>}
-                {workerLogMeta && <p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p>}
+                <PresencePanel open={Boolean(memoryActivity.lastWorkerStatus)}><p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></PresencePanel>
+                <PresencePanel open={Boolean(workerLogMeta)}><p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p></PresencePanel>
                 <pre
                   className="mt-2 rounded-lg px-3 py-2 leading-5 overflow-auto"
                   style={{
@@ -2697,7 +2681,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </pre>
                 </div>
               </Disclosure>
-            )}
+            </PresencePanel>
           </SettingsSection>
 
         </div>
@@ -2711,7 +2695,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
       <SettingsSection title="Skills folder">
         <div className="grid gap-3 p-3 text-xs" style={{color:'var(--text-2)'}}>
-          <p>Skills are Markdown files in one folder.</p>
           <div><Button size="sm" variant="primary" leadingIcon={<FolderOpen size={14} aria-hidden/>} onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) void setMarkdownStoreDirectory(selected) })}>Choose folder…</Button></div>
           <div className="flex items-center gap-2">
             <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Or type a folder path" className="uam-field min-w-0 flex-1"/>
@@ -2871,11 +2854,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               description={customExplorer ? 'A custom application opens folders.' : 'Your system file manager opens folders.'}
               control={<MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />}
             >
-              {customExplorer && <div className="flex gap-2">
+              <PresencePanel open={customExplorer}><div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
                 <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure(response.error || 'Application picker could not be opened.', 'Try again.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
-              </div>}
+              </div></PresencePanel>
             </SettingRow>
             {isWindows && <SettingRow
               title="Terminal shell"
@@ -2960,11 +2943,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <div className="uam-search-field flex items-center gap-2 px-2 rounded-md mb-5" style={{border:'1px solid var(--border)',background:'var(--surface)'}}>
               <Search size={14} aria-hidden style={{color:'var(--text-3)',flexShrink:0}}/>
               <input type="text" role="searchbox" aria-label="Search settings" placeholder="Search settings" value={settingsSearch} onChange={event => setSettingsSearch(event.target.value)} className="min-w-0 w-full py-2 text-xs" style={{background:'transparent',border:0,color:'var(--text)'}}/>
-              {settingsSearch && <IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/>}
+              <PresencePanel open={Boolean(settingsSearch)}><IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/></PresencePanel>
             </div>
             <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
               {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
-              {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
+              <PresencePanel open={visibleSettingsGroups.length === 0}><p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p></PresencePanel>
               {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
                 <h2 className="px-2 mb-1 text-[length:var(--fs-xs)] font-semibold uppercase tracking-[0.08em]" style={{color:'var(--text-3)'}}>{group.label}</h2>
                 {group.sections.map(id => {
@@ -2977,14 +2960,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </nav>
           </aside>
           <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
-            {unconfirmedSettingsLabels.length > 0 && <div data-memory-settings-unconfirmed className="shrink-0 px-6 pt-6">
+            <PresencePanel open={unconfirmedSettingsLabels.length > 0} className="shrink-0 px-6 pt-6"><div data-memory-settings-unconfirmed>
               <Notice tone="warning" title="Unconfirmed settings changes" dismissible={false} dismissLabel="Unconfirmed settings changes cannot be dismissed">
                 <p>Displayed choices are unconfirmed drafts and may differ from the running app.</p>
                 <ul aria-label="Unconfirmed settings fields" className="list-disc pl-4">
                   {unconfirmedSettingsLabels.map((label) => <li key={label}>{label}</li>)}
                 </ul>
               </Notice>
-            </div>}
+            </div></PresencePanel>
             <div className="w-full min-h-0 flex-1 flex flex-col">
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
@@ -3043,13 +3026,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   				  onChange={(value) => setRemoteCustomDirectory(value === 'custom')}
   				  options={[{ value: 'private', label: 'Recommended location' }, { value: 'custom', label: 'Custom folder' }]}
   				/>
-  				{!remoteCustomDirectory && <span className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span>}
-  				{remoteCustomDirectory && <div className="grid gap-1">
+  				<PresencePanel open={!remoteCustomDirectory}><span className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></PresencePanel>
+  				<PresencePanel open={remoteCustomDirectory} className="grid gap-1">
   				  <input aria-label="Remote helper folder" aria-invalid={Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
   				  <span id="remote-helper-folder-help" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-  				  {remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
-  				  {!remoteDirectoryValidation && <span className="block break-all font-mono text-[length:var(--fs-xs)]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-  				</div>}
+  				  <PresencePanel open={Boolean(remoteDirectoryValidation)}><span id="remote-helper-folder-error" role="alert" className="block text-[length:var(--fs-xs)]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span></PresencePanel>
+  				  <PresencePanel open={!remoteDirectoryValidation}><span className="block break-all font-mono text-[length:var(--fs-xs)]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span></PresencePanel>
+  				</PresencePanel>
   			  </fieldset>
   			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[length:var(--fs-xs)]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
             </div>
@@ -3076,10 +3059,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         }}>
         <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
       </ConfirmDialog>
-      {pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
+      <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
         onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>
         New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
-      </ConfirmDialog>}
+      </ConfirmDialog>}</Presence>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.

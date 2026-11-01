@@ -89,7 +89,7 @@ function TokenStack({ total, height = 14, labels = false }: { total: UsageTotals
       if (value <= 0) return null
       const share = value / sum
       return <span key={segment.key} title={`${segment.label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': segment.color } as CSSProperties}>
-        {labels && share >= 0.12 && <span className="uam-usage-stack-label">{share >= 0.3 ? `${segment.key === 'reasoning' ? 'Reasoning' : segment.label} ` : ''}{formatUsageCount(value)}</span>}
+        <PresenceBlock open={labels && share >= 0.12}><span className="uam-usage-stack-label">{share >= 0.3 ? `${segment.key === 'reasoning' ? 'Reasoning' : segment.label} ` : ''}{formatUsageCount(value)}</span></PresenceBlock>
       </span>
     })}
   </span>
@@ -115,7 +115,7 @@ function StatTile({ label, value, sub, title }: { label: string; value: string; 
   return <div className="uam-usage-tile">
     <span className="uam-usage-label">{label}</span>
     <span className="uam-usage-tile-value tabular-nums" title={title}>{value}</span>
-    {sub && <span className="uam-usage-muted text-xs">{sub}</span>}
+    <PresenceBlock open={!!(sub)}><span className="uam-usage-muted text-xs">{sub}</span></PresenceBlock>
   </div>
 }
 
@@ -142,8 +142,8 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
     <p className="text-xs">USD per million tokens. Blank rates stay unknown. These estimates do not change provider billing.</p>
     {model.priceReference?.kind === 'reference' && <div className="grid gap-1 text-xs">
       <p>Reference: {model.priceReference.referenceModel} · <a href={model.priceReference.source} target="_blank" rel="noreferrer" className="underline">Rate source</a>{model.priceReference.verifiedDate && ` · Verified ${model.priceReference.verifiedDate}`}</p>
-      {model.priceReference.cacheFallback && <p>Unpublished cache rates use the input rate.</p>}
-      {model.priceReference.speedFallback && <p>This speed uses the standard rate because a separate rate is unavailable.</p>}
+      <PresenceBlock open={model.priceReference.cacheFallback}><p>Unpublished cache rates use the input rate.</p></PresenceBlock>
+      <PresenceBlock open={model.priceReference.speedFallback}><p>This speed uses the standard rate because a separate rate is unavailable.</p></PresenceBlock>
     </div>}
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
       <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
@@ -290,7 +290,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-      {metric === 'limits' ? <UsageLimits executionHostId={hostId} /> : <div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
+      <PresenceBlock open={metric === 'limits'}><UsageLimits executionHostId={hostId} /></PresenceBlock>
+      <PresenceBlock open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
         {errorNote.mounted && <Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         {data && <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
@@ -313,9 +314,9 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <div className="uam-usage-tiles">
                 {metric === 'cost' ? <>
                   <StatTile label={partialCost ? 'Known cost' : totalBasis === 'reported' ? 'Reported cost' : totalBasis === 'mixed' ? 'Reported + estimated' : totalBasis === 'unpriced' ? 'Cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totalBasis === 'reported' ? 'Provider charges' : totalBasis === 'unpriced' ? pricingPending ? 'Prices still loading' : 'No known price' : hasReported ? 'Provider charges and API list-price estimates' : 'API list-price estimate, not a bill'} · ${totals.sessions.toLocaleString()} sessions${data.collecting ? ' · so far' : ''}`} />
-                  {hasReported && <StatTile label="Provider-reported" value={money(totals.reportedCostUsd)} />}
-                  {hasReported && <StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" />}
-                  {(!hasReported || totals.unpricedTokens > 0) && !(pricingPending && totalBasis === 'unpriced') && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub={pricingPending && totals.unpricedTokens > 0 ? 'Awaiting prices' : 'No known price'} />}
+                  <PresenceBlock open={hasReported}><StatTile label="Provider-reported" value={money(totals.reportedCostUsd)} /></PresenceBlock>
+                  <PresenceBlock open={hasReported}><StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" /></PresenceBlock>
+                  <PresenceBlock open={(!hasReported || totals.unpricedTokens > 0) && !(pricingPending && totalBasis === 'unpriced')}><StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub={pricingPending && totals.unpricedTokens > 0 ? 'Awaiting prices' : 'No known price'} /></PresenceBlock>
                 </> : <>
                   <StatTile label="Total tokens" value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totals.sessions.toLocaleString()} sessions`} />
                   <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.cachedInputTokens)} tokens`} />
@@ -328,7 +329,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <div className="uam-usage-chart">
                 <div className="uam-usage-axis text-xs tabular-nums" aria-hidden><span>{axisValue(peak)}</span><span>{axisValue(peak / 2)}</span><span>0</span></div>
                 <div key={plotKey} role="group" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'costs, unpriced tokens excluded' : 'tokens'} from loaded history. Use arrow keys to move between columns.`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }} onKeyDown={moveColumnFocus}>
-                  {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">{pricingPending ? 'Prices still loading.' : 'No priced usage in this range.'}</span>}
+                  <PresenceBlock open={metric === 'cost' && peak === 0 && totals.unpricedTokens > 0}><span className="absolute inset-0 flex items-center justify-center text-xs">{pricingPending ? 'Prices still loading.' : 'No priced usage in this range.'}</span></PresenceBlock>
                   {periods.map((period, index) => {
                     const total = numeric(period)
                     const pct = peak ? total / peak * 100 : 0
@@ -340,7 +341,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                       <span className="uam-usage-col-tip" aria-hidden>
                         <span className="uam-usage-tip-head">{tipLabel(period.startMs)} · <b>{amount(period)}</b></span>
                         {tipRows.map(row => <span key={row.key} className="uam-usage-tip-row"><i className="uam-usage-swatch" style={{ '--c': row.color } as CSSProperties} />{row.label}<span className="tabular-nums uam-usage-muted">{row.text}</span></span>)}
-                        {tipRows.length === 0 && <span className="uam-usage-muted">No usage</span>}
+                        <PresenceBlock open={tipRows.length === 0}><span className="uam-usage-muted">No usage</span></PresenceBlock>
                       </span>
                     </div>
                   })}
@@ -365,21 +366,21 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                   </> : <td colSpan={3} className="uam-usage-muted">{EMPTY_TEXT[state]}</td>}
                 </tr>)}</tbody>
               </table>}
-              {idleProviders.length > 0 && <p className="text-xs uam-usage-muted">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p>}
-              {visibleProviders.length === 0 && <p className="text-xs uam-usage-muted">All providers are filtered out.</p>}
+              <PresenceBlock open={idleProviders.length > 0}><p className="text-xs uam-usage-muted">{EMPTY_TEXT.idle}: {idleProviders.map(provider => providerLabel(provider.providerId)).join(', ')}</p></PresenceBlock>
+              <PresenceBlock open={visibleProviders.length === 0}><p className="text-xs uam-usage-muted">All providers are filtered out.</p></PresenceBlock>
             </div>
           </section>
           <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><SegmentedControl aria-label="Usage breakdown" value={breakdown} options={[{ value: 'model', label: 'Models' }, { value: 'time', label: 'Time' }]} onChange={setBreakdown} /></div>
-            {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
+            <PresenceBlock open={breakdown === 'model'}><div><PresenceBlock open={models.length === 0}><p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p></PresenceBlock>{models.slice(0, modelLimit).map((model, index) => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
               <RowButton className="uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-describedby={`${providerHeadingId}-cost-${index}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><Tooltip label={model.modelId}><span className="truncate">{model.modelId}</span></Tooltip>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span><span id={`${providerHeadingId}-cost-${index}`} className={cx('shrink-0', metric === 'cost' && 'uam-usage-cost-cell')}><span className="tabular-nums">{amount(model)}</span>{metric === 'cost' && <CostBasis totals={model} pending={pricingPending} />}</span>
               </RowButton>
               <PresenceBlock open={currentModel === model} className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button><PresenceBlock open={editingPrice}><PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} /></PresenceBlock></PresenceBlock>
-            </div>)}<PresenceBlock open={models.length > modelLimit}><Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button></PresenceBlock></div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,12rem)_auto] items-center gap-x-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="uam-usage-model-bar"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span><span className="tabular-nums">{amount(period)}</span></div>)}</div>}
+            </div>)}<PresenceBlock open={models.length > modelLimit}><Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button></PresenceBlock></div></PresenceBlock><PresenceBlock open={breakdown !== 'model'}><div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_minmax(4rem,12rem)_auto] items-center gap-x-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="uam-usage-model-bar"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span><span className="tabular-nums">{amount(period)}</span></div>)}</div></PresenceBlock>
           </section>
-          {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <Disclosure className="text-xs" summary="History diagnostics"><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></Disclosure>}
+          <PresenceBlock open={(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0))}><Disclosure className="text-xs" summary="History diagnostics"><p className="mt-2">{count(data.duplicates, 'duplicate record')}, {count(data.unidentifiedRecords, 'unidentified record')} and {count(data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0), 'forked copy', 'forked copies')} were skipped.</p></Disclosure></PresenceBlock>
         </div>}
-      </div>}
+      </div></PresenceBlock>
     </div>
   </main>
 }

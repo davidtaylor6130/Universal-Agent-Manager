@@ -7,7 +7,7 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
 import { Button, Chip, Disclosure, ProgressFill, Tooltip, cx, usePresence } from '../ui'
-import { SettingsSection } from '../settings/SettingsPrimitives'
+import { SettingsSection, SettingsPresence } from '../settings/SettingsPrimitives'
 import { LoaderCircle, TriangleAlert, X } from 'lucide-react'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
@@ -32,7 +32,7 @@ function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false
   const content = <>
     <span className="uam-limit-row__name break-words">{label}</span>
     <span className="uam-limit-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
-    {reset && <Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip>}
+    <SettingsPresence open={!!(reset)}><Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip></SettingsPresence>
   </>
   return valid
     ? <ProgressFill label={meterLabel} value={percent} className="uam-set-row uam-limit-row">{content}</ProgressFill>
@@ -133,12 +133,12 @@ function UsageHostLimits({ executionHostId, now: clock }: { executionHostId: str
   return <div className="grid gap-4">
     <div className="flex items-start justify-between gap-4">
       <div className="grid gap-2 min-w-0">
-        {lede}
+        <SettingsPresence open={!!lede}>{lede}</SettingsPresence>
         <p className="uam-limits-group">{executionHostId === 'local' ? 'Account allowances · read on this computer' : 'Not available for remote computers.'}</p>
       </div>
-      {executionHostId === 'local' && <Button size="sm" variant="secondary" onClick={account.refresh} disabled={account.coolingDown} loading={account.refreshing || account.requestingRefresh}>Refresh allowances</Button>}
+      <SettingsPresence open={executionHostId === 'local'}><Button size="sm" variant="secondary" onClick={account.refresh} disabled={account.coolingDown} loading={account.refreshing || account.requestingRefresh}>Refresh allowances</Button></SettingsPresence>
     </div>
-    {executionHostId === 'local' && account.coolingDown && <p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly.</p>}
+    <SettingsPresence open={executionHostId === 'local' && account.coolingDown}><p className="text-xs uam-usage-muted">Updated moments ago; refresh available shortly.</p></SettingsPresence>
     {errorNote.mounted && <p role="status" data-state={errorNote.closing ? 'closed' : 'open'} className="flex items-start gap-1.5 text-xs uam-usage-presence" style={{ color: 'var(--warning)' }}><TriangleAlert size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}{account.data ? ' Showing the last snapshot.' : ''}</p>}
     <div className="grid">{providers.map(provider => <ProviderLimitCard key={provider} provider={provider} allowance={account.data?.providers.find(row => row.providerId === provider)} loading={account.loading} refreshFailed={Boolean(account.error)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
@@ -175,7 +175,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     {!loading && !hasAllowance && !allowance?.error && allowance?.status !== 'loading' && <p className="uam-set-row text-xs uam-usage-muted">Account allowances unavailable.</p>}
     {showWindowRows && <>
       {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
-      {modelWindows.length > 2 && <Disclosure className="uam-set-row uam-limits-tokens" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid">{rows.slice(2).map(renderRow)}</div></Disclosure>}
+      <SettingsPresence open={modelWindows.length > 2}><Disclosure className="uam-set-row uam-limits-tokens" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid">{rows.slice(2).map(renderRow)}</div></Disclosure></SettingsPresence>
       {limits?.individualLimit && <ProgressFill label={`${name} spend limit usage`} value={100 - limits.individualLimit.remainingPercent} className="uam-set-row uam-limit-row">
         <span className="uam-limit-row__name">Spend limit<small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small></span>
         <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
@@ -183,7 +183,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
       {limits?.credits && <p className="uam-set-row text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
       {limits?.spendControlReached && <p className="uam-set-row flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="shrink-0" aria-hidden />Spend limit reached.</p>}
     </>}
-    {!consumption && <p className="uam-set-row text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
+    <SettingsPresence open={!consumption}><p className="uam-set-row text-xs uam-usage-muted">Consumed tokens unavailable.</p></SettingsPresence>
     {(context || consumption) && <Disclosure className="uam-set-row uam-limits-tokens text-xs" summary={<><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</>}>
       <div className="grid gap-3">
         {context && <div className="grid gap-1.5">
@@ -211,8 +211,8 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
     title={name}
     className="uam-limits-section"
     actions={<>
-      {hasAllowance && plan && <Chip size="sm" tabIndex={-1} className="uam-limits-chip">{plan}</Chip>}
-      {hasAllowance && <Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip>}
+      <SettingsPresence open={!!(hasAllowance && plan)}><Chip size="sm" tabIndex={-1} className="uam-limits-chip">{plan}</Chip></SettingsPresence>
+      <SettingsPresence open={hasAllowance}><Tooltip label={timestampValid ? new Date(limits!.updatedAt).toLocaleString() : undefined}><span className="uam-limits-updated">{timestampValid ? `Updated ${relativeAgo(limits!.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span></Tooltip></SettingsPresence>
     </>}
   >{body}</SettingsSection>
 }

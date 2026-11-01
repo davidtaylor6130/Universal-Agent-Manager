@@ -4,7 +4,7 @@ import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/bui
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { Button, StatusDot, type StatusTone } from '../ui'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { SettingRow, SettingsSection, SettingsPresence } from './SettingsPrimitives'
 import './provider-settings.css'
 
 interface PermissionState {
@@ -71,7 +71,7 @@ export function PermissionsSettings() {
       {rows.map((row) => <SettingRow key={row.id} title={row.label} description={row.purpose}
         status={<span className="uam-prov-status" data-tone={toneFor(row.status)}><StatusDot tone={toneFor(row.status)}/>{row.status === 'allowed' ? <Check size={12} aria-hidden /> : row.status === 'denied' ? <X size={12} aria-hidden /> : null}{row.status ? labels[row.status] ?? 'Not checked' : busy ? 'Checking…' : 'Not checked'}</span>}
         control={<>
-          {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
+          <SettingsPresence open={row.status !== 'allowed'}><Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button></SettingsPresence>
           <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
         </>} />)}
       {MOBILE_COMPANION_ENABLED && <SettingRow title="Local network decision" description="Check the saved choice in System Settings." />}

@@ -4,7 +4,7 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { Button, Switch } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
-import { SettingRow } from './SettingsPrimitives'
+import { SettingRow, SettingsPresence } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
 type ComputerUseObservation = ComputerUseSettings & { revision?: number }
@@ -99,8 +99,8 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       {known && <Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}
         onChange={event => void change(event.currentTarget.checked, event.currentTarget)} />}
-      {(pending || !known) && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button>}
-      {!known && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button>}
+      <SettingsPresence open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></SettingsPresence>
+      <SettingsPresence open={!known}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button></SettingsPresence>
     </div>}>
   </SettingRow>
 }

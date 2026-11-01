@@ -8,7 +8,7 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PR
 import { Button, Disclosure, usePresence } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
-import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection, SettingsPresence } from './SettingsPrimitives'
 
 // Title rules ignore case, so case variants are one rule; folder rules keep case for POSIX paths.
 const ruleLines = (text: string, foldCase = false) => {
@@ -174,7 +174,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
             <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
             <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
-            {group.items.length > 0 && <Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure>}
+            <SettingsPresence open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></SettingsPresence>
           </li>
         })}</ul>
       </Disclosure>}

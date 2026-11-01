@@ -1,8 +1,9 @@
 import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Tooltip, cx } from '../ui'
+import { Button, Tooltip, cx, usePresence } from '../ui'
 import type { ButtonProps } from '../ui'
 import './settings-shell.css'
+import './settings-motion.css'
 
 /**
  * The one settings layout language, modelled on the MCP Servers page:
@@ -11,6 +12,18 @@ import './settings-shell.css'
  * control on the right; wide inputs use SettingsField instead. Descriptions are
  * one line: they truncate, and the full text is in the tooltip.
  */
+/**
+ * Mounts a conditional block with the settings enter/exit motion. While closing, the last
+ * content stays rendered so the exit animates; reduced motion and Motion Off unmount at once.
+ */
+export function SettingsPresence({ open, children, className }: { open: boolean; children: ReactNode; className?: string }) {
+  const { mounted, closing } = usePresence(open)
+  const lastChildren = useRef(children)
+  if (open) lastChildren.current = children
+  if (!mounted) return null
+  return <div className={cx('uam-settings-presence', className)} data-state={closing ? 'closed' : 'open'}>{open ? children : lastChildren.current}</div>
+}
+
 export function SettingsSection({ title, description, actions, children, flush = false, className }: {
   title: string
   description?: ReactNode
