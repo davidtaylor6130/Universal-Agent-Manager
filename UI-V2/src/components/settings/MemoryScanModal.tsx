@@ -69,7 +69,7 @@ export function MemoryScanModal() {
           <div className="uam-scan-toolbar">
             <div className="text-sm" style={{ color: 'var(--text-2)' }}>
               {memoryScanCandidates.length} eligible chat{memoryScanCandidates.length === 1 ? '' : 's'}
-              {memoryScanCandidates.length > 0 && <span style={{ color: 'var(--text-3)' }}> · {selectedMemoryScanChatIds.length} selected</span>}
+              <Reveal as="span" open={memoryScanCandidates.length > 0}><span style={{ color: 'var(--text-3)' }}> · {selectedMemoryScanChatIds.length} selected</span></Reveal>
             </div>
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="sm" onClick={selectAllMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>

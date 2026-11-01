@@ -146,7 +146,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
       <Reveal open={model.priceReference.speedFallback}><p>This speed uses the standard rate because a separate rate is unavailable.</p></Reveal>
     </div>}
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
-      <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
+      <input type="number" min="0" step="any" className="uam-field w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
     <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}</p></Reveal>
     <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button><Reveal as="span" open={!!existing}><Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button></Reveal></div>

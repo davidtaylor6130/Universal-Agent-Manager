@@ -604,7 +604,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 className="w-full bg-transparent py-2 text-sm text-[var(--text)] outline-none"
               />
               </label>
-              {!isAllMemory && <IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/>}
+              <Reveal as="span" open={!isAllMemory}><IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/></Reveal>
               <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}/>
               <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => setIsAdding(true)}/>
               <IconButton
@@ -762,7 +762,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
               memoryLibraryError ? null : <div className="grid justify-items-start gap-3">
                 <p className="text-sm" style={{ color: 'var(--text-3)' }}>{hasSearchQuery ? 'No memory matches this search.' : 'No memory saved here yet.'}</p>
-                {!hasSearchQuery && <Button variant="primary" size="sm" onClick={() => setIsAdding(true)}>Add memory</Button>}
+                <Reveal open={!hasSearchQuery}><Button variant="primary" size="sm" onClick={() => setIsAdding(true)}>Add memory</Button></Reveal>
               </div>
             ) : selectedLocation ? (
               <div key={selectedLocation.key} className="space-y-4">

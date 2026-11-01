@@ -232,7 +232,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
-      <Reveal open={instructionFiles.length === 0}><SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." /></Reveal>
+      <Reveal open={instructionFiles.length === 0}><p className="uam-prov-sub">No instruction files. Choose an AGENTS.md file to share.</p></Reveal>
       {instructionFiles.map(path => <Reveal key={path} open={!removingKeys.has(`instruction:${path}`)}><SettingRow icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
         control={<>

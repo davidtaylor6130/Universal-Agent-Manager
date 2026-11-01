@@ -316,18 +316,6 @@
 .uam-usage-skel-tile { height: 4.5rem; }
 .uam-usage-skel-chart { grid-column: 1 / -1; height: 15rem; }
 
-.uam-usage-price-input {
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  color: var(--text);
-}
-.uam-usage-price-input:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .uam-usage-col-stack,
   .uam-usage-stack > span,

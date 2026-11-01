@@ -32,7 +32,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (busy.current) return; if (dirty) setExit(() => next); else next() } }))
   const edit = (patch: Partial<typeof draft>) => { setDraft((current) => ({ ...current, ...patch })) }
   const base = sanitizeGitBaseBranch(draft.gitDefaultBaseBranch)
-  const validation = base === undefined ? 'Use a local branch name up to 255 UTF-8 bytes without control characters.' : ''
+  const validation = base === undefined ? 'Use a local branch name of up to 255 bytes, with no hidden characters.' : ''
   const validationNotice = usePresence(Boolean(validation))
   const shownValidation = useRef(validation)
   if (validation) shownValidation.current = validation

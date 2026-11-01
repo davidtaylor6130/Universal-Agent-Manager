@@ -656,7 +656,11 @@ export function AnimatedRows<T>({ items, keyOf, render }: { items: T[]; keyOf: (
       const previous = before.get(key)
       if (previous === undefined || !animate || typeof node.animate !== 'function') return
       const delta = previous - node.offsetTop
-      if (delta) node.animate([{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(180), easing: getComputedStyle(node).getPropertyValue('--ease').trim() || 'ease' })
+      const style = getComputedStyle(node)
+      // --dur-base is `calc(180ms * var(--motion-scale, 1))`; the first literal is the base, scaledMs applies the scale.
+      const base = /([\d.]+)(ms|s)\b/.exec(style.getPropertyValue('--dur-base'))
+      const durMs = base ? parseFloat(base[1]) * (base[2] === 's' ? 1000 : 1) : 180
+      if (delta) node.animate([{ transform: `translateY(${delta}px)` }, { transform: 'translateY(0)' }], { duration: scaledMs(durMs), easing: style.getPropertyValue('--ease').trim() || 'ease' })
     })
     tops.current = new Map([...nodes.current].map(([key, node]) => [key, node.offsetTop]))
   })
@@ -1664,7 +1668,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <SettingRow
           title="Connection"
           description={companionLoadError ? undefined : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
-          status={<span role="status" aria-live="polite" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
+          status={<span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <X size={13} aria-hidden /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
             <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
@@ -2586,9 +2590,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy}>{addHostSection}</ProgressFill>
           <SettingsSection title="Configured hosts">
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
-            {remoteHosts.map((host) => (
+            <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
               <SettingRow
-                key={host.id}
                 icon={<Server size={15} aria-hidden />}
                 title={host.label}
                 description={<span className="font-mono">{host.sshAlias}</span>}
@@ -2623,7 +2626,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   return <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate active={isRemoteHostBusy(host.id)}>{options}</ProgressFill>
                 })()}
               </SettingRow>
-            ))}
+            )} />
           </SettingsSection>
         </div>
       )
@@ -2704,7 +2707,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <Reveal open={Boolean(memoryLastStatus)}><SettingRow title="Last run" description={memoryLastStatus || undefined} /></Reveal>
 
             <Reveal open={hasWorkerLog}>
-              <Disclosure className="mt-3 text-xs" summary={<span style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</span>}>
+              <Disclosure className="mt-3 text-xs" summary={<span className="inline-flex items-center gap-1" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>{workerLogIsFailure && <X size={13} aria-hidden />}Last worker log</span>}>
                 <div style={{ color: 'var(--text-2)' }}>
                 <Reveal open={Boolean(memoryActivity.lastWorkerStatus)}><p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></Reveal>
                 <Reveal open={Boolean(workerLogMeta)}><p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p></Reveal>

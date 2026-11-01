@@ -327,7 +327,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const childTitle = editing ? (editing === 'new' ? 'Create skill' : 'Edit skill') : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'
   // The add, import and editor steps replace the library list inside this dialog; they never stack a second dialog.
   const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className={`uam-skills-step flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto py-4 outline-none${embedded ? '' : ' px-5'}`}>
-    {editing ? <>
+    <Swap swapKey={editing ? 'editor' : imports.length ? 'import' : 'add'}>{editing ? <>
       <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="flex justify-end"><SegmentedControl aria-label="Entry view" options={[{ value: 'edit', label: 'Edit' }, { value: 'preview', label: 'Preview' }]} value={showEditorPreview ? 'preview' : 'edit'} onChange={(value) => setShowEditorPreview(value === 'preview')} /></div>
         <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="uam-field text-sm" />
@@ -373,7 +373,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>
       </>}</Swap>
       {previewPresence.mounted && <p role="status" data-state={previewPresence.closing ? 'closed' : 'open'} className="uam-presence text-xs">Reading skills...</p>}
-    </>}
+    </>}</Swap>
   </div>
 
   const library = <div ref={libraryRef} className="flex-1 min-h-0 flex flex-col py-4">
