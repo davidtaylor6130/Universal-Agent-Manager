@@ -1580,6 +1580,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.observed_process_exit_code = -1;
 	session.remote_runner_protocol_version = 0;
 	session.pending_remote_input_receipt_id.clear();
+	session.pending_remote_delivery_input_ids.clear();
 	session.remote_consumed_stderr_cursor = 0;
 	session.assistant_replay_prefixes.clear();
 	session.load_history_replay_updates.clear();
@@ -3579,6 +3580,10 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 				chat.remote_prompt_delivery_id =
 				    uam::time::SteadyEpochNanosecondsTokenNow();
 			chat.remote_prompt_delivery_payload = SerializeStructuredMessage(session, msg);
+			session.pending_remote_delivery_input_ids.clear();
+			for (const std::size_t index : unsent_messages)
+				if (index < chat.messages.size() && chat.messages[index].native_input_id)
+					session.pending_remote_delivery_input_ids.push_back(*chat.messages[index].native_input_id);
 		}
 		if (session.cold_retry_binding || CanDeferRemotePromptAdmission(app, session, chat) || CanStageRemoteGoalPromptAdmission(app, session, chat))
 		{
@@ -3602,6 +3607,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			session.pending_remote_delivery_input_ids.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
 			session.last_error =
