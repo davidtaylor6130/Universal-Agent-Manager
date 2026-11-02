@@ -45,7 +45,7 @@ describe('UsageLimits allowance evidence', () => {
     vi.spyOn(Date, 'now').mockReturnValue(now)
     const view = await renderLimits(allowance(now / 1000 + 3600))
     try {
-      expect(view.host.textContent).toContain('resets in 1h 0m')
+      expect(view.host.querySelector('.uam-limit-row__reset')?.textContent).toBe('Resets in 1h')
       expect(view.host.textContent?.toLowerCase()).not.toContain('reset passed')
     } finally { view.close() }
   })
@@ -61,7 +61,7 @@ describe('UsageLimits allowance evidence', () => {
     limits.primary!.usedPercent = 0
     const known = await renderLimits(limits)
     try {
-      const meters = known.host.querySelectorAll('.uam-limit-details [role="meter"]')
+      const meters = known.host.querySelectorAll('.uam-limit-card [role="meter"]')
       expect(meters).toHaveLength(1)
       expect(meters[0].getAttribute('aria-label')).toBe('Codex primary usage')
       expect(meters[0].getAttribute('aria-valuenow')).toBe('0')
@@ -110,9 +110,8 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(requests).toContainEqual(expect.objectContaining({ action: 'getProviderAllowances', payload: expect.objectContaining({ executionHostId: 'local' }) }))
       expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
-      // One card, one row per provider: no per-provider sections or machine headings.
-      expect(host.querySelectorAll('.uam-set-card')).toHaveLength(1)
-      expect(host.querySelectorAll('.uam-limit-entry')).toHaveLength(6)
+      // One always-open card per provider and no machine headings.
+      expect(host.querySelectorAll('.uam-limit-card')).toHaveLength(6)
       expect(host.textContent).not.toContain('Latest provider snapshots from chats')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -184,10 +183,11 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="remote" />))
-      expect(host.querySelector('.uam-limits-lede')?.textContent).toContain('Allowances are read on this computer only.')
+      expect(host.querySelector('.uam-limits-lede__title')?.textContent).toBe('Allowances are read on this computer only')
       expect(host.textContent).not.toContain('Refresh allowances')
-      // The unsupported remote feed is explained once, not as a lone not-available line on every row.
-      expect(host.querySelector('[aria-label="Codex"] .uam-limit-summary')?.textContent).not.toContain('Not')
+      // The unsupported remote feed is explained once, not as a not-available reason in every card header or row.
+      expect(host.querySelector('[aria-label="Codex"] .uam-limit-card__head')?.textContent).not.toContain('Not')
+      expect(host.querySelector('[aria-label="Codex"] .uam-limit-row')?.textContent).toBe('AllowanceResets —??%Allowance unknown: read on this computer only')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
@@ -271,16 +271,20 @@ describe('UsageLimits independent account allowances', () => {
       const codex = host.querySelector('[aria-label="Codex"]')!
       // While reading, the unknown row is the same greyed row with an ellipsis, not a made-up window or a percentage.
       expect(codex.querySelectorAll('.uam-limit-row')).toHaveLength(1)
-      expect(codex.textContent).toContain('Allowance · Reading…')
-      expect(codex.textContent).toContain('…')
+      expect(codex.querySelector('.uam-limit-row')!.textContent).toBe('AllowanceReading……Reading Allowance')
+      expect(codex.querySelector<HTMLElement>('.uam-meter')!.dataset.indeterminate).toBe('true')
+      expect(codex.classList.contains('uam-limit-card--off')).toBe(false)
       expect(codex.textContent).not.toContain('??%')
       expect(codex.textContent).not.toContain('Primary window')
       await act(async () => pending.onSuccess(JSON.stringify(data)))
-      expect(codex.textContent).toContain('Account allowances are not supported')
-      expect(codex.textContent).toContain('??%')
-      expect(codex.textContent).not.toContain('Primary window')
-      expect(codex.textContent).not.toContain('Secondary window')
-      expect(codex.textContent).not.toContain('Reading')
+      // Once read and unreadable, the card joins the greyed group at the end.
+      const read = host.querySelector('[aria-label="Codex"]')!
+      expect(read.classList.contains('uam-limit-card--off')).toBe(true)
+      expect(read.textContent).toContain('Account allowances are not supported')
+      expect(read.textContent).toContain('??%')
+      expect(read.textContent).not.toContain('Primary window')
+      expect(read.textContent).not.toContain('Secondary window')
+      expect(read.textContent).not.toContain('Reading')
     } finally { act(() => root.unmount()) }
   })
 
@@ -295,12 +299,12 @@ describe('UsageLimits independent account allowances', () => {
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       const opencode = host.querySelector('[aria-label="OpenCode"]')!
-      const unsupported = Array.from(opencode.querySelectorAll('p')).find(p => p.textContent === 'Account allowance is not available from this provider connection.')!
-      expect(unsupported.className).toContain('uam-usage-muted')
-      expect(unsupported.className).not.toContain('uam-limits-notice')
+      expect(opencode.querySelector('.uam-limit-card__facts .uam-usage-muted')?.textContent).toBe('Account allowance is not available from this provider connection.')
+      expect(opencode.querySelector('.uam-limit-card__facts .uam-limits-notice')).toBeNull()
       expect(opencode.querySelectorAll('[role="meter"]')).toHaveLength(0)
-      const failed = Array.from(host.querySelector('[aria-label="Antigravity"]')!.querySelectorAll('p')).find(p => p.textContent === 'Could not read account allowance.')!
-      expect(failed.className).toContain('uam-limits-notice')
+      const failed = host.querySelector('[aria-label="Antigravity"] .uam-limit-card__facts .uam-limits-notice')!
+      expect(failed.textContent).toBe('Could not read account allowance.')
+      expect(failed.querySelector('.uam-status-dot--warning')).not.toBeNull()
     } finally { act(() => root.unmount()) }
   })
 
@@ -389,7 +393,7 @@ describe('UsageLimits observed native consumption', () => {
       expect(tokenDetails).not.toBeNull()
       const tokenToggle = tokenDetails!.querySelector('button')!
       expect(tokenToggle.getAttribute('aria-expanded')).toBe('false')
-      expect(tokenToggle.textContent).toContain('Latest chat context and tokens')
+      expect(tokenToggle.textContent).toBe('Context and tokens29')
       const facts = Object.fromEntries([...tokenDetails!.querySelectorAll('dt')].map(term => [term.textContent?.trim(), term.nextElementSibling?.textContent?.trim()]))
       expect(facts).toMatchObject({ Input: '25', Output: '4', 'Last turn': 'Unavailable' })
       expect(host.textContent).toContain('Account allowances unavailable.')
@@ -404,6 +408,8 @@ describe('UsageLimits observed native consumption', () => {
 describe('UsageLimits overview', () => {
   afterEach(() => { delete window.cefQuery; vi.useRealTimers(); vi.restoreAllMocks() })
   const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
+  const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
   const tokens = (providerId: UsageProviderId, totalTokens: number, available = true): UsageProvider => ({ ...EMPTY_USAGE_TOTALS, providerId, totalTokens, inputTokens: totalTokens, records: totalTokens ? 3 : 0, sessions: totalTokens ? 2 : 0, available, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })
   const usage = (providers: UsageProvider[]): LimitsUsage => ({ providers, loading: false, collecting: false, error: '', days: 7 })
   async function render(providers: ProviderAllowanceSnapshot['providers'], history?: LimitsUsage, host = 'local') {
@@ -414,6 +420,9 @@ describe('UsageLimits overview', () => {
     await act(async () => root.render(<UsageLimits executionHostId={host} usage={history} />))
     return { host: element, close: () => { act(() => root.unmount()); useAppStore.setState(previous, true) } }
   }
+  const card = (host: HTMLElement, name: string) => host.querySelector<HTMLElement>(`[aria-label="${name}"]`)!
+  const rowOf = (host: HTMLElement, name: string, label: string) => [...card(host, name).querySelectorAll<HTMLElement>('.uam-limit-row')].find(row => row.querySelector('.uam-limit-row__name')?.textContent === label)!
+  const tick = (element: HTMLElement) => element.querySelector<HTMLElement>('.uam-meter__marker')?.style.getPropertyValue('--marker')
 
   it('still shows each provider usefully when no allowance is readable (the seeded demo state)', async () => {
     const failed = 'The provider could not return account allowances; check its existing sign-in and CLI compatibility.'
@@ -427,35 +436,158 @@ describe('UsageLimits overview', () => {
       { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'error', limits: null, error: keychain },
     ], usage([tokens('codex-cli', 1_200_000), tokens('claude-cli', 340_000), tokens('gemini-cli', 0), tokens('opencode-cli', 5000), tokens('copilot-cli', 0, false), tokens('antigravity-cli', 800)]))
     try {
-      const lede = view.host.querySelector('.uam-limits-lede')!.textContent
-      expect(lede).toContain('No allowances to show.')
-      expect(lede).toContain('1.5M tokens used in the past 7 days.')
-      const summary = (name: string) => view.host.querySelector(`[aria-label="${name}"] .uam-limit-summary`)!.textContent
-      expect(summary('Codex')).toContain('1.2M tokens')
-      expect(summary('Codex')).toContain("Couldn't read")
-      expect(summary('Claude')).toContain('Not signed in')
-      expect(summary('Gemini')).toContain('No usage')
-      expect(summary('OpenCode')).toContain('Not offered by OpenCode')
-      expect(summary('Copilot')).toContain('No history')
-      expect(summary('Antigravity')).toContain('Not signed in')
-      // Every unreadable row is the greyed allowance row: ??% with no fill, and an accessible statement of why.
-      expect(summary('Codex')).toContain('??%')
-      expect(summary('Codex')).toContain('Allowance unknown: Couldn\'t read')
-      expect(summary('OpenCode')).toContain('Allowance unknown: Not offered by OpenCode')
-      expect(view.host.querySelectorAll('.uam-limit-summary .uam-status-dot')).toHaveLength(0)
-      expect(view.host.querySelectorAll('.uam-limit-summary .uam-limit-row__value')).toHaveLength(6)
-      expect(view.host.querySelectorAll('.uam-limit-summary .uam-limit-row__value')[0].textContent).toBe('??%')
-      // Short reasons on the row; every native message is kept whole in the row tooltip and details.
-      expect(summary('Codex')).not.toContain(failed)
-      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side > small')?.getAttribute('aria-hidden')).toBe('true')
-      expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain(failed)
-      expect(view.host.querySelector('[aria-label="Antigravity"]')!.textContent).toContain(keychain)
+      expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).toBe('No allowances to show')
+      expect(view.host.querySelector('.uam-limits-lede__aside')!.textContent).toBe('1.5Mtokens in the past 7 days')
+      // Every provider is unreadable: all six greyed cards share the two-up group, with no key and no meters.
+      expect(view.host.querySelectorAll('.uam-limits-off > .uam-limit-card--off')).toHaveLength(6)
+      expect(view.host.querySelector('.uam-limits-key')).toBeNull()
       expect(view.host.querySelectorAll('[role="meter"]')).toHaveLength(0)
+      const meta = (name: string) => card(view.host, name).querySelector('.uam-limit-card__meta')!.textContent
+      expect(meta('Codex')).toBe("1.2M tokensCouldn't read")
+      expect(meta('Claude')).toBe('340K tokensNot signed in')
+      expect(meta('Gemini')).toBe('No usageNot signed in')
+      expect(meta('OpenCode')).toBe('5K tokensNot offered by OpenCode')
+      expect(meta('Copilot')).toBe("No historyCouldn't read")
+      expect(meta('Antigravity')).toBe('800 tokensNot signed in')
+      // Each card keeps the greyed allowance row and names the reason once, in its header; the row says the reset is unknown.
+      expect(rowOf(view.host, 'Codex', 'Allowance').textContent).toBe("AllowanceResets —??%Allowance unknown: Couldn't read")
+      expect(rowOf(view.host, 'OpenCode', 'Allowance').textContent).toContain('Allowance unknown: Not offered by OpenCode')
+      // The full native message is the card's help line; only failed reads carry the warning mark.
+      expect(card(view.host, 'Codex').querySelector('.uam-limit-card__facts')!.textContent).toBe(failed)
+      expect(card(view.host, 'Antigravity').querySelector('.uam-limit-card__facts')!.textContent).toBe(keychain)
+      expect(view.host.querySelectorAll('.uam-limit-card__facts .uam-status-dot--warning')).toHaveLength(5)
       expect(view.host.textContent).not.toContain('This computer')
     } finally { view.close() }
   })
 
-  it('leads with the highest use when every window has room, and keeps every window as its own meter', async () => {
+  it('renders the approved mockup: callout ordering, ahead, on pace and plenty left, 95%, weekly notches, run-out carets, per model, spend, credits and greyed cards', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const sec = now / 1000, minute = 60_000, hour = 3_600_000, day = 86_400_000
+    const base = allowance(sec)
+    const view = await render([
+      // Codex: a 5-hour window 60% through at 38% (plenty left) and a weekly window 2 of 7 days in at 60% (ahead).
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...base, planType: 'plus', credits: { hasCredits: false, unlimited: false, balance: null },
+        primary: { usedPercent: 38, resetsAt: sec + 2 * 3600, windowDurationMinutes: 300 }, secondary: { usedPercent: 60, resetsAt: sec + 5 * 86400, windowDurationMinutes: 10080 } } },
+      // Claude: a 5-hour window with 47 minutes left at 96% (ahead and past 95%); its weekly window 5 of 7 days in at 40%.
+      { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', error: '', limits: { ...base, planType: 'max 5x',
+        primary: { usedPercent: 96, resetsAt: sec + 47 * 60, windowDurationMinutes: 300 }, secondary: { usedPercent: 40, resetsAt: sec + 2 * 86400, windowDurationMinutes: 10080 } } },
+      // Gemini: four daily model buckets; Pro 15 of 24 hours in at 85% is ahead.
+      { providerId: 'gemini-cli', scope: 'local:gemini', status: 'ready', error: '', limits: null, windows: [
+        { id: 'pro', label: 'Pro daily', usedPercent: 85, resetsAt: sec + 9 * 3600, windowDurationMinutes: 1440 },
+        { id: 'flash', label: 'Flash daily', usedPercent: 20, resetsAt: sec + 9 * 3600, windowDurationMinutes: 1440 },
+        { id: 'lite', label: 'Lite requests', usedPercent: 85, resetsAt: null, windowDurationMinutes: null },
+        { id: 'image', label: 'Image requests', usedPercent: 0, resetsAt: null, windowDurationMinutes: null },
+      ] },
+      { providerId: 'opencode-cli', scope: 'local:opencode', status: 'unavailable', limits: null, error: 'Account allowance is not available from this provider connection.' },
+      // Copilot: premium requests 18 of 30 days in at 57% (on pace), and a spend limit.
+      { providerId: 'copilot-cli', scope: 'local:copilot', status: 'ready', error: '', primaryLabel: 'Premium requests', limits: { ...base, planType: 'pro', individualLimit: { used: '$2.40', limit: '$10.00', remainingPercent: 76, resetsAt: 0 },
+        primary: { usedPercent: 57, resetsAt: sec + 12 * 86400, windowDurationMinutes: 43200 }, secondary: null } },
+      { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'error', limits: null, error: 'No existing Antigravity login is available.' },
+    ], usage([tokens('codex-cli', 2_100_000), tokens('claude-cli', 1_900_000), tokens('gemini-cli', 1_900_000), tokens('opencode-cli', 1_600_000), tokens('copilot-cli', 2_300_000), tokens('antigravity-cli', 0)]))
+    try {
+      const claudeOut = now - 253 * minute + 253 * minute * 100 / 96
+      const geminiOut = now - 15 * hour + 15 * hour * 100 / 85
+      const codexOut = now - 2 * day + 2 * day * 100 / 60
+
+      // Callout: the soonest projected run-out first, then the next two in order, with the period token total aside.
+      const lede = view.host.querySelector<HTMLElement>('.uam-limits-lede')!
+      expect(lede.dataset.tone).toBe('error')
+      expect(lede.querySelector('.uam-limits-lede__title')!.textContent).toBe('Claude runs out first')
+      expect(lede.querySelector('.uam-limits-lede__body')!.textContent).toBe('Its 5-hour window is at 96% and will run out in ~11m, 36m before it resets in 47m.')
+      expect([...lede.querySelectorAll('.uam-limits-lede__more li')].map(li => li.textContent)).toEqual([
+        'Gemini · Pro daily runs out in ~2h 39m, 6h 21m before it resets in 9h',
+        `Codex · Weekly runs out ~${dayTime.format(codexOut)}, 4d before it resets ${dayTime.format(now + 5 * day)}`,
+      ])
+      expect(lede.querySelector('.uam-limits-lede__aside')!.textContent).toBe('9.8Mtokens in the past 7 days')
+
+      // Section label with Refresh, then the key.
+      expect(view.host.querySelector('.uam-limits-group')!.textContent).toBe('Allowances · read on this computerUpdated just nowRefresh allowances')
+      expect(view.host.querySelector('.uam-limits-key')!.textContent).toBe('UsedTime passed in the windowProjected run-out')
+
+      // Fixed provider order for readable cards; unreadable cards last, two-up; a disabled provider would be absent.
+      const cards = [...view.host.querySelectorAll<HTMLElement>('.uam-limits-cards .uam-limit-card')].map(element => element.getAttribute('aria-label'))
+      expect(cards).toEqual(['Codex', 'Claude', 'Gemini', 'Copilot', 'OpenCode', 'Antigravity'])
+      expect([...view.host.querySelectorAll('.uam-limits-off > .uam-limit-card--off')].map(element => element.getAttribute('aria-label'))).toEqual(['OpenCode', 'Antigravity'])
+
+      // Codex header: plan chip, tokens and freshness. Rows: plenty left, then weekly ahead with notches and a caret.
+      expect(card(view.host, 'Codex').querySelector('.uam-limit-card__head')!.textContent).toBe('Codexplus2.1M tokensUpdated just now')
+      const codexFive = rowOf(view.host, 'Codex', '5-hour')
+      expect(codexFive.textContent).toBe('5-hourResets in 2h38% usedPlenty left')
+      expect(Number(tick(codexFive))).toBeCloseTo(0.6)
+      expect(codexFive.querySelector('.uam-meter__segments')).toBeNull()
+      expect(codexFive.querySelector('.uam-meter__projection')).toBeNull()
+      const codexWeek = rowOf(view.host, 'Codex', 'Weekly')
+      const weekMeter = codexWeek.querySelector<HTMLElement>('[role="meter"]')!
+      expect(weekMeter.getAttribute('aria-label')).toBe('Codex secondary usage')
+      expect(weekMeter.dataset.tone).toBe('warning')
+      expect(weekMeter.classList.contains('uam-meter--lg')).toBe(true)
+      expect(Number(tick(codexWeek))).toBeCloseTo(2 / 7)
+      expect(weekMeter.querySelector<HTMLElement>('.uam-meter__segments')!.style.getPropertyValue('--segments')).toBe('7')
+      expect(weekMeter.getAttribute('aria-valuetext')).toBe(`60% used · 29% of the window has passed · Ahead of pace · runs out ~${dayTime.format(codexOut)} · resets ${dayTime.format(now + 5 * day)}`)
+      const weekCaret = weekMeter.querySelector<HTMLElement>('.uam-meter__projection')!
+      expect(weekCaret.textContent).toBe(`~${dayTime.format(codexOut)} · 4d before reset`)
+      expect(Number(weekCaret.style.getPropertyValue('--at'))).toBeCloseTo(2 / 7 * 100 / 60)
+      expect(weekCaret.dataset.flip).toBeUndefined()
+      expect(weekCaret.dataset.tone).toBe('warning')
+      expect(codexWeek.querySelector('.uam-limit-row__bar')!.classList.contains('is-projected')).toBe(true)
+      expect(codexWeek.querySelector('.uam-limit-row__value')!.textContent).toBe(`60% usedAhead · runs out ~${weekday.format(codexOut)}`)
+      expect(codexWeek.querySelector<HTMLElement>('.uam-limit-row__pct')!.style.color).toBe('var(--warning-text)')
+      expect(card(view.host, 'Codex').querySelector('.uam-limit-card__facts')!.textContent).toBe('Credits: None')
+
+      // Claude: at 96% the bar, percent and caret take the error tone; the caret label flips left late in the track.
+      const claudeFive = rowOf(view.host, 'Claude', '5-hour')
+      expect(claudeFive.querySelector<HTMLElement>('[role="meter"]')!.dataset.tone).toBe('error')
+      expect(claudeFive.querySelector<HTMLElement>('.uam-limit-row__pct')!.style.color).toBe('var(--error-text)')
+      expect(claudeFive.querySelector('.uam-limit-row__value')!.textContent).toBe('96% usedAhead · runs out in ~11m')
+      const claudeCaret = claudeFive.querySelector<HTMLElement>('.uam-meter__projection')!
+      expect(claudeCaret.textContent).toBe(`~${clock.format(claudeOut)} · 36m before reset`)
+      expect(claudeCaret.dataset.flip).toBe('true')
+      expect(claudeCaret.dataset.tone).toBe('error')
+      const claudeWeek = rowOf(view.host, 'Claude', 'Weekly')
+      expect(claudeWeek.textContent).toBe(`WeeklyResets ${dayTime.format(now + 2 * day)}40% usedPlenty left`)
+      expect(claudeWeek.querySelectorAll('.uam-meter__segments')).toHaveLength(1)
+      expect(claudeWeek.querySelector<HTMLElement>('[role="meter"]')!.dataset.tone).toBeUndefined()
+      expect(card(view.host, 'Claude').querySelector('.uam-limits-chip')!.textContent).toBe('max 5x')
+
+      // Gemini: the first two model buckets show, the rest wait behind the disclosure.
+      const gemini = card(view.host, 'Gemini')
+      const pro = rowOf(view.host, 'Gemini', 'Pro daily')
+      expect(Number(tick(pro))).toBeCloseTo(15 / 24)
+      expect(pro.querySelector('.uam-meter__segments')).toBeNull()
+      expect(pro.querySelector('.uam-meter__projection')!.textContent).toBe(`~${clock.format(geminiOut)} · 6h 21m before reset`)
+      expect(rowOf(view.host, 'Gemini', 'Flash daily').textContent).toBe('Flash dailyResets in 9h20% usedPlenty left')
+      const more = gemini.querySelector('.uam-limits-more')!
+      const moreToggle = more.querySelector('button')!
+      expect(moreToggle.textContent).toBe('2 more model allowances')
+      expect(moreToggle.getAttribute('aria-expanded')).toBe('false')
+      act(() => moreToggle.click())
+      expect(moreToggle.getAttribute('aria-expanded')).toBe('true')
+      // With no pace to judge by, 85% still reaches the warning tone from the 80% threshold; no tick and no verdict.
+      const lite = rowOf(view.host, 'Gemini', 'Lite requests')
+      expect(lite.textContent).toBe('Lite requestsReset time unavailable85% used')
+      expect(lite.querySelector<HTMLElement>('[role="meter"]')!.dataset.tone).toBe('warning')
+      expect(tick(lite)).toBeUndefined()
+      expect(rowOf(view.host, 'Gemini', 'Image requests').textContent).toContain('0% used')
+
+      // Copilot: on pace (57% with 60% passed), and a spend-limit bar with no tick.
+      expect(rowOf(view.host, 'Copilot', 'Premium requests').textContent).toBe(`Premium requestsResets ${dayTime.format(now + 12 * day)}57% usedOn pace`)
+      const spend = rowOf(view.host, 'Copilot', 'Spend limit')
+      expect(spend.textContent).toBe('Spend limit$2.40 of $10.0024% used')
+      expect(spend.querySelector('[role="meter"]')!.getAttribute('aria-label')).toBe('Copilot spend limit usage')
+      expect(tick(spend)).toBeUndefined()
+
+      // Greyed cards: no plan or freshness, the reason in the header, the same row empty with ??%, the native message as help.
+      const opencode = card(view.host, 'OpenCode')
+      expect(opencode.querySelector('.uam-limit-card__head')!.textContent).toBe('OpenCode1.6M tokensNot offered by OpenCode')
+      expect(opencode.querySelector('.uam-limit-row')!.textContent).toBe('AllowanceResets —??%Allowance unknown: Not offered by OpenCode')
+      expect(opencode.querySelector('[role="meter"]')).toBeNull()
+      expect(opencode.querySelector<HTMLElement>('.uam-meter')!.dataset.indeterminate).toBeUndefined()
+      expect(opencode.querySelector('.uam-limit-card__facts')!.textContent).toBe('Account allowance is not available from this provider connection.')
+      expect(card(view.host, 'Antigravity').querySelector('.uam-limit-card__meta')!.textContent).toBe('No usageNot signed in')
+    } finally { view.close() }
+  })
+
+  it('keeps a calm callout with no list when every window has room', async () => {
     vi.useFakeTimers(); vi.setSystemTime(now)
     const limits = (primary: number, secondary: number): AcpRateLimits => ({ ...allowance(now / 1000 + 7200), planType: 'plus', primary: { usedPercent: primary, resetsAt: now / 1000 + 7200, windowDurationMinutes: 300 }, secondary: { usedPercent: secondary, resetsAt: now / 1000 + 3 * 86400, windowDurationMinutes: 10080 } })
     const view = await render([
@@ -463,89 +595,12 @@ describe('UsageLimits overview', () => {
       { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', limits: limits(12, 40), error: '' },
     ], usage([tokens('codex-cli', 2_000_000), tokens('claude-cli', 10_000)]))
     try {
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe(`Allowances have room. Highest is Codex at 50% of its weekly window, resets ${dayTime.format(now + 3 * 86400000)}. 2M tokens used in the past 7 days.`)
-      const codex = view.host.querySelector<HTMLElement>('[aria-label="Codex"]')!
-      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('plus')
-      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('Weekly window · plenty left')
-      expect(codex.querySelectorAll('.uam-limit-details [role="meter"]')).toHaveLength(2)
-      // The compact bar sits inside the row's button, so it is decorative there; the expanded meters carry the values.
-      expect(codex.querySelector('.uam-limit-summary .uam-limit-bar')!.getAttribute('aria-hidden')).toBe('true')
-    } finally { view.close() }
-  })
-
-  it('shows pace on every window with mock allowances: ahead, behind, near the limit, unknown length, per model, unreadable and reading', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(now)
-    const sec = now / 1000, hour = 3_600_000, day = 86_400_000
-    const base = allowance(sec)
-    const view = await render([
-      // Weekly window 3 of 7 days in at 70% used: ahead, runs out in about 31 hours, four days before its reset.
-      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...base, planType: 'plus', primary: { usedPercent: 10, resetsAt: sec + 4 * 3600, windowDurationMinutes: 300 }, secondary: { usedPercent: 70, resetsAt: sec + 4 * 86400, windowDurationMinutes: 10080 } } },
-      // 5-hour window 90% through at 97% used: nearly out; weekly window well under pace.
-      { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', error: '', limits: { ...base, primary: { usedPercent: 97, resetsAt: sec + 1800, windowDurationMinutes: 300 }, secondary: { usedPercent: 20, resetsAt: sec + 2 * 86400, windowDurationMinutes: 10080 } } },
-      // Per-model windows: one daily window on pace, one with no window length, one with neither length nor reset.
-      { providerId: 'gemini-cli', scope: 'local:gemini', status: 'ready', error: '', limits: null, windows: [
-        { id: 'pro', label: 'Pro requests', usedPercent: 50, resetsAt: sec + 12 * 3600, windowDurationMinutes: 1440 },
-        { id: 'flash', label: 'Flash requests', usedPercent: 30, resetsAt: sec + 3 * 3600, windowDurationMinutes: null },
-        { id: 'lite', label: 'Lite requests', usedPercent: 85, resetsAt: null, windowDurationMinutes: null },
-      ] },
-      // Monthly allowance with no reported length: a bar and reset, but no tick and no verdict.
-      { providerId: 'copilot-cli', scope: 'local:copilot', status: 'ready', error: '', primaryLabel: 'Chat allowance', limits: { ...base, primary: { usedPercent: 40, resetsAt: sec + 10 * 86400, windowDurationMinutes: null }, secondary: null } },
-      { providerId: 'opencode-cli', scope: 'local:opencode', status: 'unavailable', limits: null, error: 'Account allowance is not available from this provider connection.' },
-      { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'loading', limits: null, error: '' },
-    ])
-    try {
-      const row = (name: string) => view.host.querySelector<HTMLElement>(`[aria-label="${name}"]`)!
-      const summary = (name: string) => row(name).querySelector('.uam-limit-summary')!.textContent
-      const meter = (name: string, label: string) => row(name).querySelector<HTMLElement>(`.uam-limit-details [role="meter"][aria-label="${label}"]`)!
-      const tick = (element: HTMLElement) => element.querySelector<HTMLElement>('.uam-meter__marker')?.style.getPropertyValue('--marker')
-      const codexOut = now - 3 * day + 3 * day * 100 / 70
-
-      // The lede names the provider projected to run out first: Claude's 5-hour window, in about 8 minutes.
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Claude will run out in ~8m, before its 5 hour window resets in 30m.')
-
-      // Codex: the compact row prefers the weekly window that runs out before its reset over the emptier 5-hour one.
-      expect(summary('Codex')).toContain(`Weekly window · runs out ~${dayTime.format(codexOut)}70% used`)
-      const weekly = meter('Codex', 'Codex secondary usage')
-      expect(weekly.getAttribute('aria-valuenow')).toBe('70')
-      expect(weekly.dataset.tone).toBe('warning')
-      expect(Number(tick(weekly))).toBeCloseTo(3 / 7)
-      expect(weekly.getAttribute('aria-valuetext')).toBe(`70% used · 43% of the window has passed · Ahead of pace · runs out ~${dayTime.format(codexOut)} · resets ${dayTime.format(now + 4 * day)}`)
-      expect(row('Codex').querySelector('.uam-limit-details')!.textContent).toContain('Plenty left · resets in 4h 0m')
-      const fiveHour = meter('Codex', 'Codex primary usage')
-      expect(fiveHour.dataset.tone).toBeUndefined()
-      expect(Number(tick(fiveHour))).toBeCloseTo(0.2)
-
-      // Claude: at 97% the bar and percent turn to the error tone; the weekly window is calm.
-      const nearLimit = meter('Claude', 'Claude primary usage')
-      expect(nearLimit.dataset.tone).toBe('error')
-      expect(summary('Claude')).toContain('5 hour window · runs out in ~8m97% used')
-      expect(row('Claude').querySelector<HTMLElement>('.uam-limit-summary .uam-limit-row__value')!.style.color).toBe('var(--error)')
-      expect(row('Claude').querySelector('.uam-limit-details')!.textContent).toContain(`Plenty left · resets ${dayTime.format(now + 2 * day)}`)
-      expect(meter('Claude', 'Claude secondary usage').dataset.tone).toBeUndefined()
-
-      // Gemini model windows: a daily window on pace with a tick at half way; unknown lengths have no tick or verdict.
-      const pro = meter('Gemini', 'Gemini Pro requests usage')
-      expect(Number(tick(pro))).toBeCloseTo(0.5)
-      expect(row('Gemini').querySelector('.uam-limit-details')!.textContent).toContain('Pro requestsOn pace · resets in 12h 0m50% used')
-      expect(tick(meter('Gemini', 'Gemini Flash requests usage'))).toBeUndefined()
-      expect(row('Gemini').querySelector('.uam-limit-details')!.textContent).toContain('Flash requestsResets in 3h 0m30% used')
-      // With no pace to judge by, 85% still reaches the warning tone from the 80% threshold.
-      expect(summary('Gemini')).toContain('Lite requests · reset time unavailable85% used')
-      expect(meter('Gemini', 'Gemini Lite requests usage').dataset.tone).toBe('warning')
-      expect(tick(meter('Gemini', 'Gemini Lite requests usage'))).toBeUndefined()
-
-      // Copilot: a known reset but no window length, so a bar without a tick.
-      expect(tick(meter('Copilot', 'Copilot primary usage'))).toBeUndefined()
-      expect(summary('Copilot')).toContain(`Chat allowance · resets ${dayTime.format(now + 10 * day)}40% used`)
-
-      // OpenCode: the same bar greyed and empty, ??%, short reason, no meter role.
-      expect(summary('OpenCode')).toContain('Allowance · Not offered by OpenCode??%')
-      const empty = row('OpenCode').querySelector<HTMLElement>('.uam-limit-summary .uam-meter')!
-      expect(empty.hasAttribute('role')).toBe(false)
-      expect(empty.dataset.indeterminate).toBeUndefined()
-      // Antigravity is still reading: the empty bar sweeps and the percent is an ellipsis.
-      expect(summary('Antigravity')).toContain('Allowance · Reading……')
-      expect(row('Antigravity').querySelector<HTMLElement>('.uam-limit-summary .uam-meter')!.dataset.indeterminate).toBe('true')
+      const lede = view.host.querySelector<HTMLElement>('.uam-limits-lede')!
+      expect(lede.querySelector('.uam-limits-lede__title')!.textContent).toBe('Allowances have room')
+      expect(lede.querySelector('.uam-limits-lede__body')!.textContent).toBe(`Highest is Codex at 50% of its weekly window, resets ${dayTime.format(now + 3 * 86400000)}.`)
+      expect(lede.querySelector('.uam-limits-lede__more')).toBeNull()
+      expect(lede.dataset.tone).toBeUndefined()
+      expect(card(view.host, 'Codex').querySelectorAll('[role="meter"]')).toHaveLength(2)
     } finally { view.close() }
   })
 
@@ -553,33 +608,37 @@ describe('UsageLimits overview', () => {
     vi.useFakeTimers(); vi.setSystemTime(now)
     const view = await render([{ providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...allowance(now / 1000), primary: { usedPercent: 100, resetsAt: now / 1000 + 5400, windowDurationMinutes: 300 }, secondary: null } }])
     try {
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Codex is close to its limit. 100% of its 5 hour window used, resets in 1h 30m.')
-      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary')!.textContent).toContain('5 hour window · used up · resets in 1h 30m100% used')
-      expect(view.host.querySelector<HTMLElement>('[aria-label="Codex"] .uam-limit-details [role="meter"]')!.dataset.tone).toBe('error')
+      expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).toBe('Codex is used up')
+      expect(view.host.querySelector('.uam-limits-lede__body')!.textContent).toBe('100% of its 5-hour window used, resets in 1h 30m.')
+      const row = rowOf(view.host, 'Codex', '5-hour')
+      expect(row.textContent).toBe('5-hourResets in 1h 30m100% usedUsed up')
+      expect(row.querySelector<HTMLElement>('[role="meter"]')!.dataset.tone).toBe('error')
     } finally { view.close() }
   })
 
-  it('leaves a turned-off provider out of rows, summary and token totals', async () => {
+  it('leaves a turned-off provider out of cards, the callout and token totals', async () => {
     const previous = useAppStore.getState().providerAvailability
     useAppStore.setState({ providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }] })
     const view = await render([{ providerId: 'claude-cli', scope: 'local:claude', status: 'unavailable', limits: null, error: '' }], usage([tokens('codex-cli', 9_000_000), tokens('claude-cli', 1000)]))
     try {
       expect(view.host.querySelector('[aria-label="Codex"]')).toBeNull()
       expect(view.host.textContent).not.toContain('Codex')
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toContain('1K tokens used')
+      expect(view.host.querySelectorAll('.uam-limit-card')).toHaveLength(5)
+      expect(view.host.querySelector('.uam-limits-lede__aside')!.textContent).toBe('1Ktokens in the past 7 days')
     } finally { view.close(); useAppStore.setState({ providerAvailability: previous }) }
   })
 
-  it('names a remote computer once and shows its tokens without per-row not-available lines', async () => {
+  it('names a remote computer once and shows its tokens without per-card reasons', async () => {
     const previous = useAppStore.getState().executionHosts
     useAppStore.setState({ executionHosts: [{ id: 'lab', label: 'Lab PC' }] as typeof previous })
     const view = await render(['codex-cli', 'claude-cli'].map(providerId => ({ providerId: providerId as UsageProviderId, scope: 'remote', status: 'unavailable' as const, limits: null, error: 'Independent account allowances are not available on this remote connection.' })), usage([tokens('codex-cli', 4000)]), 'lab')
     try {
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Allowances are read on this computer only. 4K tokens used in the past 7 days on Lab PC.')
-      // The row is still the greyed allowance row, but the reason is not repeated per row; its accessible text says where it is read.
-      const side = view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side')!
-      expect(side.textContent).toBe('Allowance??%Allowance unknown: read on this computer only')
-      expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain('Independent account allowances are not available on this remote connection.')
+      expect(view.host.querySelector('.uam-limits-lede__title')!.textContent).toBe('Allowances are read on this computer only')
+      expect(view.host.querySelector('.uam-limits-lede__aside')!.textContent).toBe('4Ktokens in the past 7 days on Lab PC')
+      const codex = card(view.host, 'Codex')
+      expect(codex.querySelector('.uam-limit-card__meta')!.textContent).toBe('4K tokens')
+      expect(codex.querySelector('.uam-limit-row')!.textContent).toBe('AllowanceResets —??%Allowance unknown: read on this computer only')
+      expect(codex.querySelector('.uam-limit-card__facts')!.textContent).toBe('Independent account allowances are not available on this remote connection.')
     } finally { view.close(); useAppStore.setState({ executionHosts: previous }) }
   })
 
@@ -589,9 +648,9 @@ describe('UsageLimits overview', () => {
       { providerId: 'gemini-cli', scope: 'local:gemini', status: 'error', limits: null, error: 'Could not read account allowance.' },
     ], usage([tokens('copilot-cli', 0, true), tokens('gemini-cli', 0, true)]))
     try {
-      expect(view.host.querySelector('[aria-label="Copilot"] .uam-limit-summary')!.textContent).toContain('Chat allowance · Couldn\'t read??%')
-      const gemini = view.host.querySelector('[aria-label="Gemini"]')!
-      expect(gemini.querySelector('.uam-limit-summary')!.textContent).toContain('Allowance · Couldn\'t read??%')
+      expect(card(view.host, 'Copilot').querySelector('.uam-limit-row')!.textContent).toBe("Chat allowanceResets —??%Chat allowance unknown: Couldn't read")
+      const gemini = card(view.host, 'Gemini')
+      expect(gemini.querySelector('.uam-limit-row')!.textContent).toBe("AllowanceResets —??%Allowance unknown: Couldn't read")
       expect(gemini.textContent).not.toContain('Primary window')
     } finally { view.close() }
   })

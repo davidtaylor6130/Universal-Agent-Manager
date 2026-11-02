@@ -347,36 +347,88 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: a one-line summary above one Allowances card. Each provider is one Disclosure row ending in its most pressing
-   window's bar (the ProgressFill meter variant); expanded windows repeat that text, bar and percent. Bars and percents
-   have fixed widths at the right edge so they line up down the card. */
-.uam-limits-lede { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text-2); }
-.uam-limits-lede b { font-weight: 600; color: var(--text); }
-.uam-limit-summary { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.5rem, max-content) minmax(0, 34rem); align-items: center; gap: var(--sp-4); }
-.uam-limit-summary__identity { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; font-size: var(--fs-base); font-weight: 500; color: var(--text); }
-.uam-limit-summary__tokens { text-align: right; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-limit-summary__side { display: flex; justify-content: flex-end; align-items: center; gap: var(--sp-3); min-width: 0; white-space: nowrap; font-size: var(--fs-sm); }
-/* Details reuse the row-extra slot, so card dividers stop at the provider row; the slot supplies the top gap. */
-.uam-limit-details { display: grid; gap: var(--sp-2); padding: 0 0 var(--sp-3) var(--sp-5); font-size: var(--fs-xs); }
-.uam-limit-details p { margin: 0; }
-.uam-limit-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0 var(--sp-2) var(--sp-2); border-radius: var(--r-sm); }
-/* The context row still fills as a ProgressFill row, so its text keeps an inset from the fill's edge. */
-.uam-limit-row.uam-progress-fill { padding-inline-end: var(--sp-2); }
-.uam-limit-row__name { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
-.uam-limit-row__value { flex: none; min-width: 5.5rem; text-align: right; font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-limit-row__reset { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-limit-bar { flex: none; display: block; width: 8rem; }
-/* Unknown share: the same row with an empty bar, every piece of text in the tertiary colour. */
-.uam-limit-row--unknown :is(.uam-limit-row__name, .uam-limit-row__reset, .uam-limit-row__value) { color: var(--text-3); }
-.uam-limits-chip { flex: none; font-size: var(--fs-xs); font-weight: 400; padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-high); color: var(--text-2); text-transform: capitalize; }
+/* Limits: a callout naming the soonest run-out, the section label with refresh and a small key, then one always-open
+   card per provider. Each window row is name and reset | bar (the ProgressFill meter variant, lg) | percent and verdict;
+   the fixed side columns keep bars aligned down the page. Unreadable providers are greyed cards, two to a row. */
+.uam-limits { gap: var(--sp-5); }
+
+.uam-limits-lede { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); }
+.uam-limits-lede__icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); background: var(--surface-up); color: var(--text-2); }
+.uam-limits-lede[data-tone="warning"] .uam-limits-lede__icon { background: var(--warning-dim); color: var(--warning-text); }
+.uam-limits-lede[data-tone="error"] .uam-limits-lede__icon { background: var(--error-dim); color: var(--error-text); }
+.uam-limits-lede__title { margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.uam-limits-lede__body { margin: 2px 0 0; font-size: var(--fs-base); color: var(--text-2); }
+.uam-limits-lede__body b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+.uam-limits-lede__more { display: grid; gap: 6px; margin: var(--sp-3) 0 0; padding: var(--sp-3) 0 0; border-top: 1px solid var(--border); list-style: none; }
+.uam-limits-lede__more li { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); }
+.uam-limits-lede__more b { font-weight: 500; color: var(--text); }
+.uam-limits-lede__when { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--warning-text); }
+.uam-limits-lede__aside { margin: 0; text-align: right; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-3); }
+.uam-limits-lede__aside strong { display: block; font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+
+.uam-limits-group { display: flex; align-items: center; gap: var(--sp-3); }
+.uam-limits-group > h2 { flex: 1; margin: 0; font-weight: 400; }
 .uam-limits-updated { font-size: var(--fs-xs); color: var(--text-3); }
+/* The key reads as part of the section label above it. */
+.uam-limits-key { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); margin: calc(var(--sp-3) * -1) 0 0; padding: 0; list-style: none; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-limits-key li { display: inline-flex; align-items: center; gap: 6px; }
+.uam-limits-key b { width: 14px; height: 6px; border-radius: var(--r-full); background: var(--text-3); }
+.uam-limits-key i { width: 2px; height: 11px; border-radius: 1px; background: var(--text); }
+.uam-limits-key u { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 6px solid var(--warning); }
+
+.uam-limits-cards { display: grid; gap: var(--sp-3); }
+.uam-limits-off { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+@media (max-width: 760px) { .uam-limits-off { grid-template-columns: minmax(0, 1fr); } }
+
+.uam-limit-card.uam-card { padding: var(--sp-4) var(--sp-5) var(--sp-2); }
+.uam-limit-card__head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; padding-bottom: var(--sp-2); }
+.uam-limit-card__name { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.uam-limit-card__meta { display: flex; gap: var(--sp-3); margin-left: auto; white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
+.uam-limit-card__reason { display: inline-flex; align-items: center; gap: 5px; }
+.uam-limit-card__reason::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); opacity: 0.6; }
+.uam-limits-chip { flex: none; padding: 1px var(--sp-2); border-radius: var(--r-full); background: var(--surface-high); font-size: var(--fs-xs); font-weight: 500; color: var(--text-2); text-transform: capitalize; }
+
+/* Facts on the left, the context disclosure's toggle on the right; its panel opens full width below. */
+.uam-limit-card__foot { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--sp-4); margin-top: var(--sp-1); padding-top: var(--sp-1); border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--text-3); }
+.uam-limit-card__foot:not(:has(> *:not(:empty))) { display: none; }
+.uam-limit-card__facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-4); min-width: 0; padding: 6px 0; }
+.uam-limit-card__foot > .uam-disclosure { display: contents; }
+.uam-limit-card__foot .uam-disclosure__summary { width: auto; font-size: var(--fs-xs); }
+.uam-limit-card__foot .uam-disclosure__panel { grid-column: 1 / -1; }
+.uam-limits-tokens[data-open] .uam-disclosure__inner { padding: var(--sp-2) 0 var(--sp-3); }
+.uam-limits-tokens .uam-disclosure__label { gap: var(--sp-2); }
 .uam-limits-notice { color: var(--text-2); }
-.uam-limits-label { font-size: var(--fs-sm); color: var(--text-2); }
-.uam-limits-more .uam-disclosure__summary { padding-inline: var(--sp-2); font-size: var(--fs-xs); }
-.uam-limits-tokens { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
-.uam-limits-tokens .uam-disclosure__summary { font-size: var(--fs-sm); }
-.uam-limits-tokens .uam-disclosure__label { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); min-width: 0; }
-.uam-limits-tokens[data-open] .uam-disclosure__summary { margin-bottom: var(--sp-3); }
+.uam-limits-more .uam-disclosure__summary { font-size: var(--fs-xs); }
 .uam-limits-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--sp-4); margin: 0; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .uam-limits-facts dt { color: var(--text-3); }
 .uam-limits-facts dd { margin: 0; color: var(--text-2); }
+.uam-limit-context { display: flex; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-2); border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); }
+
+.uam-limit-row { display: grid; grid-template-columns: 10.5rem minmax(0, 1fr) 11rem; align-items: center; gap: var(--sp-5); padding: var(--sp-3) 0; border-top: 1px solid var(--border); }
+.uam-limit-card__head + .uam-limit-row { border-top: 0; }
+.uam-limit-row__label { display: grid; min-width: 0; }
+.uam-limit-row__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.uam-limit-row__reset { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
+.uam-limit-row__bar { position: relative; min-width: 0; padding: 6px 0; }
+/* Room for the run-out caret and its label under the bar, mostly taken from the row's own padding. */
+.uam-limit-row__bar.is-projected { padding-bottom: 20px; margin-bottom: -14px; }
+.uam-limit-bar { display: block; }
+.uam-limit-row__value { display: grid; justify-items: end; text-align: right; }
+.uam-limit-row__pct { font-size: var(--fs-lg); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap; }
+.uam-limit-row__pct small { font-size: var(--fs-xs); font-weight: 400; letter-spacing: 0; color: var(--text-3); }
+.uam-limit-verdict { display: inline-flex; align-items: center; gap: var(--sp-1); margin-top: 1px; white-space: nowrap; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
+.uam-limit-verdict svg { flex: none; }
+/* Unknown share: the same row with an empty, flatter bar and every piece of text in the tertiary colour. */
+.uam-limit-row--unknown :is(.uam-limit-row__name, .uam-limit-row__pct) { color: var(--text-3); }
+.uam-limit-row--unknown .uam-meter { background: var(--surface-up); }
+
+.uam-limit-card--off.uam-card { background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+.uam-limit-card--off .uam-limit-card__name { color: var(--text-2); }
+.uam-limit-card--off .uam-limit-card__logo { opacity: 0.55; filter: grayscale(1); }
+.uam-limits-off .uam-limit-row { grid-template-columns: 6rem minmax(0, 1fr) 3.5rem; gap: var(--sp-4); }
+
+/* Narrow windows: the bar takes its own line under the name and percent. */
+@media (max-width: 640px) {
+  .uam-limit-row { grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2) var(--sp-4); }
+  .uam-limit-row__bar { grid-column: 1 / -1; grid-row: 2; }
+}

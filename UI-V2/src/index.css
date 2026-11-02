@@ -44,6 +44,10 @@
   --warning-dim:      rgba(234, 179, 8, 0.14);
   --error:            var(--red);
   --error-dim:        rgba(239, 68, 68, 0.12);
+  /* Warning and error as text. Fills keep --warning and --error; text mixes toward --text so it reads on any surface
+     (light-theme yellow alone is about 1.9:1 on white). Defined once here, so every theme derives its own. */
+  --warning-text:     color-mix(in srgb, var(--warning) 55%, var(--text));
+  --error-text:       color-mix(in srgb, var(--error) 85%, var(--text));
   --info:             var(--blue);
   --info-dim:         var(--blue-dim);
 
@@ -2593,8 +2597,30 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
   background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-3) 45%, transparent), transparent);
   animation: uam-progress-sweep 1.4s ease-in-out infinite;
 }
+.uam-meter--lg { height: 10px; }
 .uam-meter__marker {
   position: absolute; top: -3px; bottom: -3px; left: calc(var(--marker, 0) * 100%); width: 2px; margin-left: -1px;
-  border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--surface); pointer-events: none;
+  border-radius: 1px; background: var(--text); box-shadow: 0 0 0 2px var(--surface); pointer-events: none;
 }
+.uam-meter--lg .uam-meter__marker { top: -5px; bottom: -5px; }
+/* Equal notches cut in the surface colour, over the fill, such as the 7 days of a weekly window. */
+.uam-meter__segments {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  --seg: calc(100% / var(--segments, 1));
+  background: repeating-linear-gradient(to right, transparent 0 calc(var(--seg) - 1px), var(--surface) calc(var(--seg) - 1px) calc(var(--seg) + 1px));
+}
+/* Projection: a caret under the track at --at, labelled; past about 60% the label sits to the caret's left. */
+.uam-meter__projection {
+  position: absolute; top: 100%; left: calc(var(--at, 0) * 100%); margin-top: var(--sp-1);
+  display: flex; align-items: center; gap: var(--sp-1); white-space: nowrap; pointer-events: none;
+  font-size: var(--fs-xs); line-height: 1; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--warning-text);
+}
+.uam-meter__projection::before {
+  content: ''; flex: none; width: 0; height: 0; margin-left: -4px;
+  border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 6px solid var(--warning);
+}
+.uam-meter__projection[data-flip] { flex-direction: row-reverse; transform: translateX(-100%); }
+.uam-meter__projection[data-flip]::before { margin: 0 -4px 0 0; }
+.uam-meter__projection[data-tone="error"] { color: var(--error-text); }
+.uam-meter__projection[data-tone="error"]::before { border-bottom-color: var(--error); }
 @keyframes uam-meter-grow { from { transform: scaleX(0); } }

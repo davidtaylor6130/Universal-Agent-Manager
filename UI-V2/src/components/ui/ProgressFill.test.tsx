@@ -52,4 +52,28 @@ describe('ProgressFill', () => {
     expect((host.querySelector('.uam-meter') as HTMLElement).dataset.indeterminate).toBe('true')
     act(() => root.unmount()); host.remove()
   })
+
+  it('meter variant: lg size, day segments and a labelled projection caret that flips left late in the track', () => {
+    const { host, root } = render(createElement(ProgressFill, { variant: 'meter', size: 'lg', label: 'Weekly', value: 70, marker: 30, segments: 7, projection: { at: 40, label: '~Thu · 4d before reset' }, valueText: '70% used' }))
+    const meter = host.querySelector('[role="meter"]') as HTMLElement
+    expect(meter.classList.contains('uam-meter--lg')).toBe(true)
+    expect((meter.querySelector('.uam-meter__segments') as HTMLElement).style.getPropertyValue('--segments')).toBe('7')
+    const caret = meter.querySelector('.uam-meter__projection') as HTMLElement
+    expect(caret.textContent).toBe('~Thu · 4d before reset')
+    expect(caret.getAttribute('aria-hidden')).toBe('true')
+    expect(caret.style.getPropertyValue('--at')).toBe('0.4')
+    expect(caret.dataset.tone).toBe('warning')
+    expect(caret.dataset.flip).toBeUndefined()
+    act(() => root.render(createElement(ProgressFill, { variant: 'meter', label: 'Weekly', value: 96, projection: { at: 120, label: 'soon', tone: 'error' } })))
+    const late = host.querySelector('.uam-meter__projection') as HTMLElement
+    expect(late.style.getPropertyValue('--at')).toBe('1')
+    expect(late.dataset.flip).toBe('true')
+    expect(late.dataset.tone).toBe('error')
+    expect(host.querySelector('.uam-meter__segments')).toBeNull()
+    expect(host.querySelector('.uam-meter--lg')).toBeNull()
+    // An unknown share keeps the empty track: no tick, notches or caret.
+    act(() => root.render(createElement(ProgressFill, { variant: 'meter', size: 'lg', label: 'Weekly', active: false, segments: 7, projection: { at: 40, label: 'x' } })))
+    expect(host.querySelector('.uam-meter--lg')?.children).toHaveLength(0)
+    act(() => root.unmount()); host.remove()
+  })
 })

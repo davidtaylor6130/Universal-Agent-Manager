@@ -538,7 +538,7 @@ describe('UsageLimits', () => {
       expect(requestedHosts).toEqual(['local'])
       expect(host.textContent).not.toContain('Mac')
       expect(host.textContent).not.toContain('Windows')
-      expect(host.querySelectorAll('.uam-set-card')).toHaveLength(1)
+      expect(host.querySelectorAll('[aria-label="Codex"]')).toHaveLength(1)
       expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
       expect(host.textContent).toContain('Refresh allowances')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
