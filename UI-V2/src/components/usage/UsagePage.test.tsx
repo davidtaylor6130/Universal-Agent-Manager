@@ -22,6 +22,10 @@ function storage() {
   vi.spyOn(window, 'localStorage', 'get').mockReturnValue({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) }, clear: () => values.clear(), length: 0, key: () => null })
 }
 
+// Cost and Tokens share one layout: a headline card, a chart card and one card per provider.
+const head = (host: HTMLElement) => host.querySelector('.uam-tokens-head')?.textContent
+const card = (host: HTMLElement, name: string) => host.querySelector<HTMLElement>(`[role="group"][aria-label="${name}"]`)
+const refreshButton = (host: HTMLElement) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Refresh usage')!
 const fact = (host: HTMLElement, label: string) => [...host.querySelectorAll('.uam-limits-facts dt')].find(dt => dt.textContent === label)?.nextElementSibling?.textContent
 
 describe('UsagePage', () => {
@@ -38,10 +42,9 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const tiles = host.querySelector('.uam-usage-tiles')!
-      expect(tiles.textContent).toContain('Known cost')
-      expect(tiles.textContent).toContain('Unpriced tokens7')
-      expect(tiles.textContent).toContain('Provider-reported')
+      expect(head(host)).toContain('Known cost')
+      expect(head(host)).toContain('Unpriced tokens7')
+      expect(head(host)).toContain('Provider-reported')
       expect(host.textContent).toContain('7 tokens have no known price and are excluded from costs.')
       expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(true)
     } finally { act(() => root.unmount()) }
@@ -171,9 +174,10 @@ describe('UsagePage', () => {
       expect(host.textContent).toContain('Unknown')
       expect(host.textContent).toContain('totals are incomplete')
       expect(host.textContent).toContain('1 invalid records')
-      expect(host.textContent).toContain('Reasoning(part of output)')
       const button = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text)!
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Codex test-model standard"]')!.click())
+      // On Cost the headline splits by provider; an inspected model keeps its token types.
+      expect(host.textContent).toContain('Reasoning(part of output)')
       act(() => button('Model prices').click())
       const form = host.querySelector<HTMLFormElement>('[aria-label="Prices for test-model"]')!
       const input = form.querySelector<HTMLInputElement>('input')!
@@ -185,7 +189,7 @@ describe('UsagePage', () => {
       expect(JSON.parse(values.get('uam-usage-prices-v1')!)[0]).toMatchObject({ inputPerMillion: 0, cachedInputPerMillion: null, outputPerMillion: null })
       expect(requests.at(-1)?.priceOverrides).toMatchObject([{ inputPerMillion: 0 }])
       modelCount = 201
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      await act(async () => refreshButton(host).click())
       expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(100)
       act(() => button('Show more models (101 remaining)').click())
       expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(200)
@@ -261,27 +265,31 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const row = (name: string) => Array.from(host.querySelectorAll('.uam-usage-providers tbody tr')).find(tr => tr.querySelector('th')?.textContent === name)?.textContent
+      const row = (name: string) => card(host, name)?.textContent
       expect(row('Codex')).toContain('$1.50Estimated')
+      expect(row('Codex')).toContain('43% of cost')
       expect(row('Claude')).toContain('$2.00Reported')
       expect(row('Gemini')).toBeUndefined()
       expect(host.textContent).toContain('No usage in this range: Gemini')
       expect(row('OpenCode')).toContain('Usage history unavailable')
-      expect(host.querySelectorAll('.uam-usage-providers tbody tr')).toHaveLength(USAGE_PROVIDERS.length - 1)
+      expect(host.querySelectorAll('.uam-limits-cards [role="group"]')).toHaveLength(USAGE_PROVIDERS.length - 1)
       const chip = (name: string) => host.querySelector(`[aria-label="Include ${name} usage"]`)?.textContent
       expect(chip('Gemini')).toBe('GeminiNo usage')
       expect(chip('OpenCode')).toBe('OpenCodeUnavailable')
       expect(host.querySelector('.uam-usage-chips')?.textContent).not.toContain('$0.00')
       expect(host.querySelector('[aria-label="Inspect Codex codex-cli-model standard"]')?.textContent).toContain('Estimated')
       expect(host.querySelector('[aria-label="Inspect Claude claude-cli-model standard"]')?.textContent).toContain('Reported')
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Reported + estimated$3.50')
+      expect(head(host)).toContain('Reported + estimated$3.50')
+      expect(head(host)).toContain('Provider-reported$2.00plus $1.50 estimated')
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Claude usage"]')!.click())
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Estimated cost$1.50')
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('not a bill')
+      expect(head(host)).toContain('Estimated cost$1.50')
+      expect(head(host)).toContain('not a bill')
+      expect(head(host)).not.toContain('Provider-reported')
       expect(row('Claude')).toBeUndefined()
-      expect(host.querySelector('.uam-usage-providers [data-basis="estimated"]')?.hasAttribute('data-estimate')).toBe(true)
-      expect(host.querySelector('.uam-usage-providers .uam-usage-basis')?.getAttribute('tabindex')).toBe('0')
-      expect(host.querySelector('.uam-usage-model-row .uam-usage-basis')?.hasAttribute('tabindex')).toBe(false)
+      expect(row('Codex')).toContain('100% of cost')
+      expect(card(host, 'Codex')?.querySelector('header [data-basis="estimated"]')?.hasAttribute('data-estimate')).toBe(true)
+      expect(card(host, 'Codex')?.querySelector('header .uam-usage-basis')?.getAttribute('tabindex')).toBe('0')
+      expect(host.querySelector('.uam-tokens-model__row .uam-usage-basis')?.hasAttribute('tabindex')).toBe(false)
     } finally { act(() => root.unmount()) }
   })
 
@@ -296,7 +304,7 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      expect(host.querySelector('.uam-usage-providers')).toBeNull()
+      expect(host.querySelector('.uam-limits-cards')).toBeNull()
       expect(host.textContent).toContain(`No usage in this range: ${Array.from(host.querySelectorAll('.uam-usage-chip-name'), name => name.textContent).join(', ')}`)
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Gemini usage"]')!.click())
       expect(host.textContent).not.toMatch(/No usage in this range: .*Gemini/)
@@ -315,7 +323,7 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const tiles = () => host.querySelector('.uam-usage-tiles')?.textContent
+      const tiles = () => head(host)
       expect(tiles()).toContain('CostPricing…Prices still loading')
       expect(tiles()).not.toContain('Unpriced tokens')
       expect(host.querySelector('[aria-label="Include Codex usage"]')?.textContent).toBe('CodexPricing…')
@@ -324,7 +332,7 @@ describe('UsagePage', () => {
       expect(host.textContent).toContain('Estimated cache savings: Pricing…')
       expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(false)
       collecting = false
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      await act(async () => refreshButton(host).click())
       expect(tiles()).toContain('CostUnknownNo known price')
       expect(tiles()).toContain('Unpriced tokens')
       expect(host.textContent).toContain('no prices are known')
@@ -344,9 +352,10 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('Unpriced tokens7Awaiting prices')
+      expect(head(host)).toContain('Unpriced tokens7Awaiting prices')
       expect(host.textContent).toContain('7 tokens are still awaiting prices.')
-      expect(host.querySelector('.uam-usage-providers [data-basis="partial"]')?.textContent).toContain('are still awaiting prices')
+      expect(card(host, 'Codex')?.querySelector('[data-basis="partial"]')?.textContent).toContain('are still awaiting prices')
+      expect(card(host, 'Codex')?.textContent).toContain('7 tokens are still awaiting prices')
       expect(host.textContent).not.toContain('no known price')
       expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(false)
     } finally { act(() => root.unmount()) }
@@ -365,12 +374,15 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const claude = host.querySelector('.uam-usage-providers [data-basis="partial"]')!
+      const claude = card(host, 'Claude')!.querySelector('[data-basis="partial"]')!
       expect(claude.textContent).toContain('Known cost')
       expect(claude.hasAttribute('data-estimate')).toBe(false)
       priced = false
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('CostUnknownNo known price')
+      await act(async () => refreshButton(host).click())
+      expect(head(host)).toContain('CostUnknownNo known price')
+      // Unpriced providers claim no share of cost: no chip, and never $0.00.
+      expect(card(host, 'Codex')?.querySelector('.uam-limits-chip')).toBeNull()
+      expect(host.querySelector('.uam-limits-cards')?.textContent).not.toContain('$0.00')
     } finally { act(() => root.unmount()) }
   })
 
@@ -386,17 +398,17 @@ describe('UsagePage', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
-      const row = (name: string) => Array.from(host.querySelectorAll('.uam-usage-providers tbody tr')).find(tr => tr.querySelector('th')?.textContent === name)?.textContent
+      const row = (name: string) => card(host, name)?.textContent
       expect(row('Gemini')).toContain('Still reading history')
       expect(row('Codex')).toContain('$1.50')
       expect(host.querySelector('[aria-label="Include Gemini usage"]')?.textContent).toBe('GeminiReading…')
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('so far')
+      expect(head(host)).toContain('so far')
       collecting = false
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      await act(async () => refreshButton(host).click())
       expect(row('Gemini')).toContain('Usage history incomplete')
       expect(host.querySelector('[aria-label="Include Gemini usage"]')?.textContent).toBe('GeminiIncomplete')
       expect(row('Gemini')).not.toContain('No usage')
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).not.toContain('so far')
+      expect(head(host)).not.toContain('so far')
     } finally { act(() => root.unmount()) }
   })
 
@@ -414,20 +426,20 @@ describe('UsagePage', () => {
       expect(held).toHaveLength(1)
       expect(host.querySelector('.uam-usage-skeleton')).toBeNull()
       expect(host.querySelector('[data-kept]')).toBeNull()
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$3.50')
-      expect(host.querySelector('header .uam-usage-progress')?.textContent).toMatch(/^Updating… Showing /)
+      expect(head(host)).toContain('$3.50')
+      expect(host.querySelector('.uam-tokens-group')?.textContent).toMatch(/Updating… Showing /)
       expect(host.querySelector('header [role="status"]')?.textContent).toBe('Updating usage')
-      const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!
+      const refresh = refreshButton(host)
       expect(refresh.disabled).toBe(false); expect(refresh.getAttribute('aria-busy')).toBe('true')
       await act(async () => held[0].onSuccess(basisHistory(JSON.parse(held[0].request).payload, 2)))
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$5.00')
-      expect(host.querySelector('header .uam-usage-progress')?.textContent).toBe('')
+      expect(head(host)).toContain('$5.00')
+      expect(host.querySelector('.uam-tokens-group')?.textContent).not.toContain('Updating…')
       expect(host.querySelector('header [role="status"]')?.textContent).toBe('Usage updated')
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      act(() => refreshButton(host).click())
       await act(async () => held.at(-1)!.onFailure(500, 'Machine is offline.'))
       expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/Machine is offline\. Showing figures from /)
       expect(host.querySelector('header [role="status"]')?.textContent).toBe('')
-      expect(host.querySelector('.uam-usage-tiles')?.textContent).toContain('$5.00')
+      expect(head(host)).toContain('$5.00')
       // A period never opened before keeps the previous answer in place (dimmed only after a noticeable wait).
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '30 days')!.click())
       expect(host.querySelector('[data-kept]')?.textContent).toContain('$5.00')
@@ -453,7 +465,7 @@ describe('UsagePage', () => {
   })
 })
 
-// Mockup states for the Tokens tab. Codex is estimated across two service tiers, Claude has a partly unpriced reported cost,
+// Mockup states for the Tokens and Cost tabs. Codex is estimated across two service tiers, Claude has a partly unpriced reported cost,
 // OpenCode has no known price, Gemini is the state under test, and Copilot and Antigravity were read with nothing in range.
 const DAY = 86400000
 const mix = (input: number, cache: number, write: number, output: number, reasoning: number, extra: Partial<UsageTotals> = {}): UsageTotals =>
@@ -472,12 +484,12 @@ function tokensHistory(payload: { executionHostId: string; startMs: number; endM
     suppressedForkRecords: providerId === 'codex-cli' && !empty ? 2 : 0 }))
   const day = (index: number, providerId: string, totals: UsageTotals) => ({ ...totals, startMs: day0 + index * DAY, providerId })
   const providerDays = empty ? [] : [
-    day(2, 'codex-cli', mix(240, 300, 0, 60, 6)), day(6, 'codex-cli', mix(160, 200, 0, 40, 4)),
+    day(2, 'codex-cli', mix(240, 300, 0, 60, 6, { estimatedCostTokens: 600, unpricedTokens: 0, estimatedCostUsd: 0.9 })), day(6, 'codex-cli', mix(160, 200, 0, 40, 4, { estimatedCostTokens: 400, unpricedTokens: 0, estimatedCostUsd: 0.6 })),
     day(2, 'claude-cli', rows['claude-cli']), day(5, 'opencode-cli', rows['opencode-cli']), ...(gemini === 'used' ? [day(4, 'gemini-cli', rows['gemini-cli'])] : []),
   ]
   const models = empty ? [] : [
-    { ...mix(320, 400, 0, 80, 8), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'standard' },
-    { ...mix(80, 100, 0, 20, 2), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'fast' },
+    { ...mix(320, 400, 0, 80, 8, { estimatedCostTokens: 800, unpricedTokens: 0, estimatedCostUsd: 1.2 }), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'standard' },
+    { ...mix(80, 100, 0, 20, 2, { estimatedCostTokens: 200, unpricedTokens: 0, estimatedCostUsd: 0.3 }), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'fast' },
     { ...rows['claude-cli'], providerId: 'claude-cli', modelId: 'claude-sonnet-4.5', speed: 'standard' },
     { ...rows['opencode-cli'], providerId: 'opencode-cli', modelId: 'kimi-k2', speed: 'standard' },
   ]
@@ -487,18 +499,117 @@ function tokensHistory(payload: { executionHostId: string; startMs: number; endM
     providers, models, days: [...new Set(providerDays.map(row => row.startMs))].map(startMs => ({ ...sumProviderUsage(providerDays.filter(row => row.startMs === startMs)), startMs })), hours: [], providerDays, providerHours: [] })
 }
 
-describe('UsagePage Tokens', () => {
-  async function openTokens(options: Parameters<typeof tokensHistory>[1] = {}) {
-    storage()
-    window.cefQuery = request => request.onSuccess(tokensHistory(JSON.parse(request.request).payload, options))
-    const host = document.createElement('div'), root = createRoot(host)
-    document.body.appendChild(host)
-    await act(async () => root.render(<UsagePage onClose={() => {}} />))
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Tokens')!.click())
-    return { host, done: () => { act(() => root.unmount()); host.remove() } }
-  }
-  const card = (host: HTMLElement, name: string) => host.querySelector<HTMLElement>(`[role="group"][aria-label="${name}"]`)
+const tab = (host: HTMLElement, name: string) => act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === name)!.click())
+async function openUsage(options: Parameters<typeof tokensHistory>[1] = {}, metric = 'Cost') {
+  storage()
+  window.cefQuery = request => request.onSuccess(tokensHistory(JSON.parse(request.request).payload, options))
+  const host = document.createElement('div'), root = createRoot(host)
+  document.body.appendChild(host)
+  await act(async () => root.render(<UsagePage onClose={() => {}} />))
+  if (metric !== 'Cost') tab(host, metric)
+  return { host, done: () => { act(() => root.unmount()); host.remove() } }
+}
+const columnLabels = (host: HTMLElement) => Array.from(host.querySelectorAll('.uam-tokens-plot .uam-usage-col'), column => column.getAttribute('aria-label') ?? '')
 
+describe('UsagePage Cost', () => {
+  it('uses the Tokens layout with cost figures, and switching metric swaps figures while the frame stays still', async () => {
+    const { host, done } = await openUsage()
+    try {
+      // Headline: basis-named total with sessions, reported charges, unpriced tokens and the busiest day by cost.
+      expect(head(host)).toContain('Known cost$3.60Provider charges and API list-price estimates · 7 sessions in the past 7 days')
+      expect(head(host)).toContain('Provider-reported$2.00plus $1.60 estimated')
+      expect(head(host)).toContain('Unpriced tokens300No known price')
+      expect(head(host)).toContain('Busiest day$2.90')
+      expect(head(host)).toContain('$0.50 a day on average')
+      // Prices are per model, not per token type, so the split bar is cost by provider; unpriced OpenCode has no segment or share.
+      expect(host.querySelector('.uam-tokens-mix [role="img"]')?.getAttribute('aria-label')).toBe('Codex $1.50, Claude $2.00, Gemini $0.10')
+      const legend = host.querySelector('.uam-tokens-mix .uam-usage-key')!.textContent
+      expect(legend).toContain('Codex$1.50 · 42%')
+      expect(legend).toContain('OpenCodeUnknown')
+      expect(legend).not.toContain('$0.00')
+      expect(host.querySelector('.uam-tokens-mix')?.textContent).toContain('Estimated cache savings: $0.00')
+      // Chart: the same card stacked by provider, on rounded $ ticks.
+      expect(host.querySelector('.uam-tokens-chart__head')?.textContent).toMatch(/^Daily costby provider/)
+      expect(host.querySelector('.uam-usage-axis')?.textContent).toBe('$4$2$0')
+      const columns = columnLabels(host)
+      expect(columns).toHaveLength(7)
+      expect(columns[2]).toMatch(/: \$2\.90\. Codex \$0\.90, Claude \$2\.00\. Input 440/)
+      expect(columns[5]).toMatch(/: Unknown\. OpenCode Unknown\./)
+      expect(columns[6]).toMatch(/\$0\.60.*So far$/)
+      expect(host.querySelectorAll('.uam-tokens-plot .uam-usage-col')[2].querySelectorAll('[data-seg="codex-cli"], [data-seg="claude-cli"]')).toHaveLength(2)
+      // Provider cards: share of cost, cost basis, models on one $ scale; the old Models/Time switch is gone.
+      expect(card(host, 'Codex')?.querySelector('.uam-limits-chip')?.textContent).toBe('42% of cost')
+      expect(card(host, 'Codex')?.textContent).toContain('$1.50Estimated')
+      expect(card(host, 'Codex')?.textContent).toContain('Estimated $1.50')
+      expect(card(host, 'Claude')?.querySelector('.uam-limits-chip')?.textContent).toBe('56% of cost')
+      expect(card(host, 'Claude')?.textContent).toContain('Reported $2.00')
+      expect(card(host, 'Claude')?.textContent).toContain('200 tokens have no known price and are excluded from its cost')
+      expect(card(host, 'OpenCode')?.querySelector('.uam-limits-chip')).toBeNull()
+      expect(card(host, 'OpenCode')?.textContent).toContain('Unknown')
+      expect(host.querySelector('.uam-limits-cards')?.textContent).not.toContain('$0.00')
+      const models = Array.from(card(host, 'Codex')!.querySelectorAll('.uam-tokens-model__row'), row => row.textContent)
+      expect(models[0]).toMatch(/^gpt-5-codex\$1\.2080%Estimated/)
+      expect(models[1]).toMatch(/^gpt-5-codexfast\$0\.3020%Estimated/)
+      expect(card(host, 'OpenCode')?.querySelector('.uam-tokens-model__value')?.textContent).toBe('Unknown')
+      expect(host.querySelector('[aria-label="Usage breakdown"]')).toBeNull()
+      // Daily table: the chart's equivalent in dollars, newest first.
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Daily table')!.click())
+      const rows = host.querySelectorAll('.uam-tokens-days tbody tr')
+      expect(rows[0].textContent).toMatch(/so far\$0\.60$/)
+      expect(rows[1].textContent).toMatch(/Unknown$/)
+      expect(rows[4].querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Codex $0.90, Claude $2.00')
+      // Model prices stay reachable from the model row.
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Claude claude-sonnet-4.5 standard"]')!.click())
+      expect(Array.from(card(host, 'Claude')!.querySelectorAll('button')).some(button => button.textContent === 'Model prices')).toBe(true)
+      // Same frame on Tokens: the cards stay mounted and only their figures change.
+      const frame = ['.uam-tokens-group', '.uam-tokens-head', '.uam-tokens-chart', '[role="group"][aria-label="Codex"]'].map(selector => host.querySelector(selector))
+      tab(host, 'Tokens')
+      expect(['.uam-tokens-group', '.uam-tokens-head', '.uam-tokens-chart', '[role="group"][aria-label="Codex"]'].map(selector => host.querySelector(selector))).toEqual(frame)
+      expect(head(host)).toContain('Total tokens1.8K')
+      expect(card(host, 'Codex')?.querySelector('.uam-limits-chip')?.textContent).toBe('57% of tokens')
+      tab(host, 'Cost')
+      expect(host.querySelector('.uam-tokens-head')).toBe(frame[1])
+      expect(head(host)).toContain('Known cost$3.60')
+    } finally { done() }
+  })
+
+  it('reads Pricing… while history is still read, with figures so far and progress in the History row', async () => {
+    const { host, done } = await openUsage({ gemini: 'reading', collecting: true })
+    try {
+      expect(head(host)).toContain('so far')
+      expect(card(host, 'OpenCode')?.textContent).toContain('Pricing…')
+      expect(host.querySelector('[aria-label="Include OpenCode usage"]')?.textContent).toBe('OpenCodePricing…')
+      expect(columnLabels(host)[5]).toContain('OpenCode Pricing…')
+      expect(card(host, 'Gemini')?.textContent).toBe('GeminiStill reading historyFigures appear as its history is read.')
+      expect(host.querySelector('.uam-tokens-group')?.textContent).toContain('Reading history · 412 of 1,030 files')
+      expect(host.textContent).not.toContain('no known price')
+    } finally { done() }
+  })
+
+  it('filters with chips, then says when the range is empty or every provider is filtered out', async () => {
+    const { host, done } = await openUsage()
+    try {
+      for (const name of ['Claude', 'OpenCode']) act(() => host.querySelector<HTMLButtonElement>(`[aria-label="Include ${name} usage"]`)!.click())
+      expect(head(host)).toContain('Estimated cost$1.60API list-price estimate, not a bill')
+      expect(card(host, 'Claude')).toBeNull()
+      expect(columnLabels(host).join('|')).not.toContain('Claude')
+      expect(card(host, 'Codex')?.querySelector('.uam-limits-chip')?.textContent).toBe('94% of cost')
+      for (const chip of host.querySelectorAll<HTMLButtonElement>('.uam-usage-chip[aria-pressed="true"]')) act(() => chip.click())
+      expect(host.textContent).toContain('All providers are filtered out.')
+      expect(host.querySelector('.uam-tokens-head')).toBeNull()
+    } finally { done() }
+    const empty = await openUsage({ empty: true })
+    try {
+      expect(empty.host.textContent).toContain('No usage recorded in this range.')
+      expect(empty.host.querySelector('.uam-tokens-head')).toBeNull()
+      expect(empty.host.querySelector('.uam-limits-cards')).toBeNull()
+      expect(empty.host.textContent).not.toContain('$0.00')
+    } finally { empty.done() }
+  })
+})
+
+describe('UsagePage Tokens', () => {
+  const openTokens = (options: Parameters<typeof tokensHistory>[1] = {}) => openUsage(options, 'Tokens')
   it('picks nice axis ticks with headroom over the peak', () => {
     expect(niceTicks(2_300_000)).toEqual([0, 1_000_000, 2_000_000, 3_000_000])
     expect(niceTicks(17)).toEqual([0, 10, 20, 30])
@@ -543,7 +654,7 @@ describe('UsagePage Tokens', () => {
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Claude claude-sonnet-4.5 standard"]')!.click())
       expect(card(host, 'Claude')?.textContent).toContain('4 usage records')
       expect(Array.from(card(host, 'Claude')!.querySelectorAll('button')).some(button => button.textContent === 'Model prices')).toBe(true)
-      // Refresh sits in the History row on Tokens; the header keeps it for Cost.
+      // Refresh sits in the History row on Cost and Tokens alike.
       expect(host.querySelector('header [aria-label="Refresh usage"]')).toBeNull()
       expect(host.querySelector('.uam-tokens-group')?.textContent).toContain('Refresh usage')
     } finally { done() }
