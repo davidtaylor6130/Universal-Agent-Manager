@@ -251,11 +251,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
   const PREFETCH_MAX_IN_FLIGHT = 2
   const PREFETCH_MAX_RETAINED = 4
-  const prefetchInFlight = new Map<string, { requestId: string; promise: Promise<void | false | AcceptedHistoryPage> }>()
+  type PrefetchEntry = { requestId: string; promise: Promise<void | false | AcceptedHistoryPage>; birth: number; digest?: string; count?: number; claimed: boolean }
+  const prefetchInFlight = new Map<string, PrefetchEntry>()
   const prefetchedIds: string[] = []
+  // Any other load or selection of the chat owns its history from then on; the prefetch must not evict or release it.
+  const claimPrefetch = (chatId: string) => {
+    const entry = prefetchInFlight.get(chatId)
+    if (entry) entry.claimed = true
+    const index = prefetchedIds.indexOf(chatId)
+    if (index >= 0) prefetchedIds.splice(index, 1)
+  }
 
-  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0): Promise<void | false | AcceptedHistoryPage> | undefined => {
+  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0, background = false): Promise<void | false | AcceptedHistoryPage> | undefined => {
     if (!isCefContext() || !chatId) return
+    if (!background) claimPrefetch(chatId)
     if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
     const historyStartAtRequestStart = current.historyStartIndexBySessionId[chatId] ?? 0
@@ -272,8 +281,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       historyStartAtRequestStart + (messagesAtRequestStart?.length ?? 0) > sessionAtRequestStart!.messageCount!)
     const requestKey = `getChatMessages:${chatId}`
     // An ordinary open joins a hover prefetch instead of superseding it and restarting the native read.
+    // It only joins while the chat's identity and saved summary still match the prefetch's, and keeps the read marker
+    // on the prefetch so the open shows loading (and any failure) rather than an unavailable state.
     const prefetch = prefetchInFlight.get(chatId)
-    if (prefetch && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId)) return prefetch.promise
+    if (prefetch && !background && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId) &&
+        prefetch.birth === chatBirthAtRequestStart && prefetch.digest === sessionAtRequestStart.messagesDigest && prefetch.count === sessionAtRequestStart.messageCount) {
+      set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId, [chatId]: { requestId: prefetch.requestId, birth: prefetch.birth } } }))
+      return prefetch.promise
+    }
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
@@ -299,6 +314,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         limit: 50,
         deferToolCallContent: true,
         ...(refreshNative ? { refreshNative: true } : {}),
+        ...(background ? { background: true } : {}),
         messagesDigest: requestedDigest,
       },
       requestId,
@@ -331,7 +347,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!response.ok || !response.data) {
         if (!response.ok && response.error === 'Chat history changed while loading. Retry to refresh it.' && mayReadColdHistoryOnce) {
           // A refusal contains no page to adopt. Share the presentation reread's single budget.
-          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
           if (fresh) return fresh
         }
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
@@ -365,7 +381,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             idleShutdownAtMs: bindingAtRequestStart.idleShutdownAtMs,
             diagnostics: bindingAtRequestStart.diagnostics })) {
         // Discard this page; presentation changes only permit one new read, never stale unsent adoption.
-        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
         if (fresh) return fresh
       }
       if (data.unchanged) {
@@ -572,7 +588,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => {
-      if (id && prefetchedIds.includes(id)) prefetchedIds.splice(prefetchedIds.indexOf(id), 1)
+      if (id) claimPrefetch(id)
       const selected = get().sessions.find(candidate => candidate.id === id)
       const parent = selected && subagentParentFor(selected, get().sessions)
       if (parent && id) {
@@ -777,20 +793,29 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     prefetchSessionMessages: (id: string) => {
       const state = get()
       const session = state.sessions.find((candidate) => candidate.id === id)
-      // Remote reads can start a provider history read, so only local chats are warmed.
+      const binding = state.acpBindingBySessionId[id]
+      // Remote reads can start a provider history read, and a chat with queued or running input can have its
+      // admissions settled by the read, so only idle local chats are warmed.
       if (!session || isCompanionContext() || (session.executionHostId || 'local') !== 'local' || id === state.activeSessionId ||
           state.messages[id] !== undefined || state.chatHistoryReadBySessionId[id] || state.chatHistoryErrorBySessionId[id] ||
+          binding?.processing || binding?.queueHeld || binding?.queuedPrompts?.length || state.cliBindingBySessionId[id]?.processing ||
           pendingRequestIdsByKey.has(`getChatMessages:${id}`) || prefetchInFlight.size >= PREFETCH_MAX_IN_FLIGHT) return
-      const promise = requestChatMessagesFromCef(id)
+      const promise = requestChatMessagesFromCef(id, false, false, 0, true)
       const requestId = pendingRequestIdsByKey.get(`getChatMessages:${id}`)
       if (!promise || !requestId) return
-      prefetchInFlight.set(id, { requestId, promise })
+      const entry: PrefetchEntry = { requestId, promise, birth: session.createdAt.getTime(), digest: session.messagesDigest, count: session.messageCount, claimed: false }
+      prefetchInFlight.set(id, entry)
       void promise.then(() => {
-        if (prefetchInFlight.get(id)?.promise === promise) prefetchInFlight.delete(id)
+        if (prefetchInFlight.get(id) === entry) prefetchInFlight.delete(id)
         const settled = get()
-        if (settled.messages[id] === undefined || settled.activeSessionId === id || prefetchedIds.includes(id)) return
+        if (entry.claimed || settled.activeSessionId === id || prefetchedIds.includes(id)) return
+        if (settled.messages[id] === undefined) {
+          // Nothing was adopted (superseded or failed), so drop the native copy the read may have loaded.
+          if (!pendingRequestIdsByKey.has(`getChatMessages:${id}`) && isCefContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
+          return
+        }
         prefetchedIds.push(id)
-        // Unopened warm pages are evicted oldest first; selecting a chat removes it from this list.
+        // Unopened warm pages are evicted oldest first; any other load or selection removes a chat from this list.
         while (prefetchedIds.length > PREFETCH_MAX_RETAINED) {
           const oldest = prefetchedIds.shift()!
           if (get().activeSessionId !== oldest) get().unloadSessionMessages(oldest)

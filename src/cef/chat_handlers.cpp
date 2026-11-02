@@ -360,6 +360,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	const std::string known_digest = payload.value("messagesDigest", "");
 	const bool defer_tool_call_content = payload.value("deferToolCallContent", false);
 	bool refresh_native = payload.value("refreshNative", false);
+	// Sidebar hover warm-ups yield to an explicit open: user-blocking work runs first on the shared file thread.
+	const CefThreadId history_read_thread = payload.value("background", false) ? TID_FILE_USER_VISIBLE : TID_FILE_USER_BLOCKING;
 	std::optional<std::pair<std::size_t, std::optional<std::size_t>>> page;
 	if (payload.contains("limit") || payload.contains("before"))
 	{
@@ -588,7 +590,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    catch (...) { dispose(); throw; }
 			    dispose();
-		    }, TID_FILE_USER_BLOCKING);
+		    }, history_read_thread);
 		return;
 	}
 

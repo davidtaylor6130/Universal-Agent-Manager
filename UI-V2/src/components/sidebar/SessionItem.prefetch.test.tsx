@@ -29,10 +29,14 @@ const reads = () => bridge.held.filter(({ envelope }) => envelope.action === 'ge
 const sent = (action: string) => bridge.send.mock.calls.filter(([envelope]) => (envelope as Envelope).action === action)
 const page = (chatId: string) => ({ chatId, messagesDigest: `digest-${chatId}`, startIndex: 0, totalCount: 1,
   messages: [{ role: 'user', content: `Saved row for ${chatId}`, createdAt: '2026-10-01T08:00:00Z' }] })
-const answer = async (index: number) => {
+const answer = async (index: number, error?: string) => {
   const { envelope, resolve } = reads()[index]
-  await act(async () => { resolve({ ok: true, requestId: envelope.requestId, data: page(String(envelope.payload?.chatId)) }); await Promise.resolve() })
+  await act(async () => {
+    resolve(error ? { ok: false, requestId: envelope.requestId, error } : { ok: true, requestId: envelope.requestId, data: page(String(envelope.payload?.chatId)) })
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve()
+  })
 }
+const flush = () => act(async () => { for (let tick = 0; tick < 5; tick += 1) await Promise.resolve() })
 const row = (id: string) => host.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!
 const pointer = (id: string, type: 'pointerover' | 'pointerout') => act(() => { row(id).dispatchEvent(new MouseEvent(type, { bubbles: true })) })
 const wait = (ms: number) => act(() => { vi.advanceTimersByTime(ms) })
@@ -69,7 +73,8 @@ it('starts one history read after the hover delay without selecting the chat or 
   expect(reads()).toHaveLength(0)
   wait(1)
   expect(reads()).toHaveLength(1)
-  expect(reads()[0].envelope.payload).toMatchObject({ chatId: 'hover-a', limit: 50 })
+  // The warm-up asks native to use the lower-priority read lane.
+  expect(reads()[0].envelope.payload).toMatchObject({ chatId: 'hover-a', limit: 50, background: true })
   wait(1000)
   expect(reads()).toHaveLength(1)
   await answer(0)
@@ -92,10 +97,12 @@ it('starts nothing when the pointer passes over a row quickly', () => {
   expect(reads()).toHaveLength(0)
 })
 
-it('starts nothing for a chat that is already loaded, already loading, selected or remote', () => {
-  render([chat('loaded'), chat('selected'), chat('remote', { executionHostId: 'ssh-host' })])
-  useAppStore.setState({ messages: { loaded: [] }, activeSessionId: 'selected' })
-  for (const id of ['loaded', 'selected', 'remote']) { pointer(id, 'pointerover'); wait(200); pointer(id, 'pointerout') }
+it('starts nothing for a chat that is already loaded, already loading, selected, errored, remote or has queued input', () => {
+  const skipped = ['loaded', 'selected', 'remote', 'errored', 'queued', 'running']
+  render([chat('loaded'), chat('selected'), chat('remote', { executionHostId: 'ssh-host' }), chat('errored'), chat('queued'), chat('running')])
+  useAppStore.setState({ messages: { loaded: [] }, activeSessionId: 'selected', chatHistoryErrorBySessionId: { errored: 'Saved chat history could not be read.' },
+    acpBindingBySessionId: { queued: { queueHeld: true } as never, running: { processing: true } as never } })
+  for (const id of skipped) { pointer(id, 'pointerover'); wait(200); pointer(id, 'pointerout') }
   expect(reads()).toHaveLength(0)
   render([chat('loading')])
   void useAppStore.getState().loadSessionMessages('loading')
@@ -118,14 +125,69 @@ it('keeps at most two preloads in flight while sweeping across many rows', () =>
   expect(reads()).toHaveLength(2)
 })
 
-it('lets the click reuse the preload already in flight', async () => {
-  render([chat('click-a')])
+it('lets a click during the preload reuse it and keep showing loading', async () => {
+  render([chat('click-a', { messageCount: 1 })])
   pointer('click-a', 'pointerover'); wait(150)
   expect(reads()).toHaveLength(1)
-  act(() => { useAppStore.getState().setActiveSession('click-a'); void useAppStore.getState().loadSessionMessages('click-a') })
+  const prefetchRequestId = reads()[0].envelope.requestId
+  // The real row click: selection, its backend reply, then the pane's ordinary load.
+  act(() => row('click-a').click())
+  await flush()
+  act(() => { void useAppStore.getState().loadSessionMessages('click-a') })
+  await flush()
+  expect(sent('selectSession')).toHaveLength(1)
   expect(reads()).toHaveLength(1)
+  expect(useAppStore.getState().chatHistoryReadBySessionId['click-a']?.requestId).toBe(prefetchRequestId)
+  expect(useAppStore.getState().chatHistoryErrorBySessionId['click-a']).toBeUndefined()
   await answer(0)
   expect(useAppStore.getState().messages['click-a']).toHaveLength(1)
+  expect(useAppStore.getState().chatHistoryReadBySessionId['click-a']).toBeUndefined()
+  expect(useAppStore.getState().chatHistoryErrorBySessionId['click-a']).toBeUndefined()
+})
+
+it('shows the error when a preload the click joined fails', async () => {
+  render([chat('fail-a', { messageCount: 1 })])
+  pointer('fail-a', 'pointerover'); wait(150)
+  act(() => row('fail-a').click())
+  await flush()
+  act(() => { void useAppStore.getState().loadSessionMessages('fail-a') })
+  await answer(0, 'Saved chat history could not be read.')
+  expect(reads()).toHaveLength(1)
+  expect(useAppStore.getState().chatHistoryErrorBySessionId['fail-a']).toBe('Saved chat history could not be read.')
+  expect(sent('releaseChatMessages')).toHaveLength(0)
+})
+
+it('starts a fresh read instead of joining when the saved summary changed after the preload began', () => {
+  render([chat('changed-a', { messagesDigest: 'summary-1', messageCount: 1 })])
+  pointer('changed-a', 'pointerover'); wait(150)
+  useAppStore.setState({ sessions: [chat('changed-a', { messagesDigest: 'summary-2', messageCount: 2 })] })
+  act(() => { void useAppStore.getState().loadSessionMessages('changed-a') })
+  expect(reads()).toHaveLength(2)
+  expect(reads()[1].envelope.payload?.background).toBeUndefined()
+})
+
+it('releases the native copy of a preload that ends without adopting a page', async () => {
+  render([chat('dropped-a')])
+  pointer('dropped-a', 'pointerover'); wait(150)
+  await answer(0, 'Saved chat history could not be read.')
+  expect(sent('releaseChatMessages')).toHaveLength(1)
+})
+
+it('never evicts a chat another load claimed while its preload was in flight', async () => {
+  const sessions = Array.from({ length: 6 }, (_, index) => chat(`claim-${index}`))
+  render(sessions)
+  pointer('claim-0', 'pointerover'); wait(150); pointer('claim-0', 'pointerout')
+  // A pane opening the chat (for example a drop) loads it without selecting it.
+  act(() => { void useAppStore.getState().loadSessionMessages('claim-0') })
+  await answer(0)
+  for (let index = 1; index < sessions.length; index += 1) {
+    pointer(sessions[index].id, 'pointerover'); wait(150); pointer(sessions[index].id, 'pointerout')
+    await answer(index)
+  }
+  const { messages } = useAppStore.getState()
+  expect(messages['claim-0']).toHaveLength(1)
+  expect(messages['claim-1']).toBeUndefined()
+  expect(sessions.slice(2).every(session => messages[session.id]?.length === 1)).toBe(true)
 })
 
 it('evicts the oldest unopened preload beyond four retained chats', async () => {

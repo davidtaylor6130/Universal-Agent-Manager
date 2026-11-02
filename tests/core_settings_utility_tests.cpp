@@ -630,6 +630,10 @@ UAM_TEST(VcsStatusSubprocessReadsYieldToChatHistory)
 	const std::size_t history = chats.find("void UamQueryHandler::HandleGetChatMessages(");
 	UAM_ASSERT(history != std::string::npos);
 	UAM_ASSERT(chats.find("TID_FILE_USER_BLOCKING", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
+	// Hover warm-ups (#624) must not delay an explicit open, so only they use the lower-priority lane.
+	const std::size_t lane = chats.find("payload.value(\"background\", false) ? TID_FILE_USER_VISIBLE : TID_FILE_USER_BLOCKING", history);
+	UAM_ASSERT(lane < chats.find("\nvoid UamQueryHandler::", history + 1));
+	UAM_ASSERT(chats.find("}, history_read_thread);", history) < chats.find("\nvoid UamQueryHandler::", history + 1));
 }
 
 UAM_TEST(AttachmentStagingNeverFallsBackToLocalForAnUnknownExecutionHost)
