@@ -1899,6 +1899,36 @@ UAM_TEST(NativeChildLineageHandlerWritableRefreshKeepsReceiptForSameSession)
 	}
 }
 
+// #675 review: a refresh where the child's workspace moves between the parent's checkout and
+// the child's own worktree of it must not drop the display link.
+UAM_TEST(NativeChildLineageHandlerWorktreeMoveRefreshKeepsReceipt)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+		for (const bool snapshot_moves : {true, false})
+		{
+			NativeLineageHandlerFixture fixture(provider);
+			fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+			fixture.Parent().messages.clear(); // Preservation must not manufacture new source evidence.
+			const fs::path worktree = fixture.temp.root / ".uam" / "worktrees" / "child";
+			fs::create_directories(worktree);
+			ChatSession snapshot = fixture.child;
+			snapshot.messages.front().content = "Refreshed native child transcript";
+			ChatSession& moved = snapshot_moves ? snapshot : fixture.Child();
+			moved.workspace_worktree_directory = worktree.string();
+			moved.workspace_source_directory = fixture.parent.workspace_directory;
+			moved.workspace_isolation_kind = "git-worktree";
+			auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+			auto& handler = *handler_owner;
+			const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+			// A snapshot outside the parent's checkout is refused; a saved worktree child refreshes.
+			UAM_ASSERT_EQ(refresh.ok, !snapshot_moves);
+			fixture.AssertReceipt(fixture.Child());
+			const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
+			UAM_ASSERT(saved);
+			fixture.AssertReceipt(*saved);
+		}
+}
+
 UAM_TEST(NativeChildLineageHandlerExistingSaveFailureRestoresReceiptAndMappings)
 {
 	for (int failure = 0; failure < 3; ++failure)

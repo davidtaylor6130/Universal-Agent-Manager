@@ -118,11 +118,29 @@ it('keeps the dropdown after a child is opened directly from All Chats', async (
   const parent = { ...session('all-chats-parent'), workspaceDirectory: '/repo' }
   const listed = { ...worktreeChild(parent, 'all-chats-child'), workspaceDirectory: '/repo', workspaceWorktreeDirectory: '', workspaceIsolationKind: '' }
   expect(nativeSubagentChildren(parent.id, [parent, listed])).toEqual([listed])
-  // Opening records a navigation receipt and the refreshed child now reports its own worktree.
-  rememberSubagentParent(parent, listed.id)
+  // After opening, the refreshed child reports its own worktree of the parent's checkout.
   const opened = worktreeChild(parent, listed.id)
   expect(subagentParentFor(opened, [parent, opened])).toBe(parent)
   expect(nativeSubagentChildren(parent.id, [parent, opened])).toEqual([opened])
+})
+
+it('keeps a browser-only open receipt for a worktree child without backend lineage', async () => {
+  const { nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...session('receipt-only-parent'), workspaceDirectory: '/repo' }
+  const child = { ...worktreeChild(parent, 'receipt-only-child'), subagentParentChatId: undefined, subagentParentCreatedAt: undefined }
+  rememberSubagentParent(parent, child.id)
+  expect(subagentParentFor(child, [parent, child])).toBe(parent)
+  expect(nativeSubagentChildren(parent.id, [parent, child])).toEqual([child])
+})
+
+it('groups a child in a sibling worktree of the same project only under its exact parent', async () => {
+  const { nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...worktreeChild(session('sibling-root'), 'sibling-parent'), workspaceDirectory: '/repo/.uam/worktrees/parent', workspaceWorktreeDirectory: '/repo/.uam/worktrees/parent', subagentParentChatId: undefined, subagentParentCreatedAt: undefined }
+  const child = worktreeChild(parent, 'sibling-child')
+  const stranger = { ...parent, id: 'sibling-stranger' }
+  expect(subagentParentFor(child, [parent, stranger, child])).toBe(parent)
+  expect(nativeSubagentChildren(parent.id, [parent, stranger, child])).toEqual([child])
+  expect(nativeSubagentChildren(stranger.id, [parent, stranger, child])).toEqual([])
 })
 
 it('never groups an unrelated chat or another provider, host or project', async () => {
