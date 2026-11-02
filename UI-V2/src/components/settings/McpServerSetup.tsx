@@ -235,6 +235,10 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     const keys = preparedServers.map(server => `${server.name.toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`)
     if (new Set(keys).size !== keys.length) throw Error('Two servers share the same name. Rename one.')
   } catch (error) { validationError = (error as Error).message }
+  // A server's own problem is that server row's status line; anything else (JSON, duplicate names) is the editor row's.
+  const serverIssue = (server: McpServerConfiguration) => setup === null && view === 'form' ? problem(server) : ''
+  const editorIssue = setup === null && !servers.some(serverIssue) ? validationError : ''
+  const issueLine = (issue: string) => issue ? <p role="status" className="flex items-center gap-1.5" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{issue}</p> : undefined
   const save = async () => {
     // Save stays disabled while setup or validation blocks it; the button carries the reason.
     if (setup !== null || validationError) return
@@ -313,7 +317,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
         <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
       </>}>
-      <SettingRow title="Editor view" control={<Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
+      <SettingRow title="Editor view" status={issueLine(editorIssue)} control={<Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
         </Tabs>} />
@@ -337,6 +341,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
             style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 'var(--sp-3)' } : undefined}>
           <div className="uam-prov-collapse__inner uam-presence"><SettingRow icon={<Server size={15} aria-hidden />} title={<>{server.name || 'New server'} <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 'var(--sp-2)' }}>{scope}</span></>}
+            status={issueLine(serverIssue(server))}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} aria-hidden style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--dur-fast) var(--ease)' }} />} label={expanded ? `Collapse ${serverName}` : `Edit ${serverName}`} onClick={() => setOpen(expanded ? null : server.id)} />
@@ -385,7 +390,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       </>}</Swap>
     </SettingsSection>
 
-    <Reveal open={setup === null && Boolean(validationError)}><p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{validationError}</p></Reveal>
     {warningNotice(setup === null && importWarnings.length > 0)}
   </div>
 }

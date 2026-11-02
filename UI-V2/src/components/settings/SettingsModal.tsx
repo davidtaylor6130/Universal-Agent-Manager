@@ -1672,6 +1672,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return <div className="grid gap-0">
       <SettingsSection title="Control method">
         <ComputerUseSettingRow />
+        {SSH_ENABLED && <SettingRow title="Remote hosts" description="Remote Computer Use is off. Remote chats can't see or control the screen." />}
         <SettingRow
           title="Computer use backend"
           description={activeSession
@@ -2340,7 +2341,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           className="uam-field font-mono"
                         />
                       </SettingsField>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="uam-set-fields grid gap-3 sm:grid-cols-2">
                         <SettingsField label="Workspace access" htmlFor="agent-import-access">
                           <MenuSelect
                             id="agent-import-access"
@@ -2373,7 +2374,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           control={<Switch hideLabel label="Acknowledge omitted provider fields" checked={agentImportAcknowledged} onChange={(event) => setAgentImportAcknowledged(event.target.checked)} />}
                         />
                       </Reveal>
-                      <div className="flex justify-end">
+                      <div className="uam-set-actions">
                         <Button
                           size="sm"
                           variant="primary"
@@ -2414,7 +2415,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             const rows = (
               <>
                 <Reveal open={issues.length > 0}>{issues.map(issue => <SettingRow key={issue} title="Version" status={<span className="inline-flex items-center gap-1.5"><TriangleAlert size={13} aria-hidden style={{ color: 'var(--warning)' }} />{issue}</span>} />)}</Reveal>
-                <SettingRow title="Installed" control={<span>{manager.installedVersion || 'Not detected'}</span>} />
+                {/* The installed-version row is what the running task changes, so it alone is the progress track. */}
+                <ProgressFill label={`${providerName} CLI task running`} indeterminate active={manager.running}><SettingRow title="Installed" control={<span>{manager.installedVersion || 'Not detected'}</span>} /></ProgressFill>
                 <SettingRow title="Recommended" control={<span>{manager.preferredVersion || 'Unavailable'}</span>} />
                 <Reveal open={pendingCliInstall?.providerId === manager.providerId}>{pendingCliInstall?.providerId === manager.providerId && <div role="group" aria-label="Confirm CLI installation">
                   <SettingRow
@@ -2480,7 +2482,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </>
                 }
               >
-                <ProgressFill label={`${providerName} CLI task running`} indeterminate active={manager.running}>{rows}</ProgressFill>
+                {rows}
               </SettingsSection>
             )
           })}
@@ -2497,7 +2499,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <SettingsSection
               title="Add a host"
             >
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="uam-set-fields grid gap-3 sm:grid-cols-2">
                 <SettingsField label="Display name" htmlFor="remote-host-name">
                   <input
                     id="remote-host-name"
@@ -2522,19 +2524,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   />
                 </SettingsField>
               </div>
-              <Reveal open={Boolean(remoteMessage)}><StatusMessage message={remoteMessage} /></Reveal>
-              <div className="flex justify-end pt-3">
+              <Reveal open={Boolean(remoteMessage)}><StatusMessage message={remoteMessage} className="text-xs py-3" /></Reveal>
+              {/* The action row doing the work is the progress track, not the whole section. */}
+              <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy} className="uam-set-actions">
                 <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
                   Preview setup
                 </Button>
-              </div>
+              </ProgressFill>
             </SettingsSection>
       )
       return (
         <div className="grid gap-0">
-          <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy}>{addHostSection}</ProgressFill>
+          {addHostSection}
           <SettingsSection title="Configured hosts">
-            {COMPUTER_USE_ENABLED && <SettingRow title={<span className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</span>} />}
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
             <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
               <SettingRow
@@ -2649,15 +2651,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 )
               })}
             </div>
-            <Reveal open={Boolean(memoryLastStatus)}><SettingRow title="Last run" description={memoryLastStatus || undefined} /></Reveal>
+          </SettingsSection>
 
+          {/* The last run and its log are their own card after the workers, so a failure is a row status, not inline text. */}
+          <Reveal open={Boolean(memoryLastStatus) || hasWorkerLog}><SettingsSection title="Last worker log">
+            <SettingRow
+              title="Last run"
+              description={memoryLastStatus || memoryActivity.lastWorkerStatus || undefined}
+              status={workerLogMeta || undefined}
+              control={hasWorkerLog ? <StatusMark tone={workerLogIsFailure ? 'error' : 'success'} label={workerLogIsFailure ? 'Failed' : 'Completed'} /> : undefined}
+            />
             <Reveal open={hasWorkerLog}>
-              <Disclosure className="text-xs" summary={<span className="inline-flex items-center gap-1" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>{workerLogIsFailure && <StatusDot tone="error" />}Last worker log</span>}>
+              <Disclosure summary="Worker output">
                 <div className="py-3" style={{ color: 'var(--text-2)' }}>
-                <Reveal open={Boolean(memoryActivity.lastWorkerStatus)}><p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></Reveal>
-                <Reveal open={Boolean(workerLogMeta)}><p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p></Reveal>
+                <Reveal open={Boolean(memoryLastStatus && memoryActivity.lastWorkerStatus && memoryActivity.lastWorkerStatus !== memoryLastStatus)}><p className="mb-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></Reveal>
                 <pre
-                  className="mt-2 rounded-lg px-3 py-2 leading-5 overflow-auto"
+                  className="rounded-lg px-3 py-2 leading-5 overflow-auto"
                   style={{
                     fontSize: 'var(--fs-xs)',
                     background: 'var(--bg)',
@@ -2674,7 +2683,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
               </Disclosure>
             </Reveal>
-          </SettingsSection>
+          </SettingsSection></Reveal>
 
         </div>
       )

@@ -117,15 +117,8 @@
 .uam-native-scope__chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; font-size: var(--fs-xs); color: var(--text-2); }
 .uam-native-scope__chip[data-issues] { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
 .uam-native-scope__count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); font-size: var(--fs-xs); font-weight: var(--fw-medium); text-align: center; line-height: 16px; }
-.uam-native-disclosure { margin-top: var(--sp-3); border-top: 1px solid var(--border); padding-top: var(--sp-2); }
-.uam-native-disclosure > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; font-size: var(--fs-xs); color: var(--text-2); }
-.uam-native-disclosure > summary::-webkit-details-marker { display: none; }
-.uam-native-disclosure--warning > summary { color: var(--warning); }
-.uam-native-disclosure__chevron { margin-left: auto; transition: transform var(--dur-fast, 120ms) ease; }
-.uam-native-disclosure[open] > summary .uam-native-disclosure__chevron { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) { .uam-native-disclosure__chevron { transition: none; } }
-.uam-native-notes { margin: var(--sp-2) 0 0; padding-left: 18px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.6; }
-.uam-native-issues { display: grid; gap: var(--sp-2); margin: var(--sp-2) 0 0; padding: 0; list-style: none; font-size: var(--fs-xs); }
+.uam-native-notes { margin: 0; padding: var(--sp-1) 0 var(--sp-3) 18px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.6; }
+.uam-native-issues { display: grid; gap: var(--sp-2); margin: 0; padding: var(--sp-1) 0 var(--sp-3); list-style: none; font-size: var(--fs-xs); }
 .uam-native-issues > li { display: grid; grid-template-columns: 120px 1fr; column-gap: var(--sp-3); align-items: baseline; }
 .uam-native-issues__provider { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-weight: var(--fw-medium); }
 .uam-native-issues__reason { color: var(--text-2); }
@@ -150,7 +143,14 @@
    from the item before it, however Reveal wrappers or plain grids nest it. Disclosures nested in a disclosure or in a row's
    extra area, and notices or rows in a row's extra area, keep their own layout. */
 /* Anything inside a row (its status Reveal, control Reveals, extra content) or inside a field is not a card item: no divider. */
-.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row *, .uam-set-field *) { border-top: 1px solid var(--border); }
+.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row *, .uam-set-field *, .uam-set-fields *) { border-top: 1px solid var(--border); }
+/* A multi-column row of fields is one card item: no divider between its columns, sp-3 above and below
+   (nested in a stacked form, the form's gap spaces it instead). */
+.uam-set-card > .uam-set-fields { padding-block: var(--sp-3); }
+/* Footer action row (Preview, Import): right-aligned on the card inset with sp-3 below, so the button never touches the card edge;
+   as its own card item it also gets sp-3 above its divider. */
+.uam-set-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding-bottom: var(--sp-3); }
+.uam-set-card > .uam-set-actions { padding-top: var(--sp-3); }
 /* Disclosure trigger = full row: SettingRow height (32px + sp-3 each side), chevron on the label edge, label fills the row so a right-hand value sits at the card edge. */
 .uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary { padding-block: var(--sp-3); }
 .uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__label { flex: 1; min-width: 0; min-height: 32px; }

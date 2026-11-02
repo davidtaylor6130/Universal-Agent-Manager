@@ -59,7 +59,8 @@
 }
 .conversation-turn__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; font-size: var(--fs-xs); line-height: 1.4; color: var(--text-3); }
 .conversation-turn--user .conversation-turn__footer { justify-content: flex-end; margin-top: 5px; }
-.conversation-turn__actions, .conversation-turn__branches { display: inline-flex; align-items: center; gap: 3px; }
+/* Hover-revealed actions fade (index.css) but always keep their width, so the delivery label beside them never shifts. */
+.conversation-turn__actions, .conversation-turn__branches { display: inline-flex; flex-shrink: 0; align-items: center; gap: 3px; }
 .conversation-turn__branches { font-variant-numeric: tabular-nums; }
 
 .conversation-work { width: 100%; margin-bottom: 4px; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-3); }
@@ -322,7 +323,11 @@
   color: var(--text-3);
   cursor: default;
   outline: none;
+  /* One quiet line; it never wraps or yields its width to the action row beside it. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+.conversation-turn[data-delivery="unsent"] .conversation-turn__delivery { color: var(--error-text); }
 .conversation-turn__delivery:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .conversation-turn__delivery-error { flex-basis: 100%; text-align: right; color: var(--red); }
 

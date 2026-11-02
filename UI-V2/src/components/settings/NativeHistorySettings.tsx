@@ -153,7 +153,8 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
   const reviewPresence = usePresence(status.phase === 'ready' && status.totalCount > 0)
   return <>
   <SettingsSection title="Native provider history">
-    <ProgressFill label="Native history scan" indeterminate active={active} className="uam-set-row">
+    {/* Only the scan row is the progress track; the disclosures below are their own card items. */}
+    <ProgressFill label="Native history scan" indeterminate active={active}>
     <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
       control={<div className="flex flex-wrap gap-2">
@@ -170,28 +171,28 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
           </li>
         })}
       </ul>
-      <Reveal open={issueCount > 0}><Disclosure className="uam-native-disclosure uam-native-disclosure--warning"
-        summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
-        <ul className="uam-native-issues">{issues.map((group) => {
-          const providerId = idForName(group.provider)
-          return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
-            <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
-            <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
-            <Reveal open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></Reveal>
-          </li>
-        })}</ul>
-      </Disclosure></Reveal>
-      <Disclosure className="uam-native-disclosure" summary="How discovery works">
-        <ul className="uam-native-notes">
-          <li>Nothing is imported until you select chats and confirm.</li>
-          <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
-          <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
-          {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
-          {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads finished CLI chats and supported older histories. Chats that changed, are nested or are unrecognised are skipped and listed as issues.</li>}
-        </ul>
-      </Disclosure>
     </SettingRow>
     </ProgressFill>
+    <Reveal open={issueCount > 0}><Disclosure
+      summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
+      <ul className="uam-native-issues">{issues.map((group) => {
+        const providerId = idForName(group.provider)
+        return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">
+          <span className="uam-native-issues__provider">{providerId && <ProviderLogo providerId={providerId} size={14} />}{group.provider || 'Discovery'}</span>
+          <span className="uam-native-issues__reason">{group.items.length > 0 ? `${group.items.length} conversation${group.items.length === 1 ? '' : 's'} skipped. ${group.reason}` : group.reason}</span>
+          <Reveal open={group.items.length > 0}><Disclosure className="uam-native-issues__ids" summary="Show IDs"><ul>{group.items.map((item) => <li key={item}><code>{item}</code></li>)}</ul></Disclosure></Reveal>
+        </li>
+      })}</ul>
+    </Disclosure></Reveal>
+    <Disclosure summary="How discovery works">
+      <ul className="uam-native-notes">
+        <li>Nothing is imported until you select chats and confirm.</li>
+        <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
+        <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
+        {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
+        {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads finished CLI chats and supported older histories. Chats that changed, are nested or are unrecognised are skipped and listed as issues.</li>}
+      </ul>
+    </Disclosure>
   </SettingsSection>
   <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </>
