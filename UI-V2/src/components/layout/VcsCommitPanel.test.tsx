@@ -134,3 +134,46 @@ describe('commit draft ownership', () => {
     } finally { act(() => useAppStore.setState({ commitVcsChanges: original })) }
   })
 })
+
+describe('commit panel layout', () => {
+  const commitButton = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.startsWith('Commit '))!
+  function typeSummary(value: string) {
+    const summary = host.querySelector<HTMLInputElement>('[aria-label="Commit summary"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(summary, value)
+      summary.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    return summary
+  }
+
+  it('disables Commit until a file is selected and keeps the form after the file list in keyboard order', async () => {
+    await act(async () => root.render(<VcsCommitPanel />))
+    typeSummary('Summary')
+    expect(commitButton().textContent).toBe('Commit 0 files')
+    expect(commitButton().disabled).toBe(true)
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select owned-by-a.ts"]')!.click())
+    expect(host.querySelector('[aria-label="Select all changed files"]')!.parentElement!.textContent).toContain('1 selected')
+    expect(commitButton().disabled).toBe(false)
+
+    // Keyboard order: file row, summary, generate, description, commit.
+    const order = ['[aria-label="Deselect owned-by-a.ts"]', '[aria-label="Commit summary"]', '[aria-label="Generate commit message"]', '[aria-label="Commit description"]']
+      .map((selector) => host.querySelector(selector)!)
+    order.push(commitButton())
+    for (let i = 1; i < order.length; i += 1) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps command output collapsed after a commit', async () => {
+    const original = useAppStore.getState().commitVcsChanges
+    useAppStore.setState({ commitVcsChanges: vi.fn(async () => ({ ok: true, message: '[main abc123] Summary' })) })
+    try {
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select owned-by-a.ts"]')!.click())
+      typeSummary('Summary')
+      await act(async () => commitButton().click())
+      const output = host.querySelector('details')!
+      expect(output.querySelector('summary')!.textContent).toBe('Command output')
+      expect(output.open).toBe(false)
+      expect(output.querySelector('pre')!.textContent).toBe('[main abc123] Summary')
+    } finally { act(() => useAppStore.setState({ commitVcsChanges: original })) }
+  })
+})
