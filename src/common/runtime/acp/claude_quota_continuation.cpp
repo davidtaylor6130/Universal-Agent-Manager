@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -497,6 +498,7 @@ namespace uam::acp_detail
 				task->owner_id = chat->claude_quota_continuation.id;
 				task->worker = std::make_unique<std::jthread>([preparation, loaded = task->loaded, finished = task->finished](std::stop_token)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					std::string error;
 					try { *loaded = ChatDomainService().LoadColdHistoryPreparation(*preparation, error); }
 					catch (...) { *loaded = false; }

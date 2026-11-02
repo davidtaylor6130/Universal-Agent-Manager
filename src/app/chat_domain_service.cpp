@@ -299,6 +299,9 @@ void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 		{
 			continue;
 		}
+		// An imported local copy's location may come from an untrusted bundle; probe only a plain local absolute
+		// path. Remote-host imports keep their host-path matching, which never probes this computer.
+		if (chat.imported_read_only && uam::paths::IsControllerLocalWorkspace(chat) && !uam::paths::IsPlainLocalAbsoluteWorkspacePath(uam::strings::Trim(chat.workspace_directory))) continue;
 
 		if (uam::paths::IsControllerLocalWorkspace(chat))
 		{
