@@ -275,7 +275,7 @@ namespace
 		const auto loaded = ChatRepository::LoadLocalChat(target, imported_id);
 		UAM_ASSERT(loaded && loaded->messages.size() == 1 && loaded->messages.front().attachments.size() == 1);
 		UAM_ASSERT(loaded->imported_read_only);
-		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == source.workspace_directory);
 		UAM_ASSERT(!loaded->uam_control_enabled && loaded->agent_run_id.empty());
 		UAM_ASSERT(loaded->acp_queued_prompts.empty() && loaded->acp_dispatched_queued_prompt_count == 0);
 		const auto& expected = source.messages.front().attachments.front();
@@ -445,7 +445,7 @@ UAM_TEST(LocalChatBundleOpaqueNativeUrisRoundTripWithoutAcquiringAuthority)
 	const auto loaded = ChatRepository::LoadLocalChat(target, chat.id);
 	UAM_ASSERT(loaded && loaded->imported_read_only);
 	UAM_ASSERT_EQ(loaded->messages, chat.messages);
-	UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+	UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == chat.workspace_directory);
 	UAM_ASSERT(!loaded->uam_control_enabled && loaded->acp_queued_prompts.empty());
 	UAM_ASSERT(!fs::exists(target / std::string(bundle_assets::kStoreDirectory)));
 	UAM_ASSERT_EQ(BundleFileSnapshot(source), before);
@@ -581,7 +581,7 @@ UAM_TEST(LocalChatBundleEqualOriginalGenerationsPreserveDistinctAssociationsAcro
 	{
 		const auto loaded = ChatRepository::LoadLocalChat(root, id);
 		UAM_ASSERT(loaded && loaded->imported_read_only && loaded->acp_queued_prompts.empty());
-		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == chat.workspace_directory);
 		UAM_ASSERT_EQ(loaded->messages.size(), std::size_t{1});
 		UAM_ASSERT_EQ(loaded->messages.front().attachments.size(), std::size_t{1});
 		const auto& actual_message = loaded->messages.front().attachments.front();
