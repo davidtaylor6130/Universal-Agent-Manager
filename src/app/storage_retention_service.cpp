@@ -1,4 +1,5 @@
 #include "app/storage_retention_service.h"
+#include "common/platform/background_thread_priority.h"
 
 #include "common/state/app_state.h"
 #include "common/paths/path_utils.h"
@@ -127,7 +128,7 @@ namespace uam
 		});
 		task->worker = work.get_future();
 		m_task = task;
-		try { std::thread(std::move(work)).detach(); }
+		try { uam::platform::StartBackgroundThread(std::move(work)).detach(); }
 		catch (const std::system_error& exception)
 		{
 			Record failure; failure.error = "Storage retention worker could not start: " + std::string(exception.what());

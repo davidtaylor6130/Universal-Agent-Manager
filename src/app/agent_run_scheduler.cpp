@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "app/managed_parent_continuation_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/agent_run_scheduler.h"
@@ -695,6 +696,7 @@ namespace uam
 				std::thread(
 				    [work, function = std::move(function)]() mutable
 				    {
+				    	uam::platform::LowerCurrentThreadToBackgroundPriority();
 					    try
 					    {
 						    function(*work);
