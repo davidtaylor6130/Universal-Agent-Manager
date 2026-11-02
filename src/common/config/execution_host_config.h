@@ -244,6 +244,9 @@ namespace uam::execution_hosts
 		host.architecture = Bounded(host.architecture, 64);
 		host.last_seen_at = Bounded(host.last_seen_at, 64);
 		host.runner_directory = Bounded(host.runner_directory, 240);
+		if (host.runner_sha256.size() != 64 || !std::ranges::all_of(host.runner_sha256, [](unsigned char character)
+		    { return std::isxdigit(character) != 0 && !std::isupper(character); }))
+			host.runner_sha256.clear(); // Unknown, so a packaged helper is offered as a reinstall.
 		if (!IsSafeRunnerDirectory(host.runner_directory))
 		{
 			if (error != nullptr)
@@ -310,6 +313,7 @@ namespace uam::execution_hosts
 			    {"architecture", host.architecture}, {"lastSeenAt", host.last_seen_at},
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
+			    {"runnerSha256", host.runner_sha256},
 			    {"runnerInstallUnresolved", host.runner_install_unresolved},
 			    {"runnerInstallNonce", host.runner_install_nonce}, {"runnerInstallIdentity", host.runner_install_identity},
 			    {"instructionFile", host.instruction_file},
@@ -357,6 +361,7 @@ namespace uam::execution_hosts
 					else if (entry.contains(key)) hosts.back().runner_install_unresolved = true;
 				}
 				if (!hosts.back().runner_install_nonce.empty() || !hosts.back().runner_install_identity.empty()) hosts.back().runner_install_unresolved = true;
+				if (entry.contains("runnerSha256") && entry["runnerSha256"].is_string()) hosts.back().runner_sha256 = entry["runnerSha256"].get<std::string>();
 			}
 		}
 		Normalize(hosts);

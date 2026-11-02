@@ -141,6 +141,29 @@ describe('update catalog', () => {
     ], {}).map((update) => update.id)).toEqual(['remote-helper-same', 'remote-helper-missing'])
   })
 
+  it('compares the bundled helper checksum when the helper version is unchanged', () => {
+    const oldBuild = 'a'.repeat(64)
+    const newBuild = 'b'.repeat(64)
+    const host = { label: 'Host', transport: 'ssh' as const, runnerStatus: 'ready' as const, runnerVersion: '5.0.0', runnerProtocolVersion: 3, architecture: 'x86_64', lastSeenAt: '', bundledRunnerSha256: newBuild }
+    const hosts = [
+      { ...host, id: 'linux-rebuilt', sshAlias: 'linux-rebuilt', platform: 'linux', runnerSha256: oldBuild },
+      { ...host, id: 'windows-rebuilt', sshAlias: 'windows-rebuilt', platform: 'windows', runnerSha256: oldBuild },
+      { ...host, id: 'linux-same', sshAlias: 'linux-same', platform: 'linux', runnerSha256: newBuild },
+      { ...host, id: 'windows-same', sshAlias: 'windows-same', platform: 'windows', runnerSha256: newBuild },
+      { ...host, id: 'unknown', sshAlias: 'unknown', platform: 'linux' },
+    ]
+    const updates = availableRemoteHelperUpdates('5.0.0', 3, hosts, {})
+    expect(updates.map((update) => update.id)).toEqual(['remote-helper-linux-rebuilt', 'remote-helper-windows-rebuilt', 'remote-helper-unknown'])
+    expect(updates[0]).toMatchObject({ currentVersion: '5.0.0 · build aaaaaaaaaaaa', latestVersion: '5.0.0 · helper protocol 3 · build bbbbbbbbbbbb' })
+    expect(updates[2].currentVersion).toBe('5.0.0 · build unknown')
+
+    // Dismissal lasts for this bundled build only.
+    const dismissed = Object.fromEntries(updates.map((update) => [update.id, update.latestVersion]))
+    expect(availableRemoteHelperUpdates('5.0.0', 3, hosts, dismissed)).toEqual([])
+    const nextBuild = hosts.map((entry) => ({ ...entry, bundledRunnerSha256: 'c'.repeat(64) }))
+    expect(availableRemoteHelperUpdates('5.0.0', 3, nextBuild, dismissed)).toHaveLength(5)
+  })
+
   it('rejects malformed cached catalog entries', () => {
     const values = new Map<string, string>()
     Object.defineProperty(window, 'localStorage', {

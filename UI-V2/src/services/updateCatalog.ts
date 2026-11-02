@@ -107,15 +107,18 @@ export function availableRemoteHelperUpdates(
   return executionHosts.flatMap((host) => {
     const currentVersion = cleanVersion(host.runnerVersion)
     const id = `remote-helper-${host.id}`
-    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}`
+    // A rebuilt helper can keep its version; the bundled checksum identifies the build, and an unrecorded installed checksum is unknown.
+    const bundledBuild = host.bundledRunnerSha256 ?? ''
+    const buildOutdated = Boolean(bundledBuild) && host.runnerSha256 !== bundledBuild
+    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}${bundledBuild ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
     const versionOutdated = !currentVersion || compareVersions(latestVersion, currentVersion) > 0
     const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
-    if (!isSshHost(host) || (!versionOutdated && !protocolOutdated) || dismissedVersions[id] === updateVersion) return []
+    if (!isSshHost(host) || (!versionOutdated && !protocolOutdated && !buildOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
       remoteHostId: host.id,
       name: `${host.label} SSH helper`,
-      currentVersion: currentVersion || 'Not detected',
+      currentVersion: `${currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
       latestVersion: updateVersion,
       url: '',
       installable: true,

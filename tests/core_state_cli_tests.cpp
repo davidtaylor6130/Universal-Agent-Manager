@@ -1365,6 +1365,23 @@ UAM_TEST(RemoteCliElevationSettingSurvivesSerializationAndDefaultsOff)
 	UAM_ASSERT(!loaded.back().cli_updates_as_admin);
 }
 
+UAM_TEST(RemoteHelperChecksumSurvivesSerializationAndMalformedIsUnknown)
+{
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-homelab";
+	host.platform = "linux";
+	host.runner_sha256 = std::string(64, 'a');
+	nlohmann::json saved = uam::execution_hosts::Serialize({host});
+	UAM_ASSERT_EQ(uam::execution_hosts::Parse(saved).back().runner_sha256, host.runner_sha256);
+	for (const nlohmann::json& malformed : {nlohmann::json(std::string(64, 'A')), nlohmann::json("abc"), nlohmann::json(42)})
+	{
+		saved.back()["runnerSha256"] = malformed;
+		UAM_ASSERT(uam::execution_hosts::Parse(saved).back().runner_sha256.empty());
+	}
+}
+
 UAM_TEST(ConfiguredRemoteCliRowsExposeUnknownScopedPoliciesBeforeAnyProbe)
 {
 	uam::AppState app;

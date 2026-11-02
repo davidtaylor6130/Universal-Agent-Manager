@@ -44,6 +44,8 @@ namespace uam::remote
 	    const std::string& context_directory = {},
 	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool transient_process = false);
 	std::filesystem::path PackagedRunnerPath();
+	/// Packaged helper SHA-256 for a host platform and architecture, read once; empty when none is packaged.
+	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture);
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,
 	    const std::string& version, const std::filesystem::path& working_directory,

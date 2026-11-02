@@ -318,6 +318,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		host.architecture = existing->architecture;
 		host.runner_version = existing->runner_version;
 		host.runner_protocol_version = existing->runner_protocol_version;
+		host.runner_sha256 = existing->runner_sha256;
 		host.last_seen_at = existing->last_seen_at;
 		*existing = host;
 	}
@@ -570,6 +571,10 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    found->architecture = result->architecture;
 			    found->last_seen_at = uam::time::IsoUtcTimestampNow();
 			    found->runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+			    // The checksum the bootstrap verified before publishing the remote manifest; it identifies a rebuild with an unchanged version.
+			    const auto installed = std::ranges::find_if(install_plan->artifacts, [&](const uam::remote::RunnerArtifact& artifact)
+			    { return artifact.platform == result->platform && artifact.architecture == result->architecture; });
+			    found->runner_sha256 = installed == install_plan->artifacts.end() ? std::string{} : installed->sha256;
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {
