@@ -268,13 +268,18 @@ describe('UsageLimits independent account allowances', () => {
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       const codex = host.querySelector('[aria-label="Codex"]')!
-      expect(codex.textContent).toContain('Primary window')
-      expect(codex.textContent).toContain('Not readable at this time')
+      // While reading, the unknown row is the same greyed row with an ellipsis, not a made-up window or a percentage.
+      expect(codex.querySelectorAll('.uam-limit-row')).toHaveLength(1)
+      expect(codex.textContent).toContain('Allowance · Reading…')
+      expect(codex.textContent).toContain('…')
+      expect(codex.textContent).not.toContain('??%')
+      expect(codex.textContent).not.toContain('Primary window')
       await act(async () => pending.onSuccess(JSON.stringify(data)))
       expect(codex.textContent).toContain('Account allowances are not supported')
+      expect(codex.textContent).toContain('??%')
       expect(codex.textContent).not.toContain('Primary window')
       expect(codex.textContent).not.toContain('Secondary window')
-      expect(codex.textContent).not.toContain('Not readable at this time')
+      expect(codex.textContent).not.toContain('Reading')
     } finally { act(() => root.unmount()) }
   })
 
@@ -431,11 +436,18 @@ describe('UsageLimits overview', () => {
       expect(summary('OpenCode')).toContain('Not offered by OpenCode')
       expect(summary('Copilot')).toContain('No history')
       expect(summary('Antigravity')).toContain('Not signed in')
-      // Short reasons on the row; every native message is kept whole in the row details.
+      // Every unreadable row is the greyed allowance row: ??% with no fill, and an accessible statement of why.
+      expect(summary('Codex')).toContain('??%')
+      expect(summary('Codex')).toContain('Allowance unknown: Couldn\'t read')
+      expect(summary('OpenCode')).toContain('Allowance unknown: Not offered by OpenCode')
+      expect(view.host.querySelectorAll('.uam-limit-summary .uam-status-dot')).toHaveLength(0)
+      expect(view.host.querySelectorAll('.uam-limit-summary .uam-limit-row__value')).toHaveLength(6)
+      expect(view.host.querySelectorAll('.uam-limit-summary .uam-limit-row__value')[0].textContent).toBe('??%')
+      // Short reasons on the row; every native message is kept whole in the row tooltip and details.
       expect(summary('Codex')).not.toContain(failed)
+      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side > small')?.getAttribute('aria-hidden')).toBe('true')
       expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain(failed)
       expect(view.host.querySelector('[aria-label="Antigravity"]')!.textContent).toContain(keychain)
-      expect(view.host.querySelectorAll('.uam-limit-summary .uam-status-dot--warning')).toHaveLength(5)
       expect(view.host.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
       expect(view.host.textContent).not.toContain('This computer')
     } finally { view.close() }
@@ -478,8 +490,23 @@ describe('UsageLimits overview', () => {
     const view = await render(['codex-cli', 'claude-cli'].map(providerId => ({ providerId: providerId as UsageProviderId, scope: 'remote', status: 'unavailable' as const, limits: null, error: 'Independent account allowances are not available on this remote connection.' })), usage([tokens('codex-cli', 4000)]), 'lab')
     try {
       expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Allowances are read on this computer only. 4K tokens used in the past 7 days on Lab PC.')
-      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side')!.textContent).toBe('')
+      // The row is still the greyed allowance row, but the reason is not repeated per row; its accessible text says where it is read.
+      const side = view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side')!
+      expect(side.textContent).toBe('Allowance??%Allowance unknown: read on this computer only')
       expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain('Independent account allowances are not available on this remote connection.')
     } finally { view.close(); useAppStore.setState({ executionHosts: previous }) }
+  })
+
+  it('keeps a known window name on the unknown row and uses "Allowance" only when none is known', async () => {
+    const view = await render([
+      { providerId: 'copilot-cli', scope: 'local:copilot', status: 'error', limits: null, error: 'Could not read account allowance.', primaryLabel: 'Chat allowance' },
+      { providerId: 'gemini-cli', scope: 'local:gemini', status: 'error', limits: null, error: 'Could not read account allowance.' },
+    ], usage([tokens('copilot-cli', 0, true), tokens('gemini-cli', 0, true)]))
+    try {
+      expect(view.host.querySelector('[aria-label="Copilot"] .uam-limit-summary')!.textContent).toContain('Chat allowance · Couldn\'t read??%')
+      const gemini = view.host.querySelector('[aria-label="Gemini"]')!
+      expect(gemini.querySelector('.uam-limit-summary')!.textContent).toContain('Allowance · Couldn\'t read??%')
+      expect(gemini.textContent).not.toContain('Primary window')
+    } finally { view.close() }
   })
 })

@@ -378,6 +378,8 @@
 .uam-limit-row__name { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
 .uam-limit-row__value { font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .uam-limit-row__reset { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Unknown share: the same row with no fill, every piece of text in the tertiary colour. */
+.uam-limit-row--unknown :is(.uam-limit-row__name, .uam-limit-row__reset, .uam-limit-row__value) { color: var(--text-3); }
 .uam-limits-chip { flex: none; font-size: var(--fs-xs); font-weight: 400; padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-high); color: var(--text-2); text-transform: capitalize; }
 .uam-limits-updated { font-size: var(--fs-xs); color: var(--text-3); }
 .uam-limits-notice { color: var(--text-2); }

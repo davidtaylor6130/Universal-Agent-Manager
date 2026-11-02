@@ -40,16 +40,21 @@ function resetLabel(window: AcpRateLimitWindow, now: number, awaitingUpdate: boo
   return awaitingUpdate ? 'Reset passed, awaiting update' : 'Provider-reported reset time has passed'
 }
 
-/** One limit per line: the row is the progress track, its background fills to the used share. */
-function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false, awaitingUpdate = false, missingLabel = 'Not readable at this time' }: { label: string; meterLabel: string; window: AcpRateLimitWindow | null; now: number; showUnknownReset?: boolean; awaitingUpdate?: boolean; missingLabel?: string }) {
+/**
+ * One limit per line: the row is the progress track, its background fills to the used share. An unknown share keeps the
+ * same row, empty and muted, with ??% (… while reading); the screen-reader text carries the label and why.
+ */
+function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false, awaitingUpdate = false, missingLabel = 'Not readable at this time', pending = false }: { label: string; meterLabel: string; window: AcpRateLimitWindow | null; now: number; showUnknownReset?: boolean; awaitingUpdate?: boolean; missingLabel?: string; pending?: boolean }) {
   const percent = window ? window.usedPercent : NaN
   const valid = isValidPercent(percent)
-  const reset = (window && resetLabel(window, now, awaitingUpdate)) ?? (showUnknownReset ? 'Reset time unavailable' : null)
-  // Unreadable windows keep the same element with no fill and no meter role, so the row structure never changes.
-  return <ProgressFill label={meterLabel} value={percent} active={valid} className="uam-limit-row">
+  const reset = !valid ? '—' : (window && resetLabel(window, now, awaitingUpdate)) ?? (showUnknownReset ? 'Reset time unavailable' : null)
+  // Unknown windows keep the same element with no fill and no meter role, so the row structure never changes.
+  return <ProgressFill label={meterLabel} value={percent} active={valid} className={cx('uam-limit-row', !valid && 'uam-limit-row--unknown')}>
     <span className="uam-limit-row__name">{label}</span>
     <Reveal as="span" open={!!reset}><Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip></Reveal>
-    <span className="uam-limit-row__value" style={valid ? { color: valueTone(percent) } : undefined}>{valid ? `${formatPercent(percent)}% used` : <span className="uam-usage-muted">{window ? 'Unavailable' : missingLabel}</span>}</span>
+    {valid
+      ? <span className="uam-limit-row__value" style={{ color: valueTone(percent) }}>{`${formatPercent(percent)}% used`}</span>
+      : <><span className="uam-limit-row__value" aria-hidden>{pending ? '…' : '??%'}</span><span className="sr-only">{pending ? `Reading ${label}` : `${label} unknown: ${missingLabel}`}</span></>}
   </ProgressFill>
 }
 
@@ -70,9 +75,14 @@ function windowRows(provider: UsageProviderId, name: string, allowance: Provider
   if (modelWindows.length) return modelWindows.map(window => ({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
   // ponytail: plan-name match is an inference; drop it once Codex reports a real secondary window for Pro.
   const noFiveHourCap = CODEX_ENABLED && provider === CODEX_CLI_PROVIDER_ID && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
-  return (['primary', 'secondary'] as const).map(key => noFiveHourCap && key === 'secondary'
-    ? { id: key, label: '5-hour', meterLabel: '', window: null, unlimited: true }
-    : { id: key, label: (key === 'primary' ? allowance?.primaryLabel : allowance?.secondaryLabel) || windowLabel(limits?.[key]?.windowDurationMinutes, key), meterLabel: `${name} ${key} usage`, window: limits?.[key] ?? null, missingLabel: allowance?.status === 'ready' ? 'Not reported by provider' : undefined })
+  const rows: WindowRow[] = (['primary', 'secondary'] as const).map(key => {
+    const window = limits?.[key] ?? null
+    if (noFiveHourCap && key === 'secondary') return { id: key, label: '5-hour', meterLabel: '', window: null, unlimited: true }
+    // A window the provider did not report has no period to name, so it is "Allowance" rather than an invented Primary/Secondary window.
+    return { id: key, label: (key === 'primary' ? allowance?.primaryLabel : allowance?.secondaryLabel) || (window ? windowLabel(window.windowDurationMinutes, key) : 'Allowance'), meterLabel: `${name} ${key} usage`, window, missingLabel: allowance?.status === 'ready' ? 'Not reported by provider' : undefined }
+  })
+  // With no window reported, one unknown allowance stands in for the pair rather than two identical rows.
+  return rows.every(row => !row.window && !row.unlimited && row.label === 'Allowance') ? rows.slice(0, 1) : rows
 }
 
 /** The window that matters most for a provider: its most-used readable window, else an unlimited one. */
@@ -80,17 +90,17 @@ const leadRow = (rows: WindowRow[]) => rows.filter(row => row.window && isValidP
   .reduce<WindowRow | undefined>((top, row) => !top || row.window!.usedPercent > top.window!.usedPercent ? row : top, undefined) ?? rows.find(row => row.unlimited)
 
 /** A short reason for an unreadable allowance. The native message stays whole in the tooltip and the row details. */
-function shortReason(allowance: ProviderAllowance | undefined, name: string): { text: string; warn: boolean } {
-  if (!allowance) return { text: 'Not available', warn: false }
-  if (allowance.status === 'unavailable') return { text: `Not offered by ${name}`, warn: false }
-  if (allowance.status === 'ready') return { text: 'Not reported', warn: false }
+function shortReason(allowance: ProviderAllowance | undefined, name: string): string {
+  if (!allowance) return 'Not available'
+  if (allowance.status === 'unavailable') return `Not offered by ${name}`
+  if (allowance.status === 'ready') return 'Not reported'
   const message = allowance.error
-  if (/expired/i.test(message)) return { text: 'Login expired', warn: true }
-  if (/no (valid )?existing|not available for the current login/i.test(message)) return { text: 'Not signed in', warn: true }
-  if (/keychain|permission/i.test(message)) return { text: 'Needs access', warn: true }
-  if (/custom/i.test(message)) return { text: 'Custom command', warn: true }
-  if (/timed out/i.test(message)) return { text: 'Timed out', warn: true }
-  return { text: "Couldn't read", warn: true }
+  if (/expired/i.test(message)) return 'Login expired'
+  if (/no (valid )?existing|not available for the current login/i.test(message)) return 'Not signed in'
+  if (/keychain|permission/i.test(message)) return 'Needs access'
+  if (/custom/i.test(message)) return 'Custom command'
+  if (/timed out/i.test(message)) return 'Timed out'
+  return "Couldn't read"
 }
 
 /** Consumed tokens as one stacked bar. Cache reads and writes are part of input; reasoning is part of output. */
@@ -228,19 +238,24 @@ function ProviderLimitRow({ provider, name, allowance, rows, lead, loading, refr
   const leadWindow = lead?.window
   const leadReset = leadWindow ? resetLabel(leadWindow, now, stale || loading) : null
   const reason = shortReason(allowance, name)
-  // A remote computer's unsupported feed is explained once above the card, not repeated on every row.
+  // A remote computer's unsupported feed is explained once above the card, so its unknown row names no reason.
+  const remoteUnsupported = remote && (!allowance || allowance.status === 'unavailable')
+  const unknownLabel = rows[0]?.label ?? 'Allowance'
+  // Unknown: the row keeps its window name and reset slot, empty and muted, with the short reason as text; the native message is in the tooltip and details.
   const side = lead?.unlimited ? <span className="uam-usage-muted">Unlimited</span>
     : leadWindow ? <>
       <small className="uam-limit-row__reset">{lead!.label}{leadReset ? ` · ${leadReset}` : ''}</small>
       <span className="uam-limit-row__value" style={{ color: valueTone(leadWindow.usedPercent) }}>{formatPercent(leadWindow.usedPercent)}% used</span>
     </>
-    : reading ? <span className="uam-usage-muted">Reading…</span>
-    : remote && (!allowance || allowance.status === 'unavailable') ? null
-    : <Tooltip label={allowance?.error || undefined}><span className={cx('inline-flex items-center gap-1.5', !reason.warn && 'uam-usage-muted')}>{reason.warn && <StatusDot tone="warning" />}{reason.text}</span></Tooltip>
+    : <>
+      <Tooltip label={allowance?.error || undefined}><small className="uam-limit-row__reset" aria-hidden>{unknownLabel}{remoteUnsupported ? '' : ` · ${reading ? 'Reading…' : reason}`}</small></Tooltip>
+      <span className="uam-limit-row__value uam-usage-muted" aria-hidden>{reading ? '…' : '??%'}</span>
+      <span className="sr-only">{reading ? `Reading ${unknownLabel}` : `${unknownLabel} unknown: ${remoteUnsupported ? 'read on this computer only' : reason}`}</span>
+    </>
   const fill = leadWindow ? { '--progress': leadWindow.usedPercent / 100, '--limit-fill': fillTone(leadWindow.usedPercent) } as CSSProperties : undefined
   const renderRow = (row: WindowRow) => row.unlimited
     ? <UnlimitedRow key={row.id} label={row.label} />
-    : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} />
+    : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} pending={reading} />
   return <div role="group" aria-label={name} className="uam-limit-entry" style={fill} data-reading={(reading && !leadWindow) || undefined}>
     <Disclosure summary={<span className="uam-limit-summary">
       <span className="uam-limit-summary__identity"><ProviderLogo providerId={provider} size={16} /><span className="truncate">{name}</span>
