@@ -355,8 +355,10 @@ UAM_TEST(SettingsNativeAssignmentsResolvePathAliasesAndRefuseLinkedWorktreeConfl
 		}
 		else
 		{
-			UAM_ASSERT(!service.AssignWorkspace(app, ready.generation, main_id, "Conflicting main", &error));
-			UAM_ASSERT(error.find("conflicts") != std::string::npos);
+			// Both existing paths are pre-planned into the resolved main checkout, so the worktree cannot claim a conflicting owner.
+			UAM_ASSERT(service.AssignWorkspace(app, ready.generation, main_id, "Same main", &error));
+			const auto assigned = service.Snapshot();
+			UAM_ASSERT_EQ(assigned.candidates[0].folder_id, assigned.candidates[1].folder_id);
 			UAM_ASSERT(app.folders.empty());
 			UAM_ASSERT(app.chats.empty());
 		}
@@ -891,6 +893,87 @@ UAM_TEST(StartupNativeCandidatesExcludeOwnedDeletedDuplicateAndUnregisteredHisto
 	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{1});
 	UAM_ASSERT_EQ(service.Snapshot().candidates.front().native_session_id, std::string("fresh"));
 	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+}
+
+UAM_TEST(StartupNativeUnmatchedLocalHistoriesPlanOneWorkspacePerExistingDirectory)
+{
+	TempDir temp("uam-startup-auto-workspace");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path first = temp.root / "first";
+	const fs::path second = temp.root / "second";
+	fs::create_directories(first);
+	fs::create_directories(second);
+	ChatSession remote = StartupHistory("/remote/unregistered", "remote");
+	remote.execution_host_id = "ssh-host";
+	std::vector<ChatSession> histories{StartupHistory(first, "a1"), StartupHistory(first, "a2"), StartupHistory(second, "b1"),
+	    StartupHistory("relative/path", "relative"), StartupHistory("", "empty"), StartupHistory(temp.root / "missing", "missing"), remote};
+	uam::StartupNativeImportService service(FixtureScanner(histories));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{3});
+	std::map<std::string, std::string> folder_by_session;
+	for (const auto& candidate : ready.candidates)
+	{
+		UAM_ASSERT(candidate.new_workspace);
+		UAM_ASSERT(!candidate.folder_id.empty());
+		folder_by_session[candidate.native_session_id] = candidate.folder_id;
+	}
+	UAM_ASSERT_EQ(folder_by_session["a1"], folder_by_session["a2"]);
+	UAM_ASSERT(folder_by_session["a1"] != folder_by_session["b1"]);
+	// Planning alone saves nothing.
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(app.data_root / "folders.txt"));
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, {}, &error, {}, true));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{3});
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{3});
+	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).size(), std::size_t{3});
+	const ChatFolder* planned = ChatDomainService().FindFolderById(app, folder_by_session["a1"]);
+	UAM_ASSERT(planned != nullptr);
+	UAM_ASSERT_EQ(planned->directory, first.string());
+	UAM_ASSERT_EQ(planned->title, std::string("first"));
+	UAM_ASSERT(std::ranges::none_of(app.folders, [](const ChatFolder& folder) { return folder.execution_host_id == "ssh-host"; }));
+
+	// A later startup reuses the saved workspace instead of planning a duplicate.
+	histories.push_back(StartupHistory(first, "a3"));
+	uam::StartupNativeImportService rerun(FixtureScanner(histories));
+	rerun.Initialize(app);
+	WaitForStartup(rerun, app);
+	const uam::StartupNativeImportSnapshot again = rerun.Snapshot();
+	UAM_ASSERT_EQ(again.total_count, std::size_t{1});
+	UAM_ASSERT_EQ(again.candidates.front().native_session_id, std::string("a3"));
+	UAM_ASSERT_EQ(again.candidates.front().folder_id, folder_by_session["a1"]);
+	UAM_ASSERT(!again.candidates.front().new_workspace);
+	UAM_ASSERT(rerun.Decide(app, again.generation, {}, {}, &error, {}, true));
+	WaitForStartup(rerun, app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{4});
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupNativeDeclinedUnmatchedHistoryCreatesNoWorkspace)
+{
+	TempDir temp("uam-startup-auto-workspace-decline");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path source = temp.root / "declined";
+	fs::create_directories(source);
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(source, "declined")}));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{1});
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, {ready.candidates.front().candidate_id}, &error));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+	uam::StartupNativeImportService rerun(FixtureScanner({StartupHistory(source, "declined")}));
+	rerun.Initialize(app);
+	WaitForStartup(rerun, app);
+	UAM_ASSERT_EQ(rerun.Snapshot().total_count, std::size_t{0});
 	UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
 }
 

@@ -4037,6 +4037,19 @@ const ChatFolder* ChatHistorySyncService::StartupImportWorkspaceOwner(const uam:
 	return nullptr;
 }
 
+const ChatFolder* ChatHistorySyncService::PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat) const
+{
+	if (const ChatFolder* owner = StartupImportWorkspaceOwner(plan, chat)) return owner;
+	// ponytail: remote histories are discovered only inside registered host workspaces, so a missing remote owner was removed and stays removed.
+	if (!uam::paths::IsControllerLocalWorkspace(chat) || chat.workspace_directory.size() > 32768 || chat.workspace_directory.find('\0') != std::string::npos) return nullptr;
+	const fs::path workspace = uam::paths::PathFromUtf8(chat.workspace_directory);
+	if (!workspace.is_absolute() || !uam::paths::IsDirectoryNoThrow(workspace)) return nullptr;
+	ProviderChatSource source;
+	source.folder_directory = chat.workspace_directory;
+	source.folder_title = uam::strings::NonEmptyOrFallback(uam::paths::Utf8PathString(workspace.filename()), chat.workspace_directory);
+	return ChatDomainService().FindFolderById(plan, ResolvePersistedImportFolderIdForSource(plan, source, false));
+}
+
 ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRemoteProviderChatsForFolder(
     const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token) const
 {
