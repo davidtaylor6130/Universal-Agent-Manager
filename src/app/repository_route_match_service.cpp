@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "app/repository_route_match_service.h"
 #include "common/utils/string_utils.h"
 #include "app/execution_routing_integration.h"
@@ -232,6 +233,7 @@ namespace uam
 		app.repository_route_tasks.push_back(task);
 		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
 		{
+			uam::platform::LowerCurrentThreadToBackgroundPriority();
 			try { state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop); }
 			catch (...) { state->observed = state->captured; }
 			state->completed_at_s = GetAppTimeSeconds();
@@ -295,6 +297,7 @@ namespace uam
 		app.repository_route_tasks.push_back(task);
 		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
 		{
+			uam::platform::LowerCurrentThreadToBackgroundPriority();
 			try
 			{
 				state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop);

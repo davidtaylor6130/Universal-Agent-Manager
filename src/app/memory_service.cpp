@@ -1,4 +1,5 @@
 #include "app/agent_run_scheduler.h"
+#include "common/platform/background_thread_priority.h"
 #include "common/memory/extraction_receipts.h"
 #include "common/memory/memory_storage_guard.h"
 #include "remote/runner_client.h"
@@ -2126,7 +2127,7 @@ void MemoryService::RefreshMemoryActivityAsync(uam::AppState& app)
 	task->result = worker.get_future();
 	try
 	{
-		std::thread(std::move(worker)).detach();
+		uam::platform::StartBackgroundThread(std::move(worker)).detach();
 		app.memory_activity_refresh_task = task;
 	}
 	catch (const std::exception&)
