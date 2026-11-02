@@ -1920,13 +1920,39 @@ UAM_TEST(NativeChildLineageHandlerWorktreeMoveRefreshKeepsReceipt)
 			auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
 			auto& handler = *handler_owner;
 			const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
-			// A snapshot outside the parent's checkout is refused; a saved worktree child refreshes.
-			UAM_ASSERT_EQ(refresh.ok, !snapshot_moves);
+			// The child's own worktree of the parent's checkout refreshes either way, keeping the receipt.
+			UAM_ASSERT(refresh.ok);
+			UAM_ASSERT_EQ(fixture.Child().messages.front().content, snapshot.messages.front().content);
 			fixture.AssertReceipt(fixture.Child());
 			const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
 			UAM_ASSERT(saved);
 			fixture.AssertReceipt(*saved);
 		}
+}
+
+UAM_TEST(NativeChildLineageHandlerOtherProjectRefreshRefused)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+		const fs::path other = fixture.temp.root.parent_path() / (fixture.temp.root.filename().string() + "-other-project");
+		const fs::path worktree = other / ".uam" / "worktrees" / "child";
+		fs::create_directories(worktree);
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Foreign project transcript";
+		snapshot.workspace_directory = other.string();
+		snapshot.workspace_worktree_directory = worktree.string();
+		snapshot.workspace_source_directory = other.string();
+		snapshot.workspace_isolation_kind = "git-worktree";
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		fs::remove_all(other);
+		UAM_ASSERT(!refresh.ok);
+		UAM_ASSERT(fixture.Child().messages.front().content != snapshot.messages.front().content);
+		fixture.AssertReceipt(fixture.Child());
+	}
 }
 
 UAM_TEST(NativeChildLineageHandlerExistingSaveFailureRestoresReceiptAndMappings)
