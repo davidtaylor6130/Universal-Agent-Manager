@@ -1786,13 +1786,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const completedTurnKey = !chatWorking && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
+  const [repositoryReviewRetry, setRepositoryReviewRetry] = useState(0)
   useEffect(() => {
     let cancelled = false
     if (!completedTurnKey || !workspaceDirectory) return
 
     void getVcsCommitStatus(session.id, 'git', {
       includeLineStats: true,
-      requestId: `chat-summary:${session.id}:${completedTurnKey}`,
+      requestId: `chat-summary:${session.id}:${completedTurnKey}:${repositoryReviewRetry}`,
       comparisonRef: repositoryComparisonRef,
     }).then((status) => {
       if (cancelled) return
@@ -1802,7 +1803,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         : status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
-  }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, session.id, workspaceDirectory])
+  }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, repositoryReviewRetry, session.id, workspaceDirectory])
+  const svnRepositoryReview = repositoryChanges?.activeVcsType === 'svn'
+  // ponytail: native reports a missing/mismatched baseline only as text; every such message names the baseline.
+  const repositoryBaselineMissing = /baseline/i.test(repositoryChanges?.error ?? '')
   useEffect(() => {
     let cancelled = false
     if (isCompanionContext() || remoteComputerUseDisabled || !workspaceDirectory) return
@@ -3447,7 +3451,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           file={selectedRepositoryFile}
           vcsType={repositoryChanges.activeVcsType}
           comparisonRef={repositoryComparisonRef}
-          comparisonLabel={repositoryComparisonRef === 'chat' ? 'Since this chat began' : undefined}
+          comparisonLabel={svnRepositoryReview ? 'Working copy' : repositoryComparisonRef === 'chat' ? 'Since this chat began' : undefined}
           getDiff={getVcsFileDiff}
           onClose={() => setSelectedRepositoryFile(null)}
         />
@@ -3584,7 +3588,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 font-medium" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>
                     <div className="flex min-w-0 items-baseline gap-2">
-                      <span>Changes from this chat</span>
+                      <span>{svnRepositoryReview ? 'Working copy changes' : 'Changes from this chat'}</span>
                       {repositoryChanges && !repositoryChanges.error && (
                         <span className="font-normal" style={{ color: 'var(--text-3)' }}>
                           {repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'} · +{repositoryChanges.changedFiles.reduce((total, file) => total + file.additions, 0)} / -{repositoryChanges.changedFiles.reduce((total, file) => total + file.deletions, 0)}
@@ -3604,9 +3608,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                       Open commit panel
                     </Button>
                   </div>
-                  {repositoryChanges?.error && (
+                  {repositoryChanges?.error && (repositoryBaselineMissing ? (
                     <p role="status" className="px-3 py-2" style={{ color: 'var(--text-2)' }}>Unavailable for this chat. {repositoryChanges.error}</p>
-                  )}
+                  ) : (
+                    <div role="alert" className="flex flex-wrap items-center justify-between gap-2 px-3 py-2" style={{ color: 'var(--error)' }}>
+                      <span>Could not read changes. {repositoryChanges.error}</span>
+                      <Button type="button" size="sm" variant="secondary" onClick={() => setRepositoryReviewRetry((count) => count + 1)}>Retry</Button>
+                    </div>
+                  ))}
                   {repositoryChanges && (
                     <ChangedFilesTree
                       files={repositoryChanges.changedFiles}

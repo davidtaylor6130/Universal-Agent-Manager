@@ -2496,6 +2496,7 @@ UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "mode.sh", "echo hi\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "before\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "base\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "move.txt", "moved content line\nsecond line\n"));
 	UAM_ASSERT(RunGitForTest(repo, "add -A"));
 	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
 	// Pre-existing dirty work that the chat never touches must stay out of its summary.
@@ -2522,6 +2523,7 @@ UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
 	fs::permissions(repo / "mode.sh", fs::perms::owner_exec, fs::perm_options::add);
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "after\n"));
 	UAM_ASSERT(RunGitForTest(repo, "add stage.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "mv move.txt moved.txt"));
 	const std::string binary("\x89PNG\r\n\x1a\n\0\0\0binary", 18);
 	UAM_ASSERT(uam::io::WriteTextFile(repo / "image.png", binary));
 	const uam::VcsCommitStatus status = service.Status(app, chat, uam::VcsType::Git, true, "chat");
@@ -2537,6 +2539,10 @@ UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
 #endif
 	UAM_ASSERT(find("stage.txt") != status.changed_files.end() && find("stage.txt")->staged);
 	UAM_ASSERT(find("image.png") != status.changed_files.end() && find("image.png")->binary && find("image.png")->status == " A");
+	UAM_ASSERT(find("move.txt") == status.changed_files.end());
+	UAM_ASSERT(find("moved.txt") != status.changed_files.end() && find("moved.txt")->status == " R" && find("moved.txt")->previous_path == "move.txt" && find("moved.txt")->staged);
+	const std::string move_patch = service.Diff(app, chat, "moved.txt", uam::VcsType::Git, &error, "chat");
+	UAM_ASSERT(move_patch.find("rename from move.txt") != std::string::npos && move_patch.find("rename to moved.txt") != std::string::npos);
 	UAM_ASSERT(service.Diff(app, chat, "delete.txt", uam::VcsType::Git, &error, "chat").find("-gone") != std::string::npos);
 	UAM_ASSERT(service.Diff(app, chat, "stage.txt", uam::VcsType::Git, &error, "chat").find("+after") != std::string::npos);
 	UAM_ASSERT(service.Diff(app, chat, "prior.txt", uam::VcsType::Git, &error, "chat").empty());

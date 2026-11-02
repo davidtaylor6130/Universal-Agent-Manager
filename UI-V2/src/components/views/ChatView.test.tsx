@@ -1444,6 +1444,48 @@ describe('ChatView', () => {
     }
   })
 
+  it.each(['svn', 'git-error'] as const)('labels SVN review honestly and offers Retry for other read failures (%s)', async (kind) => {
+    const status = {
+      available: true, vcsTypes: [kind === 'svn' ? 'svn' as const : 'git' as const], activeVcsType: kind === 'svn' ? 'svn' as const : 'git' as const,
+      workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
+      changedFiles: [{ path: 'src/wc.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      lineStatsReady: true, warning: '', error: kind === 'svn' ? '' : 'fatal: Unable to create index.lock: File exists.',
+    }
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
+    const getVcsFileDiff = vi.fn(() => Promise.resolve('@@ -0,0 +1 @@\n+wc'))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {}, getVcsCommitStatus, getVcsFileDiff,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      if (kind === 'svn') {
+        expect(summary.textContent).toContain('Working copy changes')
+        expect(summary.textContent).not.toContain('Changes from this chat')
+        await act(async () => { (summary.querySelector('[aria-label="Review changes to src/wc.ts"]') as HTMLElement).click(); await Promise.resolve() })
+        const dialog = document.body.querySelector('[aria-label="Changes in src/wc.ts"]') as HTMLElement
+        expect(dialog.textContent).toContain('Working copy')
+        expect(dialog.textContent).not.toContain('Since this chat began')
+      } else {
+        expect(summary.textContent).not.toContain('Unavailable for this chat')
+        expect(summary.querySelector('[role="alert"]')?.textContent).toContain('index.lock')
+        const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+        const summaryReads = () => (getVcsCommitStatus.mock.calls as unknown as [string, string, { requestId?: string }][]).filter(([, , options]) => options?.requestId?.startsWith('chat-summary:')).length
+        expect(summaryReads()).toBe(1)
+        await act(async () => { retry.click(); await Promise.resolve() })
+        expect(summaryReads()).toBe(2)
+      }
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('replaces stale review counts with a clear state when the original chat baseline is unavailable', async () => {
     const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.' }
     useAppStore.setState((state) => ({
