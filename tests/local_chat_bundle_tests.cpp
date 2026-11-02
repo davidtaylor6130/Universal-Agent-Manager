@@ -156,6 +156,42 @@ UAM_TEST(LocalChatBundleImportNeverRetainsOrProbesNetworkWorkspaceLocations)
 		UAM_ASSERT_EQ(chat.reason, std::string("Imported location is not a plain local path"));
 }
 
+UAM_TEST(ImportedRemoteHostChatsKeepHostPathFolderMatchingAndRecovery)
+{
+	// Native Copilot/agent-history imports are read-only but keep their SSH host; the local
+	// bundle allowlist must not judge their host paths by this computer's path rules.
+	uam::AppState app;
+	ExecutionHost host;
+	host.id = "windows-host";
+	host.transport = "ssh";
+	host.platform = "windows";
+	app.settings.execution_hosts.push_back(host);
+	ChatFolder folder;
+	folder.id = "remote-folder";
+	folder.execution_host_id = host.id;
+	folder.directory = "C:\\Users\\a\\repo";
+	app.folders.push_back(folder);
+	const auto imported = [&](const std::string& id, const std::string& directory)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.imported_read_only = true;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = directory;
+		app.chats.push_back(chat);
+	};
+	imported("remote-matched", folder.directory);
+	imported("remote-unsorted", "C:\\Users\\a\\other");
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	UAM_ASSERT_EQ(app.chats[0].folder_id, folder.id);
+	UAM_ASSERT(app.chats[1].folder_id.empty());
+	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT(preview.unavailable.empty() && preview.missing.empty());
+	UAM_ASSERT_EQ(preview.groups.size(), std::size_t{1});
+	UAM_ASSERT_EQ(preview.groups.front().execution_host_id, host.id);
+	UAM_ASSERT_EQ(preview.groups.front().chat_ids, std::vector<std::string>{"remote-unsorted"});
+}
+
 UAM_TEST(LocalChatBundleImportDropsSourceCleanupAndHandoffAuthority)
 {
 	TempDir temp("uam-bundle-source-authority");

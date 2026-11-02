@@ -1425,8 +1425,9 @@ uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const A
 			preview.no_location.push_back(RecoveryChat(chat, "", "No workspace location recorded"));
 			continue;
 		}
-		// An imported copy's location came from an untrusted bundle; probe only a plain local absolute path.
-		if (chat.imported_read_only && !uam::paths::IsPlainLocalAbsoluteWorkspacePath(recorded_directory))
+		// An imported local copy's location may come from an untrusted bundle; probe only a plain local absolute
+		// path. Remote-host imports keep their host-path recovery, which never probes this computer.
+		if (chat.imported_read_only && host_id == uam::execution_hosts::kLocalHostId && !uam::paths::IsPlainLocalAbsoluteWorkspacePath(recorded_directory))
 		{
 			preview.unavailable.push_back(RecoveryChat(chat, recorded_directory, "Imported location is not a plain local path"));
 			continue;
