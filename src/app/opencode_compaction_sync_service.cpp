@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -51,15 +52,20 @@ namespace
 	enum class QueryKind { Baseline, Pending, Page, Text, Identified };
 	constexpr const char* kQueryNames[] = {"baseline", "pending", "page", "text", "identified"};
 
-	bool VerifiedVersion(std::string_view version)
+	/// <summary>V1 releases from 1.17.20 share the native message/part schema; every query still proves it
+	/// (schemaCompatible indexes and the parent-compaction predicate) and fails closed on mismatch. V2 keeps its own contract.</summary>
+	bool SupportedMetadataVersion(std::string_view version)
 	{
-		return version == "1.17.20" || version == "1.18.35";
+		int major = 0, minor = 0, patch = 0;
+		char tail = 0;
+		if (std::sscanf(std::string(version).c_str(), "%d.%d.%d%c", &major, &minor, &patch, &tail) != 3) return false;
+		return major == 1 && patch >= 0 && (minor > 17 || (minor == 17 && patch >= 20));
 	}
 
 	/// <summary>Warm SSH attachment has no initialize reply; durable process ownership permits read-only schema verification.</summary>
 	bool MetadataVersionAvailable(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 	{
-		if (VerifiedVersion(session.agent_version)) return true;
+		if (SupportedMetadataVersion(session.agent_version)) return true;
 		if (!session.agent_version.empty() || paths::IsControllerLocalWorkspace(chat)) return false;
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const std::string process = acp_detail::AcpProcessHandleLabel(session);

@@ -490,7 +490,7 @@ UAM_TEST(OpenCodeMetadataUnsupportedVersionPreservesNormalChatCompatibility)
 {
 	NativeMetadataFixture fixture;
 	std::string error;
-	for (const std::string& version : {std::string("1.18.34"), std::string(), std::string("unknown")})
+	for (const std::string& version : {std::string("1.17.19"), std::string("2.1.2"), std::string("1.19.4-beta"), std::string(), std::string("unknown")})
 	{
 		fixture.Session().agent_version = version;
 		UAM_ASSERT(fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.Chat(), error) == uam::OpenCodeCompactionGateState::NotApplicable);
@@ -836,6 +836,26 @@ UAM_TEST(OpenCodeMetadataAcceptsVerified11720Schema)
 	fixture.Parent();
 	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
 	UAM_ASSERT_EQ(fixture.queries.load(), 1);
+}
+
+UAM_TEST(OpenCodeMetadataAcceptsLaterV1VersionsThroughSchemaCheck)
+{
+	// Issue 641: 1.19.x was excluded by an exact version list, so its summaries stayed ordinary replies.
+	for (const std::string& version : {std::string("1.19.4"), std::string("1.18.36"), std::string("1.20.0")})
+	{
+		NativeMetadataFixture fixture;
+		fixture.Session().agent_version = version;
+		fixture.Parent();
+		UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+		UAM_ASSERT_EQ(fixture.queries.load(), 1);
+	}
+	NativeMetadataFixture mismatch;
+	mismatch.Session().agent_version = "1.19.4";
+	UAM_ASSERT_EQ(sqlite3_exec(mismatch.database, "DROP INDEX part_message_id_id_idx", nullptr, nullptr, nullptr), SQLITE_OK);
+	bool failed = false;
+	try { mismatch.WaitGate(); }
+	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("schema") != std::string::npos; }
+	UAM_ASSERT(failed);
 }
 
 UAM_TEST(OpenCodeMetadataClassifiesActiveSummaryInlineWithoutResettingOwners)
