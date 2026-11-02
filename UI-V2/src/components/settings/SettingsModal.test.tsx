@@ -2386,7 +2386,7 @@ describe('SettingsModal memory settings', () => {
     expect(backgroundInput).toBeTruthy()
     expect(host.querySelectorAll('input[type="color"]')).toHaveLength(0)
     expect(host.querySelectorAll('select')).toHaveLength(0)
-    expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(12)
+    expect(host.querySelectorAll('input[pattern="#[0-9A-Fa-f]{6}"]')).toHaveLength(17)
 
     const nextButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Next') as HTMLButtonElement
     act(() => {
@@ -2485,7 +2485,8 @@ describe('SettingsModal memory settings', () => {
       importInput?.dispatchEvent(new Event('change', { bubbles: true }))
     })
 
-    expect(useAppStore.getState().saveCustomTheme).toHaveBeenCalledWith(imported)
+    // A theme exported before token-type colours existed imports with its base's defaults.
+    expect(useAppStore.getState().saveCustomTheme).toHaveBeenCalledWith({ ...imported, colors: { ...imported.colors, tokenInput: '#dc7ba3', tokenCacheRead: '#80b756', tokenCacheWrite: '#a3abf4', tokenOutput: '#e0bd85', tokenReasoning: '#b26dbd' } })
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('custom:forest')
 
     act(() => root.unmount())

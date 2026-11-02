@@ -81,7 +81,8 @@ const ALERT_ROW_PX = 44
 export function pushStackedAlert(stack: StackedAlert[], alert: TransientAlert): StackedAlert[] {
   const same = stack.find((item) => !item.leaving && (item.id === alert.id ||
     (item.message === alert.message && item.tone === alert.tone && item.action === alert.action)))
-  if (same) return stack.map((item) => item === same ? { ...alert, id: same.id, count: same.count + 1 } : item)
+  // A repeat moves to the bottom as the newest notice; its keyed remount replays the slide-in.
+  if (same) return [...stack.filter((item) => item !== same), { ...alert, id: same.id, count: same.count + 1 }]
   return [...stack, { ...alert, count: 1 }]
 }
 
@@ -244,7 +245,7 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
         {expanded ? 'Show fewer' : `Show ${hidden} more`}
       </Button>}
       <div className="uam-transient-alert-list flex min-h-0 flex-col" style={{ overflowY: expanded ? 'auto' : 'visible' }}>
-        {alerts.map((alert, index) => <TransientAlertItem key={alert.id} alert={alert} held={held} collapsed={index < hidden} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
+        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} held={held} collapsed={index < hidden} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
       </div>
     </div>
   </>

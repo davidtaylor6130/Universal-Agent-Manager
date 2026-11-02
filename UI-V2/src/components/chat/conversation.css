@@ -209,7 +209,6 @@
 @keyframes conversation-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
 /* Goals popup, edit-mode strip above the composer. */
-.conversation-goals-popup { border: 1px solid var(--border-bright); border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); box-shadow: var(--elev-3); animation: conversation-pop-in var(--dur-base) var(--ease-out-soft) backwards; }
 @keyframes conversation-pop-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
 
 /* ── Chat status divider ─────────────────────────────────────

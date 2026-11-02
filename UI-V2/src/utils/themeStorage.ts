@@ -15,7 +15,15 @@ export interface ThemeColors {
   success: string
   warning: string
   error: string
+  tokenInput: string
+  tokenCacheRead: string
+  tokenCacheWrite: string
+  tokenOutput: string
+  tokenReasoning: string
 }
+
+/** Usage token-type colours; themes saved before they existed fall back to their base's defaults. */
+export const TOKEN_COLOR_KEYS = ['tokenInput', 'tokenCacheRead', 'tokenCacheWrite', 'tokenOutput', 'tokenReasoning'] as const
 
 export interface CustomTheme {
   version: 1
@@ -42,11 +50,13 @@ export const BUILT_IN_THEME_COLORS: Record<ResolvedTheme, ThemeColors> = {
     background: '#0f1117', surface: '#12141b', surfaceUp: '#191c25', text: '#eef1f7', textMuted: '#9aa4b6',
     accent: '#ff6a00', sidebar: '#11131a', userMessage: '#211811', assistantMessage: '#12141b',
     success: '#4ade80', warning: '#facc15', error: '#f87171',
+    tokenInput: '#dc7ba3', tokenCacheRead: '#80b756', tokenCacheWrite: '#a3abf4', tokenOutput: '#e0bd85', tokenReasoning: '#b26dbd',
   },
   light: {
     background: '#f7f8fa', surface: '#ffffff', surfaceUp: '#f2f4f7', text: '#141820', textMuted: '#596273',
     accent: '#ff6a00', sidebar: '#fbfcfe', userMessage: '#fff3eb', assistantMessage: '#ffffff',
     success: '#16a34a', warning: '#eab308', error: '#ef4444',
+    tokenInput: '#b4466e', tokenCacheRead: '#46703a', tokenCacheWrite: '#4d59b2', tokenOutput: '#91652e', tokenReasoning: '#804387',
   },
 }
 
@@ -65,6 +75,11 @@ const CUSTOM_CSS_PROPERTIES: Record<keyof ThemeColors, string> = {
   success: '--green',
   warning: '--yellow',
   error: '--red',
+  tokenInput: '--token-input',
+  tokenCacheRead: '--token-cache-read',
+  tokenCacheWrite: '--token-cache-write',
+  tokenOutput: '--token-output',
+  tokenReasoning: '--token-reasoning',
 }
 
 const DERIVED_CSS_PROPERTIES = [
@@ -119,7 +134,7 @@ export function normalizeCustomTheme(value: unknown): CustomTheme | null {
   const rawColors = raw.colors as Record<string, unknown>
   const colors = {} as ThemeColors
   for (const key of Object.keys(CUSTOM_CSS_PROPERTIES) as Array<keyof ThemeColors>) {
-    const color = rawColors[key]
+    const color = rawColors[key] ?? ((TOKEN_COLOR_KEYS as readonly string[]).includes(key) ? BUILT_IN_THEME_COLORS[raw.base][key] : undefined)
     if (typeof color !== 'string' || !HEX_COLOR.test(color)) return null
     colors[key] = color.toLowerCase()
   }

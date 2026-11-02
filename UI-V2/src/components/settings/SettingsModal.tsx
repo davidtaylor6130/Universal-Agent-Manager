@@ -531,6 +531,11 @@ const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
   { key: 'success', label: 'Success' },
   { key: 'warning', label: 'Warning' },
   { key: 'error', label: 'Error' },
+  { key: 'tokenInput', label: 'Input tokens' },
+  { key: 'tokenCacheRead', label: 'Cache read tokens' },
+  { key: 'tokenCacheWrite', label: 'Cache write tokens' },
+  { key: 'tokenOutput', label: 'Output tokens' },
+  { key: 'tokenReasoning', label: 'Reasoning tokens' },
 ]
 const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
 // Shared surface for settings dialogs: title, body, then actions right-aligned with the primary last.

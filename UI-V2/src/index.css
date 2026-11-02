@@ -52,12 +52,12 @@
   --info-dim:         var(--blue-dim);
 
   /* Token categories (usage bars, legends, tooltips). Hues avoid provider, status and accent hues. Calm (low chroma),
-     at least 4.4:1 on light surfaces, and spread in lightness so pairs stay apart under red-green colour blindness. */
-  --token-input:       #b5476f;
+     at least 4.5:1 on light surfaces, and spread in lightness so pairs stay apart under red-green colour blindness. */
+  --token-input:       #b4466e;
   --token-cache-read:  #46703a;
-  --token-cache-write: #535fb5;
-  --token-output:      #976a30;
-  --token-reasoning:   #8f4b96;
+  --token-cache-write: #4d59b2;
+  --token-output:      #91652e;
+  --token-reasoning:   #804387;
 
   /* Sidebar */
   --sidebar-bg:      #fbfcfe;
@@ -167,15 +167,15 @@
   --provider-logo-mono-filter: invert(1);
 }
 
-/* Token categories on dark surfaces: softened pastels, at least 4.3:1 on every dark surface and bright enough for --bg
-   label text inside segments. */
-[data-theme="dark"], [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
-  --token-input:       #e08aae;
-  --token-cache-read:  #8fbf6a;
-  --token-cache-write: #aeb5f5;
-  --token-output:      #e6c99c;
-  --token-reasoning:   #b777c2;
-}
+/* Token categories per theme (light lives in :root). Each theme tunes the five hues to its surfaces: at least 4.5:1 on
+   --bg, --surface and --surface-up (dark themes also carry --bg label text inside segments), lightness spread kept. */
+[data-theme="paper"] { --token-input:#a44b62; --token-cache-read:#426b3e; --token-cache-write:#5152a3; --token-output:#836633; --token-reasoning:#764276; }
+[data-theme="dark"] { --token-input:#dc7ba3; --token-cache-read:#80b756; --token-cache-write:#a3abf4; --token-output:#e0bd85; --token-reasoning:#b26dbd; }
+[data-theme="focus"] { --token-input:#cc86a3; --token-cache-read:#90b275; --token-cache-write:#a6ace5; --token-output:#d5be99; --token-reasoning:#a877b0; }
+[data-theme="midnight"] { --token-input:#dd88b1; --token-cache-read:#92bf70; --token-cache-write:#b3baf4; --token-output:#e5c99f; --token-reasoning:#b17dc2; }
+[data-theme="dusk"] { --token-input:#da93ac; --token-cache-read:#9dc181; --token-cache-write:#b6bbf0; --token-output:#e4cdab; --token-reasoning:#b78bc3; }
+[data-theme="aurora"] { --token-input:#ea9f8c; --token-cache-read:#9ed078; --token-cache-write:#c4cafd; --token-output:#f0d4a7; --token-reasoning:#c197d8; }
+[data-theme="contrast"] { --token-input:#fa78ae; --token-cache-read:#7ad335; --token-cache-write:#c0c7ff; --token-output:#fdd9a0; --token-reasoning:#d27ee0; }
 
 /* Appearance "Higher contrast" setting. Mixes from --text/--bg (not the token itself) to avoid a cyclic custom property. */
 :root[data-contrast="more"] {
@@ -2474,7 +2474,7 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--success-dim);
   color: var(--green);
 }
-/* Goal tab: a sibling tab beside the workspace tab, same shell; status and icon recede, objective truncates. */
+/* Goal tab: a sibling tab beside the workspace tab, same shell; the body opens the goal window, Edit and Stop sit after it. */
 .uam-composer-goal-tab {
   display: inline-flex;
   align-self: flex-end;
@@ -2484,7 +2484,7 @@ button.uam-commit-check { cursor: pointer; }
   max-width: 100%;
   min-width: 0;
   margin: 0;
-  padding: 2px 12px 2px 10px;
+  padding: 2px 4px 2px 10px;
   border: 0;
   border-radius: 8px 8px 0 0;
   background: var(--surface);
@@ -2492,13 +2492,12 @@ button.uam-commit-check { cursor: pointer; }
   font-family: inherit;
   font-size: var(--fs-xs);
   text-align: left;
-  cursor: pointer;
   transition: color var(--dur-fast) var(--ease);
 }
-.uam-composer-goal-tab:hover { color: var(--text); }
-.uam-composer-goal-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.uam-composer-goal-tab > svg { flex-shrink: 0; color: var(--text-3); }
-.uam-composer-goal-tab__status { flex-shrink: 0; color: var(--text-3); font-weight: 500; text-transform: capitalize; }
+.uam-composer-goal-tab__body { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 4px 0 0; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: color var(--dur-fast) var(--ease); }
+.uam-composer-goal-tab__body:hover { color: var(--text); }
+.uam-composer-goal-tab__body:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-composer-goal-tab__body > svg { flex-shrink: 0; color: var(--text-3); }
 .uam-composer-goal-tab__objective { min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @keyframes uam-copy-pop { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); } }

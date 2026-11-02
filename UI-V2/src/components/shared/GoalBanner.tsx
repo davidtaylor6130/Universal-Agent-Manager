@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronRight } from 'lucide-react'
+import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X } from 'lucide-react'
 import type { Goal } from '../../types/goal'
 import { Button, IconButton, MenuItem, Overlay, Presence, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
@@ -71,7 +71,7 @@ function readablePlanItem(item: string): string {
   return trimmed.replace(/^T\d+\s*(?:[:.)\]_\-–—]\s*)?/i, '').trim() || trimmed
 }
 
-function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean>; returnFocusElement: HTMLButtonElement | null }) {
+export function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean>; returnFocusElement: HTMLButtonElement | null }) {
   const [draft, setDraft] = useState(objective)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -203,54 +203,26 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
   }, [menuOpen])
 
   return (
-    <div
-      className="uam-goal-banner flex items-center gap-2 px-3 py-2 text-sm"
-      style={{ background: 'var(--surface)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
-    >
-      <div className="flex flex-shrink-0 flex-col items-center gap-1">
-        <div className="flex items-center gap-1.5">
-          <Target size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
-          <Tooltip label={goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}>
-            <span className="uam-goal-pill" data-tone={tone}>
-              <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
-              {statusLabel(goal.status)}
-            </span>
-          </Tooltip>
-        </div>
+    <div className="uam-goal-banner text-sm">
+      <div className="uam-goal-banner__header">
+        <Target size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
+        <Tooltip label={goal.executionOwner === 'provider' ? 'Provider managed' : 'UAM managed'}>
+          <span className="uam-goal-pill" data-tone={tone}>
+            <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
+            {statusLabel(goal.status)}
+          </span>
+        </Tooltip>
+        {goal.pendingContinuation ? <span className="text-xs" style={{ color: 'var(--text-3)' }}>Queued after current turn</span> : turnRunning && goal.status === 'paused' ? <span className="text-xs" style={{ color: 'var(--text-3)' }}>Current turn will finish</span> : null}
       </div>
+      <p className="uam-goal-banner__objective">{goal.objective}</p>
+      {blockerDisplay && (
+        <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
+          <strong>{blockerLabel}:</strong> {blockerDisplay} {blockerAction}
+        </p>
+      )}
 
-      {/* Objective + optional blocker */}
-      <details className="group min-w-0 flex-1">
-        <summary className="uam-goal-banner__summary flex min-w-0 cursor-pointer items-center gap-1.5" style={{ color: 'var(--text)' }}>
-          <ChevronRight data-goal-disclosure-icon size={14} className="flex-shrink-0 transition-transform duration-150 group-open:rotate-90" aria-hidden />
-					<span className="min-w-0 flex-1">
-						<span className="block truncate" style={{ fontWeight: 500 }} title={goal.objective}>{goal.objective}</span>
-						{blockerDisplay && (
-							<span role="alert" className="block truncate text-xs" style={{ color: 'var(--error)', marginTop: 1 }} title={`${blockerLabel}: ${blockerDisplay} ${blockerAction}`}>
-								<strong>{blockerLabel}:</strong> {blockerDisplay} {blockerAction}
-							</span>
-						)}
-					</span>
-        </summary>
-        <div
-          data-goal-details-scroll
-          role="region"
-          aria-label="Goal details"
-          tabIndex={0}
-          className="uam-goal-banner__details mt-2 grid gap-2 rounded-md p-2 pr-1 text-xs"
-          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
-        >
-          <div className="whitespace-pre-wrap" style={{ color: 'var(--text-2)' }}>{goal.objective}</div>
-					{goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && <div><strong style={{ color: 'var(--text)' }}>Models:</strong> <span style={{ color: 'var(--text-2)' }}>Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked</span></div>}
-					{goal.lastDiagnostic && <div><strong style={{ color: 'var(--text)' }}>Last check:</strong> <span style={{ color: 'var(--text-2)' }}>{readableDiagnostic(goal.lastDiagnostic)}</span></div>}
-          {currentStep && <div><strong style={{ color: 'var(--text)' }}>Current step:</strong> <span style={{ color: 'var(--text-2)' }}>{currentStep}</span></div>}
-          {completedItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Completed steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{completedItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
-          {remainingItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Remaining steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{remainingItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
-        </div>
-      </details>
-
-      <div className="uam-goal-banner__progress flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
-        {goal.pendingContinuation ? <span>Queued after current turn</span> : turnRunning && goal.status === 'paused' ? <span>Current turn will finish</span> : null}
+      <div className="uam-goal-banner__progress text-xs" style={{ color: 'var(--text-3)' }}>
+        <span>Steps</span>
         <progress
           className="uam-goal-progress"
           aria-label="Goal progress"
@@ -259,26 +231,33 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
           value={isComplete ? 1 : totalItems > 0 ? completedCount : undefined}
         />
         <span className="whitespace-nowrap">{progressLabel}</span>
+        {budgetDisplay && goal.tokenBudget && (<>
+          <span>Tokens</span>
+          <span aria-hidden className="uam-goal-meter" data-level={budgetLevel}>
+            <span style={{ width: `${budgetPercent}%` }} />
+          </span>
+          <span className="font-mono whitespace-nowrap" title="Tokens used / budget">{budgetDisplay}</span>
+        </>)}
       </div>
 
-      {budgetDisplay && goal.tokenBudget && (
-        <Tooltip label="Tokens used / budget">
-          <span className="uam-goal-banner__secondary flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
-            <span aria-hidden className="uam-goal-meter" data-level={budgetLevel}>
-              <span style={{ width: `${budgetPercent}%` }} />
-            </span>
-            <span className="font-mono">{budgetDisplay}</span>
-          </span>
-        </Tooltip>
+      {(currentStep || completedItems.length > 0 || remainingItems.length > 0 || goal.lastDiagnostic || (goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel)) && (
+        <div
+          data-goal-details-scroll
+          role="region"
+          aria-label="Goal details"
+          tabIndex={0}
+          className="uam-goal-banner__details grid gap-2 rounded-md p-3 text-xs"
+          style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}
+        >
+          {goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && <div><strong style={{ color: 'var(--text)' }}>Models:</strong> <span style={{ color: 'var(--text-2)' }}>Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked</span></div>}
+          {goal.lastDiagnostic && <div><strong style={{ color: 'var(--text)' }}>Last check:</strong> <span style={{ color: 'var(--text-2)' }}>{readableDiagnostic(goal.lastDiagnostic)}</span></div>}
+          {currentStep && <div><strong style={{ color: 'var(--text)' }}>Current step:</strong> <span style={{ color: 'var(--text-2)' }}>{currentStep}</span></div>}
+          {completedItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Completed steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{completedItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
+          {remainingItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Remaining steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{remainingItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
+        </div>
       )}
 
-      {goal.status === 'active' && onPause && (
-        <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onPause}>Pause</Button>
-      )}
-      {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
-        <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onResume}>{resumePending ? 'Resuming…' : 'Resume'}</Button>
-      )}
-
+      <div className="uam-goal-banner__footer">
       {/* All goal actions consolidated into one overflow menu */}
       <div ref={menuRef} className="relative flex-shrink-0">
         <IconButton
@@ -319,6 +298,14 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
             )}
             <MenuItem disabled={resumePending} icon={<Trash2 size={14} aria-hidden />} label="Delete goal" danger onSelect={() => { setMenuOpen(false); onRemove() }} />
           </ViewportMenu>
+        )}
+      </div>
+        <span className="flex-1" />
+        {goal.status === 'active' && onPause && (
+          <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onPause}>Pause</Button>
+        )}
+        {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
+          <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onResume}>{resumePending ? 'Resuming…' : 'Resume'}</Button>
         )}
       </div>
       <Presence open={editing && Boolean(onEdit)}>

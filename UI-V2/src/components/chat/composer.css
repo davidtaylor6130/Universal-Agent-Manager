@@ -144,6 +144,5 @@
 .uam-cmenu__setting:not(.uam-cmenu__setting--nested) > .relative { justify-self: end; }
 .uam-cmenu__setting:not(.uam-cmenu__setting--nested) .uam-menu-select__trigger { width: auto; }
 
-/* Tabs above the composer share its edge and join it seamlessly. */
+/* Tabs above the composer share its edge; the composer top border stays as a line below them. */
 .uam-composer-workspace-tab, .uam-composer-goal-tab { border: 1px solid var(--composer-border, color-mix(in srgb, var(--text) 16%, transparent)); border-bottom: 0; }
-.uam-composer-tabs { margin-bottom: -1px; position: relative; z-index: 1; }

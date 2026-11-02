@@ -333,7 +333,7 @@ describe('ChatView', () => {
       expect(create).toHaveBeenCalledTimes(2)
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ setGoal: originalCreate, sendAcpPrompt: originalSend }) }
   })
-  it('shows goals in a bounded composer popup and keeps edits separate from its unsent draft', async () => {
+  it('shows goals in a modal goal window and keeps edits separate from its unsent draft', async () => {
     const goal = { id: 'goal-popup', chatId: 'chat-1', objective: 'Ship the popup', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
     const send = vi.fn(async () => true)
     const edit = vi.fn(async () => ({ ok: true }))
@@ -346,21 +346,25 @@ describe('ChatView', () => {
       expect(host.querySelector('.uam-goal-banner')).toBeNull()
       const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goals"]')!
       expect(trigger.textContent).toContain('Ship the popup')
-      expect(trigger.classList.contains('uam-composer-goal-tab')).toBe(true)
-      expect(trigger.parentElement?.classList.contains('uam-composer-tabs')).toBe(true)
-      expect(trigger.previousElementSibling?.classList.contains('uam-composer-workspace-tab')).toBe(true)
+      expect(trigger.classList.contains('uam-composer-goal-tab__body')).toBe(true)
+      expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
+      const tab = trigger.parentElement!
+      expect(tab.classList.contains('uam-composer-goal-tab')).toBe(true)
+      expect(tab.parentElement?.classList.contains('uam-composer-tabs')).toBe(true)
+      expect(tab.previousElementSibling?.classList.contains('uam-composer-workspace-tab')).toBe(true)
       const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Unsent next prompt'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       openComposerGoals(host)
       let popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
-      expect(popup).toBeTruthy()
+      expect(popup.getAttribute('role')).toBe('dialog')
+      expect(popup.getAttribute('aria-modal')).toBe('true')
       act(() => { composer.focus(); composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(composer.value).toBe('Unsent next prompt')
       openComposerGoals(host)
       popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Edit goal"] textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Updated goal'); input.dispatchEvent(new Event('input', { bubbles: true })) })
       await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
@@ -368,25 +372,50 @@ describe('ChatView', () => {
       expect(send).not.toHaveBeenCalled()
       expect(composer.value).toBe('Unsent next prompt')
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeTruthy()
       expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
       expect(document.activeElement).toBe(popup.querySelector('[aria-label="Goal actions"]'))
-      expect(document.querySelector('[aria-modal="true"]')).toBeNull()
+      expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1)
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(document.activeElement).toBe(trigger)
       act(() => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })))
       const reopened = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => reopened.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, id: 'replacement', objective: 'Replacement goal' }] }, activeGoalIdByChatId: { 'chat-1': 'replacement' } }))
       expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(trigger.textContent).toContain('Replacement goal')
       expect(composer.value).toBe('Unsent next prompt')
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sendAcpPrompt: originalSend, updateGoalObjective: originalEdit }) }
+  })
+  it('edits and stops the goal from the composer goal tab', async () => {
+    const goal = { id: 'goal-tab', chatId: 'chat-1', objective: 'Tab goal', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
+    const edit = vi.fn(async () => ({ ok: true }))
+    const pause = vi.fn(async () => ({ ok: true }))
+    const original = { updateGoalObjective: useAppStore.getState().updateGoalObjective, updateGoalStatus: useAppStore.getState().updateGoalStatus }
+    useAppStore.setState({ goalsByChatId: { 'chat-1': [goal] }, activeGoalIdByChatId: { 'chat-1': goal.id }, updateGoalObjective: edit, updateGoalStatus: pause })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const tab = host.querySelector<HTMLElement>('.uam-composer-goal-tab')!
+      const editButton = tab.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!
+      act(() => editButton.click())
+      expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
+      const input = document.querySelector<HTMLTextAreaElement>('[role="dialog"][aria-label="Edit goal"] textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Edited from tab'); input.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      expect(edit).toHaveBeenCalledWith('chat-1', goal.id, 'Edited from tab')
+      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      await act(async () => tab.querySelector<HTMLButtonElement>('button[aria-label="Stop goal"]')!.click())
+      expect(pause).toHaveBeenCalledWith('chat-1', goal.id, 'paused')
+      act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, status: 'complete' as const }] } }))
+      expect(tab.querySelector('button[aria-label="Edit goal"]')).toBeNull()
+      expect(tab.querySelector('button[aria-label="Stop goal"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(original) }
   })
   it('isolates delayed goal edit failures after switching chats and leaves the new chat goal usable', async () => {
     const first = useAppStore.getState().sessions[0]
@@ -400,7 +429,7 @@ describe('ChatView', () => {
     const saveGoal = async () => {
       openComposerGoals(host)
       act(() => document.querySelector<HTMLButtonElement>('[aria-label="Chat goals"] [aria-label="Goal actions"]')!.click())
-      act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+      act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
     }
     try {
@@ -2935,6 +2964,9 @@ describe('ChatView', () => {
     // Edit tab sits in the composer tab row, left of the side-chat tab; the send button saves with a pencil.
     const editTab = host.querySelector('.uam-composer-tabs__end > [role="group"][aria-label="Editing message"]')
     expect(editTab?.classList.contains('uam-composer-side-controls')).toBe(true)
+    // Enters with the shared subagent disclosure motion.
+    expect(editTab?.classList.contains('uam-subagent-disclosure')).toBe(true)
+    expect(editTab?.getAttribute('data-state')).toBe('open')
     expect(editTab?.textContent).toContain('Editing message')
     expect(editTab?.querySelector('button[aria-label="Cancel edit"]')).toBeTruthy()
     expect(host.textContent).not.toContain('Save changes')

@@ -26,7 +26,7 @@ import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStar
 import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactElement, type ReactNode, cloneElement, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
@@ -35,7 +35,7 @@ import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
-import { GoalBanner } from '../shared/GoalBanner'
+import { EditGoalDialog, GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
@@ -49,9 +49,10 @@ import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, ConfirmDialog, IconButton, Tooltip } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Presence, Tooltip, usePresence } from '../ui'
+import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { ContextChip } from '../chat/ContextChip'
@@ -59,7 +60,7 @@ import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerC
 import { draftFileMentions } from '../../utils/fileContextReferences'
 import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
-import { getTopmostModal } from '../../utils/modalFocus'
+import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 // Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
 const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
@@ -347,6 +348,16 @@ const parentViewportVisits = new Map<string, ParentViewportDetails & { top: numb
 
 const receiptRetryAvailable = (prompt: AcpQueuedPrompt) => prompt.retryAllowed === true || (prompt.retryAllowed !== false && Number.isSafeInteger(prompt.existingUserMessageIndex) && prompt.existingUserMessageIndex! >= 0)
 
+/** Composer tab that enters and leaves with the shared subagent disclosure motion; reduced motion skips the exit wait. */
+function ComposerTab({ open, children }: { open: boolean; children: ReactElement<{ className?: string; 'data-state'?: string }> }) {
+  const { mounted, closing } = usePresence(open)
+  const last = useRef(children)
+  if (open) last.current = children
+  if (!mounted) return null
+  const tab = open ? children : last.current
+  return cloneElement(tab, { className: `${tab.props.className ?? ''} uam-subagent-disclosure`, 'data-state': closing ? 'closed' : 'open' })
+}
+
 export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
   const sessionBirth = session.createdAt.getTime()
   const showComposerRef = useRef(showComposer)
@@ -360,6 +371,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const workspaceMenuId = useId()
   const goalsPopupId = useId()
   const [goalsPopupOwner, setGoalsPopupOwner] = useState<string | null>(null)
+  const [goalEditOwner, setGoalEditOwner] = useState<string | null>(null)
+  const goalEditTriggerRef = useRef<HTMLButtonElement>(null)
   const goalsTriggerRef = useRef<HTMLButtonElement>(null)
   const goalsPopupRef = useRef<HTMLDivElement>(null)
   const goalMutationGenerationRef = useRef(0)
@@ -1805,6 +1818,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const subagentParent = useAppStore(state => subagentParentFor(session, state.sessions))
   const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
+  // Keeps the tab row mounted while the Editing tab plays its exit.
+  const editTabMounted = usePresence(editingMessageIndex !== null).mounted
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
@@ -2458,6 +2473,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const goalsPopupOpen = Boolean(goalOwner && goalsPopupOwner === goalOwner)
   useEffect(() => {
     setGoalsPopupOwner(null)
+    setGoalEditOwner(null)
     if (goalMutationOwnerRef.current !== null && goalMutationOwnerRef.current !== goalOwner) {
       goalMutationGenerationRef.current += 1
       goalMutationOwnerRef.current = null
@@ -2467,7 +2483,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [goalOwner])
   useEffect(() => {
-    if (goalsPopupOpen) goalsPopupRef.current?.querySelector<HTMLElement>('summary')?.focus()
+    if (!goalsPopupOpen) return
+    const dialog = goalsPopupRef.current
+    dialog?.focus()
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || getTopmostModal() !== dialog) return
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
+      else trapModalTab(event)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement)) goalsTriggerRef.current?.focus()
+    }
   }, [goalsPopupOpen])
   const displayedGoalWorkerLabel = session.smallModelMode && displayedGoal?.workerModelId
     ? modelOptionFor(buildModelOptions(providerAcp, displayedGoal.workerModelId, currentProvider, currentProviderId), displayedGoal.workerModelId).label
@@ -3493,33 +3521,32 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         </div>
 
         <div ref={showComposer ? composerDockRef : undefined} className={showComposer ? `uam-composer-dock${composerCentred ? ' uam-composer-dock--centred' : ''}` : 'contents'}>
-        {displayedGoal && goalsPopupOpen && (
-          <ViewportMenu ref={goalsPopupRef} anchorRef={goalsTriggerRef} side="top" role="region" aria-label="Chat goals" id={goalsPopupId} manageFocus={false}
-            onKeyDownCapture={(event) => {
-              if (event.key !== 'Escape' || getTopmostModal() || !event.currentTarget.contains(event.target as Node)) return
-              event.preventDefault(); event.stopPropagation()
-              setGoalsPopupOwner(null)
-              goalsTriggerRef.current?.focus()
-            }}
-            className="conversation-goals-popup"
-            style={{ width: 560, maxHeight: 'min(360px, calc(100vh - 16px))' }}>
-          <GoalBanner key={goalOwner}
-            goal={displayedGoal}
-            onComplete={handleCompleteGoal}
-            onPause={handlePauseGoal}
+        <Overlay open={Boolean(displayedGoal && goalsPopupOpen)} zIndex={1000} onBackdropMouseDown={() => setGoalsPopupOwner(null)}>
+          {displayedGoal && <div ref={goalsPopupRef} id={goalsPopupId} role="dialog" aria-modal="true" aria-label="Chat goals" tabIndex={-1}
+            className="w-full max-w-xl rounded-xl p-4"
+            style={{ maxHeight: 'min(640px, calc(100dvh - 32px))', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)', color: 'var(--text)' }}
+            onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="flex-1 text-base font-semibold" style={{ color: 'var(--text)' }}>Goal</h2>
+              <IconButton icon={<X size={17} aria-hidden />} label="Close goal" onClick={() => setGoalsPopupOwner(null)} />
+            </div>
+            <GoalBanner key={goalOwner}
+              goal={displayedGoal}
+              onComplete={handleCompleteGoal}
+              onPause={handlePauseGoal}
 			onResume={session.importedReadOnly ? undefined : () => void handleResumeGoal()}
-            onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
-              () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
-            )}
-            turnRunning={Boolean(acp?.processing || cli?.processing)}
-            resumePending={goalSubmitting}
-            onRemove={handleRemoveGoal}
-            onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
-            workerModelLabel={displayedGoalWorkerLabel}
-            reviewerModelLabel={displayedGoalReviewerLabel}
-          />
-          </ViewportMenu>
-        )}
+              onRestart={session.importedReadOnly ? undefined : () => void runGoalMutation(
+                () => resumeGoal(session.id, displayedGoal.id, true), 'Failed to restart goal.',
+              )}
+              turnRunning={Boolean(acp?.processing || cli?.processing)}
+              resumePending={goalSubmitting}
+              onRemove={handleRemoveGoal}
+              onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
+              workerModelLabel={displayedGoalWorkerLabel}
+              reviewerModelLabel={displayedGoalReviewerLabel}
+            />
+          </div>}
+        </Overlay>
 
         {composerCentred && <div className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
@@ -3599,7 +3626,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editingMessageIndex !== null) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editTabMounted) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
             {showComposer && !isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
               <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
@@ -3702,18 +3729,27 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               </>
             </div>}
             {/* ui: raw button kept — goal tab look (its own status and objective layout); Chip would add the uam-chip look */}
-            {showComposer && displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
-              aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
-              className="uam-composer-goal-tab" title={displayedGoal.objective}
-              onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
-              onKeyDown={(event) => {
-                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
-                else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
-              }}>
-              <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__status">{displayedGoal.status}</span><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
-            </button>}
+            {showComposer && displayedGoal && <div className="uam-composer-goal-tab" role="group" aria-label="Goal">
+              {/* ui: raw button kept — tab body look; Chip would add the uam-chip look */}
+              <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
+                aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="dialog"
+                className="uam-composer-goal-tab__body" title={displayedGoal.objective}
+                onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
+                }}>
+                <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
+              </button>
+              {displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' && !session.importedReadOnly &&
+                <IconButton ref={goalEditTriggerRef} size="sm" icon={<Pencil size={12} aria-hidden />} label="Edit goal" disabled={goalSubmitting} onClick={() => setGoalEditOwner(goalOwner)} />}
+              {displayedGoal.status === 'active' &&
+                <IconButton size="sm" icon={<Square size={11} aria-hidden />} label="Stop goal" disabled={goalSubmitting} onClick={handlePauseGoal} />}
+            </div>}
+            <Presence open={Boolean(displayedGoal && goalEditOwner === goalOwner)}>
+              {displayedGoal && <EditGoalDialog key={goalOwner} objective={displayedGoal.objective} onClose={() => setGoalEditOwner(null)} onSave={handleEditGoal} returnFocusElement={goalEditTriggerRef.current} />}
+            </Presence>
             <div className="uam-composer-tabs__end">
-              {editingMessageIndex !== null && (
+              <ComposerTab open={editingMessageIndex !== null}>
                 <div className="uam-composer-side-controls" role="group" aria-label="Editing message">
                   <span className="uam-composer-side-controls__pill" title={editingMessageSource.kind === 'unsent' ? 'Saving updates this unsent input' : 'Saving creates a new branch'}>
                     <Pencil size={12} aria-hidden />
@@ -3721,8 +3757,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   </span>
                   <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Cancel edit" tooltip="Cancel edit (Esc)" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage} />
                 </div>
-              )}
-              {showComposer && showSideChatControls && (session.temporaryParentChatId ? (
+              </ComposerTab>
+              <ComposerTab open={showComposer && showSideChatControls}>{session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
                   <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
                     <MessageSquareDashed size={12} aria-hidden />
@@ -3735,7 +3771,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div className="uam-composer-side-controls">
                   <Button type="button" size="sm" variant="ghost" leadingIcon={<MessageSquareDashed size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
                 </div>
-              ))}
+              )}</ComposerTab>
             </div>
             </div>}
             {pendingUserInput && !session.importedReadOnly && (

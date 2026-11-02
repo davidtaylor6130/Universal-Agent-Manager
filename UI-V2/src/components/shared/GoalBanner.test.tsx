@@ -100,10 +100,12 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-  it('expands the full objective and exact completed and remaining steps', () => {
+  it('shows the full objective and exact completed and remaining steps as stacked rows', () => {
     const { host, root } = renderGoal()
 
-    expect(host.querySelector('details')).toBeTruthy()
+    expect(host.querySelector('details')).toBeNull()
+    expect(host.querySelector('.uam-goal-banner__objective')?.textContent).toBe(goal.objective)
+    expect(host.querySelector('.uam-goal-banner__footer [aria-label="Goal actions"]')).toBeTruthy()
     const scrollRegion = host.querySelector('[data-goal-details-scroll]') as HTMLElement
     expect(scrollRegion).toBeTruthy()
     expect(scrollRegion.className).toContain('uam-goal-banner__details')
@@ -118,21 +120,17 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-  it('keeps truthful planned-step progress visible while details are collapsed', () => {
+  it('keeps truthful planned-step progress visible beside the details', () => {
     const { host, root } = renderGoal({
       completedItems: ['T01 Baseline'],
       remainingItems: ['T02 Fix regressions', 'T03: Verify the package'],
       currentStep: 'T02 Fix regressions',
     })
 
-    const summary = host.querySelector('summary') as HTMLElement
-    expect(summary.className).toContain('flex')
-    expect(summary.querySelector('[data-goal-disclosure-icon]')).toBeTruthy()
-    expect(summary.getAttribute('aria-label')).toBeNull()
     const progress = host.querySelector('progress[aria-label="Goal progress"]') as HTMLProgressElement
     expect(progress).toBeTruthy()
-    expect(progress.closest('details')).toBeNull()
-    expect(progress.closest('.uam-goal-banner__secondary')).toBeNull()
+    expect(progress.closest('.uam-goal-banner__progress')).toBeTruthy()
+    expect(progress.closest('[data-goal-details-scroll]')).toBeNull()
     expect(host.textContent).toContain('1 of 3 steps')
     expect(host.textContent).toContain('Current step: Fix regressions')
     expect(host.textContent).toContain('Completed steps')
@@ -162,7 +160,7 @@ describe('GoalBanner', () => {
     act(() => root.unmount())
   })
 
-	it('keeps the blocker category, cause, and next action visible while collapsed', () => {
+	it('keeps the blocker category, cause, and next action visible', () => {
 		const { host, root } = renderGoal({
 			status: 'blocked',
 			lastBlockerKind: 'user_permission_approval',
@@ -171,7 +169,7 @@ describe('GoalBanner', () => {
 			currentStep: 'Continue processing the files',
 		})
 
-		const alert = host.querySelector('summary [role="alert"]') as HTMLElement
+		const alert = host.querySelector('[role="alert"]') as HTMLElement
 		expect(alert).toBeTruthy()
 		expect(alert.textContent).toContain('Needs access')
 		expect(alert.textContent).toContain('The remote helper needs Documents access.')

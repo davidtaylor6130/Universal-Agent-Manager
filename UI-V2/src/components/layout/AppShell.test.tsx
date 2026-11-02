@@ -24,7 +24,7 @@ vi.mock('./MainPanel', () => ({
   },
 }))
 
-import { AppShell } from './AppShell'
+import { AppShell, pushStackedAlert } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -1257,6 +1257,13 @@ describe('AppShell', () => {
     expect(host.textContent).not.toContain('Committing…')
     act(() => root.unmount())
     host.remove()
+  })
+  it('moves a repeated notice to the bottom of the stack with its raised count', () => {
+    const notice = (id: string, message: string) => ({ id, tone: 'info' as const, message, actionLabel: 'View', action: 'notifications' as const })
+    let stack = pushStackedAlert([], notice('a', 'One'))
+    stack = pushStackedAlert(stack, notice('b', 'Two'))
+    stack = pushStackedAlert(stack, notice('c', 'One'))
+    expect(stack.map((item) => [item.id, item.message, item.count])).toEqual([['b', 'Two', 1], ['a', 'One', 2]])
   })
   it('stacks distinct notices newest at the bottom, counts identical repeats and collapses overflow', async () => {
     vi.useFakeTimers()
