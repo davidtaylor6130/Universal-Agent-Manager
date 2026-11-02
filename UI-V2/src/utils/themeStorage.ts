@@ -70,7 +70,7 @@ const CUSTOM_CSS_PROPERTIES: Record<keyof ThemeColors, string> = {
 const DERIVED_CSS_PROPERTIES = [
   '--window-bg', '--surface-high', '--border', '--border-bright', '--text-2', '--text-3', '--accent-dim',
   '--accent-glow', '--sidebar-item-hover', '--sidebar-item-active', '--success-dim', '--warning-dim',
-  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection', '--on-accent',
+  '--error-dim', '--term-bg', '--term-fg', '--term-cursor', '--term-selection', '--on-accent', '--meter-warning',
 ]
 
 const relativeLuminance = (hex: string) => {
@@ -100,6 +100,15 @@ export function onAccentFor(accent: string, themeColors: string[] = [], text?: s
   const best = (colors: string[]) => colors.reduce((winner, color) => worst(color) > worst(winner) ? color : winner)
   const own = themeColors.length ? best(themeColors) : ''
   return own && worst(own) >= 4.5 ? own : best(['#000000', '#ffffff'])
+}
+
+/** The warning colour as-is when it reaches 3:1 graphic contrast on every surface; otherwise mixed toward the text in 5% steps until it does. */
+export function meterWarningFor(warning: string, surfaces: string[], text: string): string {
+  for (let share = 1; share > 0; share -= 0.05) {
+    const color = mixHex(warning, text, share)
+    if (Math.min(...surfaces.map((surface) => contrastRatio(surface, color))) >= 3) return color
+  }
+  return text
 }
 
 export function normalizeStoredTheme(value: unknown): StoredTheme | null {
@@ -169,7 +178,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
       for (const [key, property] of Object.entries(CUSTOM_CSS_PROPERTIES) as Array<[keyof ThemeColors, string]>) {
         desiredProperties[property] = customTheme.colors[key]
       }
-      const { background, surfaceUp, text, textMuted, accent, success, warning, error } = customTheme.colors
+      const { background, surface, surfaceUp, text, textMuted, accent, success, warning, error } = customTheme.colors
       const derived: Record<string, string> = {
         '--window-bg': background,
         '--surface-high': `color-mix(in srgb, ${surfaceUp} 92%, ${text})`,
@@ -189,6 +198,7 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
         '--on-accent': onAccentFor(accent, [background, text], text),
+        '--meter-warning': meterWarningFor(warning, [background, surface], text),
       }
       Object.assign(desiredProperties, derived)
     }

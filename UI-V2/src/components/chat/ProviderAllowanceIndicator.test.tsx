@@ -145,7 +145,8 @@ describe('ProviderAllowanceIndicator', () => {
       expect(view.host.querySelector('[role="meter"]')).toBeNull()
       expect(view.host.querySelector('[data-usage-gauge]')?.getAttribute('aria-hidden')).toBe('true')
       expect(view.host.querySelector('button')?.className).toContain('uam-composer-action')
-      expect(view.host.querySelector('button')?.hasAttribute('data-marker')).toBe(false)
+      expect(view.host.querySelector('button')?.hasAttribute('data-cached')).toBe(false)
+      expect(view.host.querySelector('button')?.hasAttribute('data-credit')).toBe(false)
       expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(54deg)')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, spendControlReached: true }} running nowMs={now} />))
       expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(90deg)')
@@ -159,7 +160,7 @@ describe('ProviderAllowanceIndicator', () => {
   ])('shows a neutral gauge without a needle or meter value when allowance is %s', (_name, rateLimits, marker) => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits, running: true, nowMs: now })
     try {
-      expect(view.host.querySelector('button')?.getAttribute('data-marker')).toBe(marker)
+      expect(view.host.querySelector('button')?.getAttribute('data-credit')).toBe(marker)
       expect(view.host.querySelectorAll('button svg').length).toBe(marker ? 2 : 1)
       expect(view.host.querySelector('[data-usage-gauge]')?.getAttribute('aria-hidden')).toBe('true')
       expect(view.host.querySelector('[data-needle]')).toBeNull()
@@ -167,13 +168,18 @@ describe('ProviderAllowanceIndicator', () => {
     } finally { view.close() }
   })
 
-  it('dims cached snapshots and adds a visible history mark that does not rely on colour', () => {
+  it('marks cached snapshots, including credit-only ones, with a visible history mark instead of dimming the bands', () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: false, nowMs: now })
     try {
       expect(accessibleName(view)).toBe('Account allowance: Cached 20% remaining')
-      expect(view.host.querySelector('button')?.getAttribute('data-marker')).toBe('cached')
+      expect(view.host.querySelector('button')?.getAttribute('data-cached')).toBe('true')
       expect(view.host.querySelectorAll('button svg').length).toBe(2)
-      expect(view.host.querySelector<HTMLElement>('[data-usage-gauge]')?.parentElement?.style.opacity).toBe('0.55')
+      expect(view.host.querySelector('[data-usage-gauge]')?.parentElement?.tagName).toBe('BUTTON')
+      act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, primary: null, secondary: null }} running={false} nowMs={now} />))
+      expect(accessibleName(view)).toBe('Account allowance: Cached Credits available')
+      expect(view.host.querySelector('button')?.getAttribute('data-cached')).toBe('true')
+      expect(view.host.querySelector('button')?.getAttribute('data-credit')).toBe('credits')
+      expect(view.host.querySelectorAll('button svg').length).toBe(3)
     } finally { view.close() }
   })
 })
