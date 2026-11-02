@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "app/startup_native_import_service.h"
 
 #include "app/chat_domain_service.h"
@@ -145,6 +146,7 @@ namespace uam
 		{
 			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				return scanner(request, stop);
 			});
 		}
@@ -241,6 +243,7 @@ namespace uam
 		{
 			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				return scanner(request, stop);
 			});
 		}
@@ -357,6 +360,7 @@ namespace uam
 				{
 					m_scan = std::async(std::launch::async, [scanner = m_scanner, request = m_scan_request, stop = m_stop.get_token()]
 					{
+						uam::platform::LowerCurrentThreadToBackgroundPriority();
 						return scanner(request, stop);
 					});
 					return true;

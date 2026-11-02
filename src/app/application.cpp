@@ -1,4 +1,5 @@
 #include <charconv>
+#include "common/platform/background_thread_priority.h"
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
 #include "common/platform/platform_speech_output.h"
@@ -458,7 +459,7 @@ bool Application::PollWorkspaceAvailability()
 			return folders;
 		});
 		m_workspaceAvailabilityScan = task.get_future();
-		std::thread(std::move(task)).detach();
+		uam::platform::StartBackgroundThread(std::move(task)).detach();
 		m_nextWorkspaceAvailabilityScan = uam::GetAppTimeSeconds() + 2.0;
 	}
 	return changed;
