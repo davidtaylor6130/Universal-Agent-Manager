@@ -248,6 +248,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
+  // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
+  const PREFETCH_MAX_IN_FLIGHT = 2
+  const PREFETCH_MAX_RETAINED = 4
+  const prefetchInFlight = new Map<string, { requestId: string; promise: Promise<void | false | AcceptedHistoryPage> }>()
+  const prefetchedIds: string[] = []
 
   const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0): Promise<void | false | AcceptedHistoryPage> | undefined => {
     if (!isCefContext() || !chatId) return
@@ -266,6 +271,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       Number.isSafeInteger(sessionAtRequestStart?.messageCount) && sessionAtRequestStart?.messagesDigest &&
       historyStartAtRequestStart + (messagesAtRequestStart?.length ?? 0) > sessionAtRequestStart!.messageCount!)
     const requestKey = `getChatMessages:${chatId}`
+    // An ordinary open joins a hover prefetch instead of superseding it and restarting the native read.
+    const prefetch = prefetchInFlight.get(chatId)
+    if (prefetch && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId)) return prefetch.promise
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
@@ -564,6 +572,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => {
+      if (id && prefetchedIds.includes(id)) prefetchedIds.splice(prefetchedIds.indexOf(id), 1)
       const selected = get().sessions.find(candidate => candidate.id === id)
       const parent = selected && subagentParentFor(selected, get().sessions)
       if (parent && id) {
@@ -764,6 +773,30 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     loadSessionMessages: requestChatMessagesFromCef,
+
+    prefetchSessionMessages: (id: string) => {
+      const state = get()
+      const session = state.sessions.find((candidate) => candidate.id === id)
+      // Remote reads can start a provider history read, so only local chats are warmed.
+      if (!session || isCompanionContext() || (session.executionHostId || 'local') !== 'local' || id === state.activeSessionId ||
+          state.messages[id] !== undefined || state.chatHistoryReadBySessionId[id] || state.chatHistoryErrorBySessionId[id] ||
+          pendingRequestIdsByKey.has(`getChatMessages:${id}`) || prefetchInFlight.size >= PREFETCH_MAX_IN_FLIGHT) return
+      const promise = requestChatMessagesFromCef(id)
+      const requestId = pendingRequestIdsByKey.get(`getChatMessages:${id}`)
+      if (!promise || !requestId) return
+      prefetchInFlight.set(id, { requestId, promise })
+      void promise.then(() => {
+        if (prefetchInFlight.get(id)?.promise === promise) prefetchInFlight.delete(id)
+        const settled = get()
+        if (settled.messages[id] === undefined || settled.activeSessionId === id || prefetchedIds.includes(id)) return
+        prefetchedIds.push(id)
+        // Unopened warm pages are evicted oldest first; selecting a chat removes it from this list.
+        while (prefetchedIds.length > PREFETCH_MAX_RETAINED) {
+          const oldest = prefetchedIds.shift()!
+          if (get().activeSessionId !== oldest) get().unloadSessionMessages(oldest)
+        }
+      })
+    },
 
     loadOlderSessionMessages: async (id: string) => {
       if (!isCefContext()) return false

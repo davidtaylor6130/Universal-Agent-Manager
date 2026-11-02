@@ -12,6 +12,8 @@ Native text clipped to a byte limit (titles, errors, diagnostics, stderr tails) 
 
 `RunAsyncCefQuery` defaults to `TID_FILE_USER_BLOCKING`. CEF currently serves that lane and `TID_FILE_USER_VISIBLE` from one shared foreground thread (observed 2026-10-26) as separate sequences, and runs queued user-blocking work first. Chat history pages stay user-blocking; read-only Git/SVN status (`getVcsCommitStatus`, `getChatWorktreeStatus`, reference-context capture) spawns subprocesses and uses `TID_FILE_USER_VISIBLE` (`kVcsStatusThread` in `vcs_handlers.cpp`). A status read that has already started still delays a page until it returns. On 2026-10-26 the live opening of a 136 MiB, 27,000-message synthetic chat waited about 300 ms behind two equal-priority Git status reads; `VcsStatusSubprocessReadsYieldToChatHistory` guards the priority split. Give new background or automatic subprocess and network work a lower priority than history reads.
 
+Sidebar hover/focus warm-up (`prefetchSessionMessages`, #624) reuses the ordinary `getChatMessages` loader. A later non-forced load of the same chat joins the warm-up's in-flight promise while it is still the latest request, instead of superseding it and restarting the native read (each native read invalidates the previous one). `SessionItem.performance.test.tsx` measures a click after a 300 ms hover against a cold click with a simulated 400 ms native read.
+
 ## Ownership and checks
 
 - Frontend transport and state: `UI-V2/src/ipc/cefBridge.ts`, `UI-V2/src/store/useAppStore.ts`, `UI-V2/src/store/push/`.
