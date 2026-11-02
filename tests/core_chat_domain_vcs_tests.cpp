@@ -2482,6 +2482,70 @@ UAM_TEST(VcsChatBaselinePersistsAllContentWithoutChangingSourceIndexOrBranch)
 	UAM_ASSERT(!service.CaptureChatBaseline(app, chat, &error));
 }
 
+UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-chat-baseline-file-kinds");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "delete.txt", "gone\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "swap.txt", "one\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "mode.sh", "echo hi\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "before\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	// Pre-existing dirty work that the chat never touches must stay out of its summary.
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "dirty before chat\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior-untracked.txt", "dirty before chat\n"));
+	const auto git_output = [&](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(repo.string()) + " " + args, 120000);
+		UAM_ASSERT(result.ok && result.exit_code == 0);
+		return result.output;
+	};
+	const std::string initial_index = git_output("ls-files -s");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "file-kinds-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT_EQ(git_output("ls-files -s"), initial_index);
+	fs::remove(repo / "delete.txt");
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "swap.txt", "two\n"));
+	fs::permissions(repo / "mode.sh", fs::perms::owner_exec, fs::perm_options::add);
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "after\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add stage.txt"));
+	const std::string binary("\x89PNG\r\n\x1a\n\0\0\0binary", 18);
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "image.png", binary));
+	const uam::VcsCommitStatus status = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(status.error.empty());
+	const auto find = [&](const std::string& path) { return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path); };
+	UAM_ASSERT(find("prior.txt") == status.changed_files.end());
+	UAM_ASSERT(find("prior-untracked.txt") == status.changed_files.end());
+	UAM_ASSERT(find("delete.txt") != status.changed_files.end() && find("delete.txt")->status == " D");
+	UAM_ASSERT(find("swap.txt") != status.changed_files.end() && find("swap.txt")->additions == 1 && find("swap.txt")->deletions == 1);
+#ifndef _WIN32
+	// A permission-only change has no line delta but is still a chat change.
+	UAM_ASSERT(find("mode.sh") != status.changed_files.end() && find("mode.sh")->additions == 0 && find("mode.sh")->deletions == 0);
+#endif
+	UAM_ASSERT(find("stage.txt") != status.changed_files.end() && find("stage.txt")->staged);
+	UAM_ASSERT(find("image.png") != status.changed_files.end() && find("image.png")->binary && find("image.png")->status == " A");
+	UAM_ASSERT(service.Diff(app, chat, "delete.txt", uam::VcsType::Git, &error, "chat").find("-gone") != std::string::npos);
+	UAM_ASSERT(service.Diff(app, chat, "stage.txt", uam::VcsType::Git, &error, "chat").find("+after") != std::string::npos);
+	UAM_ASSERT(service.Diff(app, chat, "prior.txt", uam::VcsType::Git, &error, "chat").empty());
+	UAM_ASSERT(error.find("no longer changed") != std::string::npos);
+	// Reading the comparison leaves the user's staged selection exactly as they left it.
+	UAM_ASSERT(git_output("diff --cached --name-only").find("stage.txt") != std::string::npos);
+	UAM_ASSERT(git_output("diff --cached --name-only").find("image.png") == std::string::npos);
+}
+
 UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 {
 	if (!GitAvailableForTests()) return;

@@ -1796,7 +1796,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       comparisonRef: repositoryComparisonRef,
     }).then((status) => {
       if (cancelled) return
-      setRepositoryReview(session.id, status?.available && !status.error && status.changedFiles.length > 0 ? status : null)
+      // An unavailable chat baseline is shown as such, never as whole-workspace rows.
+      setRepositoryReview(session.id, !status?.available ? null
+        : status.error ? { ...status, changedFiles: [] }
+        : status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, repositoryComparisonRef, session.id, workspaceDirectory])
@@ -3444,6 +3447,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           file={selectedRepositoryFile}
           vcsType={repositoryChanges.activeVcsType}
           comparisonRef={repositoryComparisonRef}
+          comparisonLabel={repositoryComparisonRef === 'chat' ? 'Since this chat began' : undefined}
           getDiff={getVcsFileDiff}
           onClose={() => setSelectedRepositoryFile(null)}
         />
@@ -3580,13 +3584,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 font-medium" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>
                     <div className="flex min-w-0 items-baseline gap-2">
-                      <span>Chat changes</span>
-                      {repositoryChanges && (
+                      <span>Changes from this chat</span>
+                      {repositoryChanges && !repositoryChanges.error && (
                         <span className="font-normal" style={{ color: 'var(--text-3)' }}>
                           {repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'} · +{repositoryChanges.changedFiles.reduce((total, file) => total + file.additions, 0)} / -{repositoryChanges.changedFiles.reduce((total, file) => total + file.deletions, 0)}
                         </span>
                       )}
-                      {repositoryChanges && (() => {
+                      {repositoryChanges && !repositoryChanges.error && (() => {
                         const totals = changedLineTotals(repositoryChanges.changedFiles)
                         return (
                           <span className="flex gap-2 font-mono font-normal">
@@ -3600,6 +3604,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                       Open commit panel
                     </Button>
                   </div>
+                  {repositoryChanges?.error && (
+                    <p role="status" className="px-3 py-2" style={{ color: 'var(--text-2)' }}>Unavailable for this chat. {repositoryChanges.error}</p>
+                  )}
                   {repositoryChanges && (
                     <ChangedFilesTree
                       files={repositoryChanges.changedFiles}

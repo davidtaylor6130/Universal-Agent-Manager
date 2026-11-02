@@ -1409,7 +1409,11 @@ describe('ChatView', () => {
     const status = {
       available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const,
       workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
-      changedFiles: [{ path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      changedFiles: [
+        { path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false },
+        // Touched by the chat without a net line delta (for example a permission-only change).
+        { path: 'scripts/run.sh', status: 'M', staged: false, additions: 0, deletions: 0, binary: false },
+      ],
       lineStatsReady: true, warning: '', error: '',
     }
     const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
@@ -1425,8 +1429,13 @@ describe('ChatView', () => {
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
     expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat' }))
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Changes from this chat')
+    expect(summary.textContent).toContain('2 changed files · +1 / -0')
+    expect(summary.querySelector('[aria-label="Review changes to scripts/run.sh"]')).not.toBeNull()
     await act(async () => { (host.querySelector('[aria-label="Review changes to src/chat.ts"]') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(getVcsFileDiff).toHaveBeenCalledWith('chat-1', 'src/chat.ts', 'git', 'chat')
+    expect(document.body.querySelector('[aria-label="Changes in src/chat.ts"]')?.textContent).toContain('Since this chat began')
     if (surface === 'companion') expect((host.querySelector('[aria-label="Open commit panel"]') as HTMLElement).style.display).toBe('none')
     } finally {
       act(() => root.unmount())
@@ -1435,7 +1444,7 @@ describe('ChatView', () => {
     }
   })
 
-  it('clears stale review counts when the original chat baseline is unavailable', async () => {
+  it('replaces stale review counts with a clear state when the original chat baseline is unavailable', async () => {
     const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.' }
     useAppStore.setState((state) => ({
       repositoryReviewBySessionId: { 'chat-1': { ...status, error: '' } },
@@ -1448,8 +1457,12 @@ describe('ChatView', () => {
     const root = createRoot(host)
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
-    expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
-    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Unavailable for this chat.')
+    expect(summary.textContent).toContain('The original chat baseline is unavailable.')
+    expect(summary.textContent).not.toContain('prior.ts')
+    expect(summary.querySelector('[role="tree"]')).toBeNull()
+    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']?.changedFiles).toEqual([])
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -1547,7 +1560,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] } }))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
-    expect(summary.textContent).toContain('Chat changes')
+    expect(summary.textContent).toContain('Changes from this chat')
     expect(summary.querySelector('[aria-label="Review changes to src/exact.ts"]')?.textContent).toContain('exact.ts')
     expect(summary.textContent).toContain('isolated Git checkpoint')
     expect(host.querySelector('[aria-label="Turn checkpoint"]')).toBeNull()
