@@ -1363,8 +1363,16 @@ namespace uam
 		std::unordered_map<std::string, std::shared_ptr<ManagedInitialRuntimeOwner>> managed_initial_runtime_owners;
 		bool managed_initial_shutdown = false;
 		std::vector<UamControlCapability> uam_control_capabilities;
-		/// (chat ID, first prompt) for chats started by chat_create, sent after control requests finish.
-		std::vector<std::pair<std::string, std::string>> uam_chat_create_initial_prompts;
+		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.
+		struct UamChatCreateLaunch
+		{
+			std::string chat_id, task, request_id, capability_id;
+			std::filesystem::path directory;
+			// Audit owner captured at creation; the capability may be gone when the send settles.
+			std::string root_chat_id, provider_id, agent_id, agent_run_id;
+			nlohmann::json result;
+		};
+		std::vector<UamChatCreateLaunch> uam_chat_create_launches;
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;

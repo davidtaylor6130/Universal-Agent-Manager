@@ -6,6 +6,8 @@
 #include "common/config/execution_host_config.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/io_utils.h"
+#include "app/chat_domain_service.h"
 
 using namespace uam_test;
 
@@ -24,6 +26,11 @@ namespace
 			app.data_root = temp.root / "data";
 			fs::create_directories(app.data_root);
 			app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+			// A plain-folder workspace can be isolated only through a managed Git snapshot.
+			app.settings.git_enabled = true;
+			app.settings.git_auto_worktree = true;
+			app.settings.git_snapshot_plain_folders = true;
+			app.settings.git_snapshot_svn = true;
 			app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile(), ProviderProfileStore::DefaultClaudeProfile()};
 			ChatSession chat;
 			chat.id = "caller";
@@ -47,6 +54,7 @@ namespace
 			capability.id = id;
 			capability.directory = temp.root / id;
 			fs::create_directories(capability.directory / "responses");
+			fs::create_directories(capability.directory / "requests");
 			capability.chat_id = chat_id;
 			capability.session_chat_id = chat_id;
 			capability.provider_id = "codex-cli";
@@ -69,10 +77,27 @@ namespace
 			version.installed_version = "1.2.3";
 			version.execution_host = app.settings.execution_hosts.front();
 		}
+		/// First prompts accepted by the fake send; a false send_ok refuses them.
+		std::vector<std::pair<std::string, std::string>> sent;
+		bool send_ok = true;
+		nlohmann::json Flush(const std::string& request_id, const std::string& capability = "caller-capability")
+		{
+			uam::UamControlService::FlushChatCreateLaunchesForTests(app, [&](uam::AppState&, const std::string& chat_id, const std::string& task, std::string* error)
+			{
+				if (!send_ok) { *error = "Provider refused the prompt."; return false; }
+				sent.emplace_back(chat_id, task);
+				return true;
+			});
+			std::string text;
+			UAM_ASSERT(uam::io::TryReadTextFile(temp.root / capability / "responses" / (request_id + ".json"), text));
+			return nlohmann::json::parse(text);
+		}
 		nlohmann::json Call(const std::string& request_id, nlohmann::json arguments, const std::string& capability = "caller-capability")
 		{
-			return uam::UamControlService::HandleRequestForTests(app, capability,
+			const nlohmann::json response = uam::UamControlService::HandleRequestForTests(app, capability,
 			    {{"requestId", request_id}, {"method", "chat_create"}, {"arguments", std::move(arguments)}}, uam::time::SystemEpochMillisecondsNow());
+			// Successful creations reply only after the first prompt was sent.
+			return response.value("pendingChatCreate", false) ? Flush(request_id, capability) : response;
 		}
 		const ChatSession* Find(const std::string& id) const
 		{
@@ -108,10 +133,11 @@ UAM_TEST(UamControlChatCreateInheritsCallerDefaultsAndRecordsProvenance)
 	UAM_ASSERT(chat->parent_chat_id.empty());
 	UAM_ASSERT(chat->temporary_parent_chat_id.empty());
 	UAM_ASSERT_EQ(chat->created_by_chat_id, std::string("caller"));
-	// The first prompt is handed to the ordinary send path after the request completes.
-	UAM_ASSERT_EQ(fixture.app.uam_chat_create_initial_prompts.size(), std::size_t{1});
-	UAM_ASSERT_EQ(fixture.app.uam_chat_create_initial_prompts.front().first, chat_id);
-	UAM_ASSERT_EQ(fixture.app.uam_chat_create_initial_prompts.front().second, std::string("Implement the parser."));
+	// The reply follows the first prompt's send.
+	UAM_ASSERT_EQ(fixture.sent.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.sent.front().first, chat_id);
+	UAM_ASSERT_EQ(fixture.sent.front().second, std::string("Implement the parser."));
+	UAM_ASSERT_EQ(created["result"].value("status", ""), std::string("started"));
 	// Durable provenance and the React projection.
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat_id, false);
 	UAM_ASSERT(saved.has_value());
@@ -183,6 +209,7 @@ UAM_TEST(UamControlChatCreateRefusesPlanReadOnlyAndEscalation)
 		UAM_ASSERT_EQ(question->questions.front().id, std::string("chatCreate"));
 		std::string error;
 		UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", question->request_id_json, {{"chatCreate", {"Allow"}}}, &error));
+		UAM_ASSERT(fixture.Flush("approval").value("ok", false));
 		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
 		const ChatSession& created = fixture.app.chats.back();
 		UAM_ASSERT_EQ(created.title, std::string("Approved work"));
@@ -216,6 +243,15 @@ UAM_TEST(UamControlChatCreateBoundsPerTurnTotalAndDepth)
 	const nlohmann::json total = fixture.Call("over-total", {{"task", "One too many"}});
 	UAM_ASSERT(!total.value("ok", true));
 	UAM_ASSERT(total.value("error", "").find("at most 8") != std::string::npos);
+	// A branch of the caller shares its allowance.
+	ChatSession branch_of_caller = fixture.app.chats.front();
+	branch_of_caller.id = "caller-branch";
+	branch_of_caller.parent_chat_id = branch_of_caller.branch_root_chat_id = "caller";
+	fixture.app.chats.push_back(branch_of_caller);
+	fixture.Issue("branch-capability", "caller-branch");
+	const nlohmann::json branch_total = fixture.Call("branch-over-total", {{"task", "From the branch"}}, "branch-capability");
+	UAM_ASSERT(!branch_total.value("ok", true));
+	UAM_ASSERT(branch_total.value("error", "").find("at most 8") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{8});
 
 	// A chat created by the tool cannot itself create chats.
@@ -242,7 +278,7 @@ UAM_TEST(UamControlChatCreateRetryIsIdempotent)
 	UAM_ASSERT_EQ(retry["result"].value("chatId", ""), first["result"].value("chatId", ""));
 	UAM_ASSERT(retry["result"].value("reused", false));
 	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
-	UAM_ASSERT_EQ(fixture.app.uam_chat_create_initial_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.sent.size(), std::size_t{1});
 	// A retry does not consume the per-turn allowance.
 	UAM_ASSERT(fixture.Call("second", {{"task", "Different task"}}).value("ok", false));
 	// Replaying the same transport request ID is still rejected.
@@ -260,5 +296,98 @@ UAM_TEST(UamControlChatCreateRefusesUnavailableProviders)
 	fixture.app.runtime_cli_versions_by_provider_id.clear();
 	UAM_ASSERT(!fixture.Call("caller-provider", {{"task", "Do work."}}).value("ok", true));
 	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
-	UAM_ASSERT(fixture.app.uam_chat_create_initial_prompts.empty());
+	UAM_ASSERT(fixture.sent.empty());
+}
+
+UAM_TEST(UamControlChatCreateRequiresAnIsolatedWorktree)
+{
+	ChatCreateFixture fixture;
+	fixture.app.settings.git_auto_worktree = false;
+	const nlohmann::json no_auto = fixture.Call("no-auto", {{"task", "Do work."}});
+	UAM_ASSERT(!no_auto.value("ok", true));
+	UAM_ASSERT(no_auto.value("error", "").find("worktree") != std::string::npos);
+	fixture.app.settings.git_auto_worktree = true;
+	fixture.app.settings.git_enabled = false;
+	UAM_ASSERT(!fixture.Call("no-git", {{"task", "Do work."}}).value("ok", true));
+	fixture.app.settings.git_enabled = true;
+	// A plain folder that may not be snapshotted would make the chat share the caller's files.
+	fixture.app.settings.git_snapshot_plain_folders = false;
+	const nlohmann::json plain = fixture.Call("plain", {{"task", "Do work."}});
+	UAM_ASSERT(!plain.value("ok", true));
+	UAM_ASSERT(plain.value("error", "").find("share") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	fixture.app.settings.git_snapshot_plain_folders = true;
+	UAM_ASSERT(fixture.Call("allowed", {{"task", "Do work."}}).value("ok", false));
+}
+
+UAM_TEST(UamControlChatCreateFailedFirstSendRemovesTheChat)
+{
+	ChatCreateFixture fixture;
+	fixture.send_ok = false;
+	const nlohmann::json failed = fixture.Call("fails", {{"task", "Do work."}});
+	UAM_ASSERT(!failed.value("ok", true));
+	UAM_ASSERT(failed.value("error", "").find("could not be sent") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	UAM_ASSERT_EQ(fixture.app.uam_control_capabilities.front().chat_create_turn_count, std::size_t{0});
+	UAM_ASSERT_EQ(fixture.Find("caller")->uam_control_audit.back().result, std::string("rejected"));
+	// A retry with identical arguments starts a fresh chat rather than reusing the failed one.
+	fixture.send_ok = true;
+	const nlohmann::json retry = fixture.Call("retry", {{"task", "Do work."}});
+	UAM_ASSERT(retry.value("ok", false));
+	UAM_ASSERT(!retry["result"].value("reused", true));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
+UAM_TEST(UamControlChatCreateBranchKeepsProvenanceAndDepth)
+{
+	ChatCreateFixture fixture;
+	const nlohmann::json created = fixture.Call("create", {{"task", "Do work."}});
+	const std::string chat_id = created["result"].value("chatId", "");
+	ChatSession* chat = &*std::ranges::find(fixture.app.chats, chat_id, &ChatSession::id);
+	chat->messages.push_back(Message{MessageRole::User, "Do work."});
+	chat->messages.back().created_at = "2026-11-01 10:01:00";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *chat));
+	std::string branch_id;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(fixture.app, chat_id, 0, std::optional<std::string>("Do other work."), std::nullopt, nullptr,
+	    std::nullopt, nullptr, nullptr, false, &branch_id));
+	const ChatSession* branch = fixture.Find(branch_id);
+	UAM_ASSERT(branch != nullptr);
+	UAM_ASSERT_EQ(branch->created_by_chat_id, std::string("caller"));
+	UAM_ASSERT(branch->created_by_request_key.empty());
+	// Enable control on the branch so the refusal comes from the depth rule, not disabled control.
+	std::ranges::find(fixture.app.chats, branch_id, &ChatSession::id)->uam_control_enabled = true;
+	fixture.Issue("branch-capability", branch_id);
+	const nlohmann::json chained = fixture.Call("chain", {{"task", "Grandchild"}}, "branch-capability");
+	UAM_ASSERT(!chained.value("ok", true));
+	UAM_ASSERT(chained.value("error", "").find("started by another chat") != std::string::npos);
+}
+
+UAM_TEST(UamControlChatCreateApprovalTimeoutCreatesNothing)
+{
+	ChatCreateFixture fixture;
+	fixture.app.chats.front().command_safety_tier = "off";
+	UAM_ASSERT(fixture.Call("expires", {{"task", "Do work."}}).value("pendingApproval", false));
+	fixture.app.uam_control_capabilities.front().pending_approval->expires_at_epoch_ms = 1;
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(fixture.app, "caller").has_value());
+	std::string text;
+	UAM_ASSERT(uam::io::TryReadTextFile(fixture.temp.root / "caller-capability" / "responses" / "expires.json", text));
+	UAM_ASSERT(nlohmann::json::parse(text).value("error", "").find("timed out") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+}
+
+UAM_TEST(UamControlChatCreateProvenanceSurvivesDeletedCreatorReload)
+{
+	ChatCreateFixture fixture;
+	const std::string chat_id = fixture.Call("create", {{"task", "Do work."}})["result"].value("chatId", "");
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+	(void)ChatRepository::DeleteChatStorageFiles(fixture.app.data_root, "caller", "test");
+	std::erase_if(fixture.app.chats, [](const ChatSession& chat) { return chat.id == "caller"; });
+	std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(fixture.app.data_root, chat_id, false);
+	UAM_ASSERT(reloaded.has_value());
+	UAM_ASSERT_EQ(reloaded->created_by_chat_id, std::string("caller"));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(fixture.app.data_root, "caller", false).has_value());
+	fixture.app.chats = {*reloaded};
+	const nlohmann::json state = uam::StateSerializer::Serialize(fixture.app, true);
+	UAM_ASSERT_EQ(state["chats"][0].value("createdByChatId", ""), std::string("caller"));
 }

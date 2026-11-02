@@ -17,6 +17,7 @@
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
 #include "app/goal_service.h"
+#include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
 #include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
@@ -811,7 +812,30 @@ namespace uam
 			return {};
 		}
 
-		ToolResult ChatCreate(AppState& app, UamControlCapability& capability, const nlohmann::json& arguments)
+		/// <summary>The isolated worktree the issue requires; a skipped worktree would share the caller's source tree.</summary>
+		std::string ChatCreateIsolationRefusal(const AppState& app, const ChatSession& chat)
+		{
+			if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
+				return "Starting a chat requires Git and automatic worktrees to be enabled in VCS settings, so the new chat gets its own worktree.";
+			if (uam::strings::IsBlank(chat.workspace_directory)) return "This chat has no workspace for a new worktree.";
+			if (!uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+				if (host == nullptr || host->runner_protocol_version < 3)
+					return "SSH worktrees require an available protocol-3 helper.";
+				return {};
+			}
+			if (std::string reason = ManagedSnapshotDisabledReason(app, chat); !reason.empty())
+				return reason + " The new chat would otherwise share this chat's files.";
+			return {};
+		}
+
+		bool ChatCreateLaunchPending(const AppState& app, std::string_view chat_id)
+		{
+			return std::ranges::any_of(app.uam_chat_create_launches, [&](const auto& launch) { return launch.chat_id == chat_id; });
+		}
+
+		ToolResult ChatCreate(AppState& app, UamControlCapability& capability, std::string_view request_id, const nlohmann::json& arguments)
 		{
 			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
@@ -823,12 +847,18 @@ namespace uam
 			const std::string key = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(
 			    nlohmann::json::array({caller->id, task, requested_provider, requested_model, title}).dump()));
 			// A model retry gets a new transport request ID; identical arguments return the chat already started.
+			// A chat whose first prompt failed is removed or loses its key, so it is never returned here.
 			const auto existing = std::ranges::find_if(app.chats, [&](const ChatSession& chat)
 			{ return chat.created_by_chat_id == caller->id && chat.created_by_request_key == key; });
 			if (existing != app.chats.end())
+			{
+				if (ChatCreateLaunchPending(app, existing->id))
+					return {.error = "An identical chat is still sending its first prompt; wait for that result."};
 				return {.ok = true, .result = {{"chatId", existing->id}, {"status", "started"}, {"reused", true}},
 				        .reason = "Returned the chat already started for identical arguments."};
+			}
 			const AcpSessionState* session = WaitSession(app, capability);
+			// ponytail: CLI View callers have no structured turn serial, so their per-turn limit is per connection.
 			const int turn = session != nullptr ? session->turn_serial : 0;
 			if (capability.chat_create_turn_serial != turn)
 			{
@@ -837,8 +867,16 @@ namespace uam
 			}
 			if (capability.chat_create_turn_count >= kMaxChatCreatesPerTurn)
 				return {.error = "UAM may start at most 2 chats per turn."};
-			if (static_cast<std::size_t>(std::ranges::count(app.chats, caller->id, &ChatSession::created_by_chat_id)) >= kMaxChatCreatesPerCaller)
-				return {.error = "This chat may start at most 8 chats."};
+			// Branches share the allowance: count live chats started by any chat in the caller's branch family.
+			const std::string family = uam::strings::NonEmptyOrFallback(caller->branch_root_chat_id, caller->id);
+			const auto in_family = [&](const std::string& id)
+			{
+				const ChatSession* creator = ChatDomainService().FindChatById(app, id);
+				return id == caller->id || (creator != nullptr && uam::strings::NonEmptyOrFallback(creator->branch_root_chat_id, creator->id) == family);
+			};
+			if (static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat)
+			    { return !chat.created_by_chat_id.empty() && in_family(chat.created_by_chat_id); })) >= kMaxChatCreatesPerCaller)
+				return {.error = "This chat and its branches may start at most 8 chats."};
 			const std::string provider_id = provider_ids::NormalizeCliProviderAliasOrSelf(
 			    uam::strings::NonEmptyOrFallback(requested_provider, caller->provider_id));
 			const nlohmann::json targets = AgentProviderTargets(app, *caller);
@@ -847,13 +885,14 @@ namespace uam
 				return {.error = "Requested provider is unavailable on this chat's execution host" +
 				                 (target == targets.end() ? std::string(".") : ": " + target->value("unavailableReason", std::string("unknown reason")))};
 
-			// The same constructor as the New chat action; the worktree follows the existing Git automatic-worktree rules at launch.
+			// The same constructor as the New chat action, always requesting a worktree.
 			ChatSession chat = ChatDomainService().CreateNewChat(caller->folder_id, provider_id, true);
 			chat.execution_host_id = uam::strings::NonEmptyOrFallback(caller->execution_host_id, "local");
 			chat.workspace_directory = uam::paths::IsGitWorktreeIsolated(*caller) && !caller->workspace_source_directory.empty()
 			    ? caller->workspace_source_directory : caller->workspace_directory;
 			if (chat.workspace_directory.empty())
 				if (const ChatFolder* folder = ChatDomainService().FindFolderById(app, caller->folder_id)) chat.workspace_directory = folder->directory;
+			if (std::string refusal = ChatCreateIsolationRefusal(app, chat); !refusal.empty()) return {.error = std::move(refusal)};
 			chat.svn_update_pending = chat.execution_host_id == execution_hosts::kLocalHostId &&
 			    app.settings.svn_enabled && app.settings.svn_update_before_chat;
 			if (!title.empty()) chat.title = title;
@@ -875,26 +914,66 @@ namespace uam
 			chat.created_by_chat_id = caller->id;
 			chat.created_by_request_key = key;
 			if (!ChatRepository::SaveChat(app.data_root, chat)) return {.error = "The new chat could not be saved."};
-			const std::string caller_id = caller->id;
 			nlohmann::json result = {{"chatId", chat.id}, {"status", "started"}, {"providerId", chat.provider_id},
 			                         {"modelId", chat.model_id}, {"title", chat.title}, {"reused", false}};
-			uam::diagnostics::Write("UAM chat_create: started chat " + chat.id + " for " + caller_id + " provider=" +
-			                        provider_id + " host=" + chat.execution_host_id + ".");
-			app.uam_chat_create_initial_prompts.emplace_back(chat.id, task);
+			app.uam_chat_create_launches.push_back({.chat_id = chat.id, .task = task, .request_id = std::string(request_id),
+			    .capability_id = capability.id, .directory = capability.directory, .root_chat_id = capability.chat_id,
+			    .provider_id = capability.provider_id, .agent_id = capability.agent_id, .agent_run_id = capability.agent_run_id,
+			    .result = std::move(result)});
 			app.chats.push_back(std::move(chat)); // Invalidates caller.
 			++capability.chat_create_turn_count;
-			return {.ok = true, .result = std::move(result), .reason = "Started one top-level chat."};
+			// The reply and audit wait until the first prompt has been sent or refused.
+			return {.ok = true, .deferred = true};
 		}
 
-		/// <summary>Removes a chat_create result whose audit could not be recorded.</summary>
-		void RollbackChatCreate(AppState& app, UamControlCapability* capability, const ToolResult& result)
+		/// <summary>Sends each new chat's first prompt, then records the audit and the deferred reply.
+		/// A refused send removes a still-empty chat, so a failed start is never reported or reused.</summary>
+		void FlushChatCreateLaunches(AppState& app, const UamControlService::ChatCreateSender& send)
 		{
-			if (!result.ok || result.result.value("reused", true)) return;
-			const std::string id = result.result.value("chatId", "");
-			std::erase_if(app.chats, [&](const ChatSession& chat) { return chat.id == id; });
-			std::erase_if(app.uam_chat_create_initial_prompts, [&](const auto& prompt) { return prompt.first == id; });
-			(void)ChatRepository::DeleteChatStorageFiles(app.data_root, id, "create_rollback");
-			if (capability != nullptr && capability->chat_create_turn_count > 0) --capability->chat_create_turn_count;
+			for (auto& launch : std::exchange(app.uam_chat_create_launches, {}))
+			{
+				std::string error;
+				const bool sent = ChatDomainService().FindChatById(app, launch.chat_id) != nullptr && send(app, launch.chat_id, launch.task, &error);
+				ToolResult result;
+				if (sent)
+				{
+					result = {.ok = true, .result = launch.result, .reason = "Started one top-level chat."};
+					uam::diagnostics::Write("UAM chat_create: started chat " + launch.chat_id + " for " + launch.root_chat_id +
+					                        " provider=" + launch.result.value("providerId", "") + ".");
+				}
+				else
+				{
+					const std::string cause = uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(error, std::string("The chat is no longer available.")), 240, true);
+					ChatSession* chat = ChatDomainService().FindChatById(app, launch.chat_id);
+					const bool clean = chat == nullptr || (chat->messages.empty() && FindAcpSessionForChat(app, launch.chat_id) == nullptr);
+					if (clean)
+					{
+						std::erase_if(app.chats, [&](const ChatSession& value) { return value.id == launch.chat_id; });
+						(void)ChatRepository::DeleteChatStorageFiles(app.data_root, launch.chat_id, "create_rollback");
+						result.error = "The new chat's first prompt could not be sent, so the chat was removed: " + cause;
+					}
+					else
+					{
+						// Runtime state now exists; keep the chat visible but never return it to a retry.
+						chat->created_by_request_key.clear();
+						(void)ChatRepository::SaveChat(app.data_root, *chat);
+						result.error = "The new chat " + launch.chat_id + " was kept, but its first prompt was not sent: " + cause;
+					}
+					if (UamControlCapability* owner = FindCapability(app, launch.capability_id); owner != nullptr && owner->chat_create_turn_count > 0)
+						--owner->chat_create_turn_count;
+					uam::diagnostics::Write("UAM chat_create: first prompt for chat " + launch.chat_id + " was not sent; chat " +
+					                        (clean ? "removed" : "kept") + ".");
+				}
+				UamControlCapability owner;
+				owner.chat_id = launch.root_chat_id;
+				owner.provider_id = launch.provider_id;
+				owner.agent_id = launch.agent_id;
+				owner.agent_run_id = launch.agent_run_id;
+				if (!AppendAuditAndSave(app, owner, launch.request_id, "chat_create", result))
+					uam::diagnostics::Write("UAM chat_create: audit for chat " + launch.chat_id + " could not be saved.");
+				(void)WriteResponse(launch.directory, launch.request_id, result.ok
+				    ? nlohmann::json{{"ok", true}, {"result", result.result}} : nlohmann::json{{"ok", false}, {"error", result.error}});
+			}
 		}
 
 		ToolResult QueueApproval(AppState& app, UamControlCapability& capability,
@@ -1086,7 +1165,6 @@ namespace uam
 			if (method == "agent_cancel") return AgentCancel(app, capability, arguments);
 			if (method == "goal_get") return GoalGet(app, capability);
 			if (method == "goal_create") return GoalCreate(app, capability, arguments);
-			if (method == "chat_create") return ChatCreate(app, capability, arguments);
 			return {.error = "Unknown UAM control method."};
 		}
 
@@ -1543,8 +1621,11 @@ namespace uam
 			                        : needs_approval
 			                            ? (method == "goal_create" ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
+			                        : method == "chat_create"
+			                            ? ChatCreate(app, *capability, request_id, arguments)
 			                            : ExecuteTool(app, *capability, method, arguments);
-			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} : nlohmann::json{{"pendingApproval", true}};
+			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
+			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
 			const UamControlCapability capability_snapshot = *capability;
 			if (!AppendAuditAndSave(app, capability_snapshot, request_id, method, result))
 			{
@@ -1554,7 +1635,6 @@ namespace uam
 					(void)AgentRunScheduler::CancelTree(app, result.result.value("runId", ""), &cancel_error);
 					ManagedParentContinuationService::Revoke(app, capability_snapshot.chat_id, "delegation_save_failed");
 				}
-				if (method == "chat_create") RollbackChatCreate(app, capability, result);
 				if (rollback.has_value())
 				{
 					if (ChatSession* chat = ChatDomainService().FindChatById(app, capability_snapshot.chat_id); chat != nullptr)
@@ -1612,7 +1692,7 @@ namespace uam
 			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
 			nlohmann::json chat_create = MutationToolSchema("chat_create", {{"task", {{"type", "string"}, {"description", "First prompt for the new chat."}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"title", {{"type", "string"}}}}, {"task"});
-			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and gets its own Git worktree when Git automatic worktrees are enabled. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat.";
+			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and always gets its own Git worktree; UAM refuses when Git automatic worktrees are off or the workspace cannot be isolated. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat. The reply arrives after the first prompt is sent; if it cannot be sent the empty chat is removed and an error is returned.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
 			nlohmann::json tools = nlohmann::json::array({
@@ -2214,7 +2294,13 @@ namespace uam
 				}
 				else if (chat_create)
 				{
-					result = ChatCreate(app, capability, capability.pending_approval->chat_create_arguments);
+					result = ChatCreate(app, capability, capability.pending_approval->request_id, capability.pending_approval->chat_create_arguments);
+					if (result.deferred)
+					{
+						// The first-prompt send records the audit and the tool reply.
+						capability.pending_approval.reset();
+						return true;
+					}
 					// Creation appends to app.chats; reacquire the borrowed rows.
 					chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 					root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
@@ -2243,7 +2329,6 @@ namespace uam
 				if (chat != root_chat) *root_chat = root_before;
 				(void)ChatRepository::SaveChat(app.data_root, *chat);
 				if (chat != root_chat) (void)ChatRepository::SaveChat(app.data_root, *root_chat);
-				if (chat_create) RollbackChatCreate(app, &capability, result);
 				return fail("UAM decision could not be delivered. Try again.");
 			}
 			capability.pending_approval.reset();
@@ -2345,7 +2430,8 @@ namespace uam
 					}
 				}
 				(void)uam::paths::RemoveFileNoThrow(file);
-				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false))
+				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
+				    !response.value("pendingChatCreate", false))
 					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}
@@ -2353,12 +2439,10 @@ namespace uam
 		}
 		ProcessAgentWaits(app, response_write_hook);
 		// Sent after every capability borrow ends: a provider launch may issue new capabilities.
-		for (const auto& [chat_id, task] : std::exchange(app.uam_chat_create_initial_prompts, {}))
+		if (!app.uam_chat_create_launches.empty())
 		{
-			std::string error;
-			if (!uam::SendAcpPrompt(app, chat_id, task, &error))
-				uam::diagnostics::Write("UAM chat_create: first prompt for chat " + chat_id + " was not sent: " +
-				                        uam::strings::SafeLine(error, 160, true));
+			FlushChatCreateLaunches(app, [](AppState& state, const std::string& chat_id, const std::string& task, std::string* error)
+			{ return uam::SendAcpPrompt(state, chat_id, task, error); });
 			changed = true;
 		}
 		return changed;
@@ -2375,6 +2459,11 @@ namespace uam
 	bool UamControlService::ValidStdioToolCallForTests(const nlohmann::json& request)
 	{
 		return ValidStdioToolCall(request);
+	}
+
+	void UamControlService::FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send)
+	{
+		FlushChatCreateLaunches(app, send);
 	}
 
 	nlohmann::json UamControlService::ToolDefinitionsForTests()
