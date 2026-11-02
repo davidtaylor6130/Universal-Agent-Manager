@@ -45,6 +45,7 @@ struct RemoteRefreshFeedbackTestAccess
 		handler.m_nativeMediaRefreshDispatcherForTests = std::move(dispatch);
 		handler.m_remoteNativeHistoryReaderForTests = std::move(reader);
 	}
+	static void StopHost(UamQueryHandler& handler, const std::string& host_id) { handler.StopNativeHistoryReadsOnHost(host_id); }
 	static void Query(UamQueryHandler& handler, int64_t query_id) { handler.m_dispatchingQuery = {-1, "", query_id}; }
 	static void Cancel(UamQueryHandler& handler, int64_t query_id) { handler.OnQueryCanceled(nullptr, nullptr, query_id); }
 	static void Fault(UamQueryHandler& handler, uam::io::AtomicWriteStage stage, bool throws)
@@ -649,11 +650,11 @@ UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
 	FeedbackFixture fixture;
 	UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
 	{
-		// Other chats' held remote reads fill the global remote budget: this chat's
+		// Other chats' held remote reads fill this host's slots: this chat's
 		// refresh is refused and shared capacity stays untouched. (A repeat refresh
 		// of one chat waits on its existing read and reserves nothing.)
-		auto other = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
-		auto another = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
+		auto other = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("isolated-remote");
+		auto another = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("isolated-remote");
 		UAM_ASSERT(other && another);
 		const auto busy = fixture.Start();
 		UAM_ASSERT_EQ(busy->status, 503); UAM_ASSERT(fixture.pending.empty());
@@ -677,6 +678,48 @@ UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
 	fixture.pending.clear();
 	fixture.AwaitRetirement();
+}
+
+UAM_TEST(RemoteRefreshFeedbackSlowHostDoesNotBlockAnotherHostsRefresh)
+{
+	using uam::native_history::NativeRefreshWorkerPool;
+	using uam::native_history::TryCreateWorkerOwnedNativeRefresh;
+	FeedbackFixture fixture;
+	// Two hung reads on another host hold all of that host's slots.
+	auto slow = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("slow-host");
+	auto slower = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("slow-host");
+	UAM_ASSERT(slow && slower);
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
+	fixture.AssertPublished(cb);
+	slow.reset(); slower.reset();
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementStopsOnlyThatHostsReadAndFreesItsSlot)
+{
+	FeedbackFixture fixture;
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "other-host");
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	const auto primary = ReadFile(fixture.Primary());
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(*fixture.reads, 0); // Stopped before any SSH read began.
+	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
+	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); fixture.AssertDraft();
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 0u);
+	// The freed slot admits a fresh refresh on the same host.
+	const auto retry = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
+	fixture.AssertPublished(retry);
 }
 
 UAM_TEST(RemoteRefreshFeedbackCommittedAckFailureKeepsOriginalWarningAndHistory)

@@ -205,6 +205,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		cb->Failure(400, error);
 		return;
 	}
+	// Refresh reads against the old helper would be refused at completion; stop them now.
+	StopNativeHistoryReadsOnHost(host.id);
 	if (previous_host.has_value())
 	{
 		plan.previous_platform = previous_host->platform;

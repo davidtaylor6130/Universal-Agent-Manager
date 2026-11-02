@@ -78,3 +78,44 @@ UAM_TEST(NativeRefreshLifetimeBoundsOutstandingWorkUntilCleanupFinishes)
 	second.reset(); replacement.reset();
 	UAM_ASSERT(AwaitRetirement());
 }
+
+UAM_TEST(NativeRefreshLifetimeRemoteSlotsArePerHostWithinTotalCap)
+{
+	using uam::native_history::NativeRefreshWorkerPool;
+	using uam::native_history::TryCreateWorkerOwnedNativeRefresh;
+	namespace owners = uam::native_history::detail;
+	const auto acquire = [](std::string_view host) { return TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>(host); };
+	const auto await_on = [](std::string_view host, unsigned expected)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (owners::RemoteRefreshOwnersOnHost(host) != expected && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		return owners::RemoteRefreshOwnersOnHost(host) == expected;
+	};
+	UAM_ASSERT_EQ(owners::remote_refresh_owners.load(), 0u);
+	// A slow host fills only its own slots: it is busy, another host is not.
+	auto slow_first = acquire("slow-host"), slow_second = acquire("slow-host");
+	UAM_ASSERT(slow_first && slow_second);
+	UAM_ASSERT(!acquire("slow-host"));
+	auto other_first = acquire("other-host");
+	UAM_ASSERT(other_first);
+	// Shared local capacity is a separate budget.
+	UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
+	{ auto local = TryCreateWorkerOwnedNativeRefresh<int>(); UAM_ASSERT(local); }
+	// The total cap still bounds all remote work.
+	auto other_second = acquire("other-host");
+	UAM_ASSERT(other_second);
+	UAM_ASSERT_EQ(owners::remote_refresh_owners.load(), owners::kMaxRemoteRefreshOwners);
+	UAM_ASSERT(!acquire("third-host"));
+	// Releasing (cancelling) one slow read returns its slot to the total budget.
+	slow_first.reset();
+	UAM_ASSERT(await_on("slow-host", 1));
+	auto third = acquire("third-host");
+	UAM_ASSERT(third);
+	UAM_ASSERT(!acquire("slow-host"));
+	slow_second.reset(); other_first.reset(); other_second.reset(); third.reset();
+	UAM_ASSERT(await_on("slow-host", 0) && await_on("other-host", 0) && await_on("third-host", 0));
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while ((owners::remote_refresh_owners.load() || owners::refresh_owners.load()) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+	UAM_ASSERT_EQ(owners::remote_refresh_owners.load(), 0u);
+	{ std::lock_guard lock(owners::remote_refresh_mutex); UAM_ASSERT(owners::remote_refresh_host_owners.empty()); }
+}

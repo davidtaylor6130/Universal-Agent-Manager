@@ -659,6 +659,12 @@ void UamQueryHandler::FinishNativeHistoryRead(const std::string& key, const std:
 	m_dispatchingQuery = outer;
 }
 
+void UamQueryHandler::StopNativeHistoryReadsOnHost(const std::string& host_id)
+{
+	for (const auto& [key, request] : m_nativeHistoryRequests)
+		if (!host_id.empty() && request->execution_host_id == host_id) request->request_stop();
+}
+
 void UamQueryHandler::BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id)
 {
 	m_chatIconQueryIdentities[callback] = ChatIconQueryIdentity{browser_id, frame_id, query_id};

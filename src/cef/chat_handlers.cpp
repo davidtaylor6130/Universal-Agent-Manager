@@ -1239,7 +1239,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	};
 
 	// Reserve before stopping another request or retaining a transcript/payload.
-	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>();
+	auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(host.id);
 	if (!work) { cb->Failure(503, "Native history refresh is busy. Retry shortly."); return; }
 	const auto root = m_app.data_root;
 	const auto revision = ChatRepository::ChatStorageRevision(root, chat.id);
@@ -1275,6 +1275,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 	parse_identity.folder_id = chat.folder_id;
 	// HandleGetChatMessages admits one read per chat, so no prior request remains here.
 	const auto request = BeginNativeHistoryRead(id, cb);
+	request->execution_host_id = host.id; // A helper reinstall stops this read and frees its host slot.
 	const auto finish = [this, id, request]() { FinishNativeHistoryRead(id, request); };
 	// This identity-only check also serves postcommit response admission. New
 	// authored content is serialized from current live state, never an old page.

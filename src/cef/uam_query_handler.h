@@ -123,6 +123,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 		ChatIconQueryIdentity query{-1, "", -1};
 		bool delivery_cancelled = false;
 		bool cache_filled = false; // The read finished and saved history now reflects it.
+		std::string execution_host_id; // Set only for remote refreshes holding a per-host slot.
 		struct Waiter { ChatIconQueryIdentity query; CefRefPtr<Callback> callback; std::function<void()> retry; };
 		std::vector<Waiter> waiters;
 	};
@@ -139,6 +140,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());
 	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry);
 	void FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request);
+	// Stops remote refresh reads on a host whose helper connection is being replaced.
+	void StopNativeHistoryReadsOnHost(const std::string& host_id);
 	// Unacknowledged remote publication keeps ordinary reads detached from the old live graph.
 	struct UnconfirmedNativeMediaHistory
 	{
