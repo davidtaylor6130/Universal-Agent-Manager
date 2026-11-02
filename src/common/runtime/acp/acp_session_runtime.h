@@ -77,7 +77,7 @@ bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSess
 bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool CancelAcpTurn(AppState& app, const std::string& chat_id,
                    std::string* error_out = nullptr, bool update_goal_state = true,
-                   bool preserve_queued_prompts = false, bool hold_preserved_queue = true);
+                   bool preserve_queued_prompts = false, bool hold_preserved_queue = false);
 void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation = false);
 bool HandleAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 /// <summary>Stops a provider; internal recovery may preserve held intent instead of discarding it.</summary>

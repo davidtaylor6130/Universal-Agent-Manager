@@ -137,6 +137,8 @@ function deserializeState(
     executionRouting: AppState['executionRouting']
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
+    nativeImportExcludedTitlePrefixes: string[]
+    nativeImportExcludedDirectories: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
     computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
@@ -365,6 +367,8 @@ function deserializeState(
     executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
+    nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
+    nativeImportExcludedDirectories: cpp.settings.nativeImportExcludedDirectories ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
     computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
@@ -600,6 +604,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
+    nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
+    nativeImportExcludedDirectories: patch.settings?.nativeImportExcludedDirectories ?? current.nativeImportExcludedDirectories,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
     computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
     computerUseRevocationPending: patch.settings?.computerUseRevocationPending ?? current.computerUseRevocationPending,
@@ -818,6 +824,8 @@ export const useAppStore = create<AppState>((set, get) => {
             executionRouting: current.executionRouting,
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
+            nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+            nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
             computerUseEnabled: current.computerUseEnabled,
             computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
@@ -1165,6 +1173,8 @@ export const useAppStore = create<AppState>((set, get) => {
         executionRouting: current.executionRouting,
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
+        nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+        nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
         computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,

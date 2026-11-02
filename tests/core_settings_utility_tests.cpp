@@ -2855,6 +2855,25 @@ UAM_TEST(SettingsStorePersistsProviderChatDefaults)
 	}
 }
 
+UAM_TEST(SettingsStorePersistsNativeImportFilters)
+{
+	TempDir temp("uam-native-import-filters-settings");
+	const fs::path settings_file = temp.root / "settings.txt";
+	AppSettings settings;
+	settings.native_import_excluded_title_prefixes = {" [automation] ", "", "[automation]", "Run the nightly"};
+	settings.native_import_excluded_directories = {"C:\\scratch", "  ", "/home/you/tmp"};
+
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	AppSettings loaded;
+	SettingsStore::Load(settings_file, loaded);
+
+	UAM_ASSERT_EQ(loaded.native_import_excluded_title_prefixes, std::vector<std::string>({"[automation]", "Run the nightly"}));
+	UAM_ASSERT_EQ(loaded.native_import_excluded_directories, std::vector<std::string>({"C:\\scratch", "/home/you/tmp"}));
+	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
+	UAM_ASSERT_EQ(frontend["nativeImportExcludedTitlePrefixes"], nlohmann::json::array({"[automation]", "Run the nightly"}));
+	UAM_ASSERT_EQ(frontend["nativeImportExcludedDirectories"], nlohmann::json::array({"C:\\scratch", "/home/you/tmp"}));
+}
+
 UAM_TEST(SettingsStorePersistsOrderedUamAgentPreferences)
 {
 	TempDir temp("uam-agent-preferences");

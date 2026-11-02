@@ -3,7 +3,7 @@ import { inlineFileReference, parseFileReference, type FileReference } from '../
 import { memo, ReactNode, useContext } from 'react'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { ContextChip } from '../chat/ContextChip'
-import { inlineChipFor, isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
+import { inlineChipFor, isPotentialTableRow, parseTableSeparator, replaceInlineLatexSymbols, safeHref, splitTableRow } from './markdownParsing'
 
 /** chipBranches is null when inline code should stay plain (chips disabled for this surface). */
 function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((reference: FileReference) => void) | null, chipBranches: readonly string[] | null): ReactNode[] {
@@ -30,7 +30,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
       pattern.lastIndex = end + 1
     }
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index))
+      nodes.push(replaceInlineLatexSymbols(text.slice(lastIndex, match.index)))
     }
 
     const key = `${keyPrefix}-${match.index}`
@@ -45,7 +45,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
       }
       nodes.push(<code key={key}>{reference ? <button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)} title="Inspect file">{value}</button> : value}</code>)
     } else if (token.startsWith('**')) {
-      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>)
+      nodes.push(<strong key={key}>{replaceInlineLatexSymbols(token.slice(2, -2))}</strong>)
     } else {
       const link = token.match(/^\[([^\[\]]+)\]\(([^)]+)\)$/)
       const href = link ? safeHref(link[2]) : undefined
@@ -53,12 +53,12 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
       nodes.push(
         href ? (
           <a key={key} href={href} target="_blank" rel="noreferrer">
-            {link?.[1]}
+            {replaceInlineLatexSymbols(link?.[1] ?? '')}
           </a>
         ) : file ? (
-          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{link?.[1]}</button>
+          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{replaceInlineLatexSymbols(link?.[1] ?? '')}</button>
         ) : (
-          <span key={key}>{link?.[1] ?? token}</span>
+          <span key={key}>{link ? replaceInlineLatexSymbols(link[1]) : token}</span>
         )
       )
     }
@@ -67,7 +67,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
   }
 
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex))
+    nodes.push(replaceInlineLatexSymbols(text.slice(lastIndex)))
   }
 
   return nodes

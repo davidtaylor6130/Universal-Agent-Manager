@@ -774,6 +774,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   executionRouting?: ExecutionRoutingSettings
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
+  nativeImportExcludedTitlePrefixes?: string[]
+  nativeImportExcludedDirectories?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
   /** Saved global Computer Use consent. Unknown when absent; does not grant a target. */
   computerUseGloballyEnabled?: boolean

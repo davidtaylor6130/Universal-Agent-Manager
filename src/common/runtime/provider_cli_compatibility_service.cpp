@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "provider_cli_compatibility_service.h"
 #include "common/runtime/cli_version_parser.h"
 
@@ -223,6 +224,7 @@ namespace
 		task.worker = std::make_unique<std::jthread>(
 		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state, allow_interactive_elevation](std::stop_token stop_token)
 		    {
+		    	uam::platform::LowerCurrentThreadToBackgroundPriority();
 			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
 			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected, allow_interactive_elevation);
 
@@ -586,9 +588,8 @@ namespace
 			    "' -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1).Source;";
 			if (policy.provider_id == uam::provider_ids::kCopilotCli)
 			{
-				script += "if(-not $p){Write-Output '[UAM CLI PATH] |';Write-Output 'copilot was not found on PATH';exit 0};"
-				           "if(-not(Get-Command 'pwsh' -ErrorAction SilentlyContinue)){"
-				           "Write-Output 'GitHub Copilot CLI requires PowerShell 6 or newer; pwsh was not found.';exit 1};";
+				// UAM starts Copilot through Windows PowerShell and cmd.exe; it never requires PowerShell 7.
+				script += "if(-not $p){Write-Output '[UAM CLI PATH] |';Write-Output 'copilot was not found on PATH';exit 0};";
 			}
 			script += "$t='';try{if($p -and [IO.Path]::GetExtension($p) -eq '.cmd'){"
 			    "$prefix=(& npm.cmd prefix -g 2>$null|Select-Object -Last 1);"
@@ -1076,7 +1077,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 
 			if (command_failed)
 			{
-				provider_state.message = provider_id == uam::provider_ids::kCopilotCli && uam::strings::ContainsCaseInsensitive(output, "PowerShell 6 or newer") ? "GitHub Copilot CLI requires PowerShell 6 or newer (pwsh) on Windows." : ProviderTitleMessage("Could not check ", ProviderTitle(app, provider_id), " version.");
+				provider_state.message = ProviderTitleMessage("Could not check ", ProviderTitle(app, provider_id), " version.");
 			}
 			else if (parsed)
 			{

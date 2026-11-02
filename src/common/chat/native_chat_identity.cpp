@@ -15,12 +15,17 @@ namespace
 {
 	constexpr char kNativeIdentityKeyDelimiter = '|';
 
-	std::filesystem::path TrimmedWorkspacePath(const ChatSession& chat)
+	std::string_view TrimmedWorkspaceText(const ChatSession& chat)
 	{
 		// Native sessions run in the worktree, while UAM keeps the project folder
 		// separately for navigation. Match the provider's actual working directory.
 		const std::string_view worktree = uam::strings::TrimAsciiView(chat.workspace_worktree_directory);
-		const std::string_view trimmed_workspace = worktree.empty() ? uam::strings::TrimAsciiView(chat.workspace_directory) : worktree;
+		return worktree.empty() ? uam::strings::TrimAsciiView(chat.workspace_directory) : worktree;
+	}
+
+	std::filesystem::path TrimmedWorkspacePath(const ChatSession& chat)
+	{
+		const std::string_view trimmed_workspace = TrimmedWorkspaceText(chat);
 		return trimmed_workspace.empty() ? fs::path{} : fs::path(std::string(trimmed_workspace));
 	}
 
@@ -91,6 +96,18 @@ namespace uam::chat_identity
 	std::string NativeIdentityKeyForHistoryImport(const ChatSession& chat)
 	{
 		return MakeNativeIdentityKey(chat, NativeWorkspaceForHistoryImport(chat));
+	}
+
+	std::string NativeIdentityKeyForHistoryImport(const ChatSession& chat, NativeWorkspaceCache& workspaces)
+	{
+		const std::string_view host = uam::strings::TrimAsciiView(chat.execution_host_id);
+		// Remote keys are lexical; only local workspaces touch the filesystem.
+		if (!host.empty() && host != uam::execution_hosts::kLocalHostId) return NativeIdentityKeyForHistoryImport(chat);
+		const std::string_view text = TrimmedWorkspaceText(chat);
+		if (text.empty()) return MakeNativeIdentityKey(chat, "");
+		const auto [workspace, inserted] = workspaces.try_emplace(std::string(text));
+		if (inserted) workspace->second = uam::paths::NormalizeExistingPortablePathString(TrimmedWorkspacePath(chat));
+		return MakeNativeIdentityKey(chat, workspace->second);
 	}
 
 	std::string CodexWriterIdentityKey(const ChatSession& chat)

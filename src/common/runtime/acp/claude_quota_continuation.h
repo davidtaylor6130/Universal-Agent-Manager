@@ -21,6 +21,9 @@ namespace uam::acp_detail
 	bool PollClaudeQuotaContinuations(AppState& app, int64_t now_epoch_s);
 #else
 	// Builds without Claude have no quota waits: delivery is never quota-owned and there is nothing to cancel or poll.
+	inline std::string ClaudeQuotaContext(const AppState&, const ChatSession&) { return {}; }
+	inline void ObserveClaudeQuota(AcpSessionState&, const ChatSession&, const nlohmann::json&, int64_t) {}
+	inline bool OwnClaudeQuotaWait(AppState&, AcpSessionState&, ChatSession&, const nlohmann::json&, int64_t) { return false; }
 	inline bool IsCurrentClaudeQuotaContinuationInput(const AppState&, const AcpSessionState&, const ChatSession&, const AcpQueuedUserPromptState&) { return false; }
 	inline bool ValidateClaudeQuotaDelivery(const AppState&, const AcpSessionState&, const ChatSession&) { return true; }
 	inline bool CancelClaudeQuotaWait(AppState&, ChatSession&) { return true; }

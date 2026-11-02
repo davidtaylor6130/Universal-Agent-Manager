@@ -5,7 +5,7 @@
 #else
 #include "test_harness.h"
 #endif
-#include "common/provider/antigravity/cli/antigravity_native_history.h"
+#include "common/provider/antigravity_native_history.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/memory/memory_storage_guard.h"
 #include "common/platform/private_temp_directory.h"

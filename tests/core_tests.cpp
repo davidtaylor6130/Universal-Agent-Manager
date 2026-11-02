@@ -1369,8 +1369,6 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	const fs::path shim_bin = temp.root / uam::paths::PathFromUtf8("Jos\xC3\xA9") / "Microsoft" / "WinGet" / "Links";
 	fs::create_directories(shim_bin);
 	UAM_ASSERT(uam::io::WriteTextFile(shim_bin / "copilot.cmd", "@echo off\r\necho GitHub Copilot CLI 1.0.75\r\n"));
-	// The version probe checks pwsh availability but executes only the Copilot shim.
-	UAM_ASSERT(uam::io::WriteTextFile(shim_bin / "pwsh.cmd", "@echo off\r\nexit /b 93\r\n"));
 
 	const DWORD existing_path_size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
 	std::wstring existing_path(static_cast<std::size_t>(existing_path_size), L'\0');

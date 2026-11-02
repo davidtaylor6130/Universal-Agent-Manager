@@ -824,6 +824,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
   const [mcpDraftDirty, setMcpDraftDirty] = useState(false)
+  const [importFiltersDirty, setImportFiltersDirty] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [mcpSaving, setMcpSaving] = useState(false)
   const [computerUseStatus, setComputerUseStatus] = useState<{ screenRecording: { available: boolean; error: string }; accessibility: { available: boolean; error: string } } | null>(null)
@@ -946,7 +947,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
-    else if (selectedSection === 'mcp-servers' && mcpDraftDirty) { setDiscardExit(() => next); setConfirmDiscard(true) }
+    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
     else next()
   }
   const editorDirty = editorAssociationsDraft.some(item => {
@@ -955,11 +956,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       || (rawExtensions[item.id] !== undefined && JSON.stringify(parseExtensions(rawExtensions[item.id])) !== JSON.stringify(saved?.extensions))
   })
   useEffect(() => {
-    if (!themeDirty && !mcpDraftDirty && !editorDirty) return
+    if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload',guard)
     return () => window.removeEventListener('beforeunload',guard)
-  }, [themeDirty,mcpDraftDirty,editorDirty])
+  }, [themeDirty,mcpDraftDirty,editorDirty,importFiltersDirty])
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
@@ -3214,7 +3215,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'chat-data') {
       return (
         <div className="grid gap-0">
-          <NativeHistorySettings />
+          <NativeHistorySettings onFiltersDirtyChange={setImportFiltersDirty} />
           <SettingsSection title="Chat bundle">
             <SettingRow
               title="Export all chats"
@@ -3412,12 +3413,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </Presence>}
       <Presence open={confirmDiscard}>
         {confirmDiscard && <Overlay open zIndex={70}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
-            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Discard MCP changes?</div>
-            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'} className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>{selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'}</div>
+            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
-              <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
+              <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
             </div>
           </div>
         </Overlay>}

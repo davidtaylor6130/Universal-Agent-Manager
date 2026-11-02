@@ -89,12 +89,12 @@ void FinishMaintenance(AcpSessionState& session)
 nlohmann::json PermissionResponse(const AcpSessionState& session,
     const AcpPendingPermissionState& pending, const std::string& option, bool cancelled)
 {
-	const std::string decision = cancelled ? "user-not-available" :
-	    option == "allow_once" ? "approved" : "denied-interactively-by-user";
-	const nlohmann::json result = {{"kind", decision}};
+	const bool allowed = option == "allow_once";
 	const nlohmann::json request_id = StableStringToJsonRpcId(pending.request_id_json);
 	if (pending.provider_request_method == "permission.request")
-		return uam::acp_json_rpc::SuccessResponse(request_id, {{"result", result}});
+		return uam::acp_json_rpc::SuccessResponse(request_id, {{"result", {{"kind", cancelled ? "user-not-available" : allowed ? "approved" : "denied-interactively-by-user"}}}});
+	// handlePendingPermissionRequest takes a PermissionDecision; Copilot 1.0.105 rejects the older result kinds.
+	const nlohmann::json result = {{"kind", cancelled ? "user-not-available" : allowed ? "approve-once" : "reject"}};
 	// Permission decisions are independent of prompt/cancel IDs. A namespaced
 	// string ID avoids colliding with the monotonically allocated integer IDs.
 	return {{"jsonrpc", "2.0"}, {"id", "uam-permission:" + pending.request_id_json},
@@ -1801,6 +1801,15 @@ bool CopilotCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSe
 				entry.max_output_tokens = Count(limits, "max_output_tokens");
 				parsed.push_back(std::move(entry));
 			}
+			// Copilot Free returns an empty list; its one model is Auto, which the native "auto" id selects.
+			// A list whose entries are all filtered out (for example disabled by policy) stays a failure.
+			if (models->empty())
+			{
+				AcpModelState automatic;
+				automatic.id = "auto";
+				automatic.name = "Auto";
+				parsed.push_back(std::move(automatic));
+			}
 		}
 		if (!parsed.empty())
 		{
@@ -1809,7 +1818,9 @@ bool CopilotCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSe
 			if (session.session_ready) (void)OnAcpReconcileModelOptions(app, session, chat);
 		}
 		else if (app.provider_model_catalog)
-			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Copilot SDK server returned no available models; check authentication and account model access.",
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, models
+			        ? "Copilot SDK server returned no available models; check authentication and account model access."
+			        : "Copilot SDK server returned an invalid model list; check authentication and account model access.",
 			    uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
 		StopBackgroundModelDiscovery(app, session);
 		return true;

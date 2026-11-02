@@ -1500,13 +1500,13 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(git_output("rev-parse --show-toplevel")))));
 	uam::AppState app;
 	app.data_root = temp.root / "data";
-	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(app.data_root / "worktrees" / repo_key / "review")).size();
+	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(fs::weakly_canonical(app.data_root / "worktrees" / repo_key / "review")).size();
 	UAM_ASSERT(initial_parent_bytes <= 182);
 	app.data_root = temp.root / ("data" + std::string(182 - initial_parent_bytes, 'p'));
 	const uam::GitWorktreeService service;
 	const std::string logical_name = "review/" + std::string(80, 'a');
 	const fs::path original = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(logical_name);
-	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original) / ".git").size(), static_cast<std::size_t>(268));
+	UAM_ASSERT_EQ(uam::paths::Utf8PathString(fs::weakly_canonical(original) / ".git").size(), static_cast<std::size_t>(268));
 	std::vector<ChatSession> chats(4);
 	for (std::size_t index = 0; index < chats.size(); ++index)
 	{
@@ -1526,7 +1526,7 @@ UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
 		UAM_ASSERT_EQ(chat.workspace_branch_name, expected_branch);
 		const fs::path actual = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
 		UAM_ASSERT_EQ(actual.parent_path(), original.parent_path());
-		UAM_ASSERT(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(actual) / ".git").size() <= 220);
+		UAM_ASSERT(uam::paths::Utf8PathString(fs::weakly_canonical(actual) / ".git").size() <= 220);
 		UAM_ASSERT_EQ(uam::paths::Utf8PathString(actual.filename()), (index == 3 ? std::string("r\xC3\xA9r\xC3\xA9r\xC3\xA9r\xC3\xA9r\xC3\xA9") : std::string(15, 'a')) + "-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(expected_branch)));
 		UAM_ASSERT(("\n" + git_output("worktree list --porcelain") + "\n").find("\nbranch refs/heads/" + expected_branch + "\n") != std::string::npos);
 		UAM_ASSERT(service.Status(app, chat).isolated);

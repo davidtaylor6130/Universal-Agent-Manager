@@ -15,7 +15,8 @@ uam_local_build_presentation("${UAM_PRODUCT_VERSION}" "${UAM_LOCAL_BUILD_VERSION
 
 include("${CMAKE_SOURCE_DIR}/cmake/build_features.cmake")
 option(UAM_RUNNER_ONLY "Build only the headless remote runner." OFF)
-option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ON)
+# Without SSH there are no helpers to package, so a build that turns SSH off need not also turn packaging off.
+option(UAM_PACKAGE_REMOTE_RUNNERS "Validate and package all supported SSH helpers." ${UAM_ENABLE_SSH})
 set(UAM_REMOTE_RUNNER_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/Builds/remote-artifacts" CACHE PATH
   "Directory containing linux-arm64, linux-x86_64, and windows-x86_64 runner folders.")
 
@@ -380,7 +381,8 @@ endif()
 
 set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_native_attachment_assets.cpp
-  src/common/platform/platform_incremental_sha256.cpp)
+  src/common/platform/platform_incremental_sha256.cpp
+  src/common/platform/background_thread_priority.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 # Connected handler fixtures replace the PTY, so it stays out of the shared objects.
 if(WIN32)
@@ -1361,6 +1363,10 @@ foreach(_uam_objects IN ITEMS uam_core_objects uam_app_objects)
   endforeach()
   target_link_libraries(${_uam_objects} PRIVATE nlohmann_json::nlohmann_json libcef_dll_wrapper uam_sqlite ZLIB::ZLIB)
   set_target_properties(${_uam_objects} PROPERTIES FOLDER "App")
+  # Large orchestration units exceed MSVC's default object section limit in Debug (C1128).
+  if(MSVC)
+    target_compile_options(${_uam_objects} PRIVATE /bigobj)
+  endif()
 endforeach()
 
 foreach(_cmake_target IN ITEMS ALL_BUILD ZERO_CHECK RUN_TESTS Experimental Nightly NightlyMemoryCheck Continuous)
@@ -1495,11 +1501,13 @@ if(UAM_BUILD_TESTS)
     src/common/provider/opencode/cli/opencode_native_http.cpp
     src/common/provider/claude/cli/claude_acp_message_handlers.cpp
     src/common/provider/codex/cli/codex_acp_message_handlers.cpp
+    src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+    src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
     src/common/runtime/acp/claude_quota_continuation.cpp
     src/app/opencode_import_stream.cpp
     src/core/gemini_cli_compat.cpp
   )
-  list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
+  list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_SOURCES} ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
     tests/independent_shutdown_owner_tests.cpp
     tests/core_tests.cpp
@@ -1515,6 +1523,7 @@ if(UAM_BUILD_TESTS)
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp
     tests/async_byte_writer_receipt_tests.cpp
+    tests/background_thread_priority_tests.cpp
     tests/platform_observed_input_write_tests.cpp
     tests/input_provenance_codec_tests.cpp
     tests/acp_input_admission_bridge_tests.cpp
@@ -1752,6 +1761,9 @@ if(UAM_BUILD_TESTS)
         "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
     )
   endif()
+  # Source scans in this file must not depend on the test working directory.
+  set_source_files_properties(tests/background_thread_priority_tests.cpp PROPERTIES
+    COMPILE_DEFINITIONS "UAM_TEST_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
   target_compile_definitions(uam_core_tests PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
     NOMINMAX

@@ -1084,6 +1084,10 @@ struct AppSettings
 	std::vector<ExecutionHost> execution_hosts;
 	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
+	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>
+	std::vector<std::string> native_import_excluded_title_prefixes;
+	/// <summary>Native sessions whose workspace is one of these folders, or inside one, are never offered for import.</summary>
+	std::vector<std::string> native_import_excluded_directories;
 	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";
 };

@@ -256,7 +256,8 @@ UAM_TEST(UsageMultiHostStreamedLifetimeDeduplicatesPeersBeyondCombinedDocumentCa
 		    const fs::path path = temp.root / "usage" / "remote" / scope / "snapshot-v3.jsonl"; fs::create_directories(path.parent_path()); fs::copy_file(snapshot->path, path, fs::copy_options::overwrite_existing);
 		    return nlohmann::json{{"receiptSnapshotPath", uam::paths::Utf8PathString(path)}};
 	    });
-	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20); nlohmann::json total;
+	// Readiness wait for ~140 MiB of collection, not a speed budget: 10 s on Apple silicon, over 20 s on Intel runners.
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120); nlohmann::json total;
 	do { total = history.Query("*", 0); if (total.contains("totals") && total.value("complete", false) && !total.value("collecting", true)) break; std::this_thread::sleep_for(std::chrono::milliseconds(5)); } while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(total.contains("totals")); UAM_ASSERT(total.value("complete", false)); UAM_ASSERT_EQ(total["totals"]["totalTokens"].get<std::int64_t>(), 9000LL); UAM_ASSERT_EQ(total["totals"]["records"].get<std::size_t>(), std::size_t{4500}); UAM_ASSERT_EQ(total["duplicates"].get<std::size_t>(), std::size_t{4500}); UAM_ASSERT_EQ(total["totals"]["sessions"].get<std::size_t>(), std::size_t{1});
 	UAM_ASSERT_EQ(history.Query("*", 90)["totals"]["totalTokens"].get<std::int64_t>(), 0LL);

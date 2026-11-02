@@ -6,6 +6,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <array>
 #include <string_view>
 
@@ -188,13 +189,28 @@ namespace uam
 	/// <summary>Containment stops before a distinct nested repository or worktree.</summary>
 	static bool MatchesRegisteredParent(const std::filesystem::path& location, const std::filesystem::path& owner)
 	{
+		// Resolve the owner once rather than at every ancestor.
+		const std::filesystem::path owner_key = FolderDirectoryCompareKey(owner);
 		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
 		{
-			if (FolderDirectoryMatches(current, owner)) return true;
+			if (FolderDirectoryKeysMatch(FolderDirectoryCompareKey(current), owner_key)) return true;
 			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
 			if (current == current.parent_path()) break;
 		}
 		return false;
+	}
+
+	/// <summary>Resolved ancestors MatchesRegisteredParent would visit, up to and including the first repository boundary.</summary>
+	static std::vector<std::filesystem::path> RegisteredParentKeys(const std::filesystem::path& location)
+	{
+		std::vector<std::filesystem::path> keys;
+		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		{
+			keys.push_back(FolderDirectoryCompareKey(current));
+			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
+			if (current == current.parent_path()) break;
+		}
+		return keys;
 	}
 
 	bool ImportedWorkspaceMatchesFolder(const std::filesystem::path& workspace, const std::filesystem::path& folder)
@@ -209,23 +225,38 @@ namespace uam
 	const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace)
 	{
 		if (workspace.empty()) return nullptr;
+		// Resolve every registered folder once per call instead of once per candidate ancestor.
+		struct RegisteredFolder
+		{
+			const ChatFolder* folder;
+			std::filesystem::path key;
+			std::size_t depth;
+		};
+		std::vector<RegisteredFolder> registered;
+		for (const ChatFolder& folder : folders)
+		{
+			if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
+			const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
+			registered.push_back({&folder, FolderDirectoryCompareKey(directory), static_cast<std::size_t>(std::distance(directory.begin(), directory.end()))});
+		}
+		if (registered.empty()) return nullptr;
 		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
 		const std::filesystem::path resolved = uam::paths::NormalizeExistingOrAbsolutePath(ResolveImportedWorkspaceFolderDirectory(location));
 		// A verified linked worktree belongs to its main checkout when both are registered.
 		const std::array<std::filesystem::path, 2> candidates = resolved == location
 		    ? std::array<std::filesystem::path, 2>{location, resolved}
 		    : std::array<std::filesystem::path, 2>{resolved, location};
-		for (const std::filesystem::path& candidate : candidates)
+		for (std::size_t index = 0; index < candidates.size(); ++index)
 		{
+			// An identical second candidate cannot find an owner the first missed.
+			if (index > 0 && candidates[index] == candidates[0]) break;
+			const std::vector<std::filesystem::path> parents = RegisteredParentKeys(candidates[index]);
 			const ChatFolder* owner = nullptr;
 			std::size_t owner_depth = 0;
-			for (const ChatFolder& folder : folders)
+			for (const RegisteredFolder& folder : registered)
 			{
-				if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
-				const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
-				if (!MatchesRegisteredParent(candidate, directory)) continue;
-				const std::size_t depth = static_cast<std::size_t>(std::distance(directory.begin(), directory.end()));
-				if (owner == nullptr || depth > owner_depth) { owner = &folder; owner_depth = depth; }
+				if (std::ranges::none_of(parents, [&](const std::filesystem::path& parent) { return FolderDirectoryKeysMatch(parent, folder.key); })) continue;
+				if (owner == nullptr || folder.depth > owner_depth) { owner = folder.folder; owner_depth = folder.depth; }
 			}
 			if (owner != nullptr) return owner;
 		}

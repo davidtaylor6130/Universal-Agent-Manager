@@ -883,6 +883,8 @@ namespace uam
 			bool consumed = false;
 		} goal_review_usage;
 		bool ignore_session_updates_until_ready = false;
+		/// <summary>Gemini answers session/load before streaming its history; setup finishes once that replay is quiet.</summary>
+		double load_replay_quiet_until_s = 0.0;
 		bool codex_resume_fallback_attempted = false;
 		bool acp_resume_fallback_attempted = false;
 		std::string stdout_buffer;
@@ -890,6 +892,8 @@ namespace uam
 		std::string remote_output_delivery_token;
 		int remote_runner_protocol_version = 0;
 		std::string pending_remote_input_receipt_id;
+		// Authored rows of the in-flight remote prompt; the helper receipt for that delivery is their write fact.
+		std::vector<std::string> pending_remote_delivery_input_ids;
 		std::string pending_remote_output_ack_line;
 		std::uintmax_t pending_remote_stdout_cursor = 0;
 		std::uintmax_t pending_remote_stderr_cursor = 0;

@@ -636,6 +636,7 @@ UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
 	uam::AcpSessionState& session = *app.acp_sessions.back();
 	session.chat_id = chat.id;
 	session.provider_id = chat.provider_id;
+	session.process_execution_host_id = uam::execution_hosts::kLocalHostId;
 	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
 	session.codex_thread_id = "thread";
 	session.session_id = "thread";
@@ -3223,4 +3224,21 @@ UAM_TEST(AgentRunSchedulerEnforcesWallClockDeadlineAndReturnsOneDurableBoundedRe
 	UAM_ASSERT_EQ(durable.delivery_id, first.delivery_id);
 	UAM_ASSERT_EQ(durable.output, first.output);
 	UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(app, 3000));
+}
+
+UAM_TEST(AgentRunSchedulerReusedSessionStartsNewRunUnlaunched)
+{
+	uam::AppState app;
+	ChatSession transcript;
+	transcript.id = "managed-reused-transcript";
+	transcript.agent_run_id = "previous-run";
+	app.chats = {transcript};
+	uam::AcpSessionState& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
+	session.managed_launch_attempted = true;
+	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
+	UAM_ASSERT(session.managed_launch_attempted); // Same run keeps its launch record.
+	app.chats.front().agent_run_id = "next-run";
+	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
+	UAM_ASSERT_EQ(session.managed_agent_run_id, std::string("next-run"));
+	UAM_ASSERT(!session.managed_launch_attempted);
 }

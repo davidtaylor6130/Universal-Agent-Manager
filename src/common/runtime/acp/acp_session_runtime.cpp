@@ -1,4 +1,6 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
+#include "common/platform/observed_process_stop.h"
 #include "common/runtime/acp/acp_process_handoff.h"
 #include <type_traits>
 #include "common/chat/acp_prompt_recovery.h"
@@ -838,6 +840,14 @@ namespace uam
 				}
 				BindQueuedAgentForLaunch(session, session.queued_user_prompts.front());
 			}
+			else if (!session.running && !session.processing && !session.queue_held && !session.queued_user_prompts.empty() &&
+			    session.managed_agent_run_id.empty() && !session.model_discovery_only && !session.goal_internal_session &&
+			    !session.recovering_remote_turn && !session.recovering_remote_process)
+			{
+				// A deferred first launch (for example after worktree preparation) must start with the queued
+				// input's captured agent; otherwise session setup sees a changed native adapter and restarts.
+				BindQueuedAgentForLaunch(session, session.queued_user_prompts.front());
+			}
 
 			std::string error;
 			if (!PrepareCliTerminalForAcpLaunch(app, chat.id, &error) ||
@@ -1498,6 +1508,7 @@ namespace uam
 			{
 				task->worker = std::make_unique<std::jthread>([result, selected_id](std::stop_token)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { result->success = AgentDefinitionService::CaptureSelectedPrimary(result->root, result->workspace, selected_id, result->snapshot, result->error); }
 					catch (const std::exception& exception) { result->error = std::string("Agent preparation failed: ") + exception.what(); }
 					catch (...) { result->error = "Agent preparation failed."; }
@@ -2500,9 +2511,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out) *error_out = "Native session settings are waiting for the owning input and idle runtime.";
 				return false;
 			}
-			// A fresh stream can receive its first model report only after input. Its captured launch
-			// option is sufficient for restart selection, never native execution/model attestation.
-			const std::string& restart_model_id = session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
+			// Compare the captured launch option, not the provider-reported model: Claude reports a resolved
+			// name (claude-opus-5-5) for an alias launch (opus), which would otherwise restart every turn.
+			// The option is sufficient for restart selection, never native execution/model attestation.
+			const std::string& restart_model_id = session.launch_model_options_captured || session.current_model_id.empty() ? session.launch_model_options_id : session.current_model_id;
 			// An empty selection removes an explicit launch model; a reported default model alone
 			// must not restart every later turn of an already default-configured stream.
 			// An unknown reattached launch establishes Default by owned idle restart.
@@ -2654,7 +2666,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.current_mode_id = desired_mode;
 				else if (!SetAcpSessionMode(app, chat.id, desired_mode, error_out)) return false;
 			}
-			const std::string& configured_model_id = session.current_model_id.empty() && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
+			const std::string& configured_model_id = (session.launch_model_options_captured || session.current_model_id.empty()) && runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession ? session.launch_model_options_id : session.current_model_id;
 			if (!runtime.IsGenericAcpSession() && session.session_ready && !session.goal_turn_model_id.empty() && configured_model_id != session.goal_turn_model_id)
 			{
 				if (runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::ApplyLocally)
@@ -4564,6 +4576,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				std::thread([task]()
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { task->loaded = ChatDomainService().LoadColdHistoryPreparation(*task->history, task->error); }
 					catch (const std::exception& error) { task->error = error.what(); }
 					catch (...) { task->error = "History preparation failed."; }
@@ -4796,8 +4809,21 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (!ValidateQueuedReplayBeforeLaunch(app, session, chat)) return false;
-		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready &&
-		    !CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
+		if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() && session.running && session.session_ready)
+		{
+			// A revoked owner holds the exact head once; a silent refusal would re-check it every poll.
+			std::string ownership_error;
+			if (!ValidateAcpRestartOwnership(app, session, chat, &ownership_error))
+			{
+				session.last_error = std::move(ownership_error);
+				session.queue_held = chat.acp_queue_held = true;
+				session.reconnect_pending = false;
+				session.lifecycle_state = kAcpLifecycleError;
+				ScheduleChatSave(app, chat, 0.0);
+				return false;
+			}
+			if (!CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
+		}
 		if (chat.routing_mode == "automatic")
 		{
 			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
@@ -7589,6 +7615,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			// Adapter-owned option deadlines must retire before control timeout recovery or queued prompt admission.
 			changed = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpPollNativeModelOptions(app, session, chat) || changed;
+			changed = acp_detail::SettleAcpLoadReplay(app, session, chat, now_seconds) || changed;
 			(void)acp_detail::PollLocalSessionReceipt(app, session, chat);
 			if (HoldAcpUnconfirmedCancellationIfTimedOut(app, session, chat, now_seconds))
 			{
@@ -8145,8 +8172,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;
-			// Keep draining active pipes within the existing shutdown deadline.
-			if (!made_progress) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			// Keep draining active pipes within the existing shutdown deadline, waking as soon as output arrives.
+			if (!made_progress)
+			{
+				const auto pending = std::ranges::find_if(idle_remote_stops, [](const IdleRemoteStop& stop) { return !stop.confirmed; });
+				if (pending == idle_remote_stops.end()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				else uam::platform::WaitForStdioProcessOutput(*pending->session, std::chrono::milliseconds(10));
+			}
 		}
 		for (const IdleRemoteStop& stop : idle_remote_stops)
 		{

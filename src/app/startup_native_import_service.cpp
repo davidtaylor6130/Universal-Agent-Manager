@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "app/startup_native_import_service.h"
 
 #include "app/chat_domain_service.h"
@@ -29,6 +30,7 @@ namespace uam
 			result.id = chat.id;
 			result.native_session_id = chat.native_session_id;
 			result.provider_id = chat.provider_id;
+			result.title = chat.title; // Import filters recheck title rules before publication.
 			result.folder_id = chat.folder_id;
 			result.execution_host_id = chat.execution_host_id;
 			result.workspace_directory = chat.workspace_directory;
@@ -144,6 +146,7 @@ namespace uam
 		{
 			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				return scanner(request, stop);
 			});
 		}
@@ -240,6 +243,7 @@ namespace uam
 		{
 			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				return scanner(request, stop);
 			});
 		}
@@ -356,6 +360,7 @@ namespace uam
 				{
 					m_scan = std::async(std::launch::async, [scanner = m_scanner, request = m_scan_request, stop = m_stop.get_token()]
 					{
+						uam::platform::LowerCurrentThreadToBackgroundPriority();
 						return scanner(request, stop);
 					});
 					return true;

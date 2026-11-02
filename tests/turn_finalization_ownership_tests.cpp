@@ -109,6 +109,7 @@ UAM_TEST(AsyncCheckpointKeepsNewQueuedIntentDurableAndRetriesOwnedMetadataBefore
 	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->provider_id = "codex-cli";
+	session->process_execution_host_id = uam::execution_hosts::kLocalHostId;
 	session->running = true;
 	session->session_ready = true;
 	session->session_id = "fixture-thread";

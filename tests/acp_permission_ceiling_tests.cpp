@@ -194,9 +194,9 @@ bool ManualGrantIsRefused(bool goal_review, const std::string& kind, const std::
 		UAM_ASSERT(error.find("read-only") != std::string::npos);
 		UAM_ASSERT(fixture.Resolve(7, "reject_once", false, error));
 		// This delivered denial fences all earlier writes in the actual FIFO sink.
-		const auto responses = fixture.sink->ReadThroughResponse(7, "denied-interactively-by-user");
+		const auto responses = fixture.sink->ReadThroughResponse(7, "reject");
 		UAM_ASSERT_EQ(responses.size(), std::size_t(1));
-		AssertDecision(responses.front(), 7, "denied-interactively-by-user");
+		AssertDecision(responses.front(), 7, "reject");
 	}
 	else
 	{
@@ -250,9 +250,9 @@ UAM_TEST(AcpCapturedReadManualDecisionsPreserveAllowedOperations)
 				before.AssertUnchanged(fixture);
 			}
 			UAM_ASSERT(fixture.Resolve(7, "allow_once", false, error));
-			const auto responses = fixture.sink->ReadThroughResponse(7, "approved");
+			const auto responses = fixture.sink->ReadThroughResponse(7, "approve-once");
 			UAM_ASSERT_EQ(responses.size(), std::size_t(1));
-			AssertDecision(responses.front(), 7, "approved");
+			AssertDecision(responses.front(), 7, "approve-once");
 		}
 		for (bool cancelled : {false, true})
 		{
@@ -260,7 +260,7 @@ UAM_TEST(AcpCapturedReadManualDecisionsPreserveAllowedOperations)
 			fixture.Request(7, "write");
 			std::string error;
 			UAM_ASSERT(fixture.Resolve(7, cancelled ? "" : "reject_once", cancelled, error));
-			const std::string decision = cancelled ? "user-not-available" : "denied-interactively-by-user";
+			const std::string decision = cancelled ? "user-not-available" : "reject";
 			const auto responses = fixture.sink->ReadThroughResponse(7, decision);
 			UAM_ASSERT_EQ(responses.size(), std::size_t(1));
 			AssertDecision(responses.front(), 7, decision);
@@ -272,18 +272,18 @@ UAM_TEST(AcpCapturedReadManualDecisionsPreserveAllowedOperations)
 		fixture.Request(7, command.empty() ? "write" : "shell", command);
 		std::string error;
 		UAM_ASSERT(fixture.Resolve(7, "allow_once", false, error));
-		const auto responses = fixture.sink->ReadThroughResponse(7, "approved");
+		const auto responses = fixture.sink->ReadThroughResponse(7, "approve-once");
 		UAM_ASSERT_EQ(responses.size(), std::size_t(1));
-		AssertDecision(responses.front(), 7, "approved");
+		AssertDecision(responses.front(), 7, "approve-once");
 		UAM_ASSERT(!fs::exists(fixture.temp.root / "private-output.txt"));
 	}
 	PermissionCeilingFixture ordinary_plan(false, true, true);
 	ordinary_plan.Request(7, "read");
 	std::string error;
 	UAM_ASSERT(ordinary_plan.Resolve(7, "allow_once", false, error));
-	const auto responses = ordinary_plan.sink->ReadThroughResponse(7, "approved");
+	const auto responses = ordinary_plan.sink->ReadThroughResponse(7, "approve-once");
 	UAM_ASSERT_EQ(responses.size(), std::size_t(1));
-	AssertDecision(responses.front(), 7, "approved");
+	AssertDecision(responses.front(), 7, "approve-once");
 	UAM_ASSERT_EQ(ordinary_plan.app.chats.front().approval_mode, std::string("plan"));
 }
 
@@ -312,10 +312,10 @@ UAM_TEST(AcpRejectedManualGrantPreservesPermissionQueueUntilDenial)
 		UAM_ASSERT(fixture.session->waiting_for_permission);
 		UAM_ASSERT(fixture.session->queued_permissions.empty());
 		UAM_ASSERT(fixture.Resolve(8, "allow_once", false, error));
-		const auto responses = fixture.sink->ReadThroughResponse(8, "approved");
+		const auto responses = fixture.sink->ReadThroughResponse(8, "approve-once");
 		UAM_ASSERT_EQ(responses.size(), std::size_t(2));
-		AssertDecision(responses.front(), 7, resolved ? "approved" : "denied-interactively-by-user");
-		AssertDecision(responses.back(), 8, "approved");
+		AssertDecision(responses.front(), 7, resolved ? "approve-once" : "reject");
+		AssertDecision(responses.back(), 8, "approve-once");
 		UAM_ASSERT(!fixture.session->waiting_for_permission && fixture.session->pending_permission.request_id_json.empty());
 	}
 	UAM_ASSERT_EQ(refused.size(), std::size_t(2));
@@ -334,7 +334,7 @@ UAM_TEST(AcpCapturedReadAutoPolicyRejectsMutatingReadCommandForms)
 			const auto responses = fixture.sink->ReadThroughResponse(7);
 			UAM_ASSERT_EQ(responses.size(), std::size_t(1));
 			const std::string decision = responses.front().at("params").at("result").at("kind");
-			const bool denied = decision == "denied-interactively-by-user" || decision == "user-not-available";
+			const bool denied = decision == "reject" || decision == "user-not-available";
 			rejected.push_back(denied);
 			std::cout << "captured ceiling automatic decision: goal=" << goal_review << " command=" << command << " decision=" << decision << '\n';
 			UAM_ASSERT(!fs::exists(fixture.temp.root / "private.txt"));
@@ -344,9 +344,9 @@ UAM_TEST(AcpCapturedReadAutoPolicyRejectsMutatingReadCommandForms)
 		{
 			PermissionCeilingFixture fixture(goal_review);
 			fixture.Request(7, command.empty() ? "read" : "shell", command, "");
-			const auto responses = fixture.sink->ReadThroughResponse(7, "approved");
+			const auto responses = fixture.sink->ReadThroughResponse(7, "approve-once");
 			UAM_ASSERT_EQ(responses.size(), std::size_t(1));
-			AssertDecision(responses.front(), 7, "approved");
+			AssertDecision(responses.front(), 7, "approve-once");
 		}
 	}
 	UAM_ASSERT_EQ(rejected.size(), std::size_t(6));
@@ -368,14 +368,14 @@ UAM_TEST(AcpPersistedPermissionReplayCannotOverrideCurrentCapturedReadCeiling)
 		std::string error;
 		fixture.Request(7, "write");
 		UAM_ASSERT(fixture.Resolve(7, "allow_once", false, error));
-		const auto original_write = fixture.sink->ReadThroughResponse(7, "approved");
+		const auto original_write = fixture.sink->ReadThroughResponse(7, "approve-once");
 		UAM_ASSERT_EQ(original_write.size(), std::size_t(1));
-		AssertDecision(original_write.front(), 7, "approved");
+		AssertDecision(original_write.front(), 7, "approve-once");
 		fixture.Request(9, "read");
 		UAM_ASSERT(fixture.Resolve(9, "allow_once", false, error));
-		const auto original_read = fixture.sink->ReadThroughResponse(9, "approved");
+		const auto original_read = fixture.sink->ReadThroughResponse(9, "approve-once");
 		UAM_ASSERT_EQ(original_read.size(), std::size_t(2));
-		AssertDecision(original_read.back(), 9, "approved");
+		AssertDecision(original_read.back(), 9, "approve-once");
 		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
 		UAM_ASSERT(saved);
 		UAM_ASSERT_EQ(saved->execution_host_id, std::string("private-ssh-permission-host"));
@@ -408,12 +408,12 @@ UAM_TEST(AcpPersistedPermissionReplayCannotOverrideCurrentCapturedReadCeiling)
 		fixture.Request(9, "read");
 		// The supported saved read response is the actual FIFO fence for every
 		// preceding replay write on this freshly attached private transport.
-		const auto replayed = fixture.sink->ReadThroughResponse(9, "approved");
-		AssertDecision(replayed.back(), 9, "approved");
+		const auto replayed = fixture.sink->ReadThroughResponse(9, "approve-once");
+		AssertDecision(replayed.back(), 9, "approve-once");
 		const bool write_approved = std::ranges::any_of(replayed, [](const nlohmann::json& response)
 		{
 			return response.at("params").at("requestId") == 7 &&
-			    response.at("params").at("result").at("kind") == "approved";
+			    response.at("params").at("result").at("kind") == "approve-once";
 		});
 		safe_replay.push_back(!write_approved);
 		std::cout << "captured ceiling persisted replay: goal=" << goal_review

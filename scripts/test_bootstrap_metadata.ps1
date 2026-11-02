@@ -82,7 +82,7 @@ function Invoke-FixtureScript($name) {
         & $replacement $source $target $save
     }
     function Remove-UamOptional($paths) {
-        if ($script:mode -eq 'commit-cleanup-failure' -and $paths -contains $script:backup) { throw 'Injected cleanup failure after commit.' }
+        if ($script:mode -eq 'commit-cleanup-failure' -and @($paths | ForEach-Object { [IO.Path]::GetFullPath($_) }) -contains [IO.Path]::GetFullPath($script:backup)) { throw 'Injected cleanup failure after commit.' }
         & $remove $paths
     }
     function Invoke-UamRunner($path,$argument,$failure) {
@@ -107,7 +107,7 @@ function Invoke-FixtureScript($name) {
             }
             --source-fingerprint {
                 if ($script:mode -eq 'query-failure') { throw $failure }
-                if ($script:mode -eq 'source-mismatch' -or ($script:mode -eq 'installed-source-mismatch' -and $path -eq $script:installed)) { 'c'*64 }
+                if ($script:mode -eq 'source-mismatch' -or ($script:mode -eq 'installed-source-mismatch' -and [IO.Path]::GetFullPath($path) -eq [IO.Path]::GetFullPath($script:installed))) { 'c'*64 }
                 elseif ($script:mode -eq 'duplicate-query') { $expectedFingerprint; $expectedFingerprint }
                 else { $expectedFingerprint }
             }

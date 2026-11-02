@@ -7,7 +7,67 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PR
 import { Button, Notice } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ANTIGRAVITY_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+
+// Title rules ignore case, so case variants are one rule; folder rules keep case for POSIX paths.
+const ruleLines = (text: string, foldCase = false) => {
+  const seen = new Set<string>()
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
+    const key = foldCase ? line.toLowerCase() : line
+    return line !== '' && !seen.has(key) && !!seen.add(key)
+  })
+}
+
+/** Rules that keep matching native sessions out of discovery and import; existing chats are not touched. */
+export function NativeImportFilters({ disabled = false, onDirtyChange }: { disabled?: boolean; onDirtyChange?: (dirty: boolean) => void }) {
+  const savedPrefixes = useAppStore((state) => state.nativeImportExcludedTitlePrefixes)
+  const savedDirectories = useAppStore((state) => state.nativeImportExcludedDirectories)
+  const setNativeImportFilters = useAppStore((state) => state.setNativeImportFilters)
+  const [prefixes, setPrefixes] = useState(savedPrefixes.join('\n'))
+  const [directories, setDirectories] = useState(savedDirectories.join('\n'))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const dirty = ruleLines(prefixes, true).join('\n') !== savedPrefixes.join('\n') || ruleLines(directories).join('\n') !== savedDirectories.join('\n')
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+  // Follow saved rules changed elsewhere in each list the user has not edited; a save's own rollback keeps the draft.
+  const savingRef = useRef(saving)
+  savingRef.current = saving
+  const lastSaved = useRef({ prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') })
+  useEffect(() => {
+    const previous = lastSaved.current
+    const next = { prefixes: savedPrefixes.join('\n'), directories: savedDirectories.join('\n') }
+    lastSaved.current = next
+    if (savingRef.current) return
+    setPrefixes((draft) => ruleLines(draft, true).join('\n') === previous.prefixes ? next.prefixes : draft)
+    setDirectories((draft) => ruleLines(draft).join('\n') === previous.directories ? next.directories : draft)
+  }, [savedPrefixes, savedDirectories])
+  const discard = () => { setPrefixes(savedPrefixes.join('\n')); setDirectories(savedDirectories.join('\n')); setError('') }
+  async function save() {
+    setSaving(true); setError('')
+    const titlePrefixes = ruleLines(prefixes, true)
+    const excludedDirectories = ruleLines(directories)
+    const ok = await setNativeImportFilters({ titlePrefixes, directories: excludedDirectories })
+    setSaving(false)
+    if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')) }
+    else setError('The import filters could not be saved. Your changes are kept.')
+  }
+  return <SettingRow title="Import filters" description="Matching native sessions are never offered or imported. Chats already in UAM are not changed.">
+    <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored. Most providers title a session with its first message.">
+      <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
+        disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
+    </SettingsField>
+    <SettingsField label="Skip sessions from these folders" htmlFor="native-import-directories" hint="One folder per line. Its subfolders and worktrees are skipped too, on every host.">
+      <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
+        disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
+    </SettingsField>
+    {error && <Notice tone="error" title="Import filters" dismissible={false} dismissLabel="Dismiss import filter error">{error}</Notice>}
+    <div className="flex justify-end gap-2">
+      <Button size="sm" variant="ghost" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
+      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
+    </div>
+  </SettingRow>
+}
 
 type IssueGroup = { provider: string; reason: string; items: string[] }
 
@@ -29,7 +89,7 @@ export function groupDiscoveryIssues(messages: string[], providerNames: string[]
 }
 
 /** Explicit discovery shares startup staging and its guarded selection/publication path. */
-export function NativeHistorySettings() {
+export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirtyChange?: (dirty: boolean) => void } = {}) {
   const status = useAppStore((state) => state.startupNativeImports)
   const providers = useAppStore((state) => state.providers)
   const providerIds = [...new Set(providers.map((provider) => normalizeCliProviderIdAlias(provider.id)))].filter((id) => SUPPORTED_CLI_PROVIDER_IDS.includes(id))
@@ -125,11 +185,12 @@ export function NativeHistorySettings() {
         <ul className="uam-native-notes">
           <li>Nothing is imported until you select chats and confirm.</li>
           <li>Histories from unregistered local workspaces stay in review until you assign their source workspace.</li>
-          <li>Existing chats and deleted or ignored sessions are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
+          <li>Existing chats, deleted or ignored sessions, and sessions matching your import filters are excluded.{SSH_ENABLED && ' SSH hosts are outside this scan.'}</li>
           {OPENCODE_ENABLED && providerIds.includes(OPENCODE_CLI_PROVIDER_ID) && <li>OpenCode requires its configured CLI.</li>}
           {ANTIGRAVITY_ENABLED && providerIds.includes(ANTIGRAVITY_CLI_PROVIDER_ID) && <li>Antigravity reads settled CLI SQLite and supported legacy histories. Changing, nested or unrecognised native records remain unimported and report a retryable issue.</li>}
         </ul>
       </details>
     </SettingRow>
+    <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </SettingsSection>
 }

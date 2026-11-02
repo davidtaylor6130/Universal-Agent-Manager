@@ -98,9 +98,10 @@ namespace uam::attached_skills
 		const std::filesystem::path source = local ? target : data_root / "attached-skills" / provider_setup::Digest(manifest.dump());
 		std::vector<std::string> missing;
 		if (stop.stop_requested() || !provider_setup::Prepare(source, manifest, missing, error)) return false;
+		// Prepare fully verified the existing source directory; each file still checks every component below it.
 		for (const std::string& name : missing)
 		{
-			if (stop.stop_requested() || !provider_setup::WriteRuntimeFile(source / name, resources.at(name), error, false)) return false;
+			if (stop.stop_requested() || !provider_setup::WriteRuntimeFile(source / name, resources.at(name), error, false, source)) return false;
 		}
 		if (!provider_setup::Prepare(source, manifest, missing, error) || !missing.empty())
 		{
@@ -111,7 +112,7 @@ namespace uam::attached_skills
 		for (const std::pair<const std::string, std::string>& entry : resources)
 		{
 			std::string bytes;
-			if (!provider_setup::ReadFile(source / entry.first, bytes, error) || bytes != entry.second)
+			if (!provider_setup::ReadFile(source / entry.first, bytes, error, source) || bytes != entry.second)
 			{
 				if (error.empty()) error = "Attached skill resource bytes changed.";
 				return false;

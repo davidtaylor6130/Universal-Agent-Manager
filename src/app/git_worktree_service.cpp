@@ -331,6 +331,7 @@ namespace uam
 			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
 			{
 				bool markers[5]{};
+				std::filesystem::file_status git_status;
 				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
 				for (std::size_t index = 0; index < 5; ++index)
 				{
@@ -338,6 +339,14 @@ namespace uam
 					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
 					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
 					markers[index] = std::filesystem::exists(status);
+					if (index == 0) git_status = status;
+				}
+				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
+				// into one. An unreadable one keeps strict Git validation and its metadata error.
+				if (markers[0] && std::filesystem::is_directory(git_status))
+				{
+					std::error_code error;
+					markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
 				}
 				// Broken Git markers and bare repositories must retain normal Git validation.
 				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
@@ -365,7 +374,10 @@ namespace uam
 			path = WorktreeRootForChat(app, source_root, relative_name);
 #if defined(_WIN32)
 			constexpr std::size_t kMaxGitAdministrativePathBytes = 220;
-			const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(path);
+			// Git checks GIT_DIR on its real path (8.3 aliases and junctions expanded), so budget that spelling.
+			std::error_code canonical_error;
+			std::filesystem::path absolute = std::filesystem::weakly_canonical(uam::paths::AbsolutePathNoThrow(path), canonical_error);
+			if (canonical_error) absolute = uam::paths::AbsolutePathNoThrow(path);
 			if (uam::paths::Utf8PathString(absolute / ".git").size() > kMaxGitAdministrativePathBytes)
 			{
 				const std::filesystem::path parent = absolute.parent_path();

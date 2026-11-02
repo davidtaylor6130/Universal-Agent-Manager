@@ -28,6 +28,18 @@ describe('MarkdownContent', () => {
     host.remove()
   })
 
+  it('renders symbol-only inline LaTeX in text, bold and links but never in code', () => {
+    const host = renderMarkdown('A $\\to$ B **$\\leq$** [x $\\to$ y](https://example.test) `$\\to$`\n\n```\n$\\to$\n```')
+
+    expect(host.querySelector('p')?.textContent).toContain('A → B')
+    expect(host.querySelector('strong')?.textContent).toBe('≤')
+    expect(host.querySelector('a')?.textContent).toBe('x → y')
+    expect(host.querySelector('p code')?.textContent).toBe('$\\to$')
+    expect(host.querySelector('pre code')?.textContent).toBe('$\\to$')
+
+    host.remove()
+  })
+
   it.each(['\n', '\r\n'])('renders fenced code blocks with an optional language label (%j)', (newline) => {
     const host = renderMarkdown('```ts\nconst x = 1\n```\n\n```plain text```\n\n```\nno label\n```'.replace(/\n/g, newline))
 

@@ -3,14 +3,35 @@
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <string>
 #include <thread>
+#if !defined(_WIN32)
+#include <poll.h>
+#endif
 
 namespace uam::platform
 {
 	enum class ProcessStopOutcome { Unknown, Graceful, Forced, Failed };
+
+	/// <summary>Waits up to max for output instead of a fixed sleep, so pending output drains as soon as it is written.</summary>
+	inline void WaitForStdioProcessOutput(StdioProcessPlatformFields& process, std::chrono::milliseconds max, bool include_stderr = true)
+	{
+#if defined(_WIN32)
+		(void)process;
+		(void)include_stderr;
+		std::this_thread::sleep_for(max); // ponytail: anonymous pipes have no readiness wait, so Windows keeps its fixed pause.
+#else
+		std::array<pollfd, 2> fds{{{process.stdout_read_fd, POLLIN, 0}, {include_stderr ? process.stderr_read_fd : -1, POLLIN, 0}}};
+		const int ready = ::poll(fds.data(), fds.size(), static_cast<int>(max.count()));
+		// Callers wait only after a drain read nothing, so a hangup (macOS reports POLLIN|POLLHUP at EOF) means no
+		// more output: pause rather than spin until the caller notices the exit.
+		if (ready > 0 && std::ranges::all_of(fds, [](const pollfd& fd) { return fd.revents == 0 || (fd.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0; }))
+			std::this_thread::sleep_for(max);
+#endif
+	}
 
 	struct ObservedProcessStopResult
 	{
@@ -68,7 +89,7 @@ namespace uam::platform
 			if (std::chrono::steady_clock::now() >= deadline) break;
 			// A child still flushing output is drained again at once; the pause is only for an idle child.
 			if (result.standard_output.size() + result.standard_error.size() == drained_before)
-				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				WaitForStdioProcessOutput(process, std::chrono::milliseconds(10));
 		}
 		if (!allow_forced_stop) { result.outcome = ProcessStopOutcome::Failed; return result; }
 		service.TerminateStdioProcess(process, true);

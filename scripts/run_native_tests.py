@@ -13,8 +13,10 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
     environment = os.environ.copy()
     if sys.platform == 'darwin':
         environment['TMPDIR'] = '/tmp'
+    # ccache base_dir compiles __FILE__ relative to the build tree, not to a multi-config Release/ subfolder.
+    workdir = next((d for d in binary.resolve().parents if (d / 'CMakeCache.txt').exists()), binary.parent)
     inventory = subprocess.run([str(binary), '--list-tests'], capture_output=True, text=True,
-                               check=True, cwd=binary.parent, env=environment)
+                               check=True, cwd=workdir, env=environment)
     names = inventory.stdout.splitlines()
     if not names or any(not name.isidentifier() for name in names) or len(set(names)) != len(names):
         raise ValueError('Native test inventory is empty, malformed or contains duplicate names.')
@@ -32,7 +34,7 @@ def run_tests(binary, jobs, requested=(), retry_failed_once=False, quarantine=No
     def execute(batch):
         return subprocess.run([str(binary), *batch], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, timeout=600,
-                              cwd=binary.parent, env=environment)
+                              cwd=workdir, env=environment)
 
     # Small batches balance slow process/timeout fixtures without one process per tiny assertion. Cases with
     # tight wall-clock budgets then run one at a time, each in a fresh process with nothing else running.

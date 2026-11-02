@@ -1,4 +1,5 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "app/agent_run_scheduler.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/message_attachment_sources.h"
@@ -1555,6 +1556,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.goal_review_assistant_text.clear();
 	session.goal_review_repair_attempts = 0;
 	session.ignore_session_updates_until_ready = false;
+	session.load_replay_quiet_until_s = 0.0;
 	session.codex_resume_fallback_attempted = false;
 	session.acp_resume_fallback_attempted = false;
 	session.stdout_buffer.clear();
@@ -1579,6 +1581,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.observed_process_exit_code = -1;
 	session.remote_runner_protocol_version = 0;
 	session.pending_remote_input_receipt_id.clear();
+	session.pending_remote_delivery_input_ids.clear();
 	session.remote_consumed_stderr_cursor = 0;
 	session.assistant_replay_prefixes.clear();
 	session.load_history_replay_updates.clear();
@@ -1768,6 +1771,7 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	{
 		existing->provider_id = provider.id;
 		existing->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
+		if (existing->managed_agent_run_id != chat.agent_run_id) existing->managed_launch_attempted = false; // A new run starts unlaunched.
 		existing->managed_agent_run_id = chat.agent_run_id;
 		return *existing;
 	}
@@ -1889,7 +1893,9 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 	if (session.worktree_launch_pending)
 	{
 		session.worktree_launch_cancellation = workspace.cancellation;
-		session.lifecycle_state = "waiting_workspace";
+		// A staged launch re-polls preparation, which reports Pending while its own admission save
+		// is outstanding; it stays starting so its UAM control reservation is retained.
+		if (!session.pending_local_launch) session.lifecycle_state = "waiting_workspace";
 		return workspace.state;
 	}
 	session.worktree_launch_cancellation.reset();
@@ -2565,6 +2571,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			    workspace_root, launch_argv = std::move(launch_argv), launch_environment = std::move(launch_environment),
 			    launch_control_servers, central_native, central_instructions, configuration_provider_version](std::stop_token) mutable
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				try
 				{
 					result->argv = BuildAcpLaunchArgv(provider, launch_chat);
@@ -2993,7 +3000,9 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (!AgentRunScheduler::InitialSessionOwned(app, session, chat))
 		return false;
 	if (session.remote_source_exit_reported) return false;
-	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0)
+	// A held Gemini load already has its session; it finishes in SettleAcpLoadReplay.
+	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0 ||
+	    session.load_replay_quiet_until_s > 0.0)
 	{
 		return false;
 	}
@@ -3075,6 +3084,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	session.pending_request_methods[id] = method;
 	session.session_setup_request_id = id;
 	session.ignore_session_updates_until_ready = method == uam::acp_methods::kSessionLoad;
+	session.load_replay_quiet_until_s = 0.0;
 	if (session.ignore_session_updates_until_ready)
 	{
 		const int history_end = uam::AcpSessionHasActiveTurn(session) && session.turn_first_user_message_index >= 0
@@ -3135,6 +3145,7 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	const int retry_id = NextAcpRequestId(session, uam::acp_methods::kSessionNew);
 	session.session_setup_request_id = retry_id;
 	session.ignore_session_updates_until_ready = false;
+	session.load_replay_quiet_until_s = 0.0;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
 	ChatSession retry_chat = chat;
@@ -3431,7 +3442,7 @@ static std::shared_ptr<PendingAcpPromptDelivery> StagePromptAdmission(AppState& 
 	packet->active_goal_id = chat.active_goal_id;
 	packet->goal_revision = chat.goal_command_revision;
 	packet->small_model_mode = chat.small_model_mode;
-	packet->quota_process_authority = chat.execution_host_id != execution_hosts::kLocalHostId && chat.provider_id == "claude-cli" &&
+	packet->quota_process_authority = chat.execution_host_id != execution_hosts::kLocalHostId && chat.provider_id == uam::provider_ids::kClaudeCli &&
 	    !chat.claude_quota_continuation.id.empty() && (chat.claude_quota_continuation.state == "cancelled" ||
 	    session.claude_quota_delivery_id == chat.claude_quota_continuation.id);
 	if (chat.execution_host_id != execution_hosts::kLocalHostId && (chat.small_model_mode || packet->quota_process_authority))
@@ -3571,6 +3582,10 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 				chat.remote_prompt_delivery_id =
 				    uam::time::SteadyEpochNanosecondsTokenNow();
 			chat.remote_prompt_delivery_payload = SerializeStructuredMessage(session, msg);
+			session.pending_remote_delivery_input_ids.clear();
+			for (const std::size_t index : unsent_messages)
+				if (index < chat.messages.size() && chat.messages[index].native_input_id)
+					session.pending_remote_delivery_input_ids.push_back(*chat.messages[index].native_input_id);
 		}
 		if (session.cold_retry_binding || CanDeferRemotePromptAdmission(app, session, chat) || CanStageRemoteGoalPromptAdmission(app, session, chat))
 		{
@@ -3594,6 +3609,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 			chat.remote_prompt_delivery_session_id.clear();
 			chat.remote_prompt_delivery_id.clear();
 			chat.remote_prompt_delivery_payload.clear();
+			session.pending_remote_delivery_input_ids.clear();
 			session.pending_request_methods.erase(id);
 			session.prompt_request_id = 0;
 			session.last_error =
@@ -4063,6 +4079,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = state;
 			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{
@@ -4137,6 +4154,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				task.state = preparation;
 				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 					(void)remote::ResolveHostContext(PlatformServicesFactory::Instance().process_service,
 					    state->host, state->workspace, memory_budget, state->context, state->error, state->cancel.get_token());
@@ -4184,6 +4202,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = preparation;
 			task.worker = std::make_unique<std::jthread>([state = preparation](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{
@@ -4249,6 +4268,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			task.state = state;
 			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
 			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
 				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
 				try
 				{

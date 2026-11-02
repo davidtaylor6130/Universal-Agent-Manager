@@ -1,4 +1,4 @@
-#include "common/provider/antigravity/cli/antigravity_native_history.h"
+#include "common/provider/antigravity_native_history.h"
 #include "common/provider/antigravity/cli/antigravity_legacy_crypto.h"
 #include "common/chat/native_attachment_assets.h"
 #include "common/memory/memory_storage_guard.h"
@@ -348,7 +348,16 @@ namespace uam::antigravity::history
 			Require(!error && !journal_present, "Antigravity history has a pending rollback journal; retry after native recovery.");
 			const auto main = uam::memory::StorageRevision(path), sidecar = uam::memory::StorageRevision(wal);
 			Require(main && *main != "missing" && sidecar, "Could not inspect the Antigravity history snapshot.");
-			return *main + '/' + *sidecar;
+			// Windows timestamps can stay put across a same-size commit, so add SQLite's own change markers:
+			// the database change counter (bytes 24-27) and the WAL header salts/checkpoint sequence (bytes 0-31).
+			const auto header = [](const fs::path& file, std::size_t offset, std::size_t size)
+			{
+				std::ifstream input(file, std::ios::binary);
+				std::string bytes(size, '\0');
+				if (input && input.seekg(static_cast<std::streamoff>(offset)) && input.read(bytes.data(), static_cast<std::streamsize>(size))) return Hex(bytes);
+				return std::string();
+			};
+			return *main + '/' + *sidecar + '/' + header(path, 24, 4) + '/' + header(wal, 0, 32);
 		}
 		struct Snapshot
 		{

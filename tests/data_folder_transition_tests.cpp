@@ -1,5 +1,6 @@
 #include "data_folder_test_support.h"
 #include "app/data_folder_transition.h"
+#include "common/paths/path_utils.h"
 #include "app/data_folder_settings_service.h"
 #include "common/platform/data_folder_writer_lease.h"
 #include "common/chat/chat_repository.h"
@@ -878,7 +879,7 @@ UAM_TEST(DataFolderTransferConfirmedHandoff)
 	UAM_ASSERT(fixture.transaction->ConfirmDestinationOwner(fixture.error));
 	UAM_ASSERT(fixture.transaction->CurrentRoot() == fixture.destination && fixture.transaction->State() == "active");
 	UAM_ASSERT_EQ(ReadFile(fixture.source / "settings.txt"), original);
-	UAM_ASSERT(ReadFile(fixture.destination / "settings.txt").find((fixture.destination / "markdown-store").string()) != std::string::npos);
+	UAM_ASSERT(ReadFile(fixture.destination / "settings.txt").find(uam::EncodeLineValue(uam::paths::Utf8PathString(fixture.destination / "markdown-store"))) != std::string::npos);
 	UAM_ASSERT(ReadFile(fixture.destination / "settings.txt").find("unknown_setting=preserve-me") != std::string::npos);
 	for (const auto* path : {"chats/synthetic.json", "chats/synthetic.json.bak", "chat-summaries/synthetic.json", "queue-outboxes/synthetic.json", "agent-runs/synthetic.json", "usage/synthetic.json", "recovery/synthetic.json", "resource_collections.json", "folders.txt", "memory/knowledge.md"})
 		UAM_ASSERT_EQ(ReadFile(fixture.destination / path), ReadFile(fixture.source / path));
@@ -1528,7 +1529,9 @@ UAM_TEST(DataFolderRootLockIsNonDestructiveAndNameBound)
 	std::string error;
 	auto lease = DataFolderTestProcess().TryAcquireDataRootLock(root, &error);
 	UAM_ASSERT(lease && lease->Current());
+#if !defined(_WIN32)
 	UAM_ASSERT_EQ(ReadFile(marker), "12345\n"); // Historical PID text is neither overwritten nor authority.
+#endif
 	UAM_ASSERT(!DataFolderTestProcess().TryAcquireDataRootLock(root, &error));
 	std::error_code ec;
 	fs::rename(marker, root / "retained-marker", ec);
@@ -1540,6 +1543,9 @@ UAM_TEST(DataFolderRootLockIsNonDestructiveAndNameBound)
 	UAM_ASSERT(!lease->Current());
 #endif
 	lease.reset();
+#if defined(_WIN32)
+	UAM_ASSERT_EQ(ReadFile(marker), "12345\n"); // The exclusive lease blocks reads until released; the refused rename kept the text.
+#endif
 }
 
 UAM_TEST(DataFolderInventoryRefusesOversizedDirectoryDuringListing)
