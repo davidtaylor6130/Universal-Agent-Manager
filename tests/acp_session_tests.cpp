@@ -1173,6 +1173,127 @@ UAM_TEST(AcpRemoteInputReceiptIsConsumedBeforeProviderParsing)
 	UAM_ASSERT(session.stdout_buffer.empty());
 }
 
+UAM_TEST(AcpRemoteInputReceiptSettlesSendingWhileTurnStreams)
+{
+	// #628: the helper receipt is the remote write fact; the turn keeps running and streaming.
+	TempDir temp("uam-acp-remote-receipt-write-fact");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-receipt-write-fact";
+	chat.execution_host_id = "ssh-test";
+	chat.messages_loaded = true;
+	chat.remote_active_turn_id = "turn-1";
+	chat.remote_prompt_delivery_id = "prompt-9";
+	Message sent;
+	sent.role = MessageRole::User;
+	sent.content = "hello";
+	sent.native_input_id = "input-sent";
+	Message other = sent;
+	other.native_input_id = "input-other";
+	chat.messages = {sent, other};
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.running = true;
+	session.processing = true;
+	session.pending_remote_delivery_input_ids = {"input-sent"};
+
+	uam::AcpSessionState mismatched; // Each drain may stop this pipe-less fixture, so use one per receipt.
+	mismatched.running = true;
+	mismatched.pending_remote_delivery_input_ids = {"input-sent"};
+	mismatched.pending_remote_input_receipt_id = "prompt-other";
+	(void)uam::acp_detail::DrainStdout(app, mismatched, app.chats.front(), nullptr);
+	UAM_ASSERT(!app.chats.front().messages[0].input_write_completed);
+
+	session.pending_remote_input_receipt_id = "prompt-9";
+	(void)uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+	UAM_ASSERT(app.chats.front().messages[0].input_write_completed);
+	UAM_ASSERT(!app.chats.front().messages[1].input_write_completed);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(app.chats.front().remote_active_turn_id, std::string("turn-1"));
+	UAM_ASSERT(session.pending_remote_delivery_input_ids.empty());
+}
+
+UAM_TEST(AcpRemoteDeliveryRecordsInputIdsAndReceiptSettlesOnlyThoseRows)
+{
+	// #628 real path: DeliverPreparedPrompt records the delivered rows' native input IDs (v3 only).
+	for (const int protocol : {3, 2})
+	{
+		TempDir temp("uam-acp-remote-delivery-input-ids");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.git_enabled = app.settings.git_auto_worktree = false;
+		app.settings.provider_chat_defaults["gemini-cli"].feature_preference = "provider";
+		ExecutionHost host;
+		host.id = "ssh-628"; host.transport = "ssh"; host.platform = "linux";
+		host.ssh_alias = "unused-628"; host.runner_status = "ready"; host.runner_protocol_version = protocol;
+		app.settings.execution_hosts = {host};
+		ChatSession chat;
+		chat.id = "remote-delivery-input-ids";
+		chat.provider_id = "gemini-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = "/private/workspace-628";
+		chat.approval_mode.clear();
+		chat.memory_enabled = false;
+		chat.messages_loaded = true;
+		Message with_id{.role = MessageRole::User, .content = "first", .acp_prompt_not_sent = true};
+		with_id.native_input_id = "input-628";
+		Message without_id{.role = MessageRole::User, .content = "second", .acp_prompt_not_sent = true};
+		chat.messages = {with_id, without_id};
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "gemini-acp";
+		session.session_id = "warm-628";
+		session.current_mode_id = "default";
+		session.process_execution_host_id = host.id;
+		session.remote_runner_protocol_version = protocol;
+		session.remote_output_delivery_token = "token-628";
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root, StdioCatArgv(), &error));
+		session.running = session.session_ready = session.initialized = true;
+		session.processing = true;
+		session.queued_prompt = "first\n\nsecond";
+		session.turn_first_user_message_index = 0;
+		session.turn_user_message_index = 1;
+		app.acp_sessions.push_back(std::move(owned));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (session.prompt_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+			std::this_thread::yield();
+		}
+		if (session.prompt_request_id == 0)
+			throw TestFailure("protocol " + std::to_string(protocol) + " not delivered: " + session.last_error);
+		ChatSession& live = app.chats.front();
+		if (protocol >= 3)
+		{
+			UAM_ASSERT_EQ(session.pending_remote_delivery_input_ids, std::vector<std::string>{"input-628"});
+			UAM_ASSERT(!live.remote_prompt_delivery_id.empty());
+			session.stdout_buffer = std::string(uam::remote::kRemoteInputReceiptPrefix) + "token-628 " + live.remote_prompt_delivery_id + "\n";
+			UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(app, session, live, nullptr, 1), std::size_t{1});
+		}
+		else
+		{
+			UAM_ASSERT(live.remote_prompt_delivery_id.empty());
+			session.pending_remote_input_receipt_id = "any";
+		}
+		UAM_ASSERT(protocol >= 3 || session.pending_remote_delivery_input_ids.empty());
+		(void)uam::acp_detail::DrainStdout(app, session, live, nullptr);
+		UAM_ASSERT_EQ(live.messages[0].input_write_completed, protocol >= 3);
+		UAM_ASSERT(!live.messages[1].input_write_completed);
+		UAM_ASSERT(session.pending_remote_delivery_input_ids.empty());
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+	}
+}
+
 UAM_TEST(AcpRemoteInputReceiptKeepsReplayPayloadWhenChatSaveFails)
 {
 	TempDir temp("uam-acp-input-receipt-save-failure");
@@ -16571,6 +16692,41 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 }
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view selected : {"opus", "sonnet"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		// Launched with the alias; Claude's init message reported the resolved name.
+		session.launch_model_options_id = "opus";
+		session.current_model_id = "claude-opus-5-5";
+		chat.model_id = std::string(selected);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const bool drained = uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat);
+		if (selected == "opus")
+		{
+			UAM_ASSERT(drained);
+			UAM_ASSERT(session.last_error.empty());
+			UAM_ASSERT(session.running && session.processing && !session.local_stop_pending && !session.remote_stop_pending);
+			UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+			UAM_ASSERT_EQ(session.turn_serial, 1);
+		}
+		else
+		{
+			// A genuinely different model still stops the stream before the turn.
+			UAM_ASSERT(!fixture.app.acp_process_stop_tasks.empty());
+		}
+	}
+}
+
 UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
