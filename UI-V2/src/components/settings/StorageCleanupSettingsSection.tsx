@@ -65,18 +65,24 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     setDraft((value) => ({ ...value, ...patch })); setBaseline((value) => ({ ...value, ...patch }))
   }
   return <div className="grid gap-6">
-    <SettingsSection title="Worktrees">
+    <SettingsSection title="Worktrees" actions={<>
+        <Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button>
+        <SaveButton saving={saving === 'worktree'} disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>Save worktree settings</SaveButton>
+      </>}>
       <SettingRow title="Worktree cleanup" description="Removes old worktrees only after safety checks." control={<Switch hideLabel label="Worktree cleanup" checked={draft.enabled} disabled={Boolean(saving)} onChange={(event) => edit({ enabled: event.currentTarget.checked })} />} />
-      <SettingRow title="Worktree age" description="Branches and commits are kept." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)} />
-      {worktreeAlert.mounted && <p role="alert" className="px-3 text-xs uam-presence" data-state={worktreeAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
-      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button><SaveButton saving={saving === 'worktree'} disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>Save worktree settings</SaveButton></div>
+      <SettingRow title="Worktree age" description="Branches and commits are kept." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)}>
+        {worktreeAlert.mounted && <p role="alert" className="text-xs uam-presence" data-state={worktreeAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
+      </SettingRow>
     </SettingsSection>
-    <SettingsSection title="Logs and cache">
+    <SettingsSection title="Logs and cache" actions={<>
+        <Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button>
+        <SaveButton saving={saving === 'storage'} disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>Save backup and cache policy</SaveButton>
+      </>}>
       <SettingRow title="Backup log retention" description="Current logs are kept. 0 keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
       <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
-      <SettingRow title="Cache interval" description="Starts counting without clearing at once." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)} />
-      {storageAlert.mounted && <p role="alert" className="px-3 text-xs uam-presence" data-state={storageAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
-      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button><SaveButton saving={saving === 'storage'} disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>Save backup and cache policy</SaveButton></div>
+      <SettingRow title="Cache interval" description="Starts counting without clearing at once." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)}>
+        {storageAlert.mounted && <p role="alert" className="text-xs uam-presence" data-state={storageAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
+      </SettingRow>
     </SettingsSection>
     <ConfirmDialog open={Boolean(exit)} title="Discard unsaved cleanup changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
       onCancel={() => setExit(null)}

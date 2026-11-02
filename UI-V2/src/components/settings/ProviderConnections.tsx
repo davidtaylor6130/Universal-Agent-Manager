@@ -6,8 +6,8 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { Check, Minus, RefreshCw, X } from 'lucide-react'
-import { Button, Card, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone, Reveal } from '../ui'
-import { SettingRow } from './SettingsPrimitives'
+import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone, Reveal } from '../ui'
+import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import './provider-overview.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
@@ -184,18 +184,16 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const checkingNote = usePresence(!status && !statusError)
   // Confirmed status matching an unsaved draft resolves it (e.g. after Refresh).
   useEffect(() => { if (draft && !draft.saving && progressiveDiscovery === draft.value) setDiscoveryDraft(null) }, [draft, progressiveDiscovery])
-  return <div className="grid gap-6">
-    <div className="flex items-center gap-2 flex-wrap">
-      <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
-      <div className="ml-auto flex gap-1">
-        <Button size="sm" variant="ghost" onClick={onPreferencesSelect}>Shared agent preferences</Button>
-        <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
-      </div>
-    </div>
+  return <div className="grid gap-0">
     <Reveal open={!central.uamControlEnabled}><Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice></Reveal>
     {statusNote.mounted && <p role="status" data-state={statusNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">{shownStatusError.current}</p>}
     {checkingNote.mounted && <p role="status" data-state={checkingNote.closing ? 'closed' : 'open'} className="uam-prov-sub uam-presence">Checking connections…</p>}
-    <Card flush className="uam-prov-card overflow-x-auto">
+    <SettingsSection flush title="Connections" actions={<>
+      <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
+      <Button size="sm" variant="ghost" onClick={onPreferencesSelect}>Shared agent preferences</Button>
+      <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
+    </>}>
+    <div className="uam-prov-card overflow-x-auto">
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
         <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', ...(COMPUTER_USE_ENABLED ? ['Computer use'] : []), 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
           ? <th className="uam-prov-label uam-prov-th px-2 py-2 font-medium">MCP servers</th>
@@ -240,8 +238,9 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           </tr>
         })}</tbody>
       </table>
-    </Card>
-    {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
+    </div>
+    </SettingsSection>
+    {OPENCODE_ENABLED && providerId === OPENCODE_CLI_PROVIDER_ID && <SettingsSection title="OpenCode"><SettingRow title="Progressive MCP discovery" description="Load MCP tools only when OpenCode needs them."
       status={<span aria-live="polite">{progressiveSaving ? 'Saving discovery preference…' : draft?.error ? `Not saved: ${draft.error}` : progressiveDiscovery === undefined ? !status && !statusError ? 'Checking discovery setting…' : 'Discovery setting unavailable. Refresh connections.' : `Applies to ${hostLabel} the next time OpenCode starts.`}</span>}
       control={<Switch hideLabel label="OpenCode progressive MCP discovery" checked={draft ? draft.value : progressiveDiscovery === true}
         disabled={progressiveSaving || (progressiveDiscovery === undefined && !draft)} onChange={event => void saveDiscovery(event.currentTarget.checked)} />}>
@@ -249,7 +248,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         <Button size="sm" disabled={progressiveSaving || !draft} onClick={() => { if (draft) void saveDiscovery(draft.value) }}>Retry</Button>
         <Button size="sm" variant="ghost" disabled={progressiveSaving} onClick={() => { setDiscoveryDraft(null); document.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.focus() }}>Discard</Button>
       </div>}
-    </SettingRow>}
+    </SettingRow></SettingsSection>}
     {menuPresence.mounted && shownMenuId && (() => {
       const id = shownMenuId
       const metadata = providerMetadataForId(id)

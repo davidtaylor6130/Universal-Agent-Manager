@@ -307,7 +307,10 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     </SettingsSection></Reveal>
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
+      description={setup === null ? 'Running chats keep their old setup until restarted.' : undefined}
       actions={<>
+        <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
+        <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
         <Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
@@ -333,8 +336,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           // Wrapper replaces the row's sibling separators, so the separator moves onto it.
           return <div key={server.id} className="uam-prov-collapse" data-state={removing ? 'closed' : 'open'}
             style={index > 0 ? { borderTop: '1px solid var(--border)', paddingTop: 'var(--sp-3)' } : undefined}>
-          <div className="uam-prov-collapse__inner uam-presence"><SettingRow icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
-            status={scope}
+          <div className="uam-prov-collapse__inner uam-presence"><SettingRow icon={<Server size={15} aria-hidden />} title={<>{server.name || 'New server'} <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 'var(--sp-2)' }}>{scope}</span></>}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} aria-hidden style={{ transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform var(--dur-fast) var(--ease)' }} />} label={expanded ? `Collapse ${serverName}` : `Edit ${serverName}`} onClick={() => setOpen(expanded ? null : server.id)} />
@@ -383,11 +385,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       </>}</Swap>
     </SettingsSection>
 
-    <div className="flex items-center justify-end gap-2 flex-wrap">
-      <Reveal open={setup === null} className="mr-auto"><span className="uam-set-section__desc uam-reveal">Running chats keep their old setup until restarted.</span></Reveal>
-      <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
-      <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
-    </div>
     <Reveal open={setup === null && Boolean(validationError)}><p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p></Reveal>
     {warningNotice(setup === null && importWarnings.length > 0)}
   </div>

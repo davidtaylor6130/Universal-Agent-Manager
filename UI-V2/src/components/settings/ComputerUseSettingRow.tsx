@@ -93,8 +93,8 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
     : !known ? 'Status not confirmed.'
     : enabled ? 'On. Each chat still needs you to choose the window it can control.' : 'Off. Chat access cleared.'
 
-  return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
-    status={<span id={statusId} role="status" aria-live="polite">{status}</span>}
+  // One description line: the consent copy and the live state share it, so the row stays one line tall plus its description.
+  return <SettingRow title="UAM Computer Use" description={<>{COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'} <span id={statusId} role="status" aria-live="polite">{status}</span></>}
     control={COMPUTER_USE_ENABLED && <div ref={controls} className="flex flex-wrap items-center justify-end gap-2">
       <Reveal open={known} as="span"><Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}

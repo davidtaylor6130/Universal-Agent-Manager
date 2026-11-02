@@ -22,7 +22,7 @@ export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: Status
 
 /** Remote-folder row: the folder count is the status line, the folder list is the row content. */
 function FolderRow({ summary, children }: { summary: string; children: React.ReactNode }) {
-  return <SettingRow title="Remote folders" status={summary}>{children}</SettingRow>
+  return <SettingRow title={<>Remote folders <span style={{ color: 'var(--text-3)', fontWeight: 400, marginLeft: 'var(--sp-2)' }}>{summary}</span></>}>{children}</SettingRow>
 }
 
 export interface ExecutionRoutingSettingsHandle { requestLeave: (next: () => void) => void }
@@ -150,7 +150,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
 
     return <>
       <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-6"><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
-        <SettingsSection title="Automatic routing">
+        <SettingsSection title="Automatic routing" actions={variant === 'page' ? footer : undefined}>
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
         </SettingsSection>
@@ -229,7 +229,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </SettingsSection>
           })}</Reveal>
       </fieldset>
-      {footer}</Reveal>
+      {variant === 'dialog' && footer}</Reveal>
       {/* The dialog never opens a second dialog: leaving with unsaved edits is an in-place step in the same panel. */}
       <Reveal open={variant === 'dialog' && exit !== null} className="uam-rt-dialog__body">
         {exit && <div role="group" aria-label="Unsaved routing settings">

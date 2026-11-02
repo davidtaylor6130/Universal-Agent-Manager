@@ -42,7 +42,7 @@
 
 /* Page frame: header and content travel together, centred both ways; wide pages grow to the space available and scroll vertically. */
 .uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
-.uam-settings-frame { width: 100%; max-width: 1180px; margin: auto; }
+.uam-settings-frame { width: 100%; max-width: 960px; margin-inline: auto; }
 .uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
 
 /* ── Settings language (SettingsPrimitives) ─────────────────── */
@@ -132,3 +132,9 @@
 .uam-native-issues__ids > summary::-webkit-details-marker { display: none; }
 .uam-native-issues__ids > summary { list-style: none; text-decoration: underline; text-underline-offset: 2px; }
 [data-motion="off"] .uam-settings-nav__indicator { transition: none; }
+
+/* Every item stacked in a card is separated by one divider, even when wrapped (Reveal, AnimatedRows, lists).
+   Direct text children (empty states) get row height so cards never collapse into a thin pill. */
+.uam-set-card:not(.uam-set-card--flush) > :where(* + *) { border-top: 1px solid var(--border); }
+.uam-set-card > :where(p, span), .uam-set-card > .uam-presence > :where(p:only-child) { display: block; padding-block: var(--sp-3); margin: 0; }
+.uam-set-section__head { min-height: 32px; align-items: center; }

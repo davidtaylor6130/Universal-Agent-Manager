@@ -257,7 +257,8 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       <Reveal open={!!(saved.instructions)}><SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." /></Reveal>
     </SettingsSection>
 
-    <SettingsSection title="Defaults">
+    <SettingsSection title="Defaults"
+      actions={<SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>}>
       <SettingRow title="Default agent for new chats"
         control={<MenuSelect label="Default agent for new chats" value={defaultAgentId} disabled={busy} options={defaultAgentChoices} onChange={setDefaultAgentId} />} />
       <Reveal open={skills.length === 0}><p className="uam-prov-sub">No skills yet. Add skills in the Skills page first.</p></Reveal>
@@ -271,10 +272,6 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       </SettingRow>
     </SettingsSection>
 
-    <div className="flex items-center justify-end gap-3">
-      <SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>
-    </div>
-
     <SettingsSection title="Agent store"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
       <Reveal open={agentErrors.length > 0}>{agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}</Reveal>
@@ -283,8 +280,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
         const usedAs = USED_AS.find(option => option.value === agent.mode)
         return <Reveal key={agent.id} open={!removingKeys.has(`agent:${agent.id}`)}><SettingRow icon={<Bot size={15} aria-hidden />}
           title={agent.id}
-          description={agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'}
-          status={usedAs?.label}
+          description={[usedAs?.label, agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'].filter(Boolean).join(' · ')}
           control={<>
             <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
             {!agent.builtIn && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
