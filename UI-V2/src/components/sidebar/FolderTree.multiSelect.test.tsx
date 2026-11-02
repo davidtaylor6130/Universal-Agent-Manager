@@ -307,6 +307,26 @@ describe('workspace multi-selection actions', () => {
   })
 })
 
+describe('hidden chat selection', () => {
+  it('shift-range and bulk actions skip chats hidden in collapsed collections', async () => {
+    act(() => useAppStore.setState({
+      sessions: [chat('hidden', 'w1'), chat('a'), chat('z', 'w2')],
+      activeSessionId: null,
+      // DOM order: open collection (a), collapsed collection (hidden), ungrouped workspace (z).
+      resourceCollections: [
+        { id: 'col2', name: 'Archive', collapsed: false, references: [{ id: 'p-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'col', name: 'Favourites', collapsed: true, references: [{ id: 'w1-ref', type: 'workspace-folder', target: 'w1', label: 'Workspace one' }] },
+      ],
+    }))
+    expect(row('hidden')?.closest('[inert]')).toBeTruthy()
+    selectChats('a', 'z')
+    expect(selectedIds()).toEqual(['a', 'z'])
+    openChatMenu('z')
+    act(() => item('Delete 2 chats').click())
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).not.toContain('Chat hidden')
+  })
+})
+
 describe('collection multi-selection actions', () => {
   it('reads the same for one collection from its menu and as a one-item selection, and reports a failure by name on both', async () => {
     useAppStore.setState({ deleteResourceCollection: async () => false } as never)

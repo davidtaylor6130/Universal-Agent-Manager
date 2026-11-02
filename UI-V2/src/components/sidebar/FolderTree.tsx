@@ -405,7 +405,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const visibleSessionRows = useCallback(() => Array.from(
     treeRef.current?.querySelectorAll<HTMLElement>('[data-session-id]') ?? []
-  ), [])
+  ).filter((row) => !row.closest('[inert]')), [])
   const visibleSessionIds = useCallback(() => visibleSessionRows()
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
