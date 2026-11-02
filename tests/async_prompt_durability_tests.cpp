@@ -3,6 +3,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/paths/app_paths.h"
 #include "common/utils/hash_utils.h"
+#include <array>
 #include <future>
 
 using namespace uam_test;
@@ -1520,18 +1521,8 @@ UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
 static void CheckColdLocalConfigurationAdmission(std::string_view variation, bool scope_override = false, bool scope_disabled = false)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-#if defined(_WIN32)
-	// This thread stands in for the UI thread. On macOS a main thread already outranks the
-	// default-QoS save and setup workers; on Windows they share its priority, so on a 2-core runner
-	// they preempt it for whole quanta and the 100 ms budgets measured the scheduler (#526). Wall-clock
-	// budgets still include any blocking wait or synchronous work this thread performs.
-	struct PollThreadPriority
-	{
-		const int previous = GetThreadPriority(GetCurrentThread());
-		PollThreadPriority() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST); }
-		~PollThreadPriority() { SetThreadPriority(GetCurrentThread(), previous); }
-	} poll_thread_priority;
-#endif
+	// No test-side priority boost: on Windows same-priority save and setup workers can starve this
+	// polling thread, a product issue (#647) fixed by lowering worker priority in PR #692.
 	TempDir temp("uam-cold-local-admission");
 	const std::chrono::steady_clock::time_point fixture_started = std::chrono::steady_clock::now();
 	const fs::path assets = temp.root / "private-skills" / "fixture";
@@ -1692,10 +1683,17 @@ done
 	const std::chrono::steady_clock::duration fixture_cost = std::chrono::steady_clock::now() - fixture_started;
 	ChatSession calibration = app.chats.front();
 	calibration.id = "cold-local-admission-calibration";
-	const std::chrono::steady_clock::time_point calibration_started = std::chrono::steady_clock::now();
-	UAM_ASSERT(ChatRepository::SaveChat(temp.root / "calibration-data", calibration));
-	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root / "calibration-data", calibration.id).has_value());
-	const std::chrono::steady_clock::duration save_cycle = std::chrono::steady_clock::now() - calibration_started;
+	// The median of three samples resists both one cold first-use sample and one lucky fast sample.
+	std::array<std::chrono::steady_clock::duration, 3> save_cycles{};
+	for (std::chrono::steady_clock::duration& sample : save_cycles)
+	{
+		const std::chrono::steady_clock::time_point calibration_started = std::chrono::steady_clock::now();
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root / "calibration-data", calibration));
+		UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root / "calibration-data", calibration.id).has_value());
+		sample = std::chrono::steady_clock::now() - calibration_started;
+	}
+	std::ranges::sort(save_cycles);
+	const std::chrono::steady_clock::duration save_cycle = save_cycles[1];
 	const std::chrono::steady_clock::duration completion_limit =
 	    std::max<std::chrono::steady_clock::duration>(std::chrono::seconds(10), 2 * (fixture_cost + 40 * save_cycle));
 	std::string expected_hash = "opencode-cli:builtin-build-v2";
