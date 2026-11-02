@@ -662,7 +662,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                       <button
                         type="button"
                         aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
-                        className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                        className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)]"
                         style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-xs)', lineHeight: 1.4 }}
                         onClick={(e) => {
                           e.stopPropagation()
@@ -749,7 +749,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               type="button"
               aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
               draggable={false}
-              className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+              className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)]"
               style={{ color: 'var(--accent)' }}
               onPointerDown={(event) => event.stopPropagation()}
               onMouseDown={(event) => event.stopPropagation()}
@@ -865,7 +865,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 <button
                   type="button"
                   aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`}
-                  className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+                  className="flex flex-shrink-0 items-center justify-center rounded"
                   style={{
                     width: 20,
                     height: 20,
@@ -892,7 +892,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   aria-label="More actions"
                   aria-haspopup="menu"
                   aria-expanded={showMenu}
-                  className="flex flex-shrink-0 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1"
+                  className="flex flex-shrink-0 items-center justify-center rounded"
                   style={{
                     width: 20,
                     height: 20,

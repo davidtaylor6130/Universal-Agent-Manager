@@ -1265,6 +1265,13 @@ describe('AppShell', () => {
     stack = pushStackedAlert(stack, notice('c', 'One'))
     expect(stack.map((item) => [item.id, item.message, item.count])).toEqual([['b', 'Two', 1], ['a', 'One', 2]])
   })
+  it('gives a notice re-raised during its predecessor exit a distinct id', () => {
+    const notice = { id: 'updates-1', tone: 'info' as const, message: 'Update ready', actionLabel: 'View', action: 'updates' as const }
+    const stack = pushStackedAlert([{ ...notice, count: 1, leaving: true }], notice)
+    expect(stack).toHaveLength(2)
+    expect(stack[1].id).not.toBe('updates-1')
+    expect(stack[1].count).toBe(1)
+  })
   it('stacks distinct notices newest at the bottom, counts identical repeats and collapses overflow', async () => {
     vi.useFakeTimers()
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })

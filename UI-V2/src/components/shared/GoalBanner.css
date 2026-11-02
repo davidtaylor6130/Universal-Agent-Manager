@@ -51,7 +51,7 @@
 }
 .uam-goal-action:hover,
 .uam-goal-action[data-open] { background: var(--surface-up); color: var(--text); }
-.uam-goal-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-goal-action:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-goal-progress {
   appearance: none;

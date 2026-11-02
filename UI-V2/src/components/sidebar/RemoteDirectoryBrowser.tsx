@@ -151,7 +151,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                 {listing.parentDirectory && (
                   <RowButton
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:[outline-offset:var(--focus-inset)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(listing.parentDirectory)}
                   >
@@ -163,7 +163,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
                   <RowButton
                     key={directory.path}
                     type="button"
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors duration-150 hover:bg-[var(--surface-up)] focus-visible:[outline-offset:var(--focus-inset)]"
                     style={{ color: 'var(--text)' }}
                     onClick={() => void load(directory.path)}
                   >

@@ -256,7 +256,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
         const next = event.relatedTarget as Node | null
         if (open && next && !document.getElementById(dialogId)?.contains(next) && !event.currentTarget.contains(next)) setOpen(false)
       }}
-      className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm px-1 text-xs hover:bg-[var(--surface-up)] focus-visible:ring-1 focus-visible:ring-[var(--accent)] disabled:opacity-50"
+      className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm px-1 text-xs hover:bg-[var(--surface-up)] disabled:opacity-50"
       style={{ color: 'inherit', cursor: disabled ? 'default' : 'pointer' }}
     >
       {pendingBranch && vcsType !== 'svn' ? <GitBranchPlus size={12} aria-hidden /> : <GitBranch size={12} aria-hidden />}

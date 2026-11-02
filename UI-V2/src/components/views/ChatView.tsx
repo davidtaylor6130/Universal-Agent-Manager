@@ -35,7 +35,7 @@ import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
-import { EditGoalDialog, GoalBanner } from '../shared/GoalBanner'
+import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
@@ -51,7 +51,7 @@ import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, ConfirmDialog, IconButton, Overlay, Presence, Tooltip, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, usePresence } from '../ui'
 import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
@@ -371,8 +371,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const workspaceMenuId = useId()
   const goalsPopupId = useId()
   const [goalsPopupOwner, setGoalsPopupOwner] = useState<string | null>(null)
-  const [goalEditOwner, setGoalEditOwner] = useState<string | null>(null)
-  const goalEditTriggerRef = useRef<HTMLButtonElement>(null)
+  const [goalEditing, setGoalEditing] = useState(false)
+  const goalEditingRef = useRef(goalEditing); goalEditingRef.current = goalEditing
   const goalsTriggerRef = useRef<HTMLButtonElement>(null)
   const goalsPopupRef = useRef<HTMLDivElement>(null)
   const goalMutationGenerationRef = useRef(0)
@@ -2473,7 +2473,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const goalsPopupOpen = Boolean(goalOwner && goalsPopupOwner === goalOwner)
   useEffect(() => {
     setGoalsPopupOwner(null)
-    setGoalEditOwner(null)
+    setGoalEditing(false)
     if (goalMutationOwnerRef.current !== null && goalMutationOwnerRef.current !== goalOwner) {
       goalMutationGenerationRef.current += 1
       goalMutationOwnerRef.current = null
@@ -2485,10 +2485,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   useEffect(() => {
     if (!goalsPopupOpen) return
     const dialog = goalsPopupRef.current
-    dialog?.focus()
+    // Edit mode has already focused the objective field.
+    if (!dialog?.contains(document.activeElement)) dialog?.focus()
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || getTopmostModal() !== dialog) return
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation()
+        // Escape cancels an in-place edit first, then closes the window.
+        if (goalEditingRef.current) setGoalEditing(false)
+        else setGoalsPopupOwner(null)
+      }
       else trapModalTab(event)
     }
     window.addEventListener('keydown', onKeyDown, true)
@@ -3544,6 +3550,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
               workerModelLabel={displayedGoalWorkerLabel}
               reviewerModelLabel={displayedGoalReviewerLabel}
+              editing={goalEditing}
+              onEditingChange={setGoalEditing}
             />
           </div>}
         </Overlay>
@@ -3720,7 +3728,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   {composerBranch && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
                     : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm focus-visible:ring-1 focus-visible:ring-[var(--accent)]" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
                         {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
                       </span>
                     </Tooltip>)}
@@ -3734,20 +3742,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
                 aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="dialog"
                 className="uam-composer-goal-tab__body" title={displayedGoal.objective}
-                onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
+                onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setGoalEditing(false); setWorkspaceMenuOpen(false); setModelOpen(false) }}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalEditing(false); setGoalsPopupOwner(goalOwner) }
                 }}>
                 <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
               </button>
               {displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' && !session.importedReadOnly &&
-                <IconButton ref={goalEditTriggerRef} size="sm" icon={<Pencil size={12} aria-hidden />} label="Edit goal" disabled={goalSubmitting} onClick={() => setGoalEditOwner(goalOwner)} />}
+                <IconButton size="sm" icon={<Pencil size={12} aria-hidden />} label="Edit goal" disabled={goalSubmitting} onClick={() => { setGoalEditing(true); setGoalsPopupOwner(goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }} />}
               {displayedGoal.status === 'active' &&
                 <IconButton size="sm" icon={<Square size={11} aria-hidden />} label="Stop goal" disabled={goalSubmitting} onClick={handlePauseGoal} />}
             </div>}
-            <Presence open={Boolean(displayedGoal && goalEditOwner === goalOwner)}>
-              {displayedGoal && <EditGoalDialog key={goalOwner} objective={displayedGoal.objective} onClose={() => setGoalEditOwner(null)} onSave={handleEditGoal} returnFocusElement={goalEditTriggerRef.current} />}
-            </Presence>
             <div className="uam-composer-tabs__end">
               <ComposerTab open={editingMessageIndex !== null}>
                 <div className="uam-composer-side-controls" role="group" aria-label="Editing message">

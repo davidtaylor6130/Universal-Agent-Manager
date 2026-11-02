@@ -407,7 +407,7 @@ const EmptyPane = memo(function EmptyPane({ active, leafId, paneIndex, multiPane
       {multiPane && <div className="absolute right-2 top-2"><IconButton size="sm" variant="danger" icon={<X size={14} />} label="Close view" onClick={() => onClose(leafId)} /></div>}
       <div className="flex max-w-xs flex-col items-center gap-4 px-4">
         {/* ui: raw button kept — large text-link placeholder with custom layout; Button would restyle it */}
-        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)] focus-visible:outline" onClick={() => onActivate(leafId)}>
+        <button type="button" className="flex cursor-pointer flex-col items-center gap-2 rounded-lg p-2 text-sm hover:text-[var(--text-2)]" onClick={() => onActivate(leafId)}>
           <MessageSquare size={28} aria-hidden style={{ opacity: 0.35 }} />
           Drag a chat here or select one
         </button>

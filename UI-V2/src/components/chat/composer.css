@@ -99,13 +99,13 @@
 
 .uam-composer-choice .uam-menu-select__trigger:focus-visible,
 .uam-composer-agent .uam-menu-select__trigger:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 
 /* Bottom bar: every chip is 26px tall, the send action is 32px. */
 .uam-composer-toolbar { min-height: 40px; }
-.uam-composer-toolbar .uam-composer-action:focus-visible { outline: none; }
+/* Toolbar chips sit in a horizontally scrolling fieldset, so their ring is drawn inside the chip. */
+.uam-composer-toolbar .uam-composer-action:focus-visible { outline-offset: var(--focus-inset); }
 .uam-composer-choice .uam-menu-select__trigger { max-width: 200px; }
 .uam-composer-choice .uam-menu-select__trigger > span { min-width: 0; }
 
@@ -129,7 +129,7 @@
 .uam-model-picker-rail-button:hover:not(:disabled),
 .uam-model-picker-favorite:hover { background: var(--sidebar-item-hover); }
 .uam-model-picker-rail-button:focus-visible,
-.uam-model-picker-favorite:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-model-picker-favorite:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-model-picker-rail-button:disabled { cursor: default; }
 .uam-model-picker-favorite { opacity: 0.85; }
 .uam-model-picker-favorite:hover { opacity: 1; }

@@ -174,7 +174,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
     {step(-1)}
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={valueText} aria-disabled={busy}
-      className="conversation-rail-track relative min-h-0 w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+      className="conversation-rail-track relative min-h-0 w-full cursor-pointer focus-visible:[outline-offset:var(--focus-inset)]"
       style={{ height: Math.max(1, count - 1) * 8, maxHeight: '100%' }}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()

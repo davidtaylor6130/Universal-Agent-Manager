@@ -83,8 +83,11 @@ export function pushStackedAlert(stack: StackedAlert[], alert: TransientAlert): 
     (item.message === alert.message && item.tone === alert.tone && item.action === alert.action)))
   // A repeat moves to the bottom as the newest notice; its keyed remount replays the slide-in.
   if (same) return [...stack.filter((item) => item !== same), { ...alert, id: same.id, count: same.count + 1 }]
-  return [...stack, { ...alert, count: 1 }]
+  // A predecessor still sliding out keeps its id; the re-raised notice needs its own so keys and dismissal stay distinct.
+  const id = stack.some((item) => item.id === alert.id) ? `${alert.id}#${++reraisedAlertSerial}` : alert.id
+  return [...stack, { ...alert, id, count: 1 }]
 }
+let reraisedAlertSerial = 0
 
 function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; held: boolean; collapsed: boolean; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -112,7 +115,7 @@ function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messa
       onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
       className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
       style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
-      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1 focus-visible:ring-1 focus-visible:ring-[var(--accent)]" style={{ overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
+      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1 focus-visible:ring-[var(--accent)]" style={{ overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
         {alert.message}
         {alert.count > 1 && <span data-testid="transient-alert-count" className="ml-1.5 tabular-nums" style={{ color: 'var(--text-muted)' }} aria-label={`repeated ${alert.count} times`}>×{alert.count}</span>}
       </span>

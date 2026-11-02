@@ -44,7 +44,7 @@
   transition: color var(--dur-fast) var(--ease);
 }
 .uam-rt-disclosure__toggle:hover { color: var(--text); }
-.uam-rt-disclosure__toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rt-disclosure__toggle:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-rt-disclosure__toggle svg { flex-shrink: 0; transition: transform var(--dur-base) var(--ease-out-soft); }
 .uam-rt-disclosure[data-open="true"] .uam-rt-disclosure__toggle svg { transform: rotate(90deg); }
 .uam-rt-disclosure__summary { margin-left: auto; font-weight: 400; color: var(--text-3); }

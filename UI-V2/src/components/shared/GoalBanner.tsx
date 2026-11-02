@@ -1,9 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
-import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X } from 'lucide-react'
+import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { Button, IconButton, MenuItem, Overlay, Presence, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
-import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import { Button, IconButton, MenuItem, StatusDot, Swap, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import './GoalBanner.css'
 
 interface GoalBannerProps {
@@ -18,6 +16,9 @@ interface GoalBannerProps {
   onEdit?: (objective: string) => Promise<boolean>
   workerModelLabel?: string
   reviewerModelLabel?: string
+  /** Controlled edit mode, so the owning window can let Escape cancel the edit first. */
+  editing?: boolean
+  onEditingChange?: (editing: boolean) => void
 }
 
 function statusTone(status: Goal['status']): StatusTone {
@@ -71,101 +72,18 @@ function readablePlanItem(item: string): string {
   return trimmed.replace(/^T\d+\s*(?:[:.)\]_\-–—]\s*)?/i, '').trim() || trimmed
 }
 
-export function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean>; returnFocusElement: HTMLButtonElement | null }) {
-  const [draft, setDraft] = useState(objective)
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-  const dialogRef = useRef<HTMLFormElement>(null)
-  const closeRef = useRef(onClose); closeRef.current = onClose
-  const savingRef = useRef(false)
-  const mountedRef = useRef(false)
-
-  useEffect(() => {
-    const previouslyFocused = returnFocusElement ?? document.activeElement as HTMLElement | null
-    const dialog = dialogRef.current
-    mountedRef.current = true
-    inputRef.current?.focus()
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== dialog) return
-      if (event.key === 'Escape') {
-        event.preventDefault(); event.stopPropagation()
-        if (!savingRef.current) closeRef.current()
-      } else trapModalTab(event)
-    }
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      mountedRef.current = false
-      window.removeEventListener('keydown', onKeyDown, true)
-      if (previouslyFocused?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previouslyFocused.focus()
-    }
-  }, [])
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (savingRef.current) return
-    const nextObjective = draft.trim()
-    if (!nextObjective) {
-      setError('Goal objective is required.')
-      return
-    }
-    savingRef.current = true
-    setSaving(true)
-    setError('')
-    try {
-      const saved = await onSave(nextObjective)
-      if (!mountedRef.current) return
-      if (saved) closeRef.current()
-      else setError('Failed to update goal.')
-    } catch {
-      if (mountedRef.current) setError('Failed to update goal.')
-    } finally {
-      savingRef.current = false
-      if (mountedRef.current) setSaving(false)
-    }
-  }
-
-  return (
-    <Overlay open zIndex={1100} onBackdropMouseDown={() => { if (!saving) onClose() }}>
-      <form
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Edit goal"
-        className="w-full max-w-xl rounded-xl p-4"
-        style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={submit}
-      >
-        <div className="mb-3 flex items-center gap-3">
-          <h2 className="flex-1 text-base font-semibold" style={{ color: 'var(--text)' }}>Edit goal</h2>
-          <IconButton icon={<X size={17} aria-hidden />} label="Close edit goal" disabled={saving} onClick={onClose} />
-        </div>
-        <label className="mb-1 block text-xs font-medium" htmlFor="goal-objective-edit" style={{ color: 'var(--text-2)' }}>Objective</label>
-        <textarea
-          ref={inputRef}
-          id="goal-objective-edit"
-          rows={5}
-          value={draft}
-          disabled={saving}
-          onChange={(event) => setDraft(event.target.value)}
-          className="w-full resize-y rounded-md p-3 text-sm outline-none"
-          style={{ minHeight: 120, maxHeight: '55vh', background: 'var(--bg)', border: '1px solid var(--border-bright)', color: 'var(--text)' }}
-        />
-        {error && <div role="alert" className="mt-2 text-xs" style={{ color: 'var(--error)' }}>{error}</div>}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" disabled={saving} onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
-        </div>
-      </form>
-    </Overlay>
-  )
-}
-
-export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, turnRunning = false, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel }: GoalBannerProps) {
+export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, turnRunning = false, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel, editing: editingProp, onEditingChange }: GoalBannerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [localEditing, setLocalEditing] = useState(false)
+  const editing = Boolean(onEdit) && (editingProp ?? localEditing)
+  const setEditing = onEditingChange ?? setLocalEditing
+  const [draft, setDraft] = useState(goal.objective)
+  const [editError, setEditError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const mountedRef = useRef(true)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const wasEditingRef = useRef(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -189,6 +107,34 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
     : totalItems > 0
       ? `${completedCount} of ${totalItems} ${totalItems === 1 ? 'step' : 'steps'}`
       : goal.status === 'active' ? 'Planning' : 'No steps yet'
+
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
+  useEffect(() => {
+    if (editing) { setDraft(goal.objective); setEditError(''); inputRef.current?.focus() }
+    else if (wasEditingRef.current && (!document.activeElement || document.activeElement === document.body)) triggerRef.current?.focus()
+    wasEditingRef.current = editing
+  }, [editing]) // seed the draft only on entering edit
+
+  const saveEdit = async () => {
+    if (savingRef.current || !onEdit) return
+    const nextObjective = draft.trim()
+    if (!nextObjective) { setEditError('Goal objective is required.'); return }
+    savingRef.current = true
+    setSaving(true)
+    setEditError('')
+    try {
+      const saved = await onEdit(nextObjective)
+      if (!mountedRef.current) return
+      if (saved) setEditing(false)
+      else setEditError('Failed to update goal.')
+    } catch {
+      if (mountedRef.current) setEditError('Failed to update goal.')
+    } finally {
+      savingRef.current = false
+      if (mountedRef.current) setSaving(false)
+    }
+  }
+  const cancelEdit = () => { if (!savingRef.current) setEditing(false) }
 
   useEffect(() => {
     if (!menuOpen) return
@@ -214,7 +160,26 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         </Tooltip>
         {goal.pendingContinuation ? <span className="text-xs" style={{ color: 'var(--text-3)' }}>Queued after current turn</span> : turnRunning && goal.status === 'paused' ? <span className="text-xs" style={{ color: 'var(--text-3)' }}>Current turn will finish</span> : null}
       </div>
-      <p className="uam-goal-banner__objective">{goal.objective}</p>
+      <Swap swapKey={editing ? 'edit' : 'view'}>
+        {editing ? <div>
+          <label className="mb-1 block text-xs font-medium" htmlFor="goal-objective-edit" style={{ color: 'var(--text-2)' }}>Objective</label>
+          <textarea
+            ref={inputRef}
+            id="goal-objective-edit"
+            rows={4}
+            value={draft}
+            disabled={saving}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelEdit() }
+              else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void saveEdit() }
+            }}
+            className="w-full resize-y rounded-md p-3 text-sm outline-none"
+            style={{ minHeight: 96, maxHeight: '40vh', background: 'var(--bg)', border: '1px solid var(--border-bright)', color: 'var(--text)' }}
+          />
+          {editError && <div role="alert" className="mt-1 text-xs" style={{ color: 'var(--error)' }}>{editError}</div>}
+        </div> : <p className="uam-goal-banner__objective">{goal.objective}</p>}
+      </Swap>
       {blockerDisplay && (
         <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
           <strong>{blockerLabel}:</strong> {blockerDisplay} {blockerAction}
@@ -257,7 +222,11 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         </div>
       )}
 
-      <div className="uam-goal-banner__footer">
+      {editing ? <div className="uam-goal-banner__footer">
+        <span className="flex-1" />
+        <Button type="button" size="sm" disabled={saving} onClick={cancelEdit}>Cancel</Button>
+        <Button type="button" size="sm" variant="primary" disabled={saving} onClick={() => void saveEdit()}>{saving ? 'Saving…' : 'Save'}</Button>
+      </div> : <div className="uam-goal-banner__footer">
       {/* All goal actions consolidated into one overflow menu */}
       <div ref={menuRef} className="relative flex-shrink-0">
         <IconButton
@@ -307,10 +276,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
           <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onResume}>{resumePending ? 'Resuming…' : 'Resume'}</Button>
         )}
-      </div>
-      <Presence open={editing && Boolean(onEdit)}>
-        {onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} returnFocusElement={triggerRef.current} />}
-      </Presence>
+      </div>}
     </div>
   )
 }

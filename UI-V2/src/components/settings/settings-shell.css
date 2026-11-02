@@ -105,7 +105,7 @@
 .uam-theme-tile { display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-up); color: var(--text-2); text-align: left; cursor: pointer; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
 .uam-theme-tile:hover { border-color: var(--border-bright); }
 .uam-theme-tile:active { transform: scale(.98); }
-.uam-theme-tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-theme-tile:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-theme-tile[data-selected] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); color: var(--text); }
 .uam-theme-tile__preview { display: block; height: 46px; padding: 6px; border-radius: var(--r-sm); border: 1px solid var(--border); overflow: hidden; }
 .uam-theme-tile__surface { display: flex; align-items: center; gap: 5px; height: 100%; padding: 0 6px; border-radius: 3px; }

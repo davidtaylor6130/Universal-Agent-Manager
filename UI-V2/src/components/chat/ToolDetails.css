@@ -25,7 +25,7 @@
 .tool-details-meta dd { margin: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .tool-details-meta button { padding: 7px 12px; border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface-up); color: var(--text); }
 .tool-details-transcript { overflow-wrap: anywhere; }
-.tool-details-dialog :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.tool-details-dialog :focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .tool-details-dialog:focus { outline: none; }
 @media (max-width: 600px) { .tool-details-backdrop { padding: 8px; } .tool-details-dialog { height: calc(100dvh - 16px); } }
 .tool-details-dialog svg { animation: none; }

@@ -365,9 +365,9 @@ describe('ChatView', () => {
       popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
       act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
-      const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Edit goal"] textarea')!
+      const input = popup.querySelector<HTMLTextAreaElement>('textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Updated goal'); input.dispatchEvent(new Event('input', { bubbles: true })) })
-      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Chat goals"] button')).find((b) => b.textContent === 'Save')!.click())
       expect(edit).toHaveBeenCalledWith('chat-1', goal.id, 'Updated goal')
       expect(send).not.toHaveBeenCalled()
       expect(composer.value).toBe('Unsent next prompt')
@@ -375,7 +375,7 @@ describe('ChatView', () => {
       act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeTruthy()
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(popup.querySelector('textarea')).toBeNull()
       expect(document.activeElement).toBe(popup.querySelector('[aria-label="Goal actions"]'))
       expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1)
       act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
@@ -386,7 +386,7 @@ describe('ChatView', () => {
       act(() => reopened.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
       act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
       act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, id: 'replacement', objective: 'Replacement goal' }] }, activeGoalIdByChatId: { 'chat-1': 'replacement' } }))
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(document.querySelector('#goal-objective-edit')).toBeNull()
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
       expect(trigger.textContent).toContain('Replacement goal')
       expect(composer.value).toBe('Unsent next prompt')
@@ -404,12 +404,23 @@ describe('ChatView', () => {
       const tab = host.querySelector<HTMLElement>('.uam-composer-goal-tab')!
       const editButton = tab.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!
       act(() => editButton.click())
+      const popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      expect(popup.querySelector('[aria-label="Goal progress"]')).toBeTruthy()
+      const input = popup.querySelector<HTMLTextAreaElement>('textarea')!
+      expect(document.activeElement).toBe(input)
+      // Escape cancels the edit first, then closes the window.
+      act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+      expect(popup.querySelector('textarea')).toBeNull()
+      expect(document.querySelector('[aria-label="Chat goals"]')).toBeTruthy()
+      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
       expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
-      const input = document.querySelector<HTMLTextAreaElement>('[role="dialog"][aria-label="Edit goal"] textarea')!
-      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Edited from tab'); input.dispatchEvent(new Event('input', { bubbles: true })) })
-      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      act(() => editButton.click())
+      const reopened = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      const field = reopened.querySelector<HTMLTextAreaElement>('textarea')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Edited from tab'); field.dispatchEvent(new Event('input', { bubbles: true })) })
+      await act(async () => Array.from(reopened.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent === 'Save')!.click())
       expect(edit).toHaveBeenCalledWith('chat-1', goal.id, 'Edited from tab')
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(reopened.querySelector('textarea')).toBeNull()
       await act(async () => tab.querySelector<HTMLButtonElement>('button[aria-label="Stop goal"]')!.click())
       expect(pause).toHaveBeenCalledWith('chat-1', goal.id, 'paused')
       act(() => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...goal, status: 'complete' as const }] } }))
@@ -430,7 +441,7 @@ describe('ChatView', () => {
       openComposerGoals(host)
       act(() => document.querySelector<HTMLButtonElement>('[aria-label="Chat goals"] [aria-label="Goal actions"]')!.click())
       act(() => document.querySelector<HTMLButtonElement>('[role="menu"] button[aria-label="Edit goal"]')!.click())
-      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+      await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Chat goals"] button')).find((b) => b.textContent === 'Save')!.click())
     }
     try {
       act(() => root.render(<ChatView session={first} />))
@@ -442,7 +453,7 @@ describe('ChatView', () => {
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Second chat draft'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       await act(async () => finish({ ok: false, error: 'Old chat failed' }))
       expect(composer.value).toBe('Second chat draft')
-      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(document.querySelector('#goal-objective-edit')).toBeNull()
       expect(host.textContent).not.toContain('Old chat failed')
       await saveGoal()
       expect(edit).toHaveBeenLastCalledWith(second.id, 'goal-b', 'Second goal')

@@ -2,7 +2,7 @@
 .uam-subagent-group > summary { display: flex; align-items: center; gap: 8px; padding: 8px 4px; cursor: pointer; list-style: none; }
 .uam-subagent-group > summary::-webkit-details-marker { display: none; }
 .uam-subagent-group > summary:hover { color: var(--text); background: var(--surface-up); }
-.uam-subagent-group > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.uam-subagent-group > summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-subagent-group__chevron { margin-left: auto; transition: transform var(--dur-fast) var(--ease); }
 .uam-subagent-group[open] > summary .uam-subagent-group__chevron { transform: rotate(90deg); }
 .uam-subagent-group__body { padding: 4px 0 8px; }

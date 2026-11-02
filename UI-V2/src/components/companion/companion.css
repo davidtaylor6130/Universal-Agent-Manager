@@ -96,7 +96,7 @@
   cursor: pointer;
 }
 .uam-companion-refresh:hover { color: var(--accent); }
-.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: 8px; box-shadow: var(--focus-ring); }
+.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: 8px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-refresh:disabled { cursor: wait; opacity: .55; }
 
 .uam-companion-section { margin-top: 16px; }
@@ -104,7 +104,7 @@
 .uam-companion-empty { margin: 0; padding: 14px 4px; color: var(--text-2); font-size: var(--fs-sm); }
 .uam-companion-activity-row { width: 100%; min-height: 67px; display: flex; align-items: center; gap: 10px; padding: 9px 4px; text-align: left; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
 .uam-companion-activity-row:hover { background: var(--surface); }
-.uam-companion-activity-row:focus-visible { background: var(--surface); outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+.uam-companion-activity-row:focus-visible { background: var(--surface); outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-companion-provider { flex: 0 0 24px; }
 .uam-companion-row-copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .uam-companion-row-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); font-weight: 600; }
@@ -124,7 +124,7 @@
 .uam-companion-nav > button:first-child { grid-column: 1; justify-self: center; }
 .uam-companion-nav > button:nth-child(3) { grid-column: 3; justify-self: center; }
 .uam-companion-nav button:hover { color: var(--text); }
-.uam-companion-nav button:focus-visible { color: var(--text); outline: none; border-radius: 10px; box-shadow: var(--focus-ring); }
+.uam-companion-nav button:focus-visible { color: var(--text); outline: none; border-radius: 10px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-nav button[aria-current="page"] { color: var(--accent); }
 .uam-companion-nav-indicator { position: absolute; bottom: 4px; left: calc(16.6667% - 12px); width: 24px; height: 2px; background: var(--accent); transition: left 180ms ease; }
 .uam-companion-nav-indicator--chats { left: calc(83.3333% - 12px); }

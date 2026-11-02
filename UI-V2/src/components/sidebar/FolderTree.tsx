@@ -132,7 +132,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
       aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
       aria-expanded={expanded}
       aria-controls={listId}
-      className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+      className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left hover:bg-[var(--sidebar-item-hover)] focus-visible:[outline-offset:var(--focus-inset)]"
       style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
       onClick={onToggle}
     >
@@ -1928,7 +1928,7 @@ const FolderRow = memo(function FolderRow({
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
-        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-[-1px]"
+        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]"
         style={{
           background: selected ? 'var(--accent-dim)' : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
@@ -1992,7 +1992,7 @@ const FolderRow = memo(function FolderRow({
               aria-label="Folder actions"
               aria-haspopup="menu"
               aria-expanded={Boolean(menuPos)}
-              className="flex items-center justify-center rounded focus-visible:outline-offset-[-2px]"
+              className="flex items-center justify-center rounded focus-visible:[outline-offset:var(--focus-inset)]"
               style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
               onClick={(e) => {
                 e.stopPropagation()

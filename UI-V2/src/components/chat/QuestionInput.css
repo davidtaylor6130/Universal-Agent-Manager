@@ -15,7 +15,7 @@
 .qr-panel button:hover:not(:disabled) { background: var(--surface-up); }
 .qr-panel button:active:not(:disabled) { background: var(--surface-high); }
 .qr-panel button:disabled { opacity: .4; cursor: default; }
-.qr-panel :is(button, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qr-panel :is(button, input):focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .qr-header { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
 .qr-header > svg { color: var(--accent); flex-shrink: 0; }
 .qr-header h2 { margin: 0; font-size: var(--fs-base); font-weight: 600; }
@@ -33,7 +33,7 @@
 .qr-option { display: flex; position: relative; align-items: center; gap: 8px; min-height: 40px; padding: 8px; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); cursor: pointer; }
 .qr-option:hover { background: var(--surface-up); }
 .qr-option:has(input:checked) { background: var(--accent-dim); border-left-color: var(--accent); }
-.qr-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.qr-option:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .qr-option:has(input:disabled) { opacity: .55; cursor: default; }
 .qr-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 .qr-number { color: var(--text-2); font-size: var(--fs-sm); flex-shrink: 0; }

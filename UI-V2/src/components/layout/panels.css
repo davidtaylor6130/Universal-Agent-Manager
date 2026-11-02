@@ -122,7 +122,7 @@
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 .uam-np-search input::placeholder { color: var(--text-3); }
-.uam-np-search input:focus-visible { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.uam-np-search input:focus-visible { border-color: var(--accent); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Provider rail: one indicator glides between entries. */
 .uam-np-rail { position: relative; }
@@ -152,7 +152,7 @@
 }
 .uam-np-rail__button:hover:not(:disabled) { background: var(--surface-up); color: var(--text); }
 .uam-np-rail__button[aria-pressed="true"] { background: var(--surface-up); color: var(--text); }
-.uam-np-rail__button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-np-rail__button:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-np-rail__button:disabled { cursor: default; }
 
 /* Model rows: fixed 52px so the list can window. */
@@ -263,7 +263,7 @@
 .uam-np-model__fav[aria-pressed="true"] { opacity: 1; }
 .uam-np-model__fav[aria-pressed="true"] { color: var(--accent); }
 .uam-np-model__fav:hover { background: var(--surface-up); color: var(--text); }
-.uam-np-model__fav:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-np-model__fav:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 @media (hover: none) { .uam-np-model__fav { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {

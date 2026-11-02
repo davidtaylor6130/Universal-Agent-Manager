@@ -243,7 +243,20 @@ bool MemoryLibraryService::ReadEntryContent(const Scope& scope, std::string_view
 {
 	ClearError(error_out);
 	content_out.clear();
-	const std::vector<Entry> entries = ListEntries(scope, error_out);
+	if (scope.scope_type == "all" && entry_id.starts_with("remote:"))
+	{
+		for (const Scope& remote : scope.remote_scopes)
+		{
+			const std::string prefix = RemoteMemoryPrefix(remote);
+			if (entry_id.starts_with(prefix)) return ReadEntryContent(remote, entry_id.substr(prefix.size()), content_out, error_out);
+		}
+		SetError(error_out, "The memory entry's SSH workspace no longer exists.");
+		return false;
+	}
+	// Only the owning scope is listed: a local entry must not depend on SSH hosts being reachable.
+	std::vector<Entry> entries;
+	if (scope.remote_host) entries = ListEntries(scope, error_out);
+	else if (!scope.roots.empty() || !scope.root_path.empty()) entries = MemoryLibraryStore::ListEntries(scope, error_out);
 	if (error_out != nullptr && !error_out->empty()) return false;
 	const auto found = std::ranges::find(entries, entry_id, &Entry::id);
 	if (found == entries.end())

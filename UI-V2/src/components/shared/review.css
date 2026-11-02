@@ -62,8 +62,7 @@
 .uam-rv-segmented button:focus-visible,
 .uam-rv-tab:focus-visible,
 .uam-rv-file:focus-within {
-  outline: none;
-  box-shadow: var(--focus-ring);
+  outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
 
 /* Segmented control: split/unified and scope toggles. */
@@ -248,7 +247,7 @@
 }
 
 .uam-rv-check-btn:disabled { cursor: default; opacity: 0.5; }
-.uam-rv-check-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rv-check-btn:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Changed files list: fixed 28px rows. Columns: checkbox | status | name + muted dir | stats | chevron. */
 .uam-rv-file {
@@ -281,7 +280,7 @@
   cursor: pointer;
 }
 
-.uam-rv-file__open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rv-file__open:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-rv-file__status {
   width: 24px;

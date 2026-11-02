@@ -93,7 +93,7 @@
 .conversation-work__subagent > summary::-webkit-details-marker { display: none; }
 .conversation-work__subagent[open] > summary > svg { transform: rotate(90deg); }
 .conversation-work__history { padding-block: 10px; }
-.conversation-work__summary:focus-visible, .conversation-work__toggle:focus-visible, .conversation-work__thought > summary:focus-visible, .conversation-work__tool:focus-visible, .conversation-work__subagent > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+.conversation-work__summary:focus-visible, .conversation-work__toggle:focus-visible, .conversation-work__thought > summary:focus-visible, .conversation-work__tool:focus-visible, .conversation-work__subagent > summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
 @media (max-width: 600px) {
   .conversation-turn--user > .conversation-turn__body { max-width: 94%; }
@@ -157,7 +157,7 @@
 .context-compaction > summary::-webkit-details-marker { display: none; }
 .context-compaction > summary::before, .context-compaction > summary::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .context-compaction > summary:hover { color: var(--text-2); }
-.context-compaction > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-compaction > summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .context-compaction[open] > summary { color: var(--text-2); }
 .context-compaction > div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: var(--fs-base); color: var(--text-2); }
 
@@ -323,7 +323,7 @@
   cursor: default;
   outline: none;
 }
-.conversation-turn__delivery:focus-visible { box-shadow: var(--focus-ring); }
+.conversation-turn__delivery:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .conversation-turn__delivery-error { flex-basis: 100%; text-align: right; color: var(--red); }
 
 /* Message navigation gutter: the rail's widest expanded footprint is 54px from left 0, so a present rail reserves 64px

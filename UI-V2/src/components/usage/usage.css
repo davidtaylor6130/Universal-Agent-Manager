@@ -68,7 +68,7 @@
 }
 .uam-usage-status:hover { background: var(--surface-high); color: var(--text-2); }
 .uam-usage-status.is-attention { color: var(--warning); }
-.uam-usage-status:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-status:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-usage-status.is-open { background: var(--surface-high); }
 
 /* About these figures: the info control's panel. It grows from the control (ViewportMenu) and lists every note. */
@@ -130,7 +130,7 @@
 .uam-usage-chip:active { transform: scale(0.98); }
 .uam-usage-chip[aria-pressed="true"] { background: var(--surface-up); border-color: var(--border-bright); }
 .uam-usage-chip.is-off { opacity: 0.45; }
-.uam-usage-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-chip:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-usage-chip-dot {
   width: 8px;
   height: 8px;
@@ -176,7 +176,7 @@
   height: 100%;
   border-radius: var(--r-sm);
 }
-.uam-usage-col:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-col:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-usage-col-stack {
   display: flex;
   flex-direction: column-reverse;
@@ -256,7 +256,7 @@
   color: var(--text-2);
 }
 .uam-usage-basis[data-estimate] { border-style: dashed; }
-.uam-usage-basis:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-basis:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Background refresh: the button stays usable and its icon turns; reduced motion relies on the status text. */
 .uam-usage-refresh.is-busy svg { animation: uam-status-spin 1s linear infinite; }

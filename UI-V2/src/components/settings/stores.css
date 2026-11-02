@@ -1,8 +1,8 @@
 /* Skills and Memory Store pages: shared search, empty-state and preview patterns. */
 
 /* Search uses a quiet field; the accent ring only appears for keyboard focus. */
-.uam-search-field.uam-store-search:focus-within { box-shadow: none; }
-.uam-search-field.uam-store-search:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+.uam-search-field.uam-store-search:focus-within { outline: none; }
+.uam-search-field.uam-store-search:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Long sidebar and folder labels: one line, full text on hover. */
 .uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -35,7 +35,7 @@
 
 /* Skills library: one bordered card. A 220px folder nav sits beside the pane; the pane's 44px toolbar holds search and actions. */
 .uam-store-toolbar { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; height: var(--pane-header-h); min-width: 0; padding: 0 var(--sp-3); border-bottom: 1px solid var(--border); }
-.uam-field.uam-store-field:focus-within { border-color: var(--border-bright); box-shadow: var(--focus-ring); }
+.uam-field.uam-store-field:focus-within { border-color: var(--border-bright); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-store-nav { width: 220px; min-height: 0; overflow-y: auto; padding: var(--sp-2); border-right: 1px solid var(--border); }
 .uam-store-nav__row { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .uam-store-nav__spacer { flex-shrink: 0; width: 26px; }
