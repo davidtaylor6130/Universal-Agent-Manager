@@ -1,5 +1,6 @@
 #include "common/provider/provider_setup.h"
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/runtime/acp/acp_process_handoff.h"
 #include <type_traits>
@@ -1522,6 +1523,7 @@ namespace uam
 			{
 				task->worker = std::make_unique<std::jthread>([result, selected_id](std::stop_token)
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { result->success = AgentDefinitionService::CaptureSelectedPrimary(result->root, result->workspace, selected_id, result->snapshot, result->error); }
 					catch (const std::exception& exception) { result->error = std::string("Agent preparation failed: ") + exception.what(); }
 					catch (...) { result->error = "Agent preparation failed."; }
@@ -4596,6 +4598,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				std::thread([task]()
 				{
+					uam::platform::LowerCurrentThreadToBackgroundPriority();
 					try { task->loaded = ChatDomainService().LoadColdHistoryPreparation(*task->history, task->error); }
 					catch (const std::exception& error) { task->error = error.what(); }
 					catch (...) { task->error = "History preparation failed."; }
