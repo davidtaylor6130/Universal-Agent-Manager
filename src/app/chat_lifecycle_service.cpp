@@ -1425,6 +1425,12 @@ uam::WorkspaceFolderRecoveryPreview uam::PreviewUnsortedWorkspaceFolders(const A
 			preview.no_location.push_back(RecoveryChat(chat, "", "No workspace location recorded"));
 			continue;
 		}
+		// An imported copy's location came from an untrusted bundle; never probe a network share for it.
+		if (chat.imported_read_only && uam::paths::IsNetworkOrDevicePathSpelling(recorded_directory))
+		{
+			preview.unavailable.push_back(RecoveryChat(chat, recorded_directory, "Imported network locations are not checked"));
+			continue;
+		}
 		if (host_id != uam::execution_hosts::kLocalHostId)
 		{
 			const ExecutionHost* host = uam::execution_hosts::Find(

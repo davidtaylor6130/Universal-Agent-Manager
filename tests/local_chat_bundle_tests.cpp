@@ -90,6 +90,54 @@ UAM_TEST(LocalChatBundleImportKeepsOnlyAbsoluteLocalWorkspaceLocations)
 	}
 }
 
+UAM_TEST(LocalChatBundleImportNeverRetainsOrProbesNetworkWorkspaceLocations)
+{
+	for (const std::string_view spelling : {"\\\\server\\share\\x", "//server/share/x", "\\\\?\\UNC\\server\\share\\x", "\\\\.\\pipe\\x", "/\\server\\share", "  //server/share"})
+		UAM_ASSERT(uam::paths::IsNetworkOrDevicePathSpelling(spelling));
+	for (const std::string_view spelling : {"", "/", "/Users/me/repo", "C:\\repo", "C:/repo", "\\repo", "relative//x", "~/repo"})
+		UAM_ASSERT(!uam::paths::IsNetworkOrDevicePathSpelling(spelling));
+
+	TempDir temp("uam-bundle-network-location");
+	const fs::path source = temp.root / "source", bundle = temp.root / "bundle", target = temp.root / "target";
+	const std::vector<std::string> network = {"\\\\attacker\\share\\repo", "//attacker/share/repo", "\\\\?\\UNC\\attacker\\share\\repo", "\\\\.\\pipe\\repo"};
+	for (std::size_t index = 0; index < network.size(); ++index)
+	{
+		ChatSession chat;
+		chat.id = "network-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = network[index];
+		chat.messages.push_back(Message{MessageRole::User, "Portable history"});
+		UAM_ASSERT(ChatRepository::SaveChat(source, chat));
+	}
+	UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);
+	UAM_ASSERT(uam::LocalChatBundleService::Import(target, bundle).ok);
+	for (std::size_t index = 0; index < network.size(); ++index)
+	{
+		const auto imported = ChatRepository::LoadLocalChat(target, "network-" + std::to_string(index));
+		UAM_ASSERT(imported.has_value());
+		UAM_ASSERT(imported->workspace_directory.empty());
+		UAM_ASSERT(imported->folder_id.empty());
+	}
+
+	// Shared folder recovery also refuses a network location already saved on an imported copy.
+	uam::AppState app;
+	ChatFolder folder;
+	folder.id = "share-folder";
+	folder.directory = "//attacker/share/repo";
+	app.folders.push_back(folder);
+	ChatSession imported;
+	imported.id = "saved-network-copy";
+	imported.imported_read_only = true;
+	imported.workspace_directory = folder.directory;
+	app.chats.push_back(imported);
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	UAM_ASSERT(app.chats.front().folder_id.empty());
+	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT(preview.groups.empty() && preview.missing.empty());
+	UAM_ASSERT_EQ(preview.unavailable.size(), std::size_t{1});
+	UAM_ASSERT_EQ(preview.unavailable.front().reason, std::string("Imported network locations are not checked"));
+}
+
 UAM_TEST(LocalChatBundleImportDropsSourceCleanupAndHandoffAuthority)
 {
 	TempDir temp("uam-bundle-source-authority");

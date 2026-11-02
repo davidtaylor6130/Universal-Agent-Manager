@@ -225,6 +225,14 @@ namespace uam::paths
 		return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 	}
 
+	/// <summary>True for UNC (\\server\share, //server/share) and \\?\ or \\.\ device spellings on any platform.
+	/// Probing such a path from untrusted data can make Windows contact a remote SMB server.</summary>
+	inline bool IsNetworkOrDevicePathSpelling(std::string_view path)
+	{
+		while (!path.empty() && (path.front() == ' ' || path.front() == '\t' || path.front() == '\r' || path.front() == '\n')) path.remove_prefix(1);
+		return path.size() >= 2 && (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/');
+	}
+
 	inline std::string NormalizedPortablePathString(const std::filesystem::path& path)
 	{
 		return PortablePathString(LexicallyNormalPath(path));

@@ -299,6 +299,8 @@ void ChatDomainService::NormalizeChatFolderAssignments(uam::AppState& app) const
 		{
 			continue;
 		}
+		// An imported copy's location came from an untrusted bundle; never probe a network share for it.
+		if (chat.imported_read_only && uam::paths::IsNetworkOrDevicePathSpelling(chat.workspace_directory)) continue;
 
 		if (uam::paths::IsControllerLocalWorkspace(chat))
 		{
