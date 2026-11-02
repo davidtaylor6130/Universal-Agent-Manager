@@ -24,7 +24,7 @@ vi.mock('./MainPanel', () => ({
   },
 }))
 
-import { AppShell, pushStackedAlert } from './AppShell'
+import { AppShell, pushStackedAlert, updateNoticeText } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -1299,11 +1299,8 @@ describe('AppShell', () => {
       expect(toggle().getAttribute('aria-expanded')).toBe('true')
       act(() => toggle().click())
       expect(messages()).toHaveLength(4)
-      // Focus inside the stack holds every countdown; leaving it resumes them.
+      // Focusing the stack's toggle holds no notice; only a hovered or focused notice holds its own countdown.
       act(() => toggle().focus())
-      act(() => vi.advanceTimersByTime(3000))
-      expect(messages()).toHaveLength(4)
-      act(() => toggle().blur())
       // The oldest expires on its own timer; the rest keep theirs.
       act(() => vi.advanceTimersByTime(1000)); act(() => vi.advanceTimersByTime(200))
       expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
@@ -1386,7 +1383,7 @@ describe('AppShell', () => {
           window.innerHeight - (Number.parseFloat(this.style.bottom) || 0) - height, width, height)
       }
       if (this.closest('[data-testid="transient-alert"]') && this.tagName === 'BUTTON')
-        return new DOMRect(0, 0, this.getAttribute('aria-label') === 'Dismiss alert' ? 26 : 140, 26)
+        return new DOMRect(0, 0, ['Dismiss alert', 'Copy message'].includes(this.getAttribute('aria-label') ?? '') ? 26 : 140, 26)
       return nativeRect.call(this)
     })
     const host = document.createElement('div')
@@ -1570,10 +1567,11 @@ describe('AppShell', () => {
     const { host, alertSurface, bell, settle, cleanup } = await mountShell()
     try {
       act(() => reportAppFailure('Could not save.', 'Disk full'))
-      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      const item = () => alertSurface()!.querySelector('[data-testid="transient-alert-item"]')!
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
       settle(20000)
       expect(alertSurface()).toBeTruthy()
-      act(() => { alertSurface()!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
       settle(5000)
       settle(200)
       expect(alertSurface()).toBeNull()
@@ -1603,6 +1601,70 @@ describe('AppShell', () => {
       cleanup()
       vi.useRealTimers()
     }
+  })
+
+  it('pauses only the hovered or focused notice while the others keep counting down', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const items = () => [...alertSurface()?.querySelectorAll<HTMLElement>('[data-testid="transient-alert-item"]') ?? []]
+    const messages = () => items().map((item) => item.querySelector('[aria-label="Notification message"]')?.firstChild?.textContent)
+    try {
+      act(() => reportAppFailure('First failure.', 'one'))
+      act(() => reportAppFailure('Second failure.', 'two'))
+      act(() => { items()[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      expect(items()[0].dataset.held).toBe('true')
+      expect(items()[1].dataset.held).toBeUndefined()
+      expect((items()[1].querySelector('.uam-transient-alert__countdown') as HTMLElement).style.animationPlayState).toBe('running')
+      settle(5200)
+      expect(messages()).toEqual(['First failure.'])
+      act(() => { items()[0].dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+
+      act(() => reportAppFailure('Third failure.', 'three'))
+      const focusTarget = items()[1].querySelector<HTMLElement>('[aria-label="Notification message"]')!
+      act(() => focusTarget.focus())
+      settle(5200)
+      expect(messages()).toEqual(['Third failure.'])
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('copies the full notice text from the toast and the bell panel', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { host, alertSurface, bell, cleanup } = await mountShell()
+    try {
+      act(() => reportAppNotice('Saved.', 'success'))
+      expect(alertSurface()!.querySelector('[aria-label="Copy message"]')).toBeNull()
+      act(() => reportAppFailure('Chat history did not load.', 'Disk read failed'))
+      const copy = alertSurface()!.querySelectorAll<HTMLButtonElement>('[aria-label="Copy message"]')
+      expect(copy).toHaveLength(1)
+      await act(async () => copy[0].click())
+      expect(writeText).toHaveBeenLastCalledWith('Chat history did not load.\nDisk read failed')
+
+      act(() => bell().click())
+      const panelCopy = host.querySelector('[data-testid="notifications-panel"]')!.querySelectorAll<HTMLButtonElement>('[aria-label="Copy message"]')
+      expect(panelCopy).toHaveLength(1)
+      await act(async () => panelCopy[0].click())
+      expect(writeText).toHaveBeenLastCalledWith('Change not saved\nChat history did not load. · Disk read failed')
+    } finally {
+      cleanup()
+      Reflect.deleteProperty(navigator, 'clipboard')
+      vi.useRealTimers()
+    }
+  })
+
+  it('writes update notice copy for one update and lists several', () => {
+    const update = (name: string, latestVersion: string) => ({ id: name, name, currentVersion: '1', latestVersion, url: '', installable: true })
+    expect(updateNoticeText([update('Codex', '0.130.0')])).toBe('Update available: Codex 0.130.0')
+    expect(updateNoticeText([update('Gaming AI Desktop SSH helper', '5.0.0 · helper protocol 3'), update('Homelab Main PC SSH helper', '5.0.0 · helper protocol 3')]))
+      .toBe('2 updates available\nGaming AI Desktop SSH helper 5.0.0\nHomelab Main PC SSH helper 5.0.0')
+    expect(updateNoticeText(['A', 'B', 'C', 'D', 'E'].map((name) => update(name, '2.0.0'))))
+      .toBe('5 updates available\nA 2.0.0\nB 2.0.0\nC 2.0.0\nand 2 more')
   })
 
   // David explicitly superseded composer-clearance on 2026-10-21: bottom edge, allow covering Send.

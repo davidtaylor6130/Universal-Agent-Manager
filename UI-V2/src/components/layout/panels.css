@@ -45,6 +45,8 @@
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
 }
 .uam-np-row__title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }

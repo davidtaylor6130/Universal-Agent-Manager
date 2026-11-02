@@ -33,6 +33,7 @@ function SvnLogo({ size = 17 }: { size?: number }) {
   )
 }
 import { InterfaceErrorBoundary } from '../shared/InterfaceErrorBoundary'
+import { CopyTextButton } from '../chat/StatusHelpers'
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
 import { WindowChrome, useWindowChrome } from './WindowChrome'
@@ -65,7 +66,8 @@ const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewCha
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
-type TransientAlert = { id: string; tone: 'error' | 'info' | 'success'; message: string; actionLabel: string; action: 'notifications' | 'updates' }
+/** `detail` is not shown in the toast; it joins the message in the Copy message text. */
+type TransientAlert = { id: string; tone: 'error' | 'info' | 'success'; message: string; detail?: string; actionLabel: string; action: 'notifications' | 'updates' }
 /** A stacked alert; identical repeats raise `count` instead of adding a second toast, and `leaving` plays its exit. */
 type StackedAlert = TransientAlert & { count: number; leaving?: boolean }
 
@@ -89,9 +91,14 @@ export function pushStackedAlert(stack: StackedAlert[], alert: TransientAlert): 
 }
 let reraisedAlertSerial = 0
 
-function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; held: boolean; collapsed: boolean; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
+function TransientAlertItem({ alert, visible, collapsed, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; visible: boolean; collapsed: boolean; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
   const ref = useRef<HTMLDivElement>(null)
-  // Expiry pauses while the stack is held and resumes with the time left; a repeat (count change) restarts it visibly.
+  // Hover or focus holds only this notice's countdown; a hidden (no-fit) surface never holds, since it cannot be left.
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const held = visible && (hovered || focused)
+  const copyText = [alert.message, alert.detail].filter(Boolean).join('\n')
+  // Expiry pauses while this notice is held and resumes with the time left; a repeat (count change) restarts it visibly.
   const remaining = useRef(ALERT_EXPIRY_MS)
   useEffect(() => { remaining.current = ALERT_EXPIRY_MS }, [alert.count])
   useEffect(() => {
@@ -111,14 +118,17 @@ function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messa
   }
   // Collapsed overflow stays mounted (hidden) so its own countdown keeps running.
   return <div className="uam-transient-alert-slot" data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
-    <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'}
+    <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'} data-held={held || undefined}
+      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
       onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
       className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
       style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
-      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1" style={{ outlineOffset: 'var(--focus-inset)', overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
+      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1" style={{ outlineOffset: 'var(--focus-inset)', overflowWrap: 'anywhere', whiteSpace: 'pre-line', userSelect: 'text', WebkitUserSelect: 'text', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
         {alert.message}
         {alert.count > 1 && <span data-testid="transient-alert-count" className="ml-1.5 tabular-nums" style={{ color: 'var(--text-muted)' }} aria-label={`repeated ${alert.count} times`}>×{alert.count}</span>}
       </span>
+      {(alert.tone === 'error' || alert.detail) && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
       <Button className="shrink-0" variant="ghost" size="sm" onClick={() => finish(() => { onAction(alert.action); onDismiss(alert.id) })}>{alert.actionLabel}</Button>
       <IconButton className="shrink-0" icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={() => finish(() => onDismiss(alert.id))} />
       {!alert.leaving && <span key={`${alert.id}:${alert.count}`} aria-hidden className="uam-transient-alert__countdown" style={{ animationDuration: `${ALERT_EXPIRY_MS}ms`, animationPlayState: held ? 'paused' : 'running' }} />}
@@ -130,8 +140,6 @@ function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messa
 function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId, onFallbackChange }: { alerts: StackedAlert[]; notice: Pick<TransientAlert, 'id' | 'message'> | null; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; fallbackId: string; onFallbackChange: (fallback: boolean) => void }) {
   const mounted = alerts.length > 0
   const surfaceRef = useRef<HTMLDivElement>(null)
-  const [hovered, setHovered] = useState(false)
-  const [focused, setFocused] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [placement, setPlacement] = useState<{ right: number; width: number; height: number; fits: boolean } | null>(null)
   const [announcement, setAnnouncement] = useState<{ id: string; message: string } | null>(null)
@@ -177,11 +185,7 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
       const next = { right: window.innerWidth - rightEdge, width, height, fits }
       setPlacement((current) => current && Object.keys(next).every((key) => current[key as keyof typeof next] === next[key as keyof typeof next]) ? current : next)
       onFallbackChange(!fits)
-      if (!fits) setHovered(false)
-      if (!fits && surface.contains(document.activeElement)) {
-        bell?.focus()
-        setFocused(false)
-      }
+      if (!fits && surface.contains(document.activeElement)) bell?.focus()
     }
     const schedule = () => {
       if (frame === null) frame = window.requestAnimationFrame(() => { frame = null; bind(); measure() })
@@ -221,13 +225,8 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
     setAnnouncement((previous) => previous?.id === notice.id && previous.message === notice.message
       ? previous : { id: notice.id, message: notice.message })
   }, [notice?.id, notice?.message])
-  // Hover or focus anywhere in the stack holds every countdown so actions never vanish under the pointer or keyboard.
-  const held = mounted && (hovered || focused)
   useEffect(() => {
-    if (mounted) return
-    setHovered(false)
-    setFocused(false)
-    setExpanded(false)
+    if (!mounted) setExpanded(false)
   }, [mounted])
   const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications.</span>}</span>
   if (!mounted) return liveRegion
@@ -240,15 +239,13 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
     {liveRegion}
     <div ref={surfaceRef} data-testid="transient-alert" data-state={alerts.every((alert) => alert.leaving) ? 'closed' : 'open'}
       aria-hidden={!placement?.fits || undefined}
-      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
       className="uam-transient-alert-stack fixed flex flex-col items-stretch"
       style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, right: placement?.right ?? ALERT_GAP_PX, bottom: ALERT_GAP_PX, width: placement?.width ?? 360, maxHeight: budget, visibility: placement?.fits ? 'visible' : 'hidden' }}>
       {overflowing && <Button className="self-end shrink-0" variant="secondary" size="sm" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? 'Show fewer' : `Show ${hidden} more`}
       </Button>}
       <div className="uam-transient-alert-list flex min-h-0 flex-col" style={{ overflowY: expanded ? 'auto' : 'visible' }}>
-        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} held={held} collapsed={index < hidden} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
+        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} visible={Boolean(placement?.fits)} collapsed={index < hidden} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
       </div>
     </div>
   </>
@@ -276,8 +273,19 @@ function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResul
   return `provider-update-${result.executionHostId ? JSON.stringify([result.executionHostId, result.providerId]) : result.providerId}-${result.installedVersion}-${result.message}`
 }
 
+/** Full per-update detail for the bell row and copy text; versions may themselves contain ` · `, so updates are separated by `; `. */
 function updateSummaryText(updates: UpdateMonitor['updates']): string {
-  return updates.map((update) => `${update.name} ${update.latestVersion}`).join(' · ')
+  return updates.map((update) => `${update.name} ${update.latestVersion}`).join('; ')
+}
+
+const UPDATE_NOTICE_LIST_LIMIT = 3
+
+/** Toast copy: one update reads as one sentence; several get a plural title and a short list, full details stay in the bell and Review updates. */
+export function updateNoticeText(updates: UpdateMonitor['updates']): string {
+  const line = (update: UpdateMonitor['updates'][number]) => `${update.name} ${update.latestVersion.split(' · ')[0]}`
+  if (updates.length === 1) return `Update available: ${line(updates[0])}`
+  const extra = updates.length - UPDATE_NOTICE_LIST_LIMIT
+  return [`${updates.length} updates available`, ...updates.slice(0, extra > 1 ? UPDATE_NOTICE_LIST_LIMIT : updates.length).map(line), ...(extra > 1 ? [`and ${extra} more`] : [])].join('\n')
 }
 
 function updateNotificationId(updates: UpdateMonitor['updates']): string {
@@ -599,6 +607,7 @@ function NotificationsPanel({
                         <time tabIndex={0} className="uam-np-row__meta rounded-sm" dateTime={time.toISOString()} aria-label={relativeTime}>{relativeTime}</time>
                       </Tooltip>
                       <div className="flex shrink-0 items-center gap-1">
+                        {(tone === 'error' || tone === 'warning' || fullDetail) && <CopyTextButton text={[notification.title, fullDetail].filter(Boolean).join('\n')} label="Copy message" title="Copy message" />}
                         {notification.actions?.map((action) => {
                           const actionId = `${notification.id}-${action.label}`
                           return (
@@ -747,7 +756,7 @@ export function AppShell() {
     const onFailure = (event: Event) => {
       const failure = (event as CustomEvent<AppFailure>).detail
       setAppFailures((history) => [...history, failure])
-      showTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, actionLabel: 'View in notifications', action: 'notifications' })
+      showTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, detail: failure.detail, actionLabel: 'View in notifications', action: 'notifications' })
     }
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
     return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
@@ -813,11 +822,11 @@ export function AppShell() {
 
   useEffect(() => {
     if (updateMonitor.updates.length === 0) return
-    const count = updateMonitor.updates.length
     showTransientAlert({
       id: updateNoticeId,
       tone: 'info',
-      message: `${count} update${count === 1 ? '' : 's'} available · ${updateSummaryText(updateMonitor.updates)}`,
+      message: updateNoticeText(updateMonitor.updates),
+      detail: updateSummaryText(updateMonitor.updates),
       actionLabel: 'Review updates',
       action: 'updates',
     })
