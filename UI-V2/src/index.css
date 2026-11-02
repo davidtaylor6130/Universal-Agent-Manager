@@ -51,12 +51,13 @@
   --info:             var(--blue);
   --info-dim:         var(--blue-dim);
 
-  /* Token categories (usage bars, legends, tooltips). Hues avoid provider, status and accent hues. */
-  --token-input:       #db2777;
-  --token-cache-read:  #4d7c0f;
-  --token-cache-write: #4f46e5;
-  --token-output:      #a16207;
-  --token-reasoning:   #a21caf;
+  /* Token categories (usage bars, legends, tooltips). Hues avoid provider, status and accent hues. Calm (low chroma),
+     at least 4.4:1 on light surfaces, and spread in lightness so pairs stay apart under red-green colour blindness. */
+  --token-input:       #b5476f;
+  --token-cache-read:  #46703a;
+  --token-cache-write: #535fb5;
+  --token-output:      #976a30;
+  --token-reasoning:   #8f4b96;
 
   /* Sidebar */
   --sidebar-bg:      #fbfcfe;
@@ -166,13 +167,14 @@
   --provider-logo-mono-filter: invert(1);
 }
 
-/* Token categories on dark surfaces: bright enough for --bg label text inside segments. */
+/* Token categories on dark surfaces: softened pastels, at least 4.3:1 on every dark surface and bright enough for --bg
+   label text inside segments. */
 [data-theme="dark"], [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
-  --token-input:       #f472b6;
-  --token-cache-read:  #bef264;
-  --token-cache-write: #818cf8;
-  --token-output:      #e7c9a0;
-  --token-reasoning:   #e879f9;
+  --token-input:       #e08aae;
+  --token-cache-read:  #8fbf6a;
+  --token-cache-write: #aeb5f5;
+  --token-output:      #e6c99c;
+  --token-reasoning:   #b777c2;
 }
 
 /* Appearance "Higher contrast" setting. Mixes from --text/--bg (not the token itself) to avoid a cyclic custom property. */

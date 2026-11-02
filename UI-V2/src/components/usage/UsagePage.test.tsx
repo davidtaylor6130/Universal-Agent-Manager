@@ -5,7 +5,7 @@ import { sumProviderUsage, USAGE_PROVIDERS, type UsageTotals } from '../../servi
 import { clearUsageHistoryCache } from '../../hooks/useUsageHistory'
 import { useAppStore } from '../../store/useAppStore'
 
-import { UsagePage, parseUsagePrices } from './UsagePage'
+import { UsagePage, niceTicks, parseUsagePrices } from './UsagePage'
 import { UsageLimits } from './UsageLimits'
 import { clearProviderAllowanceCache } from '../../services/providerAllowances'
 
@@ -171,7 +171,7 @@ describe('UsagePage', () => {
       expect(host.textContent).toContain('Unknown')
       expect(host.textContent).toContain('totals are incomplete')
       expect(host.textContent).toContain('1 invalid records')
-      expect(host.textContent).toContain('Reasoning, included in output')
+      expect(host.textContent).toContain('Reasoning(part of output)')
       const button = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text)!
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Codex test-model standard"]')!.click())
       act(() => button('Model prices').click())
@@ -224,13 +224,15 @@ describe('UsagePage', () => {
       const codex = host.querySelector<HTMLButtonElement>('[aria-label="Include Codex usage"]')!
       act(() => codex.click())
       expect(codex.getAttribute('aria-pressed')).toBe('false')
-      expect(host.textContent).toContain('1 sessions')
+      expect(host.textContent).toContain('1 session in the past 7 days')
       expect(host.querySelector('[aria-label="Inspect Codex test-model standard"]')).toBeNull()
+      expect(host.querySelector('[role="group"][aria-label="Codex"]')).toBeNull()
       expect(columns()).not.toContain('Codex')
       expect(columns()).toContain('Claude 17')
+      // Nothing left in the range: the headline and chart give way to one line rather than a chart of zeros.
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Claude usage"]')!.click())
-      expect(host.textContent).toContain('0 sessions')
-      expect(columns()).not.toContain('Claude')
+      expect(host.textContent).toContain('No usage recorded in this range.')
+      expect(host.querySelector('.uam-usage-plot')).toBeNull()
       expect(requests).toBe(1)
       act(() => codex.click())
       expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(1)
@@ -448,6 +450,171 @@ describe('UsagePage', () => {
       expect(host.textContent).toContain('Retry')
       expect(host.textContent).not.toContain('$0.00')
     } finally { act(() => root.unmount()) }
+  })
+})
+
+// Mockup states for the Tokens tab. Codex is estimated across two service tiers, Claude has a partly unpriced reported cost,
+// OpenCode has no known price, Gemini is the state under test, and Copilot and Antigravity were read with nothing in range.
+const DAY = 86400000
+const mix = (input: number, cache: number, write: number, output: number, reasoning: number, extra: Partial<UsageTotals> = {}): UsageTotals =>
+  ({ ...blank, inputTokens: input, cachedInputTokens: cache, cacheWriteTokens: write, outputTokens: output, reasoningTokens: reasoning, totalTokens: input + cache + write + output, unpricedTokens: input + cache + write + output, ...extra })
+type GeminiState = 'used' | 'reading' | 'unavailable' | 'incomplete'
+function tokensHistory(payload: { executionHostId: string; startMs: number; endMs: number; windowDays: number }, { gemini = 'used' as GeminiState, collecting = false, empty = false } = {}) {
+  const day0 = Math.floor(payload.startMs / DAY) * DAY
+  const rows: Record<string, UsageTotals> = empty ? {} : {
+    'codex-cli': mix(400, 500, 0, 100, 10, { estimatedCostTokens: 1000, unpricedTokens: 0, estimatedCostUsd: 1.5, records: 5, sessions: 3 }),
+    'claude-cli': mix(200, 300, 20, 80, 0, { reportedCostTokens: 400, reportedCostUsd: 2, unpricedTokens: 200, records: 4, sessions: 2 }),
+    'opencode-cli': mix(50, 0, 0, 50, 0, { unpricedTokens: 100, records: 1, sessions: 1 }),
+    ...(gemini === 'used' ? { 'gemini-cli': mix(30, 0, 0, 20, 0, { estimatedCostTokens: 50, unpricedTokens: 0, estimatedCostUsd: 0.1, records: 1, sessions: 1 }) } : {}),
+  }
+  const providers = USAGE_PROVIDERS.map(providerId => ({ ...(rows[providerId] ?? blank), providerId, available: !(providerId === 'gemini-cli' && gemini === 'unavailable'), files: 3,
+    errors: providerId === 'gemini-cli' && gemini === 'incomplete' ? 2 : 0, invalidLines: 0, oversizedLines: 0, pendingLines: providerId === 'gemini-cli' && gemini === 'incomplete' ? 5 : 0,
+    suppressedForkRecords: providerId === 'codex-cli' && !empty ? 2 : 0 }))
+  const day = (index: number, providerId: string, totals: UsageTotals) => ({ ...totals, startMs: day0 + index * DAY, providerId })
+  const providerDays = empty ? [] : [
+    day(2, 'codex-cli', mix(240, 300, 0, 60, 6)), day(6, 'codex-cli', mix(160, 200, 0, 40, 4)),
+    day(2, 'claude-cli', rows['claude-cli']), day(5, 'opencode-cli', rows['opencode-cli']), ...(gemini === 'used' ? [day(4, 'gemini-cli', rows['gemini-cli'])] : []),
+  ]
+  const models = empty ? [] : [
+    { ...mix(320, 400, 0, 80, 8), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'standard' },
+    { ...mix(80, 100, 0, 20, 2), providerId: 'codex-cli', modelId: 'gpt-5-codex', speed: 'fast' },
+    { ...rows['claude-cli'], providerId: 'claude-cli', modelId: 'claude-sonnet-4.5', speed: 'standard' },
+    { ...rows['opencode-cli'], providerId: 'opencode-cli', modelId: 'kimi-k2', speed: 'standard' },
+  ]
+  return JSON.stringify({ version: 3, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, asOfMs: payload.endMs, windowDays: payload.windowDays,
+    collecting, collectionError: '', totals: sumProviderUsage(providers), complete: false, listingLimited: false, filesChecked: collecting ? 412 : 1030, filesTotal: 1030, bytesRead: 0, duplicates: empty ? 0 : 14, unidentifiedRecords: 0,
+    coverage: [{ executionHostId: 'local', label: 'This Mac', status: 'ready', asOfMs: payload.endMs, error: '' }, { executionHostId: 'build', label: 'build-box', status: 'cached', asOfMs: 1000, error: 'build-box (SSH) was unreachable.' }],
+    providers, models, days: [...new Set(providerDays.map(row => row.startMs))].map(startMs => ({ ...sumProviderUsage(providerDays.filter(row => row.startMs === startMs)), startMs })), hours: [], providerDays, providerHours: [] })
+}
+
+describe('UsagePage Tokens', () => {
+  async function openTokens(options: Parameters<typeof tokensHistory>[1] = {}) {
+    storage()
+    window.cefQuery = request => request.onSuccess(tokensHistory(JSON.parse(request.request).payload, options))
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    await act(async () => root.render(<UsagePage onClose={() => {}} />))
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Tokens')!.click())
+    return { host, done: () => { act(() => root.unmount()); host.remove() } }
+  }
+  const card = (host: HTMLElement, name: string) => host.querySelector<HTMLElement>(`[role="group"][aria-label="${name}"]`)
+
+  it('picks nice axis ticks with headroom over the peak', () => {
+    expect(niceTicks(2_300_000)).toEqual([0, 1_000_000, 2_000_000, 3_000_000])
+    expect(niceTicks(17)).toEqual([0, 10, 20, 30])
+    expect(niceTicks(1200)).toEqual([0, 500, 1000, 1500])
+    expect(niceTicks(0)).toEqual([0])
+  })
+
+  it('shows the headline, the chart with Today so far, provider cards with models and the Daily table', async () => {
+    const { host, done } = await openTokens()
+    try {
+      const head = host.querySelector('.uam-tokens-head')!.textContent
+      expect(head).toContain('Total tokens1.8K')
+      expect(head).toContain('7 sessions in the past 7 days')
+      expect(head).toContain('Busiest day1.2K')
+      expect(head).toContain('Reasoning(part of output)')
+      expect(host.querySelector('.uam-usage-axis')?.textContent).toBe('1.5K1K5000')
+      const labels = host.querySelector('.uam-tokens-xaxis')!.textContent
+      expect(labels).toMatch(/Todayso far$/)
+      expect(host.querySelectorAll('.uam-tokens-plot .uam-usage-col')).toHaveLength(7)
+      expect(host.querySelector('.uam-tokens-plot .uam-usage-col:last-child')?.getAttribute('aria-label')).toMatch(/So far$/)
+      // Cost stays on every provider with usage, with its basis; models and service tiers keep their own rows.
+      expect(card(host, 'Codex')?.textContent).toContain('57% of tokens')
+      expect(card(host, 'Codex')?.textContent).toContain('$1.50Estimated')
+      expect(card(host, 'Codex')?.querySelectorAll('[aria-label^="Inspect Codex gpt-5-codex"]')).toHaveLength(2)
+      expect(card(host, 'Codex')?.querySelector('.uam-tokens-tier')?.textContent).toBe('fast')
+      expect(card(host, 'Claude')?.textContent).toContain('Known cost')
+      expect(card(host, 'Claude')?.textContent).toContain('200 tokens have no known price and are excluded from its cost')
+      expect(card(host, 'OpenCode')?.textContent).toContain('Unknown')
+      expect(host.querySelector('.uam-limits-cards')?.textContent).not.toContain('$0.00')
+      expect(host.textContent).toContain('No usage in this range: Copilot, Antigravity')
+      expect(card(host, 'Copilot')).toBeNull()
+      // Old Models/Time switch: models live in the cards, the Time view is the Daily table.
+      expect(host.querySelector('[aria-label="Usage breakdown"]')).toBeNull()
+      const table = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Daily table')!
+      act(() => table.click())
+      expect(table.getAttribute('aria-expanded')).toBe('true')
+      const rows = host.querySelectorAll('.uam-tokens-days tbody tr')
+      expect(rows).toHaveLength(7)
+      expect(rows[0].textContent).toMatch(/so far/)
+      expect(rows[4].querySelector('[role="img"]')?.getAttribute('aria-label')).toContain('Input 440')
+      // An inspected model keeps its legend, records and Model prices.
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Claude claude-sonnet-4.5 standard"]')!.click())
+      expect(card(host, 'Claude')?.textContent).toContain('4 usage records')
+      expect(Array.from(card(host, 'Claude')!.querySelectorAll('button')).some(button => button.textContent === 'Model prices')).toBe(true)
+      // Refresh sits in the History row on Tokens; the header keeps it for Cost.
+      expect(host.querySelector('header [aria-label="Refresh usage"]')).toBeNull()
+      expect(host.querySelector('.uam-tokens-group')?.textContent).toContain('Refresh usage')
+    } finally { done() }
+  })
+
+  it('keeps About these figures behind the info control, with a single summary line on the page', async () => {
+    const { host, done } = await openTokens()
+    try {
+      expect(host.querySelector('.uam-tokens-group .uam-usage-reason')?.textContent).toBe('Partial · build-box shows cached figures')
+      expect(host.querySelectorAll('.uam-tokens-group .uam-usage-reason')).toHaveLength(1)
+      expect(host.textContent).not.toContain('About these figures')
+      expect(host.textContent).not.toContain('History diagnostics')
+      const info = host.querySelector<HTMLButtonElement>('[aria-label="Usage status"]')!
+      expect(info.classList.contains('is-attention')).toBe(true)
+      act(() => info.click())
+      const panel = document.querySelector<HTMLElement>('[role="dialog"][aria-label="About these figures"]')!
+      expect(info.getAttribute('aria-expanded')).toBe('true')
+      expect(panel.textContent).toContain('build-box: Cached')
+      expect(panel.textContent).toContain('build-box (SSH) was unreachable.')
+      expect(panel.textContent).toContain('they are not a bill')
+      expect(panel.textContent).toContain('History diagnostics: 14 duplicate records, 0 unidentified records and 2 forked copies were skipped.')
+      act(() => { panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+      expect(document.querySelector('[aria-label="About these figures"]')).toBeNull()
+      expect(document.activeElement).toBe(info)
+    } finally { done() }
+  })
+
+  it.each([
+    ['reading', 'Still reading history', 'Figures appear as its history is read.'],
+    ['unavailable', 'Usage history unavailable', 'No figures. This is missing history, not zero use.'],
+    ['incomplete', 'Usage history incomplete', '2 read errors, 5 unfinished lines.'],
+  ] as const)('keeps a greyed %s card that says why and never shows zero', async (gemini, reason, note) => {
+    const { host, done } = await openTokens({ gemini, collecting: gemini === 'reading' })
+    try {
+      const gem = card(host, 'Gemini')!
+      expect(gem.getAttribute('data-state')).toBe(gemini)
+      expect(gem.textContent).toBe(`Gemini${reason}${note}`)
+      expect(host.textContent).not.toMatch(/No usage in this range: .*Gemini/)
+      if (gemini === 'reading') {
+        expect(host.querySelector('.uam-tokens-group')?.classList.contains('uam-progress-fill')).toBe(true)
+        expect(host.querySelector('.uam-tokens-group')?.textContent).toContain('Reading history · 412 of 1,030 files')
+        expect(host.querySelector('.uam-tokens-head')?.textContent).toContain('so far')
+        expect(card(host, 'Codex')?.textContent).toContain('1K tokens so far')
+        expect(card(host, 'OpenCode')?.textContent).toContain('Pricing…')
+      }
+    } finally { done() }
+  })
+
+  it('filters with an excluded chip, then says when the range is empty or every provider is filtered out', async () => {
+    const { host, done } = await openTokens()
+    try {
+      const codex = host.querySelector<HTMLButtonElement>('[aria-label="Include Codex usage"]')!
+      act(() => codex.click())
+      expect(codex.getAttribute('aria-pressed')).toBe('false')
+      expect(codex.classList.contains('is-off')).toBe(true)
+      expect(codex.querySelector('.lucide-x')).not.toBeNull()
+      expect(card(host, 'Codex')).toBeNull()
+      expect(host.querySelector('.uam-tokens-head')?.textContent).toContain('Total tokens750')
+      expect(Array.from(host.querySelectorAll('.uam-tokens-plot .uam-usage-col'), column => column.getAttribute('aria-label')).join('|')).not.toContain('Codex')
+      for (const chip of host.querySelectorAll<HTMLButtonElement>('.uam-usage-chip[aria-pressed="true"]')) act(() => chip.click())
+      expect(host.textContent).toContain('All providers are filtered out.')
+      expect(host.textContent).not.toContain('No usage recorded in this range.')
+      expect(host.querySelector('.uam-tokens-head')).toBeNull()
+    } finally { done() }
+    const empty = await openTokens({ empty: true })
+    try {
+      expect(empty.host.textContent).toContain('No usage recorded in this range.')
+      expect(empty.host.querySelector('.uam-tokens-head')).toBeNull()
+      expect(empty.host.querySelector('.uam-limits-cards')).toBeNull()
+      expect(empty.host.textContent).toMatch(/No usage in this range: Codex, Claude, Gemini, OpenCode, Copilot, Antigravity/)
+    } finally { empty.done() }
   })
 })
 

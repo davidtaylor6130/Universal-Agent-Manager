@@ -29,7 +29,7 @@ const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 
 const formatPercent = (percent: number) => percentFormat.format(percent)
 const isValidPercent = (percent: number) => Number.isFinite(percent) && percent >= 0 && percent <= 100
 
-const PERIOD_PHRASE: Record<UsageWindowDays, string> = { 1: 'in the past 24 hours', 7: 'in the past 7 days', 30: 'in the past 30 days', 90: 'in the past 90 days', 0: 'in all recorded history' }
+export const PERIOD_PHRASE: Record<UsageWindowDays, string> = { 1: 'in the past 24 hours', 7: 'in the past 7 days', 30: 'in the past 30 days', 90: 'in the past 90 days', 0: 'in all recorded history' }
 
 /** Token history for the selected period, the same answer the Tokens tab shows. */
 export interface LimitsUsage {

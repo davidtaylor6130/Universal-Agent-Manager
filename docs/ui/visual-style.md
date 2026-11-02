@@ -11,7 +11,7 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 - Text: `--text`, `--text-2` secondary, `--text-3` muted/meta.
 - Status only: `--success`, `--success-dim`, `--warning`, `--warning-dim`, `--error`, `--error-dim`, `--info`, `--info-dim`.
 - Warning and error as text use `--warning-text` and `--error-text`: the status colour mixed toward `--text` (55% and 85%), defined once in `:root` so every built-in and custom theme derives its own and the text reaches at least 4.5:1 on its surface. Fills, carets and dots keep `--warning` and `--error`; light-theme yellow alone is about 1.9:1 on white.
-- Token categories for usage split bars, legends and tooltips: `--token-input`, `--token-cache-read`, `--token-cache-write`, `--token-output`, `--token-reasoning`; each stays a distinct hue clear of provider, status and accent colours, and is never reused for anything else.
+- Token categories for usage split bars, legends and tooltips: `--token-input`, `--token-cache-read`, `--token-cache-write`, `--token-output`, `--token-reasoning`; each stays a distinct hue clear of provider, status and accent colours, and is never reused for anything else. Light and dark themes each define calm, low-chroma values that reach at least 4.4:1 on their surfaces and differ in lightness so neighbouring categories stay apart under red-green colour blindness.
 
 ## Type
 
@@ -43,6 +43,8 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 Quantities such as allowances, token usage, spend and counts versus capacity use bars, meters, sparklines or segmented bars where useful, with exact numbers as secondary text. Use semantic thresholds where the value has a real limit (for example over 80% warning and over 95% error); do not invent capacity for unknown values.
 
 Progress on work is never a thin line or bar at the bottom of a rounded box. The row or item doing the work is the progress bar: its background fills left to right in `var(--accent-dim)` by percentage when one is known, or sweeps when none is known. Text stays readable on top and the fill follows the item's border radius. Under reduced motion or Motion Off the sweep stops and a static partial fill (or no fill, when there is no percentage) is shown. Context fill, a measured quantity with a real limit, uses the same row fill, switching to the warning or error tint at its thresholds. Account allowance windows and spend limits are the exception: each is a standalone bar meter (the ProgressFill meter variant) with a neutral fill and a tick at the share of the window's time passed, so use can be read against time; the fill turns warning when the window is projected to run out before its reset and error from 95% ([Allowances](../usage/allowances.md)). Allowance bars are the 10px meter size; weekly windows add seven day notches cut in the surface colour, and an ahead window adds a run-out caret under the track in the bar's tone, labelled with the time and how long before the reset. The meter fill grows from the left when it appears and settles at once under reduced motion or Motion Off.
+
+Usage Tokens bars use the gapped token-type bar: 2px gaps between segments, rounded ends, growing in from the left as one piece, with a width that shares one scale across rows. Its chart uses gridlines on rounded ticks (1, 2, 2.5 or 5 × 10ⁿ, about a quarter of headroom, at most three intervals), a total above each column for ranges up to two weeks, sparse x labels on long ranges and the open bucket labelled so far.
 
 ## Model picker
 
