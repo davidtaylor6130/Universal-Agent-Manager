@@ -2,7 +2,7 @@
 
 /* Search uses a quiet field; the accent ring only appears for keyboard focus. */
 .uam-search-field.uam-store-search:focus-within { outline: none; }
-.uam-search-field.uam-store-search:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-search-field.uam-store-search:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
 /* Long sidebar and folder labels: one line, full text on hover. */
 .uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

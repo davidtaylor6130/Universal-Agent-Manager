@@ -334,3 +334,25 @@
   padding-left: max(24px, var(--message-navigation-gutter));
 }
 .uam-chat-viewport[data-message-navigation] .conversation-rail-preview { max-width: calc(100cqi - 70px); }
+
+/* Edit and branch motion (docs/ui/motion.md). `data-message-motion` sits on .uam-message-list; only rows after the
+   [data-motion-anchor] fork/edited row move or dim. The global reduced-motion / Motion Off stop settles all of it. */
+.uam-message-list > * { transition: opacity var(--dur-base) var(--ease); }
+.uam-message-list .conversation-turn--user > .conversation-turn__body { transition: box-shadow var(--dur-base) var(--ease); }
+[data-message-motion="editing"] > [data-motion-anchor] .conversation-turn--user > .conversation-turn__body,
+[data-message-motion="collapse"] > [data-motion-anchor] .conversation-turn--user > .conversation-turn__body { box-shadow: 0 0 0 1px var(--accent); }
+[data-message-motion="editing"] > [data-motion-anchor] ~ * { opacity: 0.55; }
+/* Saving folds the rows below up into the edited message; the new branch's reply then enters as usual. */
+[data-message-motion="collapse"] > [data-motion-anchor] ~ * {
+  interpolate-size: allow-keywords; overflow: clip; animation: uam-message-collapse var(--dur-exit) var(--ease) forwards;
+}
+@keyframes uam-message-collapse { from { opacity: 0.55; } to { opacity: 0; height: 0; margin-top: 0; transform: translateY(calc(var(--sp-2) * -1)); } }
+/* Branch swipe: next leaves left and enters from the right; previous is the mirror. The counter digit follows. */
+[data-message-motion^="out-"] > [data-motion-anchor] ~ * { animation: uam-branch-out var(--dur-exit) var(--ease) forwards; }
+[data-message-motion^="in-"] > [data-motion-anchor] ~ * { animation: uam-branch-in var(--dur-base) var(--ease-out-soft) backwards; }
+[data-message-motion^="out-"] > [data-motion-anchor] .conversation-turn__branches > span { display: inline-block; animation: uam-branch-out var(--dur-exit) var(--ease) forwards; }
+[data-message-motion^="in-"] > [data-motion-anchor] .conversation-turn__branches > span { display: inline-block; animation: uam-branch-in var(--dur-base) var(--ease-out-soft) backwards; }
+[data-message-motion="out-next"], [data-message-motion="in-prev"] { --branch-travel: -20px; }
+[data-message-motion="out-prev"], [data-message-motion="in-next"] { --branch-travel: 20px; }
+@keyframes uam-branch-out { to { opacity: 0; transform: translateX(var(--branch-travel)); } }
+@keyframes uam-branch-in { from { opacity: 0; transform: translateX(var(--branch-travel)); } }

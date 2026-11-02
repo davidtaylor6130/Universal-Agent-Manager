@@ -87,7 +87,7 @@
 }
 
 .uam-prov-json:focus-visible {
-  outline: var(--focus-ring); outline-offset: var(--focus-offset);
+  outline: var(--focus-ring); outline-offset: var(--focus-inset);
 }
 
 /* Smooth disclosure: content eases in and out (grid-rows 1fr <-> 0fr); unmounts after the exit window. */

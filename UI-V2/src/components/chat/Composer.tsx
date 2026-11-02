@@ -173,6 +173,8 @@ export function ComposerToolbar({
   canChangeProvider,
   canSend,
   editing = false,
+  sendLabel,
+  holdSend = false,
   runtimeStatusLabel,
   runtimeStatusColor,
   modelId,
@@ -236,6 +238,10 @@ export function ComposerToolbar({
   canSend: boolean
   /** Composer is editing a sent message: the send button saves the edit. */
   editing?: boolean
+  /** Overrides the send button's label, e.g. while it submits question answers. */
+  sendLabel?: string
+  /** Keep the (possibly disabled) send button instead of Cancel turn, e.g. while answers are being submitted. */
+  holdSend?: boolean
   runtimeStatusLabel: string
   runtimeStatusColor: string
   modelId?: string
@@ -735,16 +741,16 @@ export function ComposerToolbar({
         />
       </div>
       </>}
-        {running && !canSend && !editing ? (
+        {running && !canSend && !editing && !holdSend ? (
           <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
-        ) : <ComposerSendButton canSend={canSend} running={running} editing={editing} />}
+        ) : <ComposerSendButton canSend={canSend} running={running} editing={editing} label={sendLabel} />}
     </div>
   )
 }
 
 /** Composer send button; while editing a message it saves the edit with a pencil icon. */
-export function ComposerSendButton({ canSend, running = false, editing = false }: { canSend: boolean; running?: boolean; editing?: boolean }) {
-  const label = editing ? 'Save edit' : running ? 'Queue prompt' : 'Send prompt'
+export function ComposerSendButton({ canSend, running = false, editing = false, label: labelOverride }: { canSend: boolean; running?: boolean; editing?: boolean; label?: string }) {
+  const label = labelOverride ?? (editing ? 'Save edit' : running ? 'Queue prompt' : 'Send prompt')
   return (
     <IconButton
       type="submit"

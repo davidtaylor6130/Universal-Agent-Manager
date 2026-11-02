@@ -385,6 +385,75 @@ describe('production sequential questions', () => {
         expect(button('Submit answers').disabled).toBe(false)
     })
 
+    it('collapses the floating card to a pill and expands it again with the draft intact', async () => {
+        await render(<UserInputInlineCard input={request} onResolve={vi.fn()} />)
+        const panel = () => document.querySelector<HTMLElement>('.qr-panel')!
+        expect(panel().dataset.variant).toBe('float')
+        act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+        await click('Collapse questions')
+        expect(panel().dataset.open).toBe('false')
+        expect(button('Answer questions').getAttribute('aria-expanded')).toBe('false')
+        await click('Answer questions')
+        expect(panel().dataset.open).toBe('true')
+        expect(document.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true)
+    })
+
+    it('composer variant: no own Submit, focuses the first answer, and submits through the composer', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const onAnswered = vi.fn()
+        const states: string[] = []
+        const submitRef: { current: (() => void) | null } = { current: null }
+        ;(document.activeElement as HTMLElement | null)?.blur()
+        await render(<UserInputInlineCard variant="composer" input={{ ...request, questions: [request.questions[0]] }} onResolve={onResolve}
+            submitRef={submitRef} onSubmitStateChange={state => states.push(state)} onAnswered={onAnswered} />)
+        const radios = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+        expect(document.querySelector('.qr-panel')?.getAttribute('data-variant')).toBe('composer')
+        expect(Array.from(document.querySelectorAll('button')).some(item => item.textContent === 'Submit answers')).toBe(false)
+        expect(document.activeElement).toBe(radios()[0])
+        expect(states.at(-1)).toBe('incomplete')
+        const key = async (target: Element, k: string) => { await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })) }) }
+        // Up from the first row wraps to Other, which hands focus to its text field.
+        await key(radios()[0], 'ArrowUp')
+        expect(radios()[2].checked).toBe(true)
+        expect(document.activeElement).toBe(document.querySelector('.qr-text-answer input'))
+        await key(document.activeElement!, 'ArrowUp')
+        expect(radios()[1].checked).toBe(true)
+        expect(document.activeElement).toBe(radios()[1])
+        await key(radios()[1], 'ArrowDown')
+        await key(radios()[2], 'ArrowDown')
+        expect(radios()[0].checked).toBe(true)
+        expect(states.at(-1)).toBe('ready')
+        await act(async () => { submitRef.current!() })
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Focused'] })
+        expect(onAnswered).toHaveBeenCalledOnce()
+    })
+
+    it('Enter on a choice advances to the next question, then submits on the last one', async () => {
+        const onResolve = vi.fn().mockResolvedValue(true)
+        const input = { ...request, questions: [request.questions[0], { ...request.questions[0], id: 'size', header: 'Size', question: 'How big?' }] }
+        await render(<UserInputInlineCard variant="composer" input={input} onResolve={onResolve} />)
+        const enterOn = async (target: Element) => { await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })) }) }
+        expect(document.querySelector('.qr-status')?.textContent).toBe('Question 1 of 2')
+        await enterOn(document.querySelector('input[type="radio"]')!)
+        expect(document.querySelector('legend')?.textContent).toBe('Which scope?')
+        act(() => document.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click())
+        await enterOn(document.querySelectorAll('input[type="radio"]')[1])
+        expect(document.querySelector('legend')?.textContent).toBe('How big?')
+        expect(document.querySelector('.qr-status')?.textContent).toBe('Question 2 of 2')
+        act(() => document.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+        await enterOn(document.querySelector('input[type="radio"]')!)
+        expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Broad'], size: ['Focused'] })
+    })
+
+    it('arrow keys move focus between multiple-choice rows without toggling them', async () => {
+        await render(<UserInputInlineCard input={{ ...request, questions: [{ ...request.questions[0], isMultiple: true }] }} onResolve={vi.fn()} />)
+        const boxes = () => Array.from(document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+        boxes()[0].focus()
+        await act(async () => { boxes()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })) })
+        expect(document.activeElement).toBe(boxes()[1])
+        expect(boxes().map(item => item.checked)).toEqual([false, false, false])
+    })
+
     it('preserves drafts through thrown submission failures and keeps recovery callbacks', async () => {
         const onCancel = vi.fn()
         const onStop = vi.fn()

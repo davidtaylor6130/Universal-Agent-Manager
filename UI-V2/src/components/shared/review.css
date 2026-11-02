@@ -58,7 +58,7 @@
   font-size: var(--fs-base);
 }
 
-.uam-rv-field:focus-visible,
+.uam-rv-field:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-rv-segmented button:focus-visible,
 .uam-rv-tab:focus-visible,
 .uam-rv-file:focus-within {

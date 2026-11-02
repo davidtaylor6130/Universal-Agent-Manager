@@ -42,6 +42,7 @@ import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusS
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
+import type { QuestionSubmitState } from '../chat/QuestionInput'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerSendButton, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
@@ -49,9 +50,10 @@ import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, usePresence } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
 import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
@@ -1820,6 +1822,22 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
   // Keeps the tab row mounted while the Editing tab plays its exit.
   const editTabMounted = usePresence(editingMessageIndex !== null).mounted
+  // A question the running turn waits on replaces the composer body; any other pending question (UAM control, or one
+  // arriving while editing or without a composer) floats above the composer so it stays usable.
+  const questionKey = pendingUserInput ? `${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}` : ''
+  const [answeredQuestionKey, setAnsweredQuestionKey] = useState('')
+  const showQuestion = Boolean(pendingUserInput && !session.importedReadOnly)
+  const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && showComposer && editingMessageIndex === null &&
+    acp?.lifecycleState === 'waitingUserInput' && !pendingUserInput?.requestId.startsWith('uam-control:')
+  const questionTabMounted = usePresence(questionInComposer).mounted
+  const questionSubmitRef = useRef<(() => void) | null>(null)
+  const [questionSubmitState, setQuestionSubmitState] = useState<QuestionSubmitState>('incomplete')
+  const questionWasInComposer = useRef(false)
+  useEffect(() => {
+    if (questionInComposer) { questionWasInComposer.current = true; return }
+    // Answering removes the focused question; give focus back to the restored composer.
+    if (questionWasInComposer.current && (!document.activeElement || document.activeElement === document.body)) composerTextareaRef.current?.focus({ preventScroll: true })
+  }, [questionInComposer])
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
@@ -2159,10 +2177,25 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setEditingMessageIndex(null)
     setBranchingMessageIndex(null)
   }, [])
-  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string) => {
-    setPreferredBranch(parentId, messageIndex, branchId)
-    setActiveSession(branchId)
+  const [branchMotion, setBranchMotion] = useState<{ phase: MessageMotionPhase; anchor: number } | null>(null)
+  const branchMotionTimer = useRef(0)
+  useEffect(() => () => window.clearTimeout(branchMotionTimer.current), [])
+  const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string, direction: 'next' | 'prev' = 'next') => {
+    const activate = () => { setPreferredBranch(parentId, messageIndex, branchId); setActiveSession(branchId) }
+    window.clearTimeout(branchMotionTimer.current)
+    if (!motionAllowed()) { setBranchMotion(null); activate(); return }
+    // Rows below the fork leave toward the old side, then the chosen branch's rows enter from the other side.
+    setBranchMotion({ phase: `out-${direction}`, anchor: messageIndex })
+    branchMotionTimer.current = window.setTimeout(() => {
+      activate()
+      setBranchMotion({ phase: `in-${direction}`, anchor: messageIndex })
+      branchMotionTimer.current = window.setTimeout(() => setBranchMotion(null), scaledMs(180))
+    }, scaledMs(EXIT_MS))
   }, [setActiveSession])
+  const messageListRef = useRef<HTMLDivElement>(null)
+  const messageMotion = messageMotionPhase({ branch: branchMotion?.phase ?? null, editing: editingMessageIndex !== null && editingMessageSource.kind === 'branch',
+    saving: branchingMessageIndex !== null && branchingMessageIndex === editingMessageIndex })
+  const messageMotionAnchor = branchMotion?.anchor ?? (messageMotion ? editingMessageIndex : null)
   const selectPersistedTool = useCallback((messageId: string, toolId: string) => {
     setSelectedToolCallRef({ id: toolId, messageId })
   }, [])
@@ -2784,7 +2817,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
       : mentionMatches
-  const slashOpen = showComposer && editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
+  const slashOpen = showComposer && editingMessageIndex === null && !questionInComposer && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
   const slashPaletteVisible = showComposer && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined || mentionQuery !== undefined)
   const commandPaletteVisible = slashPaletteVisible && mentionQuery === undefined
   useEffect(() => {
@@ -3282,6 +3315,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
                 return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
   }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+  // The fork/edited row is marked so CSS can move or dim only the rows after it (`[data-motion-anchor] ~ *`).
+  useLayoutEffect(() => {
+    const list = messageListRef.current
+    if (!list) return
+    const target = messageMotionAnchor === null ? null : list.querySelector(`:scope > [data-message-index="${messageMotionAnchor}"]`)
+    list.querySelectorAll(':scope > [data-motion-anchor]').forEach((row) => { if (row !== target) row.removeAttribute('data-motion-anchor') })
+    target?.setAttribute('data-motion-anchor', '')
+  }, [messageMotionAnchor, transcriptRows])
 
   return (
     <FileInspectionProvider chatId={session.id}>
@@ -3357,7 +3398,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 }
               }}>
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
-              <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
+              <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
                   <span className="conversation-skeleton__bubble" />
@@ -3559,7 +3600,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         {composerCentred && <div className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
           ref={composerFormRef}
-          onSubmit={submit}
+          onSubmit={(event) => {
+            if (!questionInComposer) return submit(event)
+            event.preventDefault()
+            questionSubmitRef.current?.()
+          }}
           className={showComposer ? "flex-shrink-0" : "contents"}
         >
             <div className={showComposer ? "uam-chat-content uam-composer-region flex flex-col p-3" : "uam-chat-content flex shrink-0 flex-col"}>
@@ -3634,7 +3679,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editTabMounted) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {showQuestion && !questionInComposer && questionKey !== answeredQuestionKey && pendingUserInput && (
+              <UserInputInlineCard
+                key={questionKey}
+                input={pendingUserInput}
+                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+                waitIsStale={acp?.waitIsStale}
+                waitStaleReason={acp?.waitStaleReason}
+                waitSeconds={acp?.waitSeconds}
+                onCancelTurn={cancelLiveTurn}
+                onStopRuntime={stopLiveRuntime}
+              />
+            )}
+            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editTabMounted || questionTabMounted) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
             {showComposer && !isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
               <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
@@ -3754,6 +3811,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <IconButton size="sm" icon={<Square size={11} aria-hidden />} label="Stop goal" disabled={goalSubmitting} onClick={handlePauseGoal} />}
             </div>}
             <div className="uam-composer-tabs__end">
+              <ComposerTab open={questionInComposer}>
+                <div className="uam-composer-side-controls" role="group" aria-label="Question">
+                  <span className="uam-composer-side-controls__pill" title="The agent is waiting for your answer">
+                    <MessageSquare size={12} aria-hidden />
+                    Question
+                  </span>
+                </div>
+              </ComposerTab>
               <ComposerTab open={editingMessageIndex !== null}>
                 <div className="uam-composer-side-controls" role="group" aria-label="Editing message">
                   <span className="uam-composer-side-controls__pill" title={editingMessageSource.kind === 'unsent' ? 'Saving updates this unsent input' : 'Saving creates a new branch'}>
@@ -3779,23 +3844,27 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               )}</ComposerTab>
             </div>
             </div>}
-            {pendingUserInput && !session.importedReadOnly && (
-              <UserInputInlineCard
-                key={`${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}`}
-                input={pendingUserInput}
-                onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
-                waitIsStale={acp?.waitIsStale}
-                waitStaleReason={acp?.waitStaleReason}
-                waitSeconds={acp?.waitSeconds}
-                onCancelTurn={cancelLiveTurn}
-                onStopRuntime={stopLiveRuntime}
-              />
-            )}
             {(showComposer || editingMessageIndex !== null) && <div
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
               onDrop={onComposerDrop}
             >
+            {questionInComposer && pendingUserInput && <UserInputInlineCard
+              key={questionKey}
+              variant="composer"
+              input={pendingUserInput}
+              onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
+              submitRef={questionSubmitRef}
+              onSubmitStateChange={setQuestionSubmitState}
+              onAnswered={() => setAnsweredQuestionKey(questionKey)}
+              waitIsStale={acp?.waitIsStale}
+              waitStaleReason={acp?.waitStaleReason}
+              waitSeconds={acp?.waitSeconds}
+              onCancelTurn={cancelLiveTurn}
+              onStopRuntime={stopLiveRuntime}
+            />}
+            {/* The composer body stays mounted under a question so its draft, refs and menus survive; it swaps back in on answer. */}
+            <div className={!questionInComposer && questionWasInComposer.current ? 'uam-swap__in' : undefined} hidden={questionInComposer}>
             {editingMessageIndex === null && <ComposerReferenceChips key={`${session.id}:${session.createdAt.getTime()}`} references={composerReferences} />}
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -3970,6 +4039,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {!showComposer && <ComposerSendButton canSend={canSaveEdit} editing />}
               </div>
             )}
+            </div>
             {showComposer && <>
             <input
               ref={fileInputRef}
@@ -3989,8 +4059,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               providers={composerProviders}
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
-              canSend={editingMessageIndex !== null ? canSaveEdit : canSend}
+              canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
               editing={editingMessageIndex !== null}
+              sendLabel={questionInComposer ? 'Submit answers' : undefined}
+              holdSend={questionInComposer && questionSubmitState === 'busy'}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}

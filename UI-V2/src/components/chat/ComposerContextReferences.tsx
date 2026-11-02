@@ -58,7 +58,7 @@ function SnapshotDialog({ snapshot, label, onClose }: { snapshot: ContextReferen
         Captured for your message.{snapshot.truncated ? ' Limited to the first 16 KiB; this snapshot is incomplete.' : ' The source may have changed since capture.'}
         {snapshot.kind === 'branch' || snapshot.kind === 'worktree' ? ' This records context only; it does not switch branches or workspaces.' : ''}
       </p>
-      <pre role="region" aria-label="Captured snapshot text" className="min-h-0 overflow-auto p-3 text-xs" tabIndex={0} style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', outlineOffset: -3 }}>{snapshot.text || '(Empty file)'}</pre>
+      <pre role="region" aria-label="Captured snapshot text" className="min-h-0 overflow-auto p-3 text-xs" tabIndex={0} style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', outlineOffset: 'var(--focus-inset)' }}>{snapshot.text || '(Empty file)'}</pre>
     </section>
   </Overlay>
 }

@@ -3678,11 +3678,14 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    expect(host.querySelector('.uam-composer-region .qr-panel')).toBeTruthy()
+    // The turn waits on this question: it replaces the composer body and a Question tab joins the composer tab row.
     expect(host.querySelectorAll('.qr-panel')).toHaveLength(1)
-    expect(host.querySelector('.qr-panel')?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    expect(host.querySelector('.uam-composer-surface > .qr-panel[data-variant="composer"]')).toBeTruthy()
+    expect(host.querySelector('.uam-composer-tabs__end [role="group"][aria-label="Question"]')?.textContent).toBe('Question')
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeTruthy()
     expect(document.querySelector('[aria-modal="true"]')).toBeNull()
     const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
+    const composerSend = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')
     expect(dialog.textContent).toContain('Which scope?')
     expect(dialog.textContent).toContain('Focused')
     expect(dialog.textContent).not.toContain('Any extra detail?')
@@ -3694,14 +3697,18 @@ describe('ChatView', () => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(noteInput, 'Extra context')
       noteInput.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
-    expect(submitButton.disabled).toBe(false)
-    await act(async () => { submitButton.click(); await Promise.resolve() })
+    // The composer's own send button submits; the question has no separate Submit button.
+    expect(Array.from(dialog.querySelectorAll('button')).some((button) => button.textContent === 'Submit answers')).toBe(false)
+    expect(composerSend()?.disabled).toBe(false)
+    await act(async () => { composerSend()!.click(); await Promise.resolve() })
 
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', '11', {
       scope: ['Focused'],
       note: ['Extra context'],
     })
+    // Answering restores the normal composer before the native push clears the request.
+    expect(host.querySelector('.qr-panel')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
 
     act(() => {
       root.unmount()
@@ -3729,6 +3736,12 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     let dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     expect(dialog.textContent).toContain('Which browser should I use?')
+    // UAM control questions do not block the turn: they float above a composer that stays usable, with no Question tab.
+    expect(dialog.dataset.variant).toBe('float')
+    expect(dialog.closest('.uam-composer-surface')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
+    expect(host.querySelector('[role="group"][aria-label="Question"]')).toBeNull()
+    expect(Boolean(dialog.compareDocumentPosition(host.querySelector('.uam-composer-surface')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     act(() => dialog.querySelector<HTMLInputElement>('input[type="radio"]')!.click())
     await act(async () => { Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledWith('chat-1', 'uam-control:question-1', { userQuestion: ['Firefox'] })
@@ -3778,24 +3791,29 @@ describe('ChatView', () => {
 
     const dialog = document.body.querySelector<HTMLElement>('.qr-panel')!
     const answerButton = dialog.querySelector<HTMLInputElement>('input[type="radio"]')!
+    const submitButton = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')
+    // Until an answer is chosen the running turn keeps its Cancel turn control.
+    expect(submitButton()).toBeNull()
+    expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeTruthy()
     act(() => answerButton.click())
-    const submitButton = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!
-    expect(submitButton.disabled).toBe(false)
+    expect(submitButton()?.disabled).toBe(false)
 
-    act(() => { submitButton.click(); submitButton.click() })
+    act(() => { submitButton()!.click(); submitButton()?.click() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
     expect(answerButton.closest('fieldset')?.disabled).toBe(true)
-    expect(submitButton.disabled).toBe(true)
+    // While the answer is in flight the send button stays put (disabled) rather than turning into Cancel turn.
+    expect(submitButton()?.disabled).toBe(true)
+    expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeNull()
 
     await act(async () => { finishResponse?.(false); await Promise.resolve() })
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('did not accept')
-    expect(submitButton.disabled).toBe(false)
+    expect(submitButton()?.disabled).toBe(false)
 
     resolveAcpUserInput.mockResolvedValueOnce(true)
-    await act(async () => { submitButton.click(); await Promise.resolve() })
+    await act(async () => { submitButton()!.click(); await Promise.resolve() })
     expect(resolveAcpUserInput).toHaveBeenCalledTimes(2)
-    expect(document.body.querySelector('.qr-panel fieldset')).toBeNull()
-    expect(Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Answers submitted')?.disabled).toBe(true)
+    expect(document.body.querySelector('.qr-panel')).toBeNull()
+    expect(host.querySelector('.uam-composer-textarea')?.closest('[hidden]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()

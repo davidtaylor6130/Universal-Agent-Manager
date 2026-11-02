@@ -300,6 +300,10 @@
 .uam-goal-banner__details:focus-visible {
   outline: var(--focus-ring); outline-offset: var(--focus-offset);
 }
+/* Text-entry fields draw the ring inside their own border, so a dialog, scroll area or Swap can never clip it. */
+:is(input:not([type="checkbox"], [type="radio"], [type="range"]), textarea, select, [contenteditable="true"]):focus-visible {
+  outline-offset: var(--focus-inset);
+}
 
 .uam-chat-pane__header {
   transition: background var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
@@ -1698,7 +1702,7 @@ summary,
   border-color: var(--border-bright);
 }
 .uam-menu-select__trigger:focus-visible {
-  outline: var(--focus-ring); outline-offset: var(--focus-offset);
+  outline: var(--focus-ring); outline-offset: var(--focus-inset);
 }
 .uam-menu-select__trigger:disabled { opacity: 0.55; cursor: not-allowed; }
 .uam-menu-select__chevron { flex: none; transition: transform var(--dur-fast) var(--ease); }
@@ -1967,7 +1971,7 @@ summary,
 .uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }
-.uam-search-field:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-search-field:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-search-field input:focus-visible { outline:none; }
 .uam-iconbtn[aria-label^="Close"]:hover,
 .uam-iconbtn[aria-label^="Dismiss"]:hover { color:var(--red); background:color-mix(in srgb,var(--red) 12%,transparent); }
@@ -2136,7 +2140,7 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--bg);
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.uam-commit-message:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-bright)); box-shadow: 0 0 0 3px var(--accent-dim); }
+.uam-commit-message:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 
 /* ── Side panels open and close on the compositor ──────────────
    The slot changes once; only transform animates, so the chat area never
@@ -2170,19 +2174,13 @@ button.uam-commit-check { cursor: pointer; }
   color: var(--text);
   font: inherit;
   font-size: var(--fs-sm);
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease);
 }
 .uam-field::placeholder { color: var(--text-3); }
 .uam-field:disabled { opacity: 0.5; cursor: not-allowed; }
 .uam-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .uam-field[type="number"]::-webkit-inner-spin-button,
 .uam-field[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.uam-field:focus,
-.uam-field:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-bright));
-  box-shadow: 0 0 0 3px var(--accent-dim);
-}
 .uam-inline-form {
   display: grid;
   gap: 10px;

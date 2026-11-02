@@ -115,7 +115,7 @@ function TransientAlertItem({ alert, held, collapsed, onAction, onDismiss, messa
       onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
       className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
       style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
-      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1 focus-visible:ring-[var(--accent)]" style={{ overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
+      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1" style={{ outlineOffset: 'var(--focus-inset)', overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: messageMaxHeight, color: alert.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>
         {alert.message}
         {alert.count > 1 && <span data-testid="transient-alert-count" className="ml-1.5 tabular-nums" style={{ color: 'var(--text-muted)' }} aria-label={`repeated ${alert.count} times`}>×{alert.count}</span>}
       </span>

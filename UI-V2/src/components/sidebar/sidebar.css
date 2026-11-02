@@ -13,6 +13,8 @@
   transition-timing-function: var(--ease);
 }
 .uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
+/* The collapse clips during its animation, so everything inside draws the focus ring inside its own shape. */
+.uam-sb-collapse__inner :focus-visible { outline-offset: var(--focus-inset); }
 .uam-sb-collapse[hidden] {
   display: none;
   opacity: 0;

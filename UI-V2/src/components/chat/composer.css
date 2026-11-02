@@ -15,6 +15,8 @@
   padding: 10px 12px;
   outline: none;
 }
+/* The borderless textarea fills the composer, so the composer surface draws its keyboard focus ring. */
+.uam-composer-surface:has(.uam-composer-textarea:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Keep the existing toolbar and native textarea; only compact their own controls. */
 .uam-composer-input-row {
@@ -97,10 +99,8 @@
   background: var(--surface-up);
 }
 
-.uam-composer-choice .uam-menu-select__trigger:focus-visible,
-.uam-composer-agent .uam-menu-select__trigger:focus-visible {
-  outline: var(--focus-ring); outline-offset: var(--focus-offset);
-}
+/* The status chips sit in a horizontally scrolling strip, so their ring is drawn inside the chip. */
+.uam-composer-status-chips :focus-visible { outline-offset: var(--focus-inset); }
 
 /* Bottom bar: every chip is 26px tall, the send action is 32px. */
 .uam-composer-toolbar { min-height: 40px; }

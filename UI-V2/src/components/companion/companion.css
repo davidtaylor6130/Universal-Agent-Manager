@@ -130,7 +130,7 @@
 .uam-companion-nav-indicator--chats { left: calc(83.3333% - 12px); }
 .uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--on-accent); }
 .uam-companion-new-chat:hover,
-.uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: 3px solid var(--accent-dim); outline-offset: 2px; }
+.uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-settings { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 16px; }
 .uam-companion-settings h1 { font-size: var(--fs-2xl); }
 .uam-companion .uam-chat-transcript { overscroll-behavior: contain; }
@@ -147,7 +147,7 @@
 .uam-companion .xterm-viewport { overscroll-behavior: contain; }
 .uam-companion [data-cli-controls] button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--border); cursor: pointer; }
 .uam-companion [data-cli-controls] button:hover { background: var(--surface-up); }
-.uam-companion [data-cli-controls] button:focus-visible { outline: 2px solid var(--accent); }
+.uam-companion [data-cli-controls] button:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 .uam-companion-timeout-row { padding: 4px 16px; border-bottom: 1px solid var(--border); }
 .uam-companion-timeout-row:empty { display: none; }

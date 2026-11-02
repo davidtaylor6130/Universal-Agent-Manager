@@ -242,7 +242,7 @@ export function ChatSearchBar({
                 Provider
               </div>
               {/* Even grid: 3–6 columns chosen so rows fill evenly (6 → 6, 7 → 4+3, 8 → 4+4). */}
-              <div className="grid max-h-40 gap-1 overflow-auto p-0.5" style={{ gridTemplateColumns: `repeat(${providerGridColumns(providerOptions.length)}, minmax(0, 1fr))` }}>
+              <div className="grid max-h-40 gap-1 overflow-auto p-1" style={{ gridTemplateColumns: `repeat(${providerGridColumns(providerOptions.length)}, minmax(0, 1fr))` }}>
                 {providerOptions.map((provider) => {
                   const active = filters.providerIds.includes(provider.id)
                   return (

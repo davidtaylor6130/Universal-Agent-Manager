@@ -73,7 +73,7 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
   retryInPlace?: boolean
   onBeginEdit?: (index: number, content: string) => void
   onCreateBranch?: (index: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => void | Promise<void>
-  onSelectBranch?: (parentId: string, index: number, sessionId: string) => void
+  onSelectBranch?: (parentId: string, index: number, sessionId: string, direction?: 'next' | 'prev') => void
   onSelectTool: (messageId: string, toolId: string) => void
   /** Read-only history: no branch/edit/revert actions, chat-scoped reads, previews or subagent refresh. */
   passive?: boolean
@@ -116,8 +116,8 @@ export const PersistedConversationMessage = memo(function PersistedConversationM
       branchNavigation={isBranchPoint ? {
         current: messageBranchIndex + 1,
         total: messageBranchSessions.length,
-        onPrevious: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id),
-        onNext: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id),
+        onPrevious: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex - 1].id, 'prev'),
+        onNext: () => onSelectBranch!(branchParentId, index, messageBranchSessions[messageBranchIndex + 1].id, 'next'),
       } : undefined}
       goalReview={Boolean(goalReview)}
       actionsDisabled={(actionsDisabled ?? false) || historicalInputUnknown}
