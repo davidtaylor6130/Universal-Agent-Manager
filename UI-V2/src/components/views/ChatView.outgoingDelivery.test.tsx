@@ -291,6 +291,20 @@ describe('ChatView outgoing admission without a delivery witness', () => {
     noReplay()
   })
 
+  it('settles Sending on the exact write fact while the provider turn still streams (#628)', async () => {
+    await send(); exactResources()
+    await act(async () => callbacks[0].ack())
+    const row = host.querySelector('[data-outgoing-message]')!; const article = row.querySelector('article')!
+    const native = { ...inputIdentity(), role: 'user' as const, content: TEXT, attachments: [FILE], markdownStoreFiles: [SKILL.filePath], createdAt: '2026-01-02T00:00:00Z' }
+    const streaming: CppMessage = { role: 'assistant', content: 'Reading files', createdAt: '2026-01-02T00:00:01Z' }
+    publish([...HISTORY, native, streaming], { processing: true, lifecycleState: 'processing' })
+    assertRetained(row, article, 'sending') // Streaming output alone is not a delivery fact.
+    publish([...HISTORY, { ...native, inputWriteCompleted: true }, streaming], { processing: true, lifecycleState: 'processing' })
+    expect(row.querySelector('article')).toBe(article)
+    expect(article.hasAttribute('data-delivery')).toBe(false)
+    noReplay()
+  })
+
   it.each([
     { label: 'absent write', change: {}, aliases: true },
     { label: 'false write', change: { inputWriteCompleted: false }, aliases: true },

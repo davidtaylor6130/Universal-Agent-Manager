@@ -1,3 +1,4 @@
+#include "common/platform/background_thread_priority.h"
 #include "provider_cli_compatibility_service.h"
 #include "common/runtime/cli_version_parser.h"
 
@@ -223,6 +224,7 @@ namespace
 		task.worker = std::make_unique<std::jthread>(
 		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state, allow_interactive_elevation](std::stop_token stop_token)
 		    {
+		    	uam::platform::LowerCurrentThreadToBackgroundPriority();
 			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
 			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected, allow_interactive_elevation);
 
