@@ -47,6 +47,151 @@ UAM_TEST(LocalChatBundleImportedSideTranscriptSurvivesStartupCleanup)
 	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(source, original.id)), source_bytes);
 }
 
+UAM_TEST(LocalChatBundleImportKeepsOnlyAbsoluteLocalWorkspaceLocations)
+{
+	TempDir temp("uam-bundle-workspace-location");
+	const fs::path source = temp.root / "source", bundle = temp.root / "bundle", target = temp.root / "target";
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	ChatFolder folder;
+	folder.id = "repo-folder";
+	folder.directory = repo.string();
+	UAM_ASSERT(ChatFolderStore::Save(target, {folder}));
+	const auto save = [&](const std::string& id, const std::string& host, const std::string& directory)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = host;
+		chat.workspace_directory = directory;
+		chat.messages.push_back(Message{MessageRole::User, "Portable history"});
+		UAM_ASSERT(ChatRepository::SaveChat(source, chat));
+	};
+	save("absolute-local", "local", repo.string());
+	// A remote path naming a registered local folder must not survive the rebind to "local".
+	save("remote-host", "ssh-remote", repo.string());
+	save("relative-local", "local", "relative/repo");
+	save("home-local", "local", "~/repo");
+	UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);
+	UAM_ASSERT(uam::LocalChatBundleService::Import(target, bundle).ok);
+
+	const auto kept = ChatRepository::LoadLocalChat(target, "absolute-local");
+	UAM_ASSERT(kept.has_value());
+	UAM_ASSERT_EQ(kept->workspace_directory, repo.string());
+	UAM_ASSERT_EQ(kept->folder_id, folder.id);
+	for (const std::string id : {"remote-host", "relative-local", "home-local"})
+	{
+		const auto cleared = ChatRepository::LoadLocalChat(target, id);
+		UAM_ASSERT(cleared.has_value());
+		UAM_ASSERT(cleared->workspace_directory.empty());
+		UAM_ASSERT(cleared->folder_id.empty());
+		UAM_ASSERT_EQ(cleared->execution_host_id, std::string("local"));
+		UAM_ASSERT(cleared->imported_read_only);
+	}
+}
+
+UAM_TEST(LocalChatBundleImportNeverRetainsOrProbesNetworkWorkspaceLocations)
+{
+	// Allowlist, checked for both path shapes regardless of the host OS.
+	const std::vector<std::string_view> rejected = {"", "\\??\\UNC\\x\\y", "\\??\\C:\\x", "\\\\?\\C:\\x", "\\\\.\\pipe\\x", "//x/y", "\\\\x\\y",
+	    "C:x", "\\x", "file:///x", "/\\x", " C:\\repo", " /Users/a/repo", "relative/x", "~/repo"};
+	for (const bool windows : {true, false})
+		for (const std::string_view spelling : rejected)
+			UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, windows));
+	for (const std::string_view spelling : {"C:\\repo", "C:/repo", "z:\\repo"})
+	{
+		UAM_ASSERT(uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, true));
+		UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, false));
+	}
+	for (const std::string_view spelling : {"/Users/a/repo", "/"})
+	{
+		UAM_ASSERT(uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, false));
+		UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, true));
+	}
+
+	TempDir temp("uam-bundle-network-location");
+	const fs::path source = temp.root / "source", bundle = temp.root / "bundle", target = temp.root / "target";
+	const std::vector<std::string> network = {"\\\\attacker\\share\\repo", "//attacker/share/repo", "\\\\?\\UNC\\attacker\\share\\repo", "\\\\.\\pipe\\repo",
+	    "\\??\\UNC\\attacker\\share\\repo", "\\??\\C:\\repo", "\\\\?\\C:\\repo", "C:repo", "\\repo", "file:///repo"};
+	for (std::size_t index = 0; index < network.size(); ++index)
+	{
+		ChatSession chat;
+		chat.id = "network-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = network[index];
+		chat.messages.push_back(Message{MessageRole::User, "Portable history"});
+		UAM_ASSERT(ChatRepository::SaveChat(source, chat));
+	}
+	UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);
+	UAM_ASSERT(uam::LocalChatBundleService::Import(target, bundle).ok);
+	for (std::size_t index = 0; index < network.size(); ++index)
+	{
+		const auto imported = ChatRepository::LoadLocalChat(target, "network-" + std::to_string(index));
+		UAM_ASSERT(imported.has_value());
+		UAM_ASSERT(imported->workspace_directory.empty());
+		UAM_ASSERT(imported->folder_id.empty());
+	}
+
+	// Shared folder recovery also refuses non-plain locations already saved on an imported copy,
+	// even when a registered folder spells the same location.
+	uam::AppState app;
+	for (const std::string directory : {"//attacker/share/repo", "\\??\\UNC\\attacker\\share\\repo"})
+	{
+		ChatFolder folder;
+		folder.id = "folder-" + std::to_string(app.folders.size());
+		folder.directory = directory;
+		app.folders.push_back(folder);
+		ChatSession imported;
+		imported.id = "saved-copy-" + std::to_string(app.chats.size());
+		imported.imported_read_only = true;
+		imported.workspace_directory = directory;
+		app.chats.push_back(imported);
+	}
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(chat.folder_id.empty());
+	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT(preview.groups.empty() && preview.missing.empty());
+	UAM_ASSERT_EQ(preview.unavailable.size(), app.chats.size());
+	for (const auto& chat : preview.unavailable)
+		UAM_ASSERT_EQ(chat.reason, std::string("Imported location is not a plain local path"));
+}
+
+UAM_TEST(ImportedRemoteHostChatsKeepHostPathFolderMatchingAndRecovery)
+{
+	// Native Copilot/agent-history imports are read-only but keep their SSH host; the local
+	// bundle allowlist must not judge their host paths by this computer's path rules.
+	uam::AppState app;
+	ExecutionHost host;
+	host.id = "windows-host";
+	host.transport = "ssh";
+	host.platform = "windows";
+	app.settings.execution_hosts.push_back(host);
+	ChatFolder folder;
+	folder.id = "remote-folder";
+	folder.execution_host_id = host.id;
+	folder.directory = "C:\\Users\\a\\repo";
+	app.folders.push_back(folder);
+	const auto imported = [&](const std::string& id, const std::string& directory)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.imported_read_only = true;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = directory;
+		app.chats.push_back(chat);
+	};
+	imported("remote-matched", folder.directory);
+	imported("remote-unsorted", "C:\\Users\\a\\other");
+	ChatDomainService().NormalizeChatFolderAssignments(app);
+	UAM_ASSERT_EQ(app.chats[0].folder_id, folder.id);
+	UAM_ASSERT(app.chats[1].folder_id.empty());
+	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
+	UAM_ASSERT(preview.unavailable.empty() && preview.missing.empty());
+	UAM_ASSERT_EQ(preview.groups.size(), std::size_t{1});
+	UAM_ASSERT_EQ(preview.groups.front().execution_host_id, host.id);
+	UAM_ASSERT_EQ(preview.groups.front().chat_ids, std::vector<std::string>{"remote-unsorted"});
+}
+
 UAM_TEST(LocalChatBundleImportDropsSourceCleanupAndHandoffAuthority)
 {
 	TempDir temp("uam-bundle-source-authority");
@@ -275,7 +420,7 @@ namespace
 		const auto loaded = ChatRepository::LoadLocalChat(target, imported_id);
 		UAM_ASSERT(loaded && loaded->messages.size() == 1 && loaded->messages.front().attachments.size() == 1);
 		UAM_ASSERT(loaded->imported_read_only);
-		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == source.workspace_directory);
 		UAM_ASSERT(!loaded->uam_control_enabled && loaded->agent_run_id.empty());
 		UAM_ASSERT(loaded->acp_queued_prompts.empty() && loaded->acp_dispatched_queued_prompt_count == 0);
 		const auto& expected = source.messages.front().attachments.front();
@@ -445,7 +590,7 @@ UAM_TEST(LocalChatBundleOpaqueNativeUrisRoundTripWithoutAcquiringAuthority)
 	const auto loaded = ChatRepository::LoadLocalChat(target, chat.id);
 	UAM_ASSERT(loaded && loaded->imported_read_only);
 	UAM_ASSERT_EQ(loaded->messages, chat.messages);
-	UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+	UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == chat.workspace_directory);
 	UAM_ASSERT(!loaded->uam_control_enabled && loaded->acp_queued_prompts.empty());
 	UAM_ASSERT(!fs::exists(target / std::string(bundle_assets::kStoreDirectory)));
 	UAM_ASSERT_EQ(BundleFileSnapshot(source), before);
@@ -581,7 +726,7 @@ UAM_TEST(LocalChatBundleEqualOriginalGenerationsPreserveDistinctAssociationsAcro
 	{
 		const auto loaded = ChatRepository::LoadLocalChat(root, id);
 		UAM_ASSERT(loaded && loaded->imported_read_only && loaded->acp_queued_prompts.empty());
-		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory.empty());
+		UAM_ASSERT(loaded->native_session_id.empty() && loaded->workspace_directory == chat.workspace_directory);
 		UAM_ASSERT_EQ(loaded->messages.size(), std::size_t{1});
 		UAM_ASSERT_EQ(loaded->messages.front().attachments.size(), std::size_t{1});
 		const auto& actual_message = loaded->messages.front().attachments.front();
