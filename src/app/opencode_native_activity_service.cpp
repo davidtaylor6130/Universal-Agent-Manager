@@ -221,7 +221,11 @@ struct OpenCodeNativeCompanion::State
 	std::string error;
 	std::string failure_reason;
 	Clock::time_point next{};
-	std::optional<Clock::time_point> slow_since; // First of consecutive late answers; cleared by any complete snapshot.
+	// Late answers after the first complete snapshot: the gate holds new prompts while late is set. slow_since
+	// times consecutive late answers during one in-flight turn (slow_turn) and is cleared by idle, a new turn or success.
+	bool late = false;
+	std::optional<Clock::time_point> slow_since;
+	int slow_turn = 0;
 	std::map<std::string, Json> permissions;
 	std::set<std::string> published;
 	std::map<std::string, std::string> replies;
@@ -521,13 +525,18 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::BeforeDispatch(AppState& 
 			state.error = "The native OpenCode delegation policy changed during an active turn.";
 		}
 		state.read_only = read_only;
-		state.ready = false;
+		state.ready = false; state.late = false; state.slow_since.reset();
 		state.next = {};
 	}
 	if (state.failed) { error = state.error; return OpenCodeNativeGateState::Failed; }
 	if (state.failures > 0)
 	{
 		error = "Native OpenCode permission observation is retrying; the next prompt has not been sent.";
+		return OpenCodeNativeGateState::Pending;
+	}
+	if (state.late)
+	{
+		error = "OpenCode is answering slowly; the next prompt waits until it responds.";
 		return OpenCodeNativeGateState::Pending;
 	}
 	return state.ready ? OpenCodeNativeGateState::Ready : OpenCodeNativeGateState::Pending;
@@ -592,11 +601,20 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				// A missing snapshot is not evidence that the provider or a pending
 				// decision failed. Hold new prompts and retry the complete observation;
 				// queued decisions remain gated by fresh ownership proof before delivery.
-				// A busy server streaming from a slow model answers late. Late answers are not failures;
-				// only the user-adjustable turn timeout bounds them, and that stop is reported as a timeout.
-				const bool late = !result.authority_conflict && result.error == opencode_native::kQueryTimedOutError;
-				if (late && !owner->slow_since) owner->slow_since = Clock::now();
-				if (late && Clock::now() - *owner->slow_since >= std::chrono::seconds(app.settings.active_turn_inactivity_timeout_seconds))
+				// A busy server streaming from a slow model answers late. After the first complete snapshot, late
+				// answers are not failures: only the user-adjustable turn timeout bounds them during an in-flight
+				// turn, reported as a timeout. Before it, they keep the consecutive-failure limit.
+				const bool late = owner->ready && !result.authority_conflict && result.error == opencode_native::kQueryTimedOutError;
+				const auto owning = std::ranges::find_if(app.acp_sessions, [&](const auto& candidate)
+				{ return candidate && candidate->opencode_native_companion && candidate->opencode_native_companion->state == owner; });
+				const AcpSessionState* turn = owning != app.acp_sessions.end() && ((*owning)->processing || (*owning)->prompt_request_id != 0) ? owning->get() : nullptr;
+				if (late)
+				{
+					owner->late = true;
+					if (!turn || owner->slow_turn != turn->turn_serial) owner->slow_since.reset();
+					if (turn && !owner->slow_since) { owner->slow_since = Clock::now(); owner->slow_turn = turn->turn_serial; }
+				}
+				if (late && owner->slow_since && Clock::now() - *owner->slow_since >= std::chrono::seconds(app.settings.active_turn_inactivity_timeout_seconds))
 				{
 					owner->failed = true;
 					owner->failure_reason = "turn_timeout";
@@ -609,7 +627,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			}
 			else
 			{
-				owner->slow_since.reset();
+				owner->slow_since.reset(); owner->late = false;
 				owner->retry_recovered = owner->failures > 0;
 				owner->failures = 0; owner->ready = true;
 				if (ChatSession* chat = ChatDomainService().FindChatById(app, iterator->identity.chat); chat &&
@@ -759,7 +777,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		const bool receipt_pending = CanRetireDecisions(app, *chat, owner->query, owner->identity.native, owner->identity.host, owner->identity.control) &&
 		    std::ranges::any_of(chat->remote_interaction_responses, [&](const AcpRemoteInteractionResponseState& saved)
 		    { return SavedDecisionId(saved).has_value() && !owner->unowned_decisions.contains(DecisionKey(saved)); });
-		const bool observe = !owner->ready || owner->failures > 0 || session.processing || session.prompt_request_id != 0 || session.recovering_remote_turn ||
+		const bool observe = !owner->ready || owner->failures > 0 || owner->late || session.processing || session.prompt_request_id != 0 || session.recovering_remote_turn ||
 		    session.waiting_for_permission || session.waiting_for_user_input || !owner->permissions.empty() || !owner->replies.empty() ||
 		    child_tool_pending || runtime.AcpBackgroundTaskCount(session) > 0 || receipt_pending;
 		if (!observe) continue;

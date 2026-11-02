@@ -181,6 +181,9 @@ namespace uam::provider_setup
 
 	inline std::string Digest(std::string_view bytes) { return uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(bytes)); }
 
+	/// OpenCode's built-in provider request timeout; UAM never configures a value at or below it.
+	inline constexpr std::int64_t kOpenCodeDefaultRequestTimeoutMilliseconds = 300000;
+
 	/// The provider part of an OpenCode "provider/model" ID, when it is a plain configuration key.
 	inline std::string OpenCodeModelProviderId(std::string_view model_id)
 	{
@@ -766,7 +769,14 @@ namespace uam::provider_setup
 				if ((config.contains("provider") && !config["provider"].is_object()) || (config.contains("provider") && config["provider"].contains(id) &&
 				    (!config["provider"][id].is_object() || (config["provider"][id].contains("options") && !config["provider"][id]["options"].is_object()))))
 				{ error = "OpenCode provider settings must be objects."; return false; }
-				config["provider"][id]["options"]["timeout"] = manifest["openCodeRequestTimeout"]["milliseconds"];
+				// OpenCode's option bounds a whole provider request; UAM's limit bounds inactivity. Only ever raise it:
+				// a value at or below OpenCode's 5-minute default, a larger inline value or an inline `false` is kept.
+				const std::int64_t requested = manifest["openCodeRequestTimeout"]["milliseconds"].get<std::int64_t>();
+				const nlohmann::json* inline_timeout = config.contains("provider") && config["provider"].contains(id) && config["provider"][id].contains("options") &&
+				    config["provider"][id]["options"].contains("timeout") ? &config["provider"][id]["options"]["timeout"] : nullptr;
+				const bool keep_inline = inline_timeout && (*inline_timeout == false || (inline_timeout->is_number() && inline_timeout->get<double>() >= static_cast<double>(requested)));
+				if (requested > kOpenCodeDefaultRequestTimeoutMilliseconds && !keep_inline)
+					config["provider"][id]["options"]["timeout"] = requested;
 			}
 			SetEnvironment(environment, "OPENCODE_CONFIG_CONTENT", config.dump());
 		}

@@ -3,6 +3,7 @@
 #include "common/provider/opencode_native_http.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include <algorithm>
+#include <thread>
 
 using namespace uam_test;
 
@@ -314,6 +315,68 @@ UAM_TEST(OpenCodeNativeCompanionLateAnswersStopAsTurnTimeout)
 	UAM_ASSERT_EQ(fixture.Session().timeout_stop_label, std::string("Provider turn timeout"));
 	UAM_ASSERT_EQ(fixture.Session().timeout_stop_seconds, 1);
 	UAM_ASSERT_EQ(fixture.Session().timeout_stop_error, fixture.Session().last_error);
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionIdleLateAnswersDoNotCarryIntoTheNextTurn)
+{
+	// A late answer during one turn must not start a timer that the next turn's first late answer completes.
+	NativeCompanionFixture fixture;
+	fixture.app.settings.active_turn_inactivity_timeout_seconds = 1;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true; fixture.Session().turn_serial = 1;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	fixture.Session().processing = false;
+	// Idle for longer than the turn timeout while the server keeps answering late.
+	const auto idle_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1600);
+	while (std::chrono::steady_clock::now() < idle_until && fixture.Session().running)
+	{ fixture.service->Poll(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+	UAM_ASSERT(fixture.Session().running);
+	fixture.failures_left->store(1);
+	fixture.Session().processing = true; fixture.Session().turn_serial = 2;
+	fixture.Until([&] { return fixture.failures_left->load() == 0 || !fixture.Session().running; });
+	const int after_late = fixture.queries->load();
+	fixture.Until([&] { return fixture.queries->load() > after_late + 1 || !fixture.Session().running; });
+	UAM_ASSERT(fixture.Session().running);
+	UAM_ASSERT(std::ranges::none_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion"; }));
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersHoldNewPromptsVisibly)
+{
+	NativeCompanionFixture fixture;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	UAM_ASSERT(error.find("answering slowly") != std::string::npos);
+	UAM_ASSERT(fixture.Session().running);
+	// Observation continues after the turn ends, so recovery is seen without another prompt.
+	fixture.Session().processing = false;
+	fixture.failures_left->store(0);
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersBeforeFirstSnapshotKeepFailureLimit)
+{
+	// A server that never answers in time before readiness fails within three tries, not the whole turn timeout.
+	NativeCompanionFixture fixture;
+	fixture.has_permission->store(false);
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	std::string error;
+	fixture.Until([&] { (void)fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error); return !fixture.Session().running; });
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures" && entry.detail == "failures=3"; }));
+	UAM_ASSERT(fixture.Session().timeout_stop_error.empty());
 	fixture.service->Stop();
 }
 

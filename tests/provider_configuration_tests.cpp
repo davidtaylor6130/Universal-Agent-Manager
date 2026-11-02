@@ -2732,6 +2732,29 @@ UAM_TEST(OpenCodeProviderRequestTimeoutFollowsTurnTimeout)
 		UAM_ASSERT_EQ(actual["provider"]["ollama"]["options"]["timeout"], nlohmann::json(2700000));
 		UAM_ASSERT_EQ(actual["provider"]["ollama"]["options"]["baseURL"], native["provider"]["ollama"]["options"]["baseURL"]);
 	}
+	{
+		// Only ever raise OpenCode's limit: a larger inline value, an inline `false` and a UAM value at or below
+		// OpenCode's 5-minute default leave the inline configuration unchanged.
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		chat.execution_host_id = "local";
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		for (const nlohmann::json kept : {nlohmann::json(false), nlohmann::json(5400000)})
+		{
+			std::vector<std::string> argv{"opencode", "acp"};
+			const nlohmann::json native{{"provider", {{"ollama", {{"options", {{"timeout", kept}}}}}}}};
+			uam::provider_setup::Environment environment{{"OPENCODE_CONFIG_CONTENT", native.dump()}};
+			UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+			UAM_ASSERT_EQ(nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"))["provider"]["ollama"]["options"]["timeout"], kept);
+		}
+		AppSettings short_limit = settings;
+		short_limit.active_turn_inactivity_timeout_seconds = 300;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", short_limit, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		std::vector<std::string> argv{"opencode", "acp"};
+		uam::provider_setup::Environment environment;
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		UAM_ASSERT(!nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT")).contains("provider"));
+	}
 	// No provider prefix means no known provider to configure; nothing is invented.
 	chat.execution_host_id = "local";
 	chat.model_id.clear();

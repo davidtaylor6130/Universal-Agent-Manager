@@ -24,6 +24,7 @@ namespace
 		UAM_ASSERT_EQ(canonical.goal_max_loop_iterations, settings.goal_max_loop_iterations);
 		UAM_ASSERT_EQ(canonical.acp_setup_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds);
 		UAM_ASSERT_EQ(canonical.acp_turn_output_limit_mib, settings.acp_turn_output_limit_mib);
+		UAM_ASSERT_EQ(canonical.active_turn_inactivity_timeout_seconds, settings.active_turn_inactivity_timeout_seconds);
 		UAM_ASSERT_EQ(canonical.memory_worker_bindings.size(), settings.memory_worker_bindings.size());
 		for (const auto& [provider, binding] : settings.memory_worker_bindings)
 		{
@@ -125,7 +126,7 @@ UAM_TEST(MemoryWriteReceiptCommittedCanonicalMatchesReloadWithoutMutatingInput)
 	SameCoveredValues(SettingsMemoryCanonicalValues{input.memory_enabled_default, input.memory_level_default,
 	    input.memory_idle_delay_seconds, input.memory_recall_budget_bytes, input.goal_max_loop_iterations,
 	    input.acp_setup_inactivity_timeout_seconds, input.acp_turn_output_limit_mib, input.memory_worker_bindings,
-	    input.permission_reviewer_provider_id, input.permission_reviewer_model_id}, UnnormalizedMemorySettings());
+	    input.permission_reviewer_provider_id, input.permission_reviewer_model_id, input.active_turn_inactivity_timeout_seconds}, UnnormalizedMemorySettings());
 	UAM_ASSERT(SettingsStore::Save(temp.root / "input-after.txt", input));
 	UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "input-before.txt"), uam_test::ReadFile(temp.root / "input-after.txt"));
 }
@@ -433,7 +434,7 @@ UAM_TEST(SettingsPrimaryLoadUsesExistingParserAndNormalization)
 	SameCoveredValues(SettingsMemoryCanonicalValues{primary.memory_enabled_default, primary.memory_level_default,
 	    primary.memory_idle_delay_seconds, primary.memory_recall_budget_bytes, primary.goal_max_loop_iterations,
 	    primary.acp_setup_inactivity_timeout_seconds, primary.acp_turn_output_limit_mib, primary.memory_worker_bindings,
-	    primary.permission_reviewer_provider_id, primary.permission_reviewer_model_id}, legacy);
+	    primary.permission_reviewer_provider_id, primary.permission_reviewer_model_id, primary.active_turn_inactivity_timeout_seconds}, legacy);
 	UAM_ASSERT(primary.memory_idle_delay_seconds != input.memory_idle_delay_seconds);
 	UAM_ASSERT_EQ(primary.permission_reviewer_provider_id, std::string(uam::provider_ids::kClaudeCli));
 	UAM_ASSERT_EQ(primary.permission_reviewer_model_id, std::string("private-review-model"));

@@ -3059,6 +3059,47 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each(['restart', 'output', 'refused'] as const)('presents a timeout stop as a notice and restarts it after saving the raised limit (%s)', async (branch) => {
+    const order: string[] = []
+    const setMemorySettings = vi.fn(async () => { order.push('save'); return true })
+    const retryFailedMessage = vi.fn(async () => { order.push('retry'); return branch === 'refused' ? { ok: false, error: 'Wait for pending runtime work.' } : { ok: true } })
+    const user = { ...useAppStore.getState().messages['chat-1'][0] }
+    useAppStore.setState((state) => ({
+      setMemorySettings,
+      retryFailedMessage,
+      activeTurnInactivityTimeoutSeconds: 1800,
+      messages: { ...state.messages, 'chat-1': branch === 'output' ? [user, { ...user, id: 'partial', role: 'assistant', content: 'Partial answer' }] : [user] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', processing: false, running: true,
+          lastError: 'Internal error: The operation timed out.', timeoutStop: { label: 'OpenCode request timeout', seconds: 1800 },
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('[aria-label="Dismiss composer error"]')).toBeNull()
+      expect(host.textContent).toContain('OpenCode request timeout (30 min) expired')
+      const restart = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Restart with +15 min')!
+      await act(async () => { restart.click() })
+      expect(setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
+      if (branch === 'output') {
+        expect(retryFailedMessage).not.toHaveBeenCalled()
+        expect(host.textContent).toContain('This turn already produced output')
+      } else {
+        expect(order).toEqual(['save', 'retry'])
+        expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+      }
+      if (branch === 'refused') expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each([
     { notSent: true, interrupted: true, expectedRetry: true },
     { notSent: false, interrupted: true, expectedRetry: true },

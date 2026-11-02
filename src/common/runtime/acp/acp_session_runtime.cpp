@@ -2521,7 +2521,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (turn_model_id.empty() ? !session.launch_model_options_captured || !session.launch_model_options_id.empty() : restart_model_id != turn_model_id);
 			// Restart before preparing the turn: setting changes must not stop its transport afterwards.
 			// OpenCode received the turn timeout as its provider request timeout at launch; a changed value needs a relaunch.
-			const bool turn_timeout_changed = session.launch_turn_timeout_seconds > 0 && session.launch_turn_timeout_seconds != app.settings.active_turn_inactivity_timeout_seconds;
+			// Never interrupt an in-flight turn for it; the changed limit applies from the next idle turn.
+			const bool turn_timeout_changed = session.launch_turn_timeout_seconds > 0 && session.launch_turn_timeout_seconds != app.settings.active_turn_inactivity_timeout_seconds &&
+			    !session.processing && session.prompt_request_id == 0;
 			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{

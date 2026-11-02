@@ -3079,7 +3079,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <SettingRow
             title="Provider turn timeout"
-            description="Stops a turn after this long with no provider activity. OpenCode also uses it as its request timeout."
+            description="Stops a turn after this long without provider activity."
             control={
               <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <IconButton icon={<Minus size={14} />} label="Decrease provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.max(TIMEOUT_RESTART_STEP_SECONDS, activeTurnInactivityTimeoutSeconds - TIMEOUT_RESTART_STEP_SECONDS) })} />

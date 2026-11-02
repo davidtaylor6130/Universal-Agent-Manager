@@ -39,7 +39,7 @@ import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isCl
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
-import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice } from '../chat/TimeoutStopNotice'
+import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
@@ -2025,16 +2025,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
   // Raise the turn timeout, then re-deliver the same user message in place (never a duplicate row).
   // A next turn on a running OpenCode process relaunches it so the new limit applies.
-  const restartTimedOutTurn = async () => {
-    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
-    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return 'Could not save the new timeout. Nothing was restarted.'
+  const restartTimedOutTurn = async (): Promise<TimeoutRestartOutcome | undefined> => {
+    // Decide whether an in-place restart is possible before any side effect.
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
     let lastUser = chatMessages.length - 1
     while (lastUser >= 0 && chatMessages[lastUser].role !== 'user') lastUser -= 1
-    if (lastUser < 0 || !canRetryMessageInPlace(chatMessages, lastUser))
-      return `Timeout raised to ${formatTimeoutDuration(timeout)}. This turn already produced output, so send a follow-up to continue it.`
+    const queued = (acp?.queuedPrompts?.length ?? 0) > 0
+    const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
+    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
+    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return { tone: 'error', message: 'Could not save the new timeout. Nothing was restarted.' }
+    const raised = `Timeout raised to ${formatTimeoutDuration(timeout)}.`
+    if (queued) return { tone: 'info', message: `${raised} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
+    if (!retryable) return { tone: 'info', message: `${raised} This turn already produced output, so send a follow-up to continue it.` }
     const result = await retryFailedMessage(session.id, lastUser + historyStartIndex)
-    return result.ok ? undefined : `Timeout raised to ${formatTimeoutDuration(timeout)}, but the turn did not restart: ${result.error || 'retry was refused.'}`
+    return result.ok ? undefined : { tone: 'error', message: `${raised} The turn did not restart: ${result.error || 'retry was refused.'}` }
   }
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
