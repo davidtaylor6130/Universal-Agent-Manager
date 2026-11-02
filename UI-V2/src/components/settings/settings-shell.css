@@ -41,7 +41,7 @@
 }
 
 /* Page frame: header and content travel together, centred both ways; wide pages grow to the space available and scroll vertically. */
-.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
+.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
 .uam-settings-frame { width: 100%; max-width: 960px; margin-inline: auto; }
 .uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
 

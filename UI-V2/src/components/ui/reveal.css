@@ -15,3 +15,5 @@
 @keyframes uam-swap-out { to { opacity: 0; transform: translateX(calc(var(--sp-4) * -1)); } }
 @media (prefers-reduced-motion: reduce) { .uam-swap__in, .uam-swap__out { animation: none; } }
 [data-motion="off"] .uam-swap__in, [data-motion="off"] .uam-swap__out { animation: none; }
+/* When a Swap is laid out as a flex column (flex-1 callers), its panes still fill it. */
+.uam-swap > * { flex: 1 1 auto; }

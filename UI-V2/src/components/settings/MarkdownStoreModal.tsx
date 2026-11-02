@@ -494,7 +494,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
       {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close skills" onClick={close} /></div>}
       <div className={`flex min-h-0 flex-1 flex-col${embedded ? '' : ' p-5'}`}>
-        <div className="uam-set-card uam-set-card--flush flex min-h-0 flex-1 flex-col">
+        <div className="uam-set-card uam-set-card--flush uam-store-card flex min-h-0 flex-1 flex-col">
           {/* The flush card has no side padding, so the row carries its own. */}
           <div className="px-4">
           <SettingRow

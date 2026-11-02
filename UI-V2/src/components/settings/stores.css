@@ -113,3 +113,5 @@
 .uam-store-nav > .uam-store-nav__item { flex: 0 0 auto; width: 100%; }
 /* "More" menus are a plain ⋯ trigger, no dropdown chevron. */
 .uam-more-menu .uam-menu-select__chevron { display: none; }
+/* The skills library keeps a usable height even when the list or a step is short. */
+.uam-store-card { min-height: min(600px, 70vh); }
