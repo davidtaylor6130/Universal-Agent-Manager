@@ -210,8 +210,6 @@
 
 /* Goals popup, edit-mode strip above the composer. */
 .conversation-goals-popup { border: 1px solid var(--border-bright); border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); box-shadow: var(--elev-3); animation: conversation-pop-in var(--dur-base) var(--ease-out-soft) backwards; }
-.conversation-edit-strip { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; margin-bottom: var(--sp-1); padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3); border-radius: var(--r-md); background: var(--accent-dim); color: var(--text-2); font-size: var(--fs-sm); animation: conversation-pop-in var(--dur-fast) var(--ease-out-soft) backwards; }
-.conversation-edit-strip > svg { flex-shrink: 0; color: var(--accent); }
 @keyframes conversation-pop-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
 
 /* ── Chat status divider ─────────────────────────────────────

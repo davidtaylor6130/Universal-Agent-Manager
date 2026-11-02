@@ -2932,6 +2932,19 @@ describe('ChatView', () => {
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
     expect(editTextarea).toBe(composer)
+    // Edit tab sits in the composer tab row, left of the side-chat tab; the send button saves with a pencil.
+    const editTab = host.querySelector('.uam-composer-tabs__end > [role="group"][aria-label="Editing message"]')
+    expect(editTab?.classList.contains('uam-composer-side-controls')).toBe(true)
+    expect(editTab?.textContent).toContain('Editing message')
+    expect(editTab?.querySelector('button[aria-label="Cancel edit"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Save changes')
+    const saveEdit = host.querySelector('button[aria-label="Save edit"][type="submit"]')
+    expect(saveEdit?.querySelector('svg.lucide-pencil')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Send prompt"]')).toBeNull()
+    act(() => root.render(<ChatView session={{ ...useAppStore.getState().sessions[0], temporaryParentChatId: 'parent' }} />))
+    const endTabs = Array.from(host.querySelector('.uam-composer-tabs__end')!.children).map((child) => child.getAttribute('aria-label'))
+    expect(endTabs).toEqual(['Editing message', 'Side chat'])
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     expect(host.querySelectorAll('textarea')).toHaveLength(1)
     expect(editTextarea?.value).toBe('Please inspect the workspace')
     expect(document.activeElement).toBe(composer)
@@ -2942,7 +2955,7 @@ describe('ChatView', () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Inspect only the tests')
       editTextarea?.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
+    const saveButton = host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
     if (historyOffset === 0) await act(async () => editTextarea?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     else await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(composer?.value).toBe('Unsent draft stays here')
@@ -2979,7 +2992,7 @@ describe('ChatView', () => {
       const edit = () => act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!.click())
       edit()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
-      const save = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!
+      const save = () => host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!
       expect(save().disabled).toBe(false)
       await act(async () => save().click())
       expect(branch).toHaveBeenLastCalledWith('chat-1', 0, '', ['second'])
@@ -2990,7 +3003,7 @@ describe('ChatView', () => {
       expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
       edit()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
-      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Cancel edit')!.click())
       edit()
       expect(host.querySelector('button[aria-label="Remove photo.png from edited message"]')).toBeTruthy()
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
@@ -3021,7 +3034,7 @@ describe('ChatView', () => {
       if (retry) act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Retry message"]')!.click())
       else {
         edit()
-        act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!.click())
+        act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.click())
       }
       act(() => root.render(<ChatView session={sessionB} />))
       act(() => root.render(<ChatView session={sessionA} />))
@@ -3256,7 +3269,7 @@ describe('ChatView', () => {
       editTextarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')?.click()
+      host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')?.click()
     })
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt', [])
     expect(retryFailedMessage).not.toHaveBeenCalled()
@@ -11067,8 +11080,8 @@ describe('ChatView committed unsent editing', () => {
     const f = fixture()
     try {
       await f.open()
-      expect(f.host.textContent).toContain('Editing unsent message. Saving updates this input.')
-      const save = Array.from(f.host.querySelectorAll('button')).find(button => button.textContent === 'Save changes')
+      expect(f.host.querySelector('[role="group"][aria-label="Editing message"] [title="Saving updates this unsent input"]')).not.toBeNull()
+      const save = f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
       expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
       await f.enter()
       expect(f.requests.map(request => request.action)).toEqual(['getChatMessages', 'manageQueuedAcpPrompt'])
@@ -11407,7 +11420,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(editor).toBe(composer)
       expect(editor!.disabled).toBe(false)
       expect(editor!.value).toBe(source.content)
-      expect(host.querySelector('.conversation-edit-strip')?.textContent).toContain('Saving creates a new branch.')
+      expect(host.querySelector('[role="group"][aria-label="Editing message"] [title="Saving creates a new branch"]')).not.toBeNull()
       for (const name of ['first.txt', 'second.txt', 'review.md']) {
         const remove = host.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${name} from edited message"]`)
         expect(remove).not.toBeNull(); expect(remove!.disabled).toBe(false)
@@ -11421,7 +11434,7 @@ describe('ChatView delivered edit skill selection', () => {
       expect(editor!.value).toBe('Revised delivered request')
       for (const name of ['first.txt', 'second.txt']) expect(Boolean(host.querySelector(`[aria-label="Remove ${name} from edited message"]`))).toBe(name !== removedNativeName)
       expect(Boolean(host.querySelector('[aria-label="Remove review.md from edited message"]'))).toBe(!removedSkill)
-      const save = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save to new branch')
+      const save = host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')
       expect(save).toBeTruthy(); expect(save!.disabled).toBe(false)
       expect(useAppStore.getState().messages['chat-1']).toBe(rows)
       expect(source.attachments).toEqual(originalResources)

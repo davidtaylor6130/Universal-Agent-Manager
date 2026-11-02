@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
+import { Folder, Pencil, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -172,6 +172,7 @@ export function ComposerToolbar({
   providerId,
   canChangeProvider,
   canSend,
+  editing = false,
   runtimeStatusLabel,
   runtimeStatusColor,
   modelId,
@@ -233,6 +234,8 @@ export function ComposerToolbar({
   providerId: string
   canChangeProvider: boolean
   canSend: boolean
+  /** Composer is editing a sent message: the send button saves the edit. */
+  editing?: boolean
   runtimeStatusLabel: string
   runtimeStatusColor: string
   modelId?: string
@@ -732,27 +735,33 @@ export function ComposerToolbar({
         />
       </div>
       </>}
-        {running && !canSend ? (
+        {running && !canSend && !editing ? (
           <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
-        ) : (
-        <IconButton
-          type="submit"
-          title={running ? 'Queue prompt' : 'Send prompt'}
-          icon={<ComposerIcon name="send" size={15} />}
-          label={running ? 'Queue prompt' : 'Send prompt'}
-          tooltip={false}
-          disabled={!canSend}
-          className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center"
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
-            background: canSend ? 'var(--accent)' : 'var(--surface-up)',
-            color: canSend ? 'var(--on-accent)' : 'var(--text-3)',
-          }}
-        />
-        )}
+        ) : <ComposerSendButton canSend={canSend} running={running} editing={editing} />}
     </div>
+  )
+}
+
+/** Composer send button; while editing a message it saves the edit with a pencil icon. */
+export function ComposerSendButton({ canSend, running = false, editing = false }: { canSend: boolean; running?: boolean; editing?: boolean }) {
+  const label = editing ? 'Save edit' : running ? 'Queue prompt' : 'Send prompt'
+  return (
+    <IconButton
+      type="submit"
+      title={label}
+      icon={editing ? <Pencil size={15} aria-hidden /> : <ComposerIcon name="send" size={15} />}
+      label={label}
+      tooltip={false}
+      disabled={!canSend}
+      className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center"
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 8,
+        border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
+        background: canSend ? 'var(--accent)' : 'var(--surface-up)',
+        color: canSend ? 'var(--on-accent)' : 'var(--text-3)',
+      }}
+    />
   )
 }

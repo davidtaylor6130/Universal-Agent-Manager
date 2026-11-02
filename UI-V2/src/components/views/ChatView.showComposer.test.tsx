@@ -177,9 +177,9 @@ describe('showComposer presentation contract, authored UNRUN', () => {
             const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="Edit message"]')!
             expect(editor.value).toBe('Unconfirmed child input')
             expect(document.activeElement).toBe(editor)
-            expect(button('Save changes')).toBeDefined()
+            expect(button('Save edit')).toBeDefined()
             expect(button('Send prompt')).toBeUndefined()
-            await act(async () => button('Cancel')!.click())
+            await act(async () => button('Cancel edit')!.click())
             expect(field()).toBeNull()
         }
         expect(readChatComposerDraft(child.id).text).toBe('Independent hidden child draft')

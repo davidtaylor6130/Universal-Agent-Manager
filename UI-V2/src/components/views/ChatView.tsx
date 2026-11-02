@@ -44,7 +44,7 @@ import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type 
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
-import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
+import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerSendButton, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
@@ -1979,6 +1979,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
+  const canSaveEdit = branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
   const unsentActionsDisabled = session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null
   const unsentReceiptDeleteDisabled = session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null
   const removeUnsent = async (index: number, receipt?: { id: string; revision: number }) => {
@@ -3598,8 +3599,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
-            {!isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
+            {((showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls)) || editingMessageIndex !== null) && <div className="uam-composer-tabs" data-workspace={showComposer && (!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {showComposer && !isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
               <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
@@ -3701,7 +3702,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               </>
             </div>}
             {/* ui: raw button kept — goal tab look (its own status and objective layout); Chip would add the uam-chip look */}
-            {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
+            {showComposer && displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
               aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
               className="uam-composer-goal-tab" title={displayedGoal.objective}
               onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
@@ -3712,7 +3713,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__status">{displayedGoal.status}</span><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
             </button>}
             <div className="uam-composer-tabs__end">
-              {showSideChatControls && (session.temporaryParentChatId ? (
+              {editingMessageIndex !== null && (
+                <div className="uam-composer-side-controls" role="group" aria-label="Editing message">
+                  <span className="uam-composer-side-controls__pill" title={editingMessageSource.kind === 'unsent' ? 'Saving updates this unsent input' : 'Saving creates a new branch'}>
+                    <Pencil size={12} aria-hidden />
+                    Editing message
+                  </span>
+                  <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Cancel edit" tooltip="Cancel edit (Esc)" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage} />
+                </div>
+              )}
+              {showComposer && showSideChatControls && (session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
                   <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
                     <MessageSquareDashed size={12} aria-hidden />
@@ -3740,11 +3750,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 onStopRuntime={stopLiveRuntime}
               />
             )}
-            {editingMessageIndex !== null && <div className="conversation-edit-strip" role="status">
-              <Pencil size={13} aria-hidden />
-              <span className="min-w-0 flex-1 truncate">{editingMessageSource.kind === 'unsent' ? 'Editing unsent message. Saving updates this input.' : 'Editing message. Saving creates a new branch.'}</span>
-              <Button type="button" size="sm" variant="ghost" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage}>Cancel</Button>
-            </div>}
             {(showComposer || editingMessageIndex !== null) && <div
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
@@ -3921,7 +3926,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branchingMessageIndex !== null} onClick={() => removeEditingAttachment(attachment.id, attachment.type === 'markdown-store')} />
                   </div>
                 ))}
-                <Button type="button" size="sm" variant="primary" loading={branchingMessageIndex !== null} disabled={(!editingMessageText.trim() && editingMessageAttachments.length === 0) || !canChangeProvider} onClick={() => void submit()}>{editingMessageSource.kind === 'unsent' ? 'Save changes' : 'Save to new branch'}</Button>
+                {!showComposer && <ComposerSendButton canSend={canSaveEdit} editing />}
               </div>
             )}
             {showComposer && <>
@@ -3943,7 +3948,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               providers={composerProviders}
               providerId={currentProviderId}
               canChangeProvider={canChangeProvider}
-              canSend={canSend}
+              canSend={editingMessageIndex !== null ? canSaveEdit : canSend}
+              editing={editingMessageIndex !== null}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}
