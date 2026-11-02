@@ -17,7 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
+#include <charconv>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -52,14 +52,34 @@ namespace
 	enum class QueryKind { Baseline, Pending, Page, Text, Identified };
 	constexpr const char* kQueryNames[] = {"baseline", "pending", "page", "text", "identified"};
 
+	/// <summary>Fixture-verified releases keep fail-closed baseline schema checks.</summary>
+	bool FixtureVerifiedVersion(std::string_view version)
+	{
+		return version == "1.17.20" || version == "1.18.35";
+	}
+
 	/// <summary>V1 releases from 1.17.20 share the native message/part schema; every query still proves it
-	/// (schemaCompatible indexes and the parent-compaction predicate) and fails closed on mismatch. V2 keeps its own contract.</summary>
+	/// (schemaCompatible indexes and the parent-compaction predicate). V2 keeps its own contract.</summary>
 	bool SupportedMetadataVersion(std::string_view version)
 	{
-		int major = 0, minor = 0, patch = 0;
-		char tail = 0;
-		if (std::sscanf(std::string(version).c_str(), "%d.%d.%d%c", &major, &minor, &patch, &tail) != 3) return false;
-		return major == 1 && patch >= 0 && (minor > 17 || (minor == 17 && patch >= 20));
+		int parts[3] = {};
+		for (int index = 0; index < 3; ++index)
+		{
+			const std::size_t end = index < 2 ? version.find('.') : version.size();
+			const std::string_view field = version.substr(0, end);
+			if (field.empty() || end == std::string_view::npos ||
+			    !std::ranges::all_of(field, [](char c) { return c >= '0' && c <= '9'; })) return false;
+			const std::from_chars_result parsed = std::from_chars(field.data(), field.data() + field.size(), parts[index]);
+			if (parsed.ec != std::errc{} || parsed.ptr != field.data() + field.size()) return false;
+			version.remove_prefix(index < 2 ? end + 1 : end);
+		}
+		return parts[0] == 1 && (parts[1] > 17 || (parts[1] == 17 && parts[2] >= 20));
+	}
+
+	std::string MetadataScope(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	{
+		const ExecutionHost* host = paths::IsControllerLocalWorkspace(chat) ? nullptr : execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		return chat.execution_host_id + ":" + session.agent_version + ":" + (host ? std::to_string(host->runner_protocol_version) : "local");
 	}
 
 	/// <summary>Warm SSH attachment has no initialize reply; durable process ownership permits read-only schema verification.</summary>
@@ -460,6 +480,7 @@ struct OpenCodeCompactionSyncService::State
 		std::optional<Owner> owner;
 		std::string error;
 		std::set<std::string> native_pending_markers, native_summary_ids, identified, inspected;
+		bool degraded = false;
 		int inspected_turn = 0;
 		int native_marker_turn = 0, native_marker_assistant = -1, query_timeouts = 0;
 		std::chrono::steady_clock::time_point retry_at{}, next_live_probe{}, next_publication_probe{};
@@ -483,7 +504,7 @@ struct OpenCodeCompactionSyncService::State
 	std::shared_ptr<Work> active;
 	std::unique_ptr<std::jthread> worker;
 	std::string last_scheduled;
-	std::set<std::string> unsupported_diagnostics;
+	std::set<std::string> unsupported_diagnostics, degraded_scopes;
 	bool stopped = false;
 
 	explicit State(ExecuteQuery executor) : execute(executor ? std::move(executor) : ExecuteNativeQuery) {}
@@ -669,6 +690,8 @@ struct OpenCodeCompactionSyncService::State
 
 	Context* FindOrCreate(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string& error)
 	{
+		if (degraded_scopes.contains(MetadataScope(app, session, chat)))
+		{ error = "Native compaction metadata schema is incompatible with this unverified OpenCode release."; return nullptr; }
 		const std::optional<Identity> identity = CaptureIdentity(app, session, chat, error);
 		if (!identity) return nullptr;
 		Context& context = contexts[chat.id];
@@ -857,6 +880,20 @@ struct OpenCodeCompactionSyncService::State
 		return changed;
 	}
 
+	/// <summary>An unverified release whose first baseline proves an incompatible schema keeps ordinary chat behaviour.</summary>
+	bool DegradeUnverifiedBaseline(AppState& app, Context& context, const Work& work, const std::string& detail)
+	{
+		if (work.kind != QueryKind::Baseline || context.baseline) return false;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
+		const AcpSessionState* session = FindAcpSessionForChat(app, context.identity.chat_id);
+		if (!chat || !session || FixtureVerifiedVersion(session->agent_version)) return false;
+		const std::string scope = MetadataScope(app, *session, *chat);
+		degraded_scopes.insert(scope);
+		context.degraded = true;
+		diagnostics::Write("[OpenCode compaction] Baseline schema check failed for unverified " + scope + " (" + detail + ").");
+		return true;
+	}
+
 	bool Consume(AppState& app, Context& context, const Work& work)
 	{
 		if (context.owner && context.owner->pending_deadline != std::chrono::steady_clock::time_point{})
@@ -881,7 +918,10 @@ struct OpenCodeCompactionSyncService::State
 				if (context.owner && context.owner->pending_deadline != std::chrono::steady_clock::time_point{})
 					context.owner->pending_deadline += backoff;
 			}
-			else context.error = "Native compaction metadata query failed: " + detail;
+			else if (!((detail.find("no such column") != std::string::npos || detail.find("no such table") != std::string::npos ||
+			    work.result.output.find("no such column") != std::string::npos || work.result.output.find("no such table") != std::string::npos) &&
+			    DegradeUnverifiedBaseline(app, context, work, detail)))
+				context.error = "Native compaction metadata query failed: " + detail;
 			return false;
 		}
 		try
@@ -925,8 +965,13 @@ struct OpenCodeCompactionSyncService::State
 				context.query_timeouts = 0; context.retry_at = {};
 				return summary.ready && chat && session ? Publish(app, *session, *chat, context) : false;
 			}
-			if (envelope.at("sessionId") != context.identity.native || !directory_matches || envelope.at("schemaCompatible") != 1)
-				throw std::runtime_error("native session, workspace or schema mismatch");
+			if (envelope.at("sessionId") != context.identity.native || !directory_matches)
+				throw std::runtime_error("native session or workspace mismatch");
+			if (envelope.at("schemaCompatible") != 1)
+			{
+				if (DegradeUnverifiedBaseline(app, context, work, "schema mismatch")) return false;
+				throw std::runtime_error("native schema mismatch");
+			}
 			const nlohmann::json rows = nlohmann::json::parse(envelope.at("rows").get<std::string>());
 			if (!rows.is_array() || rows.size() > kPageSize + 1)
 				throw std::runtime_error("metadata page limit exceeded");
@@ -1218,14 +1263,17 @@ OpenCodeCompactionGateState OpenCodeCompactionSyncService::BeforeDispatch(AppSta
 	if (session.provider_id != provider_ids::kOpenCodeCli || session.model_discovery_only) return OpenCodeCompactionGateState::NotApplicable;
 	if (m_state->stopped) { error = "Native compaction synchronization is stopping."; return OpenCodeCompactionGateState::Failed; }
 	const ExecutionHost* host = paths::IsControllerLocalWorkspace(chat) ? nullptr : execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-	if (!MetadataVersionAvailable(app, session, chat) || (host && host->runner_protocol_version < 3))
+	const std::string scope = MetadataScope(app, session, chat);
+	const auto unavailable = [&]
 	{
-		const std::string scope = chat.execution_host_id + ":" + session.agent_version + ":" + (host ? std::to_string(host->runner_protocol_version) : "local");
 		if (m_state->unsupported_diagnostics.insert(scope).second)
 			diagnostics::Write("[OpenCode compaction] Native metadata reconciliation is unavailable for " + scope + "; the existing provider chat remains supported.");
 		return OpenCodeCompactionGateState::NotApplicable;
-	}
+	};
+	if (!MetadataVersionAvailable(app, session, chat) || (host && host->runner_protocol_version < 3) || m_state->degraded_scopes.contains(scope))
+		return unavailable();
 	(void)Poll(app);
+	if (m_state->degraded_scopes.contains(scope)) return unavailable(); // The baseline consumed by this poll proved an incompatible schema.
 	State::Context* context = m_state->FindOrCreate(app, session, chat, error);
 	if (!context) return OpenCodeCompactionGateState::Failed;
 	if (!context->error.empty())
@@ -1347,6 +1395,7 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			{
 				changed = m_state->Consume(app, current->second, *work) || changed;
 				if (!current->second.error.empty()) diagnostics::Write("[OpenCode compaction] " + current->second.error);
+				else if (current->second.degraded) m_state->contexts.erase(current);
 			}
 		}
 	}
