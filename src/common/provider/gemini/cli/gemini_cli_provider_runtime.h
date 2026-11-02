@@ -37,7 +37,7 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	std::string NativeTypeFromRole(MessageRole role) const override;
 	std::filesystem::path GetNativeSessionDirectory(const std::filesystem::path& workspace_path) const override;
 	bool RebuildNativeSessionFile(const ProviderProfile& profile, const ChatSession& chat, const std::filesystem::path& workspace_path) const override;
-	bool SupportsLocalPassiveNativeMedia(const ProviderProfile&) const override { return true; }
+	bool SupportsPassiveNativeMedia(const ProviderProfile&) const override { return true; }
 	bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const override;
 	bool UsesLocalHistory(const ProviderProfile& profile) const override;
 	bool UsesCliOutput(const ProviderProfile& profile) const override;

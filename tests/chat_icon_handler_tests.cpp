@@ -4663,6 +4663,55 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiOriginalStoreRefusalAndFreshRetry)
 	if (retry->failures) { before.AssertRetained(fixture); fixture.Settle(retry); }
 	fixture.RequireSuccess(retry); fixture.AssertPublished(expected, true); fixture.AssertResponse(retry, expected, true); fixture.Settle(retry);
 }
+
+// Issue #620: opening an SSH Gemini child whose journal holds inline images
+// must save its text and owned originals instead of refusing the whole open.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildInlineOriginalsOpenAndSave)
+{
+	using Json = nlohmann::json;
+	RemoteGeminiHistoryHandlerFixture fixture;
+	const std::string agent = "88888888-8888-4888-8888-888888888888";
+	const Json image{{"inlineData", {{"mimeType", "image/png"}, {"data", fixture.png}}}};
+	const fs::path child_file = fixture.NativeFile().parent_path() / fixture.native_id / (agent + ".jsonl");
+	const std::string child_bytes =
+	    Json{{"sessionId", agent}, {"projectHash", "project"}, {"kind", "subagent"}, {"directories", Json::array({fixture.workspace})},
+	        {"startTime", "2020-10-18T08:01:00Z"}, {"lastUpdated", "2020-10-18T08:01:02Z"}}.dump() + "\n" +
+	    Json{{"id", "child-user"}, {"type", "user"}, {"timestamp", "2020-10-18T08:01:01Z"},
+	        {"content", Json::array({{{"text", "Remote child question"}}, image})}}.dump() + "\n" +
+	    Json{{"id", "child-answer"}, {"type", "gemini"}, {"timestamp", "2020-10-18T08:01:02Z"}, {"content", "Remote child answer"}}.dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(child_file, child_bytes));
+	const std::string reference = uam::native_agents::BuildHistoryId("gemini-cli", fixture.native_id, agent, fixture.host.id);
+	UAM_ASSERT(!reference.empty());
+	const auto before = fixture.Launches();
+	CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
+	fixture.pending_callbacks.push_back(callback);
+	ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", fixture.owner_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
+	RunCreationLoopUntil([callback] { return callback->Completed(); }, std::chrono::seconds(15));
+	UAM_ASSERT(callback->Completed());
+	if (callback->failures) throw std::runtime_error("Remote Gemini child open refused (" + std::to_string(callback->status) + "): " + callback->body);
+	fixture.AssertPrivateTransport(before); // The open read the child through the actual helper.
+	UAM_ASSERT_EQ(callback->successes, 1);
+	UAM_ASSERT_EQ(Json::parse(callback->body).at("chatId"), Json(reference));
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, reference, true);
+	const auto* live = ChatDomainService().FindChatById(fixture.app, reference);
+	UAM_ASSERT(saved && live && saved->messages_loaded && live->messages_loaded && saved->messages == live->messages);
+	UAM_ASSERT(saved->imported_read_only && saved->native_session_id.empty());
+	UAM_ASSERT_EQ(saved->execution_host_id, fixture.host.id); UAM_ASSERT_EQ(saved->workspace_directory, fixture.workspace);
+	UAM_ASSERT_EQ(saved->parent_chat_id, fixture.native_id);
+	UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(saved->messages.front().content, std::string("Remote child question"));
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Remote child answer"));
+	UAM_ASSERT_EQ(saved->messages.front().attachments.size(), std::size_t{1});
+	const auto& part = saved->messages.front().attachments.front();
+	UAM_ASSERT(part.source == AttachmentSource::OwnedNativeAsset && !part.native_inline_payload && part.path.empty());
+	UAM_ASSERT_EQ(part.origin_execution_host_id, fixture.host.id); UAM_ASSERT_EQ(part.mime_type, std::string("image/png"));
+	UAM_ASSERT(uam::native_assets::IsKeyForOwner(reference, part.native_asset_key));
+	const auto bytes = uam::native_assets::ReadOwned(fixture.app.data_root, reference, part.native_asset_key);
+	UAM_ASSERT(bytes.ok && bytes.error.empty()); UAM_ASSERT_EQ(bytes.bytes, fixture.original);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.unrelated_id);
+	UAM_ASSERT_EQ(ReadFile(child_file), child_bytes);
+	fixture.Settle(callback);
+}
 #endif
 
 

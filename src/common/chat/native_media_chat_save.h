@@ -17,27 +17,27 @@ namespace uam::io { enum class AtomicWriteStage; }
 
 namespace uam
 {
-	namespace native_agents { class LocalPassiveHistoryLoader; }
+	namespace native_agents { class PassiveHistoryLoader; }
 
-	/// A genuine local reader result. Only the reader can construct it; callers
+	/// A genuine local or SSH-helper reader result. Only the reader can construct it; callers
 	/// can inspect but cannot substitute messages or invent a resume identity.
-	class AdmittedLocalPassiveNativeHistory final
+	class AdmittedPassiveNativeHistory final
 	{
 	public:
-		AdmittedLocalPassiveNativeHistory(AdmittedLocalPassiveNativeHistory&&) noexcept = default;
-		AdmittedLocalPassiveNativeHistory& operator=(AdmittedLocalPassiveNativeHistory&&) noexcept = default;
-		AdmittedLocalPassiveNativeHistory(const AdmittedLocalPassiveNativeHistory&) = delete;
-		AdmittedLocalPassiveNativeHistory& operator=(const AdmittedLocalPassiveNativeHistory&) = delete;
+		AdmittedPassiveNativeHistory(AdmittedPassiveNativeHistory&&) noexcept = default;
+		AdmittedPassiveNativeHistory& operator=(AdmittedPassiveNativeHistory&&) noexcept = default;
+		AdmittedPassiveNativeHistory(const AdmittedPassiveNativeHistory&) = delete;
+		AdmittedPassiveNativeHistory& operator=(const AdmittedPassiveNativeHistory&) = delete;
 		const ChatSession& Candidate() const { return m_chat; }
 		const std::optional<ChatSession>& Previous() const { return m_previous; }
 	private:
-		AdmittedLocalPassiveNativeHistory() = default;
-		friend class native_agents::LocalPassiveHistoryLoader;
+		AdmittedPassiveNativeHistory() = default;
+		friend class native_agents::PassiveHistoryLoader;
 		friend class PreparedNativeMediaChatSave;
 		ChatSession m_chat;
 		std::optional<ChatSession> m_previous;
 		std::filesystem::path m_root;
-		std::string m_reference, m_parent_native_id, m_workspace, m_source_id, m_source_birth, m_primary, m_summary;
+		std::string m_reference, m_parent_native_id, m_workspace, m_host, m_source_id, m_source_birth, m_primary, m_summary;
 	};
 
 	/// Final metadata staged from the actual owner after loading, never a new
@@ -60,7 +60,7 @@ namespace uam
 		    const std::filesystem::path& resolved_root, ChatSession detached,
 		    std::string_view admitted_storage_revision, std::string& error, std::stop_token cancel = {});
 		static std::unique_ptr<PreparedNativeMediaChatSave> PreparePassive(
-		    const std::filesystem::path& resolved_root, AdmittedLocalPassiveNativeHistory admitted,
+		    const std::filesystem::path& resolved_root, AdmittedPassiveNativeHistory admitted,
 		    const PassiveNativeOpenMetadata& metadata, std::string_view admitted_storage_revision,
 		    std::string& error, std::stop_token cancel = {});
 		~PreparedNativeMediaChatSave();

@@ -35,40 +35,47 @@ std::optional<HistoryReference> Validate(const ChatSession& source, std::string_
 }
 
 
-class LocalPassiveHistoryLoader final
+class PassiveHistoryLoader final
 {
 public:
-	static std::optional<AdmittedLocalPassiveNativeHistory> Load(
+	static std::optional<AdmittedPassiveNativeHistory> Load(
 	    const std::filesystem::path& root, const ChatSession& source, const ProviderProfile& profile,
-	    std::string_view reference, std::string_view primary, std::string_view summary, std::string* error, std::stop_token stop)
+	    std::string_view reference, std::string_view primary, std::string_view summary,
+	    const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop)
 	{
-		const auto fail = [&](const char* message) -> std::optional<AdmittedLocalPassiveNativeHistory>
+		// One reader for both: a local child reads its journal, an SSH child the
+		// parent's exact helper snapshot. Every identity check binds this host.
+		const std::string host_id = host ? host->id : "local";
+		const bool workspace_absolute = host
+		    ? execution_hosts::IsAbsoluteRemotePath(host->platform, source.workspace_directory)
+		    : paths::IsControllerLocalWorkspace(source) && paths::PathFromUtf8(source.workspace_directory).is_absolute();
+		const auto fail = [&](const char* message) -> std::optional<AdmittedPassiveNativeHistory>
 		{ if (error) *error = message; return std::nullopt; };
 		const auto decoded = Validate(source, reference, error);
 		if (!decoded || decoded->provider_id != provider_ids::NormalizeCliProviderAliasOrSelf(profile.id) ||
-		    !ProviderRuntimeRegistry::Resolve(profile).SupportsLocalPassiveNativeMedia(profile) || decoded->execution_host_id != "local" ||
+		    !ProviderRuntimeRegistry::Resolve(profile).SupportsPassiveNativeMedia(profile) || decoded->execution_host_id != host_id ||
+		    (host && (host->id.empty() || host->id == "local" || source.execution_host_id != host->id)) ||
 		    source.imported_read_only || source.id.empty() || source.created_at.empty() || !source.metadata_incarnation ||
-		    !root.is_absolute() || !paths::IsControllerLocalWorkspace(source) ||
-		    !paths::PathFromUtf8(source.workspace_directory).is_absolute() || primary.empty() || summary.empty() || (primary == "missing" && summary != "missing"))
-			return fail("This local child history no longer matches the selected parent or provider. Reopen it and try again.");
+		    !root.is_absolute() || !workspace_absolute || primary.empty() || summary.empty() || (primary == "missing" && summary != "missing"))
+			return fail("This child history no longer matches the selected parent or provider. Reopen it and try again.");
 		if (ChatRepository::ChatStorageRevision(root, reference) != primary ||
 		    ChatRepository::ChatSummaryStorageRevision(root, reference) != summary)
 			return fail("Saved passive history changed before loading.");
-		auto loaded = LoadHistory(source, reference, std::nullopt, error, stop);
+		auto loaded = LoadHistory(source, reference, host, error, stop);
 		if (!loaded || stop.stop_requested()) return std::nullopt;
 		// Validate the actual reader before saved metadata can replace any field.
 		if (loaded->id != reference || loaded->provider_id != decoded->provider_id || !loaded->imported_read_only ||
 		    !loaded->native_session_id.empty() || loaded->parent_chat_id != decoded->parent_session_id ||
-		    loaded->execution_host_id != "local" || loaded->workspace_directory != source.workspace_directory || !loaded->messages_loaded)
+		    loaded->execution_host_id != host_id || loaded->workspace_directory != source.workspace_directory || !loaded->messages_loaded)
 			return fail("The actual passive reader returned a different native identity.");
-		AdmittedLocalPassiveNativeHistory result;
+		AdmittedPassiveNativeHistory result;
 		if (primary != "missing")
 		{
 			result.m_previous = ChatRepository::LoadLocalChat(root, std::string(reference), true, nullptr, false);
 			const auto& old = result.m_previous;
 			if (!old || !old->messages_loaded || old->id != reference || !old->imported_read_only || !old->native_session_id.empty() ||
 			    old->provider_id != decoded->provider_id || old->parent_chat_id != decoded->parent_session_id ||
-			    old->execution_host_id != "local" || chat_identity::NativeWorkspaceForHistoryImport(*old) != chat_identity::NativeWorkspaceForHistoryImport(source))
+			    old->execution_host_id != host_id || chat_identity::NativeWorkspaceForHistoryImport(*old) != chat_identity::NativeWorkspaceForHistoryImport(source))
 				return fail("Saved passive history belongs to a different owner.");
 			// A readable partial journal does not authorize discarding saved history.
 			// Compare the actual full graphs, independently of metadata/cache timestamps.
@@ -125,11 +132,11 @@ public:
 			return fail("Saved passive history changed while loading.");
 		if (loaded->id != reference || loaded->provider_id != decoded->provider_id || !loaded->imported_read_only ||
 		    !loaded->native_session_id.empty() || loaded->parent_chat_id != decoded->parent_session_id ||
-		    loaded->execution_host_id != "local" || loaded->workspace_directory != source.workspace_directory)
+		    loaded->execution_host_id != host_id || loaded->workspace_directory != source.workspace_directory)
 			return fail("The actual passive reader returned a different native identity.");
 		std::vector<ChatSession> checked;
 		ChatSession key;
-		key.id = loaded->id; key.provider_id = loaded->provider_id; key.execution_host_id = "local";
+		key.id = loaded->id; key.provider_id = loaded->provider_id; key.execution_host_id = host_id;
 		key.workspace_directory = loaded->workspace_directory;
 		checked.push_back(std::move(key));
 		if (!ChatHistorySyncService().FilterDeletedNativeHistory(root, checked, error) || checked.empty())
@@ -140,18 +147,20 @@ public:
 		result.m_reference = std::string(reference);
 		result.m_parent_native_id = decoded->parent_session_id;
 		result.m_workspace = source.workspace_directory;
+		result.m_host = host_id;
 		result.m_source_id = source.id;
 		result.m_source_birth = source.created_at;
 		result.m_chat = std::move(*loaded);
-		return std::optional<AdmittedLocalPassiveNativeHistory>(std::move(result));
+		return std::optional<AdmittedPassiveNativeHistory>(std::move(result));
 	}
 };
 
-std::optional<AdmittedLocalPassiveNativeHistory> LoadLocalPassiveHistoryForMedia(
+std::optional<AdmittedPassiveNativeHistory> LoadPassiveHistoryForMedia(
 	const std::filesystem::path& root, const ChatSession& source, const ProviderProfile& profile,
-	std::string_view reference, std::string_view primary, std::string_view summary, std::string* error, std::stop_token stop)
+	std::string_view reference, std::string_view primary, std::string_view summary,
+	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop)
 {
-	return LocalPassiveHistoryLoader::Load(root, source, profile, reference, primary, summary, error, stop);
+	return PassiveHistoryLoader::Load(root, source, profile, reference, primary, summary, host, error, stop);
 }
 
 std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const ChatSession& source,

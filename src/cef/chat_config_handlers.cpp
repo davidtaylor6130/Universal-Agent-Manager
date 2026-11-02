@@ -93,7 +93,7 @@ namespace
 	{
 		const auto decoded = uam::native_agents::ParseHistoryId(reference);
 		if (!decoded || decoded->provider_id != uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id) ||
-		    decoded->parent_session_id != source.native_session_id || decoded->execution_host_id != "local" ||
+		    decoded->parent_session_id != source.native_session_id ||
 		    decoded->execution_host_id != uam::strings::NonEmptyOrFallback(source.execution_host_id, "local")) return false;
 		ChatSession key;
 		key.id = reference; key.provider_id = decoded->provider_id; key.execution_host_id = decoded->execution_host_id;
@@ -101,6 +101,15 @@ namespace
 		std::vector<ChatSession> checked;
 		checked.push_back(std::move(key));
 		return ChatHistorySyncService().FilterDeletedNativeHistory(root, checked) && !checked.empty();
+	}
+
+	/// A child read on a remote host publishes only while that host's helper identity is unchanged.
+	bool NativeChildOpenHostUnchanged(const std::vector<ExecutionHost>& hosts, const ExecutionHost& expected)
+	{
+		const ExecutionHost* host = uam::execution_hosts::Find(hosts, expected.id);
+		return host != nullptr && host->transport == expected.transport && host->ssh_alias == expected.ssh_alias &&
+		    host->platform == expected.platform && host->runner_directory == expected.runner_directory &&
+		    host->runner_version == expected.runner_version && host->runner_protocol_version == expected.runner_protocol_version;
 	}
 
 	bool NativeChildOpenProfileMatches(const ProviderProfile& left, const ProviderProfile& right)
@@ -248,19 +257,25 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	const bool needs_export = source != nullptr && supports_history && supported_host && !native_id.empty() && !reuse_saved_read &&
 	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || target == nullptr);
 	const bool needs_preparation = needs_export || (supports_history && supported_host && target != nullptr && !target->messages_loaded);
-	const bool supports_local_passive_media = provider != nullptr &&
-	    ProviderRuntimeRegistry::Resolve(*provider).SupportsLocalPassiveNativeMedia(*provider);
+	const bool supports_passive_media = provider != nullptr &&
+	    ProviderRuntimeRegistry::Resolve(*provider).SupportsPassiveNativeMedia(*provider);
+	// A remote passive child needs its parent's ready helper; otherwise the
+	// generic path below reports that the host is not ready.
+	const ExecutionHost* passive_host = source == nullptr || uam::paths::IsControllerLocalWorkspace(*source) ? nullptr
+	    : uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
+	const bool passive_host_ready = source != nullptr &&
+	    (uam::paths::IsControllerLocalWorkspace(*source) || (passive_host != nullptr && uam::remote::CanAttemptRunnerConnection(*passive_host)));
 
-	// This opt-in route is only the existing local passive journal Open. Remote
-	// snapshots and resumable native-session opens retain their current path.
-	if (needs_export && native_agent && supports_local_passive_media &&
-	    source != nullptr && uam::paths::IsControllerLocalWorkspace(*source))
+	// Passive journal Open (local or SSH) publishes inline originals through the
+	// sealed media save; resumable native-session opens retain their current path.
+	if (needs_export && native_agent && supports_passive_media && passive_host_ready)
 	{
 		struct Work
 		{
 			std::filesystem::path root;
 			ChatSession source_identity;
-			std::optional<uam::AdmittedLocalPassiveNativeHistory> loaded;
+			std::optional<ExecutionHost> host;
+			std::optional<uam::AdmittedPassiveNativeHistory> loaded;
 			std::unique_ptr<uam::PreparedNativeMediaChatSave> prepared;
 			std::optional<ChatSession> retired;
 			uam::PassiveNativeOpenMetadata metadata;
@@ -290,6 +305,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
 		if (!work) { cb->Failure(503, "Native history preparation is busy. Retry shortly."); return; }
 		work->root = m_app.data_root;
+		if (passive_host) work->host = *passive_host;
 		work->target_present = target != nullptr;
 		work->target_loaded = target != nullptr && target->messages_loaded;
 		if (target)
@@ -345,6 +361,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    pending == m_nativeHistoryRequests.end() || pending->second != request ||
 			    preparation == m_app.branch_preparations.end() || preparation->second.lock() != ownership ||
 			    m_workspaceDeletionPending || m_app.deletion_progress || !parent ||
+			    (work->host && !NativeChildOpenHostUnchanged(m_app.settings.execution_hosts, *work->host)) ||
 			    parent->metadata_incarnation != work->source_identity.metadata_incarnation || parent->created_at != work->source_identity.created_at ||
 			    parent->native_session_id != work->source_identity.native_session_id || parent->folder_id != work->source_identity.folder_id ||
 			    parent->imported_read_only || parent->messages_loaded != source_loaded ||
@@ -353,7 +370,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    (source_loaded && uam::StateSerializer::MessageDigest(*parent, false) != source_digest) ||
 			    uam::paths::ResolveWorkspaceRootPath(m_app, *parent) != workspace || m_app.native_history_chats_dir != native_directory ||
 			    !NativeChildOpenProfileMatches(ProviderResolutionService().ProviderForChatOrDefault(m_app, *parent), profile) ||
-			    !ProviderRuntimeRegistry::Resolve(profile).SupportsLocalPassiveNativeMedia(profile) ||
+			    !ProviderRuntimeRegistry::Resolve(profile).SupportsPassiveNativeMedia(profile) ||
 			    m_app.pending_chat_save_at_by_chat_id.contains(source_id) || m_app.pending_chat_save_tasks.contains(source_id) ||
 			    m_app.pending_chat_save_at_by_chat_id.contains(native_id) || m_app.pending_chat_save_tasks.contains(native_id) ||
 			    m_app.worktree_operation_chat_ids.contains(source_id) || m_app.worktree_operation_chat_ids.contains(native_id) ||
@@ -394,8 +411,8 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				        ChatRepository::ChatStorageRevision(work->root, work->source_identity.id) != source_primary ||
 				        ChatRepository::ChatSummaryStorageRevision(work->root, work->source_identity.id) != source_summary)
 					    return AsyncFailure(409, "Source history changed before passive loading.");
-				    auto loaded = uam::native_agents::LoadLocalPassiveHistoryForMedia(work->root, work->source_identity, profile, native_id,
-				        *primary, *summary, &work->error, request->get_token());
+				    auto loaded = uam::native_agents::LoadPassiveHistoryForMedia(work->root, work->source_identity, profile, native_id,
+				        *primary, *summary, work->host, &work->error, request->get_token());
 				    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Actual native child history is unavailable."));
 				    if (work->target_present)
 				    {
@@ -582,7 +599,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		std::string revision;
 	};
 	std::shared_ptr<CachedPassiveHistoryWork> cached_passive;
-	if (!needs_export && native_agent && supports_local_passive_media &&
+	if (!needs_export && native_agent && supports_passive_media &&
 	    source != nullptr && uam::paths::IsControllerLocalWorkspace(*source))
 	{
 		// Cached reopen hydrates canonical already-owned history, never issues a
@@ -794,12 +811,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    }
 		    if (remote_host)
 		    {
-			    const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, remote_host->id);
-			    if (host == nullptr || host->transport != remote_host->transport ||
-			        host->ssh_alias != remote_host->ssh_alias || host->platform != remote_host->platform ||
-			        host->runner_directory != remote_host->runner_directory ||
-			        host->runner_version != remote_host->runner_version ||
-			        host->runner_protocol_version != remote_host->runner_protocol_version)
+			    if (!NativeChildOpenHostUnchanged(m_app.settings.execution_hosts, *remote_host))
 			    {
 				    result = AsyncFailure(409, "Remote host changed while its child history was loading.");
 				    return;

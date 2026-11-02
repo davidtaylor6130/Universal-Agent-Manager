@@ -264,9 +264,9 @@ class IProviderRuntime
 		return true;
 	}
 
-	/// Actual local passive-reader originals may use the sealed media transaction.
+	/// Actual passive-reader originals (local or SSH helper) may use the sealed media transaction.
 	/// This grants no provider input/resume authority and is opt-in per adapter.
-	virtual bool SupportsLocalPassiveNativeMedia(const ProviderProfile&) const { return false; }
+	virtual bool SupportsPassiveNativeMedia(const ProviderProfile&) const { return false; }
 
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
 	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const
