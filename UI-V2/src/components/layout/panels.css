@@ -281,11 +281,20 @@
 .uam-update-row--error { background: var(--error-dim); }
 .uam-update-row--success.uam-progress-fill::before { background: var(--success-dim); }
 
-/* Shared transient alert: slides in from the right and back out the way it came. */
+/* Shared transient alert stack: newest enters from the bottom while its slot grows, pushing older notices up;
+   a dismissed notice drops back toward the bottom as its slot closes, so the others slide down into place. */
+.uam-transient-alert-stack { gap: 6px; }
+.uam-transient-alert-list { gap: 6px; }
+.uam-transient-alert-slot { display: grid; grid-template-rows: 1fr; animation: uam-transient-alert-slot-in var(--dur-base) var(--ease-out-soft) backwards; }
+.uam-transient-alert-slot[hidden] { display: none; }
+.uam-transient-alert-slot[data-state="closed"] { animation: uam-transient-alert-slot-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+.uam-transient-alert-slot > .uam-transient-alert { min-height: 0; overflow: hidden; }
 .uam-transient-alert { animation: uam-transient-alert-in var(--dur-base) var(--ease-out-soft) backwards; }
-.uam-transient-alert[data-state="closed"] { animation: uam-transient-alert-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-@keyframes uam-transient-alert-in { from { opacity: 0; transform: translateX(24px); } }
-@keyframes uam-transient-alert-out { to { opacity: 0; transform: translateX(24px); } }
+.uam-transient-alert[data-state="closed"] { animation: uam-transient-alert-out var(--dur-exit) var(--ease) forwards; }
+@keyframes uam-transient-alert-slot-in { from { grid-template-rows: 0fr; } }
+@keyframes uam-transient-alert-slot-out { to { grid-template-rows: 0fr; margin-top: -6px; } }
+@keyframes uam-transient-alert-in { from { opacity: 0; transform: translateY(24px); } }
+@keyframes uam-transient-alert-out { to { opacity: 0; transform: translateY(24px); } }
 .uam-transient-alert { isolation: isolate; }
 /* Countdown as the alert's own background: a tinted fill that drains right-to-left, never a separate bar. */
 .uam-transient-alert__countdown {
@@ -303,7 +312,8 @@
 @keyframes uam-transient-alert-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 [data-motion="off"] .uam-transient-alert__countdown { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .uam-transient-alert, .uam-transient-alert[data-state="closed"] { animation: none; }
+  .uam-transient-alert, .uam-transient-alert[data-state="closed"],
+  .uam-transient-alert-slot, .uam-transient-alert-slot[data-state="closed"] { animation: none; }
   .uam-transient-alert__countdown { display: none; }
 }
 

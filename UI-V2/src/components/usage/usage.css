@@ -201,7 +201,8 @@
   z-index: 2;
   display: grid;
   gap: 3px;
-  min-width: 9rem;
+  /* Size to content: an absolutely positioned box otherwise shrinks to the half-column left of its anchor and nowrap values spill out. */
+  width: max-content;
   padding: 6px 8px;
   white-space: nowrap;
   border: 1px solid var(--border-bright);
@@ -211,14 +212,14 @@
   font-size: var(--fs-xs);
   color: var(--text);
   opacity: 0;
-  transform: translateX(-50%);
+  transform: translateX(calc(-50% + var(--tip-dx, 0px)));
   translate: 0 4px;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease-out-soft), translate var(--dur-fast) var(--ease-out-soft);
 }
-.uam-usage-col.is-start .uam-usage-col-tip { left: 0; transform: none; }
-.uam-usage-col.is-end .uam-usage-col-tip { left: auto; right: 0; transform: none; }
-.uam-usage-col.is-high .uam-usage-col-tip { bottom: auto; top: 2px; }
+.uam-usage-col.is-start .uam-usage-col-tip { left: 0; transform: translateX(var(--tip-dx, 0px)); }
+.uam-usage-col.is-end .uam-usage-col-tip { left: auto; right: 0; transform: translateX(var(--tip-dx, 0px)); }
+.uam-usage-col.is-high .uam-usage-col-tip, .uam-usage-col-tip[data-flip] { bottom: auto; top: 2px; }
 .uam-usage-col:hover .uam-usage-col-tip,
 .uam-usage-col:focus-visible .uam-usage-col-tip { opacity: 1; translate: 0 0; }
 .uam-usage-tip-head { color: var(--text-2); }
@@ -438,12 +439,13 @@
 .uam-tokens-plot .uam-usage-col-stack { width: 64%; max-width: 4rem; }
 .uam-usage-col-total { position: absolute; bottom: calc(var(--h, 0%) + 4px); left: 0; right: 0; text-align: center; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); pointer-events: none; }
 .uam-usage-col:is(:hover, :focus-visible) .uam-usage-col-total { font-weight: 600; color: var(--text); }
-.uam-usage-col-tip--split { min-width: 17rem; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--surface); }
+.uam-usage-col-tip--split { gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--surface); }
 .uam-usage-col-tip--split .uam-usage-tip-head { display: flex; justify-content: space-between; gap: var(--sp-4); color: var(--text); }
-.uam-usage-tip-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.uam-usage-tip-cols { display: grid; grid-template-columns: auto auto; gap: var(--sp-4); }
+.uam-usage-tip-cols .uam-usage-tip-row { white-space: nowrap; }
 .uam-usage-tip-cols > span { display: grid; align-content: start; gap: 3px; }
 .uam-usage-tip-cols > span + span { padding-left: var(--sp-4); border-left: 1px solid var(--border); }
-.uam-usage-col-tip--split .uam-usage-tip-row > .tabular-nums { margin-left: auto; padding-left: var(--sp-3); color: var(--text); }
+.uam-usage-col-tip--split .uam-usage-tip-row > .tabular-nums { margin-left: auto; padding-left: var(--sp-3); color: var(--text); flex-shrink: 0; }
 .uam-usage-swatch.is-dot { border-radius: 50%; }
 .uam-tokens-xaxis { display: flex; margin: var(--sp-1) 0 0 calc(3.25rem + var(--sp-2)); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--text-3); }
 .uam-tokens-xaxis > span { display: grid; flex: 1 1 0; justify-items: center; min-width: 0; white-space: nowrap; line-height: 1.3; }

@@ -27,7 +27,7 @@ vi.mock('./MainPanel', () => ({
 import { AppShell } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
-import { APP_FAILURE_EVENT, reportAppFailure } from '../../utils/appFailure'
+import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { retainUnconfirmedFolderChoice, retainUnconfirmedFolderRestart } from '../settings/dataFolderSettings'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -1258,6 +1258,52 @@ describe('AppShell', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('stacks distinct notices newest at the bottom, counts identical repeats and collapses overflow', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const messages = () => [...host.querySelectorAll('.uam-transient-alert-slot:not([hidden]) [aria-label="Notification message"]')].map((node) => node.firstChild?.textContent)
+    try {
+      await act(async () => root.render(<AppShell />))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'one'))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'two'))
+      act(() => reportAppFailure('Subagent conversation unavailable.', 'three'))
+      // Rapid identical failures stay one notice with a visible count instead of silently restarting.
+      expect(messages()).toEqual(['Subagent conversation unavailable.'])
+      expect(host.querySelector('[data-testid="transient-alert-count"]')?.textContent).toBe('×3')
+      act(() => vi.advanceTimersByTime(4000))
+      for (const n of [1, 2, 3, 4]) act(() => reportAppNotice(`Notice ${n}`))
+      // 30% of 768px holds 4 rows: the toggle plus the 4 newest; the oldest collapses behind it.
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      const toggle = () => [...host.querySelectorAll('button')].find((button) => /^Show/.test(button.textContent ?? ''))!
+      expect(toggle().textContent).toBe('Show 1 more')
+      act(() => toggle().click())
+      expect(messages()).toEqual(['Subagent conversation unavailable.', 'Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      act(() => toggle().click())
+      expect(messages()).toHaveLength(4)
+      // Focus inside the stack holds every countdown; leaving it resumes them.
+      act(() => toggle().focus())
+      act(() => vi.advanceTimersByTime(3000))
+      expect(messages()).toHaveLength(4)
+      act(() => toggle().blur())
+      // The oldest expires on its own timer; the rest keep theirs.
+      act(() => vi.advanceTimersByTime(1000)); act(() => vi.advanceTimersByTime(200))
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      expect(toggle()).toBeUndefined()
+      // Dismiss (button or Escape) removes only that notice.
+      act(() => host.querySelectorAll<HTMLButtonElement>('[aria-label="Dismiss alert"]')[3].click())
+      act(() => host.querySelector('.uam-transient-alert-slot:not([hidden]) [data-testid="transient-alert-item"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      act(() => vi.advanceTimersByTime(200))
+      expect(messages()).toEqual(['Notice 2', 'Notice 3'])
+      act(() => vi.advanceTimersByTime(5200))
+      expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); vi.useRealTimers() }
+  })
+
   it('keeps failed moves in notifications after the transient alert is dismissed', async () => {
     vi.useFakeTimers()
     const originalMove = useAppStore.getState().moveResourceToCollection
@@ -1646,7 +1692,8 @@ describe('AppShell', () => {
       expect(surface.style.bottom).toBe('16px')
       expect(surface.getBoundingClientRect().bottom).toBe(284)
       expect(surface.getBoundingClientRect().top).toBeGreaterThanOrEqual(96)
-      expect(Number.parseFloat(text.style.maxHeight)).toBe(178)
+      // The stack (and so one long notice) is capped at 30% of the 300px window, less padding.
+      expect(Number.parseFloat(text.style.maxHeight)).toBe(80)
       expect(text.style.overflowY).toBe('auto')
       expect(text.tabIndex).toBe(0)
       expect(text.textContent).toBe(message)

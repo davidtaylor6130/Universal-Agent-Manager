@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowLeft, Check, ChevronRight, Info, RefreshCw, SlidersHorizontal, X } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageCostBasis, usageWindow, type UsageCostBasis, type UsageProvider, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
@@ -165,6 +165,24 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
  * T3-inspired usage workspace. Cost and Tokens share one layout (History row, chips, headline, chart, provider cards); only
  * the figures differ, so switching metric keeps the frame still. Native readers supply counts; unknown prices and scan gaps remain visible.
  */
+/** Keeps each column tooltip inside its chart card and the viewport, 8px in: shifts it sideways (--tip-dx) and drops it to the plot top when it would cross the card top. The column highlight stays on its column. */
+export function fitColumnTooltips(plot: HTMLElement) {
+  const card = plot.closest<HTMLElement>('.uam-tokens-chart') ?? plot
+  const tips = [...plot.querySelectorAll<HTMLElement>('.uam-usage-col-tip')]
+  tips.forEach(tip => { tip.style.setProperty('--tip-dx', '0px'); delete tip.dataset.flip })
+  const box = card.getBoundingClientRect()
+  const left = Math.max(box.left, 0) + TIP_INSET, right = Math.min(box.right, window.innerWidth) - TIP_INSET, top = Math.max(box.top, 0) + TIP_INSET
+  const tipBoxes = tips.map(tip => tip.getBoundingClientRect())
+  tips.forEach((tip, index) => {
+    const tipBox = tipBoxes[index]
+    // ponytail: a tooltip wider than the card keeps its left edge; no width-aware flip to the other side.
+    const dx = tipBox.left < left ? left - tipBox.left : tipBox.right > right ? right - tipBox.right : 0
+    tip.style.setProperty('--tip-dx', `${dx}px`)
+    if (tipBox.top < top) tip.dataset.flip = ''
+  })
+}
+const TIP_INSET = 8
+
 export function UsagePage({ onClose }: { onClose: () => void }) {
   const hosts = useAppStore(state => state.executionHosts)
   const [hostId, setHostId] = useState(ALL_MACHINES_HOST_ID)
@@ -443,12 +461,21 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     </tr>)}</tbody>
   </table>
   const chartKey = cost ? costMix : tokenParts(totals)
+  const plotRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const plot = plotRef.current
+    if (!plot) return
+    const refit = () => fitColumnTooltips(plot)
+    refit()
+    window.addEventListener('resize', refit)
+    return () => window.removeEventListener('resize', refit)
+  }, [plotKey, periods, scaleMax])
   const chart = <Card className="uam-tokens-chart">
     <div className="uam-tokens-chart__head"><h2>{chartTitle}</h2><span className="uam-usage-muted">{cost ? 'by provider' : 'by token type'}</span>
       <ul className="uam-usage-key text-xs" aria-hidden>{chartKey.map(part => <li key={part.key} className="uam-usage-key-item"><i className="uam-usage-swatch" style={{ '--c': part.color } as CSSProperties} />{part.label}</li>)}</ul></div>
     <div className="uam-usage-chart">
       <div className="uam-usage-axis text-xs tabular-nums" aria-hidden>{[...ticks].reverse().map(tick => <span key={tick}>{axisValue(tick)}</span>)}</div>
-      <div key={plotKey} role="group" aria-label={`${chartTitle} ${cost ? 'by provider, unpriced tokens excluded,' : 'by type'} from loaded history. Use arrow keys to move between columns; the ${hourly ? 'Hourly' : 'Daily'} table below lists the same figures.`}
+      <div key={plotKey} ref={plotRef} role="group" aria-label={`${chartTitle} ${cost ? 'by provider, unpriced tokens excluded,' : 'by type'} from loaded history. Use arrow keys to move between columns; the ${hourly ? 'Hourly' : 'Daily'} table below lists the same figures.`}
         className="uam-usage-plot uam-tokens-plot" style={{ gap: periods.length > 31 ? 1 : 4, '--n': Math.max(1, ticks.length - 1) } as CSSProperties} onKeyDown={moveColumnFocus}>
         <Reveal open={cost && peak === 0 && totals.unpricedTokens > 0}><span className="absolute inset-0 flex items-center justify-center text-xs uam-usage-muted">{pricingPending ? 'Prices still loading.' : 'No priced usage in this range.'}</span></Reveal>
         {periods.map((period, index) => {
