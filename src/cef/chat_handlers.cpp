@@ -688,6 +688,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	}
 	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat, ChatDomainService().SelectedChatId(m_app) == chat->id);
 	const auto request = BeginNativeHistoryRead(chat_id, cb);
+	if (host_snapshot) request->execution_host_id = host_snapshot->id; // A helper reinstall stops this read.
 	auto transcript = std::make_shared<NativeChatTranscript>();
 	if (!DispatchNativeMediaRefresh(cb,
 	    [chat_snapshot, host_snapshot, provider_id, transcript, request, profile_snapshot,

@@ -46,6 +46,12 @@ struct RemoteRefreshFeedbackTestAccess
 		handler.m_remoteNativeHistoryReaderForTests = std::move(reader);
 	}
 	static void StopHost(UamQueryHandler& handler, const std::string& host_id) { handler.StopNativeHistoryReadsOnHost(host_id); }
+	static bool Pending(UamQueryHandler& handler, const std::string& id) { return handler.m_nativeHistoryRequests.contains(id); }
+	static bool Stopped(UamQueryHandler& handler, const std::string& id)
+	{
+		const auto found = handler.m_nativeHistoryRequests.find(id);
+		return found != handler.m_nativeHistoryRequests.end() && found->second->stop_requested();
+	}
 	static void Query(UamQueryHandler& handler, int64_t query_id) { handler.m_dispatchingQuery = {-1, "", query_id}; }
 	static void Cancel(UamQueryHandler& handler, int64_t query_id) { handler.OnQueryCanceled(nullptr, nullptr, query_id); }
 	static void Fault(UamQueryHandler& handler, uam::io::AtomicWriteStage stage, bool throws)
@@ -703,23 +709,83 @@ UAM_TEST(RemoteRefreshFeedbackSlowHostDoesNotBlockAnotherHostsRefresh)
 UAM_TEST(RemoteRefreshFeedbackHelperReplacementStopsOnlyThatHostsReadAndFreesItsSlot)
 {
 	FeedbackFixture fixture;
+	// Another host's helper replacement leaves this host's read running to publication.
 	const auto cb = fixture.Start();
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
 	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "other-host");
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(*fixture.reads, 1); UAM_ASSERT_EQ(cb->failures, 0);
+	fixture.Complete(1); fixture.Complete(2);
+	fixture.AssertPublished(cb);
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+	// This host's helper replacement stops its next read before any SSH read begins.
+	const auto stopped = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
 	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
 	const auto primary = ReadFile(fixture.Primary());
 	fixture.Complete(0);
-	UAM_ASSERT_EQ(*fixture.reads, 0); // Stopped before any SSH read began.
-	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
+	UAM_ASSERT_EQ(*fixture.reads, 1);
+	UAM_ASSERT_EQ(stopped->successes, 0); UAM_ASSERT_EQ(stopped->failures, 1); UAM_ASSERT_EQ(stopped->status, 409);
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); fixture.AssertDraft();
 	fixture.pending.clear();
 	fixture.AwaitRetirement();
 	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 0u);
-	// The freed slot admits a fresh refresh on the same host.
-	const auto retry = fixture.Start();
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementInterruptsInProgressReadAndFreesItsSlot)
+{
+	FeedbackFixture fixture;
+	auto entered = std::make_shared<std::promise<void>>();
+	auto entering = entered->get_future();
+	RemoteRefreshFeedbackTestAccess::Configure(*fixture.handler,
+	    [&fixture](auto cb, auto worker, auto completion)
+	    {
+		    fixture.pending.push_back({cb, std::move(worker), std::move(completion)});
+		    return true;
+	    },
+	    [entered](const ExecutionHost&, const ChatSession&, std::string* error, std::stop_token stop) -> std::optional<ChatSession>
+	    {
+		    // A hung SSH read that ends only through its stop token (bounded for test safety).
+		    entered->set_value();
+		    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		    if (error) *error = "Remote read stopped.";
+		    return std::nullopt;
+	    });
+	const auto cb = fixture.Start();
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
-	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
-	fixture.AssertPublished(retry);
+	auto query = fixture.Take(0);
+	auto running = std::async(std::launch::async, query.worker);
+	UAM_ASSERT(entering.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
+	const auto started = std::chrono::steady_clock::now();
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	UAM_ASSERT(running.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
+	query.Finish(running.get());
+	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
+	query = {}; fixture.pending.clear();
+	fixture.AwaitRetirement();
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 0u);
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementStopsOtherProvidersRemoteRead)
+{
+	FeedbackFixture fixture;
+	// Non-Gemini remote refreshes take no remote slot, but a helper install still stops them.
+	fixture.Chat().provider_id = "claude-cli";
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::Pending(*fixture.handler, fixture.Chat().id));
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "other-host");
+	UAM_ASSERT(!RemoteRefreshFeedbackTestAccess::Stopped(*fixture.handler, fixture.Chat().id));
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::Stopped(*fixture.handler, fixture.Chat().id));
+	// Never run the queued real-SSH worker; discard it unexecuted.
+	fixture.pending.clear();
+	UAM_ASSERT_EQ(cb->successes, 0);
 }
 
 UAM_TEST(RemoteRefreshFeedbackCommittedAckFailureKeepsOriginalWarningAndHistory)

@@ -123,7 +123,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 		ChatIconQueryIdentity query{-1, "", -1};
 		bool delivery_cancelled = false;
 		bool cache_filled = false; // The read finished and saved history now reflects it.
-		std::string execution_host_id; // Set only for remote refreshes holding a per-host slot.
+		std::string execution_host_id; // Set for remote refresh reads on this host; empty for local reads.
 		struct Waiter { ChatIconQueryIdentity query; CefRefPtr<Callback> callback; std::function<void()> retry; };
 		std::vector<Waiter> waiters;
 	};
