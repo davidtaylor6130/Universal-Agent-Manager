@@ -1330,8 +1330,11 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
 
-    expect(host.textContent).toContain('Idle delay (seconds)')
-    expect(host.textContent).toContain('Recall budget (bytes)')
+    expect(host.textContent).toContain('Idle delay')
+    expect(host.textContent).toContain('Recall budget')
+    // The unit lives inside the field, not in the row title.
+    expect(host.querySelector('[aria-label="Idle delay (seconds)"]')?.closest('.relative')?.textContent).toContain('seconds')
+    expect(host.querySelector('[aria-label="Recall budget (bytes)"]')?.closest('.relative')?.textContent).toContain('bytes')
 
     act(() => root.unmount())
     host.remove()

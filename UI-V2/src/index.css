@@ -2229,47 +2229,6 @@ button.uam-commit-check { cursor: pointer; }
 
 .uam-field--select { height: 34px; padding-right: 6px; cursor: pointer; }
 
-/* ── Skills store ───────────────────────────────────────────── */
-.uam-skill-folder__summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
-  border-radius: var(--r-md);
-  font-size: var(--fs-md);
-  color: var(--text-2);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-.uam-skill-folder__summary::-webkit-details-marker { display: none; }
-.uam-skill-folder__summary:hover { background: var(--sidebar-item-hover); color: var(--text); }
-.uam-skill-folder__chevron { flex-shrink: 0; color: var(--text-3); transition: transform var(--dur-base) var(--ease-out-soft); }
-.uam-skill-folder[open] > .uam-skill-folder__summary .uam-skill-folder__chevron { transform: rotate(90deg); }
-.uam-skill-folder__count { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
-.uam-skill-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  margin: 1px 0;
-  padding: 6px 4px 6px 10px;
-  border-radius: var(--r-md);
-  transition: background var(--dur-fast) var(--ease);
-}
-.uam-skill-row:hover { background: var(--sidebar-item-hover); }
-.uam-skill-row[data-selected="true"] { background: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
-.uam-skill-row__command {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  color: var(--accent);
-  opacity: 0.85;
-}
-.uam-skill-preview {
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-}
 .uam-field--area { height: auto; padding: 8px 9px; line-height: 1.5; resize: vertical; }
 .uam-form-dialog { background: var(--surface); border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
 .uam-form-dialog label { color: var(--text-2); font-weight: var(--fw-medium); }

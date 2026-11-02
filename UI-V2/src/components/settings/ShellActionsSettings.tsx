@@ -1,5 +1,4 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
@@ -111,7 +110,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const [newGroupActionId, setNewGroupActionId] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
-  const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null)
   const dirty = JSON.stringify(actions) !== JSON.stringify(appliedActions)
   const invalidAction = actions.find(action => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
   const validationError = invalidAction ? 'Each action needs a label and input type; enabled skill actions also need a skill.' : ''
@@ -122,7 +120,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     if (dirty) setPendingExit(() => next)
     else next()
   } }), [dirty])
-  useEffect(() => { setToolbarTarget(document.getElementById('settings-page-actions')) }, [])
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -204,10 +201,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     ...actions.map(groupPathText),
     ...markdownEntries.map(entry => entry.group || ''),
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
-  const toolbar = <div className="flex items-center gap-2">
-    <Reveal open={dirty}><StatusIndicator issues={['Unsaved shell action changes']} /></Reveal>
-    <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
-  </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
   // ui: hand-rolled group header kept — the aria-label carries the full group path and collapse animates grid rows with visibility, which the Disclosure summary cannot express.
   const renderEntries = (entries: ActionEntry[], renderAction: (action: ShellAction) => ReactNode): ReactNode[] => entries.map((entry, index) => {
@@ -235,7 +228,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
 
   return (
     <div className="grid gap-6">
-      {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
       <Presence open={Boolean(pendingExit)}>{pendingExit && <UnsavedChangesDialog title="Save shell action changes?" label="Unsaved shell actions" busy={applying} saveDisabled={Boolean(invalidAction)} error={validationError || undefined}
         onStay={() => { setPendingExit(null); revealInvalidAction() }}
         onDiscard={() => { const next = pendingExit; setActions(appliedActions); setPendingExit(null); next() }}
@@ -250,7 +242,11 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
       </ConfirmDialog>
 
       <SettingsSection title="Actions"
-        actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
+        actions={<>
+          <Reveal open={dirty}><StatusIndicator issues={['Unsaved shell action changes']} /></Reveal>
+          <Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>
+          <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
+        </>}>
         <Reveal open={actions.length === 0}><p className="uam-prov-sub">No shell actions yet. Add one to start chats from Finder or Explorer.</p></Reveal>
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>

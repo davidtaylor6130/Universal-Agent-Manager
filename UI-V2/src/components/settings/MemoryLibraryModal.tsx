@@ -713,7 +713,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       </label>
       <Reveal as="span" open={!isAllMemory}><IconButton icon={<FolderOpen size={15} />} label="Open memory root" onClick={() => void openMemoryRoot()} /></Reveal>
       <IconButton icon={<RefreshCw size={15} />} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()} />
-      <div className="shrink-0">
+      <div className="shrink-0 uam-more-menu">
         <MenuSelect
           label="More memory actions"
           value=""

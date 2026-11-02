@@ -14,6 +14,12 @@ import { ArrowLeft, ChevronRight, Download, ExternalLink, FileInput, FileText, F
 import './stores.css'
 import './provider-settings.css'
 
+/** The detail header already shows the title; drop a leading Markdown heading that repeats it. */
+function withoutRepeatedTitle(body: string, title: string) {
+  const match = /^\s*#{1,2}\s+(.+?)\s*(?:\n|$)/.exec(body)
+  return match && match[1].trim().toLowerCase() === title.trim().toLowerCase() ? body.slice(match[0].length) : body
+}
+
 const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
 const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
   id, label: providerMetadataForId(id).name, icon: <ProviderLogo providerId={id} size={24} />,
@@ -83,7 +89,6 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   // Confirmation and preview lines swap in place; the last confirmation stays readable while it animates out.
   const confirmPresence = usePresence(Boolean(confirmation))
   const idleActionsPresence = usePresence(!confirmation)
-  const previewPresence = usePresence(previewing)
   const lastConfirmation = useRef<'discard' | 'overwrite' | null>(null)
   if (confirmation) lastConfirmation.current = confirmation
   const childSnapshot = useRef<ReactElement | null>(null)
@@ -393,7 +398,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
     </> : <>
       <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
-      <Swap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="grid gap-2">
+      <Swap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="grid">
+        <ProgressFill label="Reading skills" indeterminate active={previewing} className="grid gap-2">
         {[
           { label: 'Create', icon: <Plus size={14} />, action: beginNew },
           { label: 'Import from provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
@@ -404,11 +410,11 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <span className="uam-prov-option__label min-w-0 text-left">{choice.label}</span>
           <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
         </RowButton>)}
+        </ProgressFill>
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
         <ProgressFill label="Reading skills" indeterminate active={previewing} className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></ProgressFill>
       </>}</Swap>
-      {previewPresence.mounted && <p role="status" data-state={previewPresence.closing ? 'closed' : 'open'} className="uam-presence text-xs">Reading skills...</p>}
     </>}</Swap>
   </div>
 
@@ -447,7 +453,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         {folderSegments(entry.group).length > 0 && <span className="uam-chip uam-chip--sm"><Folder size={13} aria-hidden />{folderSegments(entry.group).join(' / ')}</span>}
         {entry.commandName && <span className="uam-chip uam-chip--sm uam-store-command">/{entry.commandName}</span>}
       </div>
-      <div className="uam-store-markdown"><MarkdownContent content={entry.body ?? entry.preview} /></div>
+      <div className="uam-store-markdown"><MarkdownContent content={withoutRepeatedTitle(entry.body ?? entry.preview, entry.title)} /></div>
       <Disclosure className="uam-store-details mt-4" summary="Details">
         <dl>
           {entry.dateUpdated && <><dt>Updated</dt><dd>{formatDate(entry.dateUpdated)}</dd></>}
@@ -595,7 +601,7 @@ function SkillRows({ entries, onOpen, onPin }: { entries: MarkdownStoreEntry[]; 
       <RowButton className="uam-store-row__open" onClick={() => onOpen(entry.filePath)}>
         <FileText size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />
         <span className="uam-store-truncate text-sm" style={{ color: 'var(--text)', fontWeight: 'var(--fw-medium)', maxWidth: '45%' }}>{entry.title}</span>
-        {entry.commandName && <span className="uam-chip uam-chip--sm uam-store-command shrink-0">/{entry.commandName}</span>}
+        {entry.commandName && <span className="uam-store-command shrink-0">/{entry.commandName}</span>}
         <span className="uam-store-truncate min-w-0 flex-1 text-xs" style={{ color: 'var(--text-3)' }}>{entry.review || entry.preview}</span>
       </RowButton>
       <div className="uam-store-row__pin">

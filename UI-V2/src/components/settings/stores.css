@@ -52,6 +52,8 @@
 .uam-store-row__pin { display: flex; flex-shrink: 0; justify-content: center; width: 28px; }
 .uam-store-row__pin .uam-iconbtn:not(.is-active) { opacity: 0; }
 .uam-store-row:hover .uam-store-row__pin .uam-iconbtn, .uam-store-row:focus-within .uam-store-row__pin .uam-iconbtn { opacity: 1; }
+/* List rows: the command is plain muted mono text. The chip style below is the detail view's only. */
+.uam-store-row .uam-store-command { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
 .uam-chip.uam-store-command { font-family: var(--font-mono); color: var(--text-3); border-color: var(--border); }
 
 /* Detail: title, chips, body as the hero, then a collapsed Details list. */
@@ -98,3 +100,6 @@
 [data-motion="off"] .uam-memory-exit, [data-motion="off"] .uam-memory-exit[data-state="closed"], [data-motion="off"] .uam-memory-form, [data-motion="off"] .uam-memory-form[data-state="closed"],
 [data-motion="off"] .uam-memory-toolbar, [data-motion="off"] .uam-memory-toolbar[data-state="closed"], [data-motion="off"] .uam-memory-row, [data-motion="off"] .uam-memory-row[data-state="closed"] { transition: none; animation: none; }
 
+.uam-store-nav > .uam-store-nav__item { flex: 0 0 auto; width: 100%; }
+/* "More" menus are a plain ⋯ trigger, no dropdown chevron. */
+.uam-more-menu .uam-menu-select__chevron { display: none; }

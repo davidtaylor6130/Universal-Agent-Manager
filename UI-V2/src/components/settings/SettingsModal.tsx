@@ -197,7 +197,7 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
   </>
 })
 
-const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers: Provider[]; hostId: string }>(function ProviderAvailabilityControls({ providers, hostId }, ref) {
+const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { title: string; providers: Provider[]; hostId: string }>(function ProviderAvailabilityControls({ title, providers, hostId }, ref) {
   const overrides = useAppStore((state) => state.providerAvailability)
   const saveSettings = useAppStore((state) => state.setProviderAvailability)
   const saved = Object.fromEntries(providers.map((provider) => [provider.id, overrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true]))
@@ -230,11 +230,14 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
     finally { setSaving(false) }
   }
   return <>
-    {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
+    <SettingsSection title={title} actions={<>
+        <Button size="sm" disabled={saving || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
+        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton>
+      </>}>
+      {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)}
         control={<Switch hideLabel label={`${providerShortName(provider, provider.id)} available`} checked={draft[provider.id]} disabled={saving}
           onChange={(event) => { const enabled = event.currentTarget.checked; setDraft((current) => ({ ...current, [provider.id]: enabled })) }} />} />)}
-      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
-        <SaveButton saving={saving} disabled={saving || !dirty} onClick={() => void save()}>Save provider settings</SaveButton></div>
+    </SettingsSection>
     <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}</Presence>
   </>
 })
@@ -1744,7 +1747,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           description={computerUseAllowlistEnabled ? 'Chats can target only the apps checked below.' :'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
-        <Reveal open={computerUseApps.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>Refresh to list apps UAM can target.</span>} control={<Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>} /></Reveal>
+        <Reveal open={computerUseApps.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>Refresh to list apps UAM can target.</span>} /></Reveal>
         <AnimatedRows items={computerUseApps} keyOf={(app) => `${app.identityKind}:${app.identity}`} render={(app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
@@ -1778,11 +1781,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} />
-    if (selectedSection === 'provider-summary') return <div className="grid"><SettingsSection title="Provider availability">{availability()}</SettingsSection><ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+    const availability = (title: string, ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} title={title} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} />
+    if (selectedSection === 'provider-summary') return <div className="grid">{availability('Provider availability')}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid"><SettingsSection title="Availability">{availability([providerId])}</SettingsSection>{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+      return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -2602,7 +2605,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
             </SettingRow></Reveal>
             <SettingRow
-              title="Idle delay (seconds)"
+              title="Idle delay"
               description="Idle time before a chat's memory is processed."
               control={
                 <NumberField label="Idle delay (seconds)" value={memoryIdleDelaySeconds} min={MIN_MEMORY_IDLE_DELAY_SECONDS} max={MAX_MEMORY_IDLE_DELAY_SECONDS} unit="seconds"
@@ -2610,7 +2613,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             <SettingRow
-              title="Recall budget (bytes)"
+              title="Recall budget"
               description="Most saved memory added to each prompt."
               control={
                 <NumberField label="Recall budget (bytes)" value={memoryRecallBudgetBytes} min={MIN_MEMORY_RECALL_BUDGET_BYTES} max={MAX_MEMORY_RECALL_BUDGET_BYTES} step={256} unit="bytes"
@@ -2946,9 +2949,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const header = <div className="uam-settings-page-header w-full">
                   <div key={selectedSection} className="uam-reveal min-w-0">
                     <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div id="settings-page-actions" className="flex items-center gap-2"/>
                   </div>
                 </div>
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6"><div className="uam-settings-frame flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div></div>
