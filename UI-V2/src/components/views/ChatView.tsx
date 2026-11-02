@@ -1114,11 +1114,23 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     turnAssistantMessageIndex === messages.length - 2
       ? messages.length - 1
       : -1
-  // A settled turn's events were synced into the backend's turn assistant row, so bind them to that row even when a
-  // later user row follows (#278). While processing, a steer can leave the index on an earlier row; require the tail.
+  const completedTurnAssistantText = useMemo(() => acp?.processing
+    ? ''
+    : turnEvents.reduce(
+        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
+        ''
+      ).trim(), [acp?.processing, turnEvents])
+  // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
+  // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
+  // the turn's user row and contain the turn text (includes: compaction summaries live in content, not turn text).
+  // While processing, a steer can leave the index on an earlier row; require the tail.
+  const settledTurnAssistantRowValid =
+    !acp?.processing &&
+    turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
+    (completedTurnAssistantText.length === 0 || Boolean(messages[turnAssistantMessageIndex]?.content.includes(completedTurnAssistantText)))
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (!acp?.processing || turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
+    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&
     messages[turnAssistantMessageIndex]?.role === 'assistant'
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
@@ -1126,12 +1138,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  const completedTurnAssistantText = useMemo(() => acp?.processing
-    ? ''
-    : turnEvents.reduce(
-        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
-        ''
-      ).trim(), [acp?.processing, turnEvents])
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
     completedTurnAssistantText.length > 0 &&

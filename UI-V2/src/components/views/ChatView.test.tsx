@@ -8339,13 +8339,13 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  it('renders a settled turn once at its owning assistant row when a later user row follows it', () => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string }) => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
         'chat-1': [
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
-          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: 'Status update.\n\nSettled answer.', createdAt: new Date(1) },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', createdAt: new Date(1) },
           { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Follow-up row', createdAt: new Date(2) },
         ],
       },
@@ -8353,12 +8353,13 @@ describe('ChatView', () => {
         ...state.acpBindingBySessionId,
         'chat-1': {
           ...state.acpBindingBySessionId['chat-1'],
-          lifecycleState: 'error',
-          processing: false,
+          lifecycleState: overrides.processing ? 'processing' : 'error',
+          processing: overrides.processing ?? false,
           pendingPermission: null,
+          toolCalls: [],
           turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
-          turnUserMessageIndex: 0,
-          turnAssistantMessageIndex: 1,
+          turnUserMessageIndex: overrides.turnUserMessageIndex ?? 0,
+          turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? 1,
           turnSerial: 2,
         },
       },
@@ -8366,14 +8367,30 @@ describe('ChatView', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-
-    expect(host.textContent?.match(/Settled answer\./g)).toHaveLength(1)
-    expect(host.textContent).toContain('Follow-up row')
-
+    const text = host.textContent ?? ''
     act(() => root.unmount())
     host.remove()
+    return text
+  }
+
+  it('renders a settled turn once at its owning assistant row when a later user row follows it', () => {
+    const text = renderTurnAfterFollowUp({})
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it.each([
+    { name: 'processing turn whose assistant is not the tail', overrides: { processing: true } },
+    { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
+    { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
+    { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
+  ])('keeps the trailing fallback card for a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    // The fallback renders the turn text after the follow-up row; the persisted row keeps its own content.
+    expect(text.lastIndexOf('Settled answer.')).toBeGreaterThan(text.indexOf('Follow-up row'))
+    if (overrides.assistantContent) expect(text).toContain(overrides.assistantContent)
   })
 
   it('keeps the fallback visible while processing even when persisted text matches', () => {
