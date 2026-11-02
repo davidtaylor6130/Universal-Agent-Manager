@@ -1520,7 +1520,20 @@ UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
 static void CheckColdLocalConfigurationAdmission(std::string_view variation, bool scope_override = false, bool scope_disabled = false)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#if defined(_WIN32)
+	// This thread stands in for the UI thread. On macOS a main thread already outranks the
+	// default-QoS save and setup workers; on Windows they share its priority, so on a 2-core runner
+	// they preempt it for whole quanta and the 100 ms budgets measured the scheduler (#526). Wall-clock
+	// budgets still include any blocking wait or synchronous work this thread performs.
+	struct PollThreadPriority
+	{
+		const int previous = GetThreadPriority(GetCurrentThread());
+		PollThreadPriority() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST); }
+		~PollThreadPriority() { SetThreadPriority(GetCurrentThread(), previous); }
+	} poll_thread_priority;
+#endif
 	TempDir temp("uam-cold-local-admission");
+	const std::chrono::steady_clock::time_point fixture_started = std::chrono::steady_clock::now();
 	const fs::path assets = temp.root / "private-skills" / "fixture";
 	fs::create_directories(assets);
 	UAM_ASSERT(uam::io::WriteTextFile(assets / "SKILL.md", "Read the fixture references when requested."));
@@ -1671,6 +1684,20 @@ done
 	for (int index = 1; index < history_count; ++index)
 		app.chats.front().messages.push_back({.role = MessageRole::Assistant,
 		    .content = std::to_string(index) + std::string(128 * 1024, 'x')});
+	// Calibrate only the completion deadline, which bounds background work rather than the UI thread.
+	// The cold launch repeats this fixture's small-file I/O while installing resources, and the longest
+	// (restart and reload) flows then take about 40 times one save and reload of this ~26 MB chat, so
+	// the deadline allows twice that on this machine with the old 10 s as its floor (#526). The 100 ms
+	// input and poll budgets below are fixed and never scaled.
+	const std::chrono::steady_clock::duration fixture_cost = std::chrono::steady_clock::now() - fixture_started;
+	ChatSession calibration = app.chats.front();
+	calibration.id = "cold-local-admission-calibration";
+	const std::chrono::steady_clock::time_point calibration_started = std::chrono::steady_clock::now();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root / "calibration-data", calibration));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root / "calibration-data", calibration.id).has_value());
+	const std::chrono::steady_clock::duration save_cycle = std::chrono::steady_clock::now() - calibration_started;
+	const std::chrono::steady_clock::duration completion_limit =
+	    std::max<std::chrono::steady_clock::duration>(std::chrono::seconds(10), 2 * (fixture_cost + 40 * save_cycle));
 	std::string expected_hash = "opencode-cli:builtin-build-v2";
 	if (app.chats.front().uam_agent_id == "workspace-47")
 		expected_hash = "opencode-cli:fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(ReadFile(temp.root / ".uam/agents/workspace-47.md")));
@@ -1714,7 +1741,7 @@ done
 		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{201});
 		const std::shared_ptr<std::optional<bool>> receipt = std::make_shared<std::optional<bool>>();
 		UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [receipt](bool saved) { *receipt = saved; }));
-		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		const std::chrono::steady_clock::time_point deadline = started + completion_limit;
 		while (!receipt->has_value() && std::chrono::steady_clock::now() < deadline)
 		{
 			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -1731,7 +1758,7 @@ done
 	}
 	if (variation == "source")
 	{
-		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		const std::chrono::steady_clock::time_point deadline = started + completion_limit;
 		while (!uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()) && std::chrono::steady_clock::now() < deadline)
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		UAM_ASSERT(uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()));
@@ -1761,7 +1788,7 @@ done
 		else if (variation == "provider") app.chats.front().provider_id = "gemini-cli";
 		else if (variation == "goal") app.chats.front().goal_command_revision = "replacement-goal-revision";
 		else if (variation == "host") app.settings.execution_hosts.front().instruction_file = (temp.root / "changed-host.md").string();
-		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		const std::chrono::steady_clock::time_point deadline = started + completion_limit;
 		while (std::chrono::steady_clock::now() < deadline &&
 		    (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch ||
 		     !app.agent_input_preparation_tasks.empty() || !app.local_acp_launch_tasks.empty()))
@@ -1783,7 +1810,7 @@ done
 		UAM_ASSERT_EQ(app.chats.front().messages[199].content, std::to_string(199) + std::string(128 * 1024, 'x'));
 		if (variation == "agentfailure" || variation == "source")
 		{
-			const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+			const std::chrono::steady_clock::time_point deadline = started + completion_limit;
 			while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
 			{
 				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -1802,7 +1829,7 @@ done
 	bool completion_guard_exercised = false;
 	const fs::path blocked_chats = app.data_root / "chats";
 	const fs::path saved_chats = app.data_root / "fixture-saved-chats";
-	const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+	const std::chrono::steady_clock::time_point deadline = started + completion_limit;
 	while (std::chrono::steady_clock::now() < deadline)
 	{
 		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
@@ -2093,7 +2120,7 @@ done
 						replacement.native_session_id = "replacement-native-session";
 						UAM_ASSERT(ChatRepository::SaveChat(app.data_root, replacement));
 					}
-					const std::chrono::steady_clock::time_point guard_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+					const std::chrono::steady_clock::time_point guard_deadline = std::chrono::steady_clock::now() + completion_limit;
 					while (resumed.pending_queued_history && std::chrono::steady_clock::now() < guard_deadline)
 					{
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -2117,7 +2144,7 @@ done
 				}
 				if (variation.starts_with("busyrelaunch"))
 				{
-					const std::chrono::steady_clock::time_point stage_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+					const std::chrono::steady_clock::time_point stage_deadline = std::chrono::steady_clock::now() + completion_limit;
 					while (resumed.pending_referenced_queue_launch_fingerprint.empty() && std::chrono::steady_clock::now() < stage_deadline)
 					{
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -2156,7 +2183,7 @@ done
 					UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
 					return;
 				}
-				const std::chrono::steady_clock::time_point restart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+				const std::chrono::steady_clock::time_point restart_deadline = std::chrono::steady_clock::now() + completion_limit;
 				while (std::chrono::steady_clock::now() < restart_deadline)
 				{
 					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -2292,7 +2319,7 @@ done
 		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Warm input against the current selected catalogue", &error));
 		UAM_ASSERT(std::chrono::steady_clock::now() - warm_started <= std::chrono::milliseconds(100));
 		UAM_ASSERT_EQ(ReadFile(prompt_log), prompts);
-		const std::chrono::steady_clock::time_point warm_deadline = warm_started + std::chrono::seconds(10);
+		const std::chrono::steady_clock::time_point warm_deadline = warm_started + completion_limit;
 		while ((app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->processing || !app.pending_chat_save_at_by_chat_id.empty()) &&
 		    std::chrono::steady_clock::now() < warm_deadline)
 		{
