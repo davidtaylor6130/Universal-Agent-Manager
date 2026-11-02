@@ -121,8 +121,13 @@ function QuestionRequest({ input, onResolve, autoOpen = true, variant = 'float',
         if (memory) memory.inflight = request
         await settle(request)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- adopt a submit started by the instance this one replaced
-    useEffect(() => { if (memory?.inflight) void settle(memory.inflight) }, [])
+    // Adopt a submit started by the instance this one replaced. A layout effect runs before the response can settle, and
+    // a submit that already failed in between leaves nothing in flight, so the busy state seeded at render is dropped.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useLayoutEffect(() => {
+        if (memory?.inflight) void settle(memory.inflight)
+        else if (submittingRef.current) { submittingRef.current = false; setSubmitting(false) }
+    }, [])
     const submitState: QuestionSubmitState = busy ? 'busy' : pending && complete && !accepted ? 'ready' : 'incomplete'
     useEffect(() => { onSubmitStateChange?.(submitState) }, [submitState, onSubmitStateChange])
     useEffect(() => {

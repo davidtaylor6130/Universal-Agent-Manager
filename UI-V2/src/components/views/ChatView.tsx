@@ -1827,12 +1827,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const questionKey = pendingUserInput ? `${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}` : ''
   const [answeredQuestionKey, setAnsweredQuestionKey] = useState('')
   // Both card forms share one answer state per question, so a lifecycle flip (permission, message edit) never resets it.
-  // ponytail: entries are never pruned; they are a few small objects per answered question for the life of this view.
-  const questionMemories = useRef(new Map<string, QuestionMemory>()).current
+  const [questionMemories] = useState(() => new Map<string, QuestionMemory>())
   if (questionKey && !questionMemories.has(questionKey)) questionMemories.set(questionKey, createQuestionMemory())
   const questionMemory = questionMemories.get(questionKey)
+  // Once the chat has no pending question its answer state is dropped, so a provider that reuses a request id
+  // (Copilot's JSON-RPC ids restart with the runtime) opens a fresh, answerable question.
+  useEffect(() => {
+    if (pendingUserInput) return
+    const prefix = `${session.id}:`
+    for (const key of questionMemories.keys()) if (key.startsWith(prefix)) questionMemories.delete(key)
+    setAnsweredQuestionKey((key) => key.startsWith(prefix) ? '' : key)
+  }, [pendingUserInput, questionMemories, session.id])
   const showQuestion = Boolean(pendingUserInput && !session.importedReadOnly)
-  const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && showComposer && editingMessageIndex === null &&
+  // An answer accepted from the floating card keeps that card's "Answers submitted" until native clears the question.
+  const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && !questionMemory?.accepted && showComposer && editingMessageIndex === null &&
     acp?.lifecycleState === 'waitingUserInput' && !pendingUserInput?.requestId.startsWith('uam-control:')
   const questionTabMounted = usePresence(questionInComposer).mounted
   const questionSubmitRef = useRef<(() => void) | null>(null)

@@ -3891,6 +3891,78 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('forgets a chat\'s question answers once no question is pending, so a reused request id opens fresh', async () => {
+    const resolveAcpUserInput = vi.fn().mockResolvedValue(true)
+    const ask = (text: string | null) => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: text ? 'waitingUserInput' : 'processing', pendingPermission: null,
+          pendingUserInput: text ? { requestId: '7', itemId: '', status: 'pending', questions: [{ id: 'answer', header: 'answer', question: text, isOther: false, isSecret: false,
+            options: [{ label: 'Focused', description: '' }, { label: 'Broad', description: '' }] }] } : null } },
+    })))
+    useAppStore.setState({ resolveAcpUserInput })
+    ask('First question?')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const panel = () => host.querySelector<HTMLElement>('.qr-panel')
+    const radios = () => Array.from(panel()!.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+    const submit = () => host.querySelector<HTMLButtonElement>('button[type="submit"][aria-label="Submit answers"]')!
+
+    // A draft left behind by a cancelled turn does not prefill the next question that reuses the id.
+    act(() => radios()[1].click())
+    ask(null)
+    ask('Second question?')
+    expect(panel()?.textContent).toContain('Second question?')
+    expect(radios().some((radio) => radio.checked)).toBe(false)
+
+    // An answered question does not hide or lock the next one with the same id.
+    act(() => radios()[0].click())
+    await act(async () => { submit().click(); await Promise.resolve() })
+    expect(panel()).toBeNull()
+    ask(null)
+    ask('Third question?')
+    expect(panel()?.dataset.variant).toBe('composer')
+    expect(radios().some((radio) => radio.checked)).toBe(false)
+    act(() => radios()[1].click())
+    expect(submit().disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a question answered from the floating card out of the composer until native clears it', async () => {
+    const resolveAcpUserInput = vi.fn().mockResolvedValue(true)
+    const setLifecycle = (lifecycleState: 'waitingUserInput' | 'waitingPermission') => act(() => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState } },
+    })))
+    useAppStore.setState((state) => ({
+      resolveAcpUserInput,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'waitingPermission', pendingPermission: null,
+          pendingUserInput: { requestId: 'float-request', itemId: 'float-item', status: 'pending', questions: [{ id: 'scope', header: 'scope', question: 'Which scope?', isOther: false, isSecret: false,
+            options: [{ label: 'Focused', description: '' }, { label: 'Broad', description: '' }] }] } },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const panel = () => host.querySelector<HTMLElement>('.qr-panel')!
+    expect(panel().dataset.variant).toBe('float')
+    act(() => panel().querySelector<HTMLInputElement>('input[type="radio"]')!.click())
+    await act(async () => { Array.from(panel().querySelectorAll('button')).find((button) => button.textContent === 'Submit answers')!.click(); await Promise.resolve() })
+    expect(resolveAcpUserInput).toHaveBeenCalledTimes(1)
+
+    setLifecycle('waitingUserInput')
+    expect(panel().dataset.variant).toBe('float')
+    expect(panel().textContent).toContain('Answers submitted')
+    expect(host.querySelector('button[type="submit"][aria-label="Submit answers"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders Codex provider labels from backend provider metadata', () => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) =>

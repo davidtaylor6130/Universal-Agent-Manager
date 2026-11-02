@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SubAgentRunningPanel, MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
 import type { AcpPendingPermission, AcpPendingUserInput } from '../../store/useAppStore'
 import { sanitizePendingUserInput } from '../../store/cpp/sanitizers'
+import { createQuestionMemory, type QuestionMemory } from './QuestionInput'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: Root
@@ -318,6 +319,17 @@ describe('production sequential questions', () => {
         expect(button('Submit answers').disabled).toBe(false)
         await click('Submit answers')
         expect(onResolve).toHaveBeenCalledExactlyOnceWith('request-1', { scope: ['Broad'] })
+    })
+
+    it('drops the adopted Submitting state when the replaced card\'s submit failed before this card picked it up', async () => {
+        // The replaced card's submit is in flight while this card renders, then fails and clears memory.inflight before pickup.
+        let reads = 0
+        const pendingSubmit = new Promise<boolean>(() => {})
+        const memory: QuestionMemory = { ...createQuestionMemory(), get inflight() { return reads++ < 2 ? pendingSubmit : undefined }, set inflight(_) {} }
+        const onResolve = vi.fn().mockResolvedValue(true)
+        await render(<UserInputInlineCard input={request} onResolve={onResolve} memory={memory} />)
+        expect(document.querySelector('fieldset')?.disabled).toBe(false)
+        expect(Array.from(document.querySelectorAll('button')).some(item => item.textContent === 'Submitting…')).toBe(false)
     })
 
     it('accepts a no-options free-text answer without inventing a default', async () => {
