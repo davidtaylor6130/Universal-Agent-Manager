@@ -15,6 +15,15 @@ namespace uam::usage
 	{
 		constexpr std::size_t kCredentialLimit = 64 * 1024;
 		constexpr std::size_t kOutputLimit = kCredentialLimit * 6 + 1024;
+
+		// Volatile writes so the compiler cannot drop the wipe as a dead store before the buffer is freed.
+		void Wipe(std::string& value)
+		{
+			volatile char* bytes = value.data();
+			for (std::size_t index = 0; index < value.size(); ++index) bytes[index] = '\0';
+			value.clear();
+		}
+
 		AccountCredentialResult Failure(std::string message, bool unavailable = false)
 		{
 			AccountCredentialResult result; result.error = std::move(message); result.account_unavailable = unavailable; return result;
@@ -33,7 +42,7 @@ namespace uam::usage
 		{
 			HelperOutcome outcome = HelperOutcome::StartFailed; std::string output; int exit_code = -1;
 			// Helper output can hold the secret: every copy is wiped however its reader returns.
-			~HelperRun() { std::fill(output.begin(), output.end(), '\0'); }
+			~HelperRun() { Wipe(output); }
 		};
 
 		// Runs one bounded credential helper. Its stderr can contain diagnostics, so it is drained and never exposed or logged.
@@ -135,7 +144,7 @@ namespace uam::usage
 		begin += run.output[begin] == '\n' ? 10 : 9;
 		const std::size_t end = run.output.find('\n', begin);
 		AccountCredentialResult result; result.credential = run.output.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-		if (result.credential.empty() || result.credential.size() > kCredentialLimit) { std::fill(result.credential.begin(), result.credential.end(), '\0'); return Failure(kStoreInvalid); }
+		if (result.credential.empty() || result.credential.size() > kCredentialLimit) { Wipe(result.credential); return Failure(kStoreInvalid); }
 		return result;
 	}
 
