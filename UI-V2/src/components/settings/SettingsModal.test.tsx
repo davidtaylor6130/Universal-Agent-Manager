@@ -1482,6 +1482,9 @@ describe('SettingsModal memory settings', () => {
     const fiftyK = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="option"]')).find((option) => option.textContent?.includes('50,000'))
     act(() => fiftyK?.click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ goalTokenBudget: 50000 })
+    // A budget set elsewhere (for example the companion) that is not a preset still shows as the selected value.
+    act(() => useAppStore.setState({ goalTokenBudget: 75000 }))
+    expect(host.querySelector('button[aria-label="Goal token budget"]')?.textContent).toContain('75,000')
 
     act(() => root.unmount())
     host.remove()

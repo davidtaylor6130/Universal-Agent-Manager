@@ -42,7 +42,7 @@ import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusS
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
-import type { QuestionSubmitState } from '../chat/QuestionInput'
+import { createQuestionMemory, type QuestionMemory, type QuestionSubmitState } from '../chat/QuestionInput'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, AttachmentList, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerSendButton, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
@@ -52,7 +52,7 @@ import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, ConfirmDialog, EXIT_MS, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
 import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -1826,6 +1826,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // arriving while editing or without a composer) floats above the composer so it stays usable.
   const questionKey = pendingUserInput ? `${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}` : ''
   const [answeredQuestionKey, setAnsweredQuestionKey] = useState('')
+  // Both card forms share one answer state per question, so a lifecycle flip (permission, message edit) never resets it.
+  // ponytail: entries are never pruned; they are a few small objects per answered question for the life of this view.
+  const questionMemories = useRef(new Map<string, QuestionMemory>()).current
+  if (questionKey && !questionMemories.has(questionKey)) questionMemories.set(questionKey, createQuestionMemory())
+  const questionMemory = questionMemories.get(questionKey)
   const showQuestion = Boolean(pendingUserInput && !session.importedReadOnly)
   const questionInComposer = showQuestion && questionKey !== answeredQuestionKey && showComposer && editingMessageIndex === null &&
     acp?.lifecycleState === 'waitingUserInput' && !pendingUserInput?.requestId.startsWith('uam-control:')
@@ -2177,25 +2182,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setEditingMessageIndex(null)
     setBranchingMessageIndex(null)
   }, [])
-  const [branchMotion, setBranchMotion] = useState<{ phase: MessageMotionPhase; anchor: number } | null>(null)
+  const [branchMotion, setBranchMotion] = useState<{ phase: MessageMotionPhase; anchor: number; sessionId: string } | null>(null)
   const branchMotionTimer = useRef(0)
   useEffect(() => () => window.clearTimeout(branchMotionTimer.current), [])
   const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string, direction: 'next' | 'prev' = 'next') => {
-    const activate = () => { setPreferredBranch(parentId, messageIndex, branchId); setActiveSession(branchId) }
+    // Switch at once so each click steps from the branch on screen; the swipe only decorates the arriving rows.
+    setPreferredBranch(parentId, messageIndex, branchId)
+    setActiveSession(branchId)
     window.clearTimeout(branchMotionTimer.current)
-    if (!motionAllowed()) { setBranchMotion(null); activate(); return }
-    // Rows below the fork leave toward the old side, then the chosen branch's rows enter from the other side.
-    setBranchMotion({ phase: `out-${direction}`, anchor: messageIndex })
-    branchMotionTimer.current = window.setTimeout(() => {
-      activate()
-      setBranchMotion({ phase: `in-${direction}`, anchor: messageIndex })
-      branchMotionTimer.current = window.setTimeout(() => setBranchMotion(null), scaledMs(180))
-    }, scaledMs(EXIT_MS))
+    if (!motionAllowed()) { setBranchMotion(null); return }
+    setBranchMotion({ phase: `in-${direction}`, anchor: messageIndex, sessionId: branchId })
+    branchMotionTimer.current = window.setTimeout(() => setBranchMotion(null), scaledMs(180))
   }, [setActiveSession])
   const messageListRef = useRef<HTMLDivElement>(null)
-  const messageMotion = messageMotionPhase({ branch: branchMotion?.phase ?? null, editing: editingMessageIndex !== null && editingMessageSource.kind === 'branch',
+  // A swipe belongs to the branch it switched to; picking another chat mid-swipe does not animate that chat.
+  const activeBranchMotion = branchMotion?.sessionId === session.id ? branchMotion : null
+  const messageMotion = messageMotionPhase({ branch: activeBranchMotion?.phase ?? null, editing: editingMessageIndex !== null && editingMessageSource.kind === 'branch',
     saving: branchingMessageIndex !== null && branchingMessageIndex === editingMessageIndex })
-  const messageMotionAnchor = branchMotion?.anchor ?? (messageMotion ? editingMessageIndex : null)
+  const messageMotionAnchor = activeBranchMotion?.anchor ?? (messageMotion ? editingMessageIndex : null)
   const selectPersistedTool = useCallback((messageId: string, toolId: string) => {
     setSelectedToolCallRef({ id: toolId, messageId })
   }, [])
@@ -2524,8 +2528,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       if (event.defaultPrevented || getTopmostModal() !== dialog) return
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation()
-        // Escape cancels an in-place edit first, then closes the window.
-        if (goalEditingRef.current) setGoalEditing(false)
+        // Escape cancels an in-place edit first (never while it saves, so a failed save keeps its draft), then closes the window.
+        if (goalEditingRef.current) { if (!goalMutationInFlightRef.current) setGoalEditing(false) }
         else setGoalsPopupOwner(null)
       }
       else trapModalTab(event)
@@ -3682,6 +3686,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             {showQuestion && !questionInComposer && questionKey !== answeredQuestionKey && pendingUserInput && (
               <UserInputInlineCard
                 key={questionKey}
+                memory={questionMemory}
                 input={pendingUserInput}
                 onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                 waitIsStale={acp?.waitIsStale}
@@ -3851,6 +3856,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             >
             {questionInComposer && pendingUserInput && <UserInputInlineCard
               key={questionKey}
+              memory={questionMemory}
               variant="composer"
               input={pendingUserInput}
               onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
@@ -4062,7 +4068,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
               editing={editingMessageIndex !== null}
               sendLabel={questionInComposer ? 'Submit answers' : undefined}
-              holdSend={questionInComposer && questionSubmitState === 'busy'}
+              holdSend={questionInComposer}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
               modelId={session.smallModelMode ? activeGoal?.workerModelId || currentModelId : currentModelId}

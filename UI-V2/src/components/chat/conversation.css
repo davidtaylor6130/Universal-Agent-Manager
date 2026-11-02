@@ -347,12 +347,9 @@
   interpolate-size: allow-keywords; overflow: clip; animation: uam-message-collapse var(--dur-exit) var(--ease) forwards;
 }
 @keyframes uam-message-collapse { from { opacity: 0.55; } to { opacity: 0; height: 0; margin-top: 0; transform: translateY(calc(var(--sp-2) * -1)); } }
-/* Branch swipe: next leaves left and enters from the right; previous is the mirror. The counter digit follows. */
-[data-message-motion^="out-"] > [data-motion-anchor] ~ * { animation: uam-branch-out var(--dur-exit) var(--ease) forwards; }
+/* Branch swipe: the branch switches at once and its rows enter from the right on next, from the left on previous. The counter digit follows. */
 [data-message-motion^="in-"] > [data-motion-anchor] ~ * { animation: uam-branch-in var(--dur-base) var(--ease-out-soft) backwards; }
-[data-message-motion^="out-"] > [data-motion-anchor] .conversation-turn__branches > span { display: inline-block; animation: uam-branch-out var(--dur-exit) var(--ease) forwards; }
 [data-message-motion^="in-"] > [data-motion-anchor] .conversation-turn__branches > span { display: inline-block; animation: uam-branch-in var(--dur-base) var(--ease-out-soft) backwards; }
-[data-message-motion="out-next"], [data-message-motion="in-prev"] { --branch-travel: -20px; }
-[data-message-motion="out-prev"], [data-message-motion="in-next"] { --branch-travel: 20px; }
-@keyframes uam-branch-out { to { opacity: 0; transform: translateX(var(--branch-travel)); } }
+[data-message-motion="in-prev"] { --branch-travel: -20px; }
+[data-message-motion="in-next"] { --branch-travel: 20px; }
 @keyframes uam-branch-in { from { opacity: 0; transform: translateX(var(--branch-travel)); } }

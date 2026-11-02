@@ -10,7 +10,7 @@ describe('message motion', () => {
 
   it('moves only when motion is allowed', () => {
     setReduced(false)
-    expect(messageMotionPhase({ branch: 'out-prev', editing: false, saving: false })).toBe('out-prev')
+    expect(messageMotionPhase({ branch: 'in-prev', editing: false, saving: false })).toBe('in-prev')
     expect(messageMotionPhase({ branch: null, editing: true, saving: true })).toBe('collapse')
     expect(messageMotionPhase({ branch: null, editing: false, saving: false })).toBeUndefined()
     setReduced(true)
@@ -18,6 +18,6 @@ describe('message motion', () => {
     expect(messageMotionPhase({ branch: null, editing: true, saving: true })).toBe('editing')
     setReduced(false)
     document.documentElement.setAttribute('data-motion', 'off')
-    expect(messageMotionPhase({ branch: 'out-next', editing: false, saving: false })).toBeUndefined()
+    expect(messageMotionPhase({ branch: 'in-next', editing: false, saving: false })).toBeUndefined()
   })
 })

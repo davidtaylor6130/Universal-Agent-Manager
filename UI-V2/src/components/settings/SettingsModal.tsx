@@ -2690,7 +2690,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'goal-loops') {
       return (
         <SettingsSection title="Goal limits">
-          <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[10000, 25000, 50000, 100000, 200000, 500000].map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
+          <SettingRow title="Goal token budget" description="Maximum tokens for a new goal; 0 is unlimited." control={<MenuSelect label="Goal token budget" value={String(goalTokenBudget)} options={[{ value: '0', label: 'Unlimited' }, ...[...new Set([10000, 25000, 50000, 100000, 200000, 500000, goalTokenBudget])].filter(Boolean).sort((a, b) => a - b).map((value) => ({ value: String(value), label: value.toLocaleString() }))]} onChange={(value) => void setMemorySettings({ goalTokenBudget: Number(value) })} />} />
           <SettingRow
             title="Maximum iterations"
             description="Loops a goal may run before it stops."

@@ -19,11 +19,15 @@ type Props = {
     submitRef?: MutableRefObject<(() => void) | null>
     /** Composer variant: `ready` lets the composer send button submit; `busy` keeps it shown but disabled while answers are in flight. */
     onSubmitStateChange?: (state: QuestionSubmitState) => void
-    /** Called once the provider accepts the answers. */
+    /** Called once the provider accepts the answers, even if this card has unmounted meanwhile. */
     onAnswered?: () => void
+    /** Owner-held answer state, so moving the question between the composer and the floating card keeps drafts, step and an in-flight submit. */
+    memory?: QuestionMemory
 }
 export type QuestionSubmitState = 'incomplete' | 'ready' | 'busy'
 type Draft = { choice: number | 'other' | null; selections?: Array<number | 'other'>; text: string }
+export type QuestionMemory = { drafts: Record<string, Draft>; step: number; accepted: boolean; inflight?: Promise<boolean> }
+export const createQuestionMemory = (): QuestionMemory => ({ drafts: {}, step: 0, accepted: false })
 type Question = AcpPendingUserInput['questions'][number]
 
 function answerFor(question: Question, draft?: Draft)
@@ -60,16 +64,17 @@ function QuestionCollapse({ open, children }: { open: boolean; children: ReactNo
 
 const choiceInputs = (root: Element) => Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]'))
 
-function QuestionRequest({ input, onResolve, autoOpen = true, variant = 'float', submitRef, onSubmitStateChange, onAnswered, ...wait }: Props)
+function QuestionRequest({ input, onResolve, autoOpen = true, variant = 'float', submitRef, onSubmitStateChange, onAnswered, memory, ...wait }: Props)
 {
     const [open, setOpen] = useState(autoOpen)
-    const [drafts, setDrafts] = useState<Record<string, Draft>>({})
-    const [step, setStep] = useState(0)
-    const [submitting, setSubmitting] = useState(false)
-    const [accepted, setAccepted] = useState(false)
+    const [drafts, setDrafts] = useState<Record<string, Draft>>(() => memory?.drafts ?? {})
+    const [step, setStep] = useState(() => memory?.step ?? 0)
+    const [submitting, setSubmitting] = useState(() => Boolean(memory?.inflight))
+    const [accepted, setAccepted] = useState(() => memory?.accepted ?? false)
     const [error, setError] = useState('')
     const [restoreFocus, setRestoreFocus] = useState(false)
-    const submittingRef = useRef(false)
+    const submittingRef = useRef(Boolean(memory?.inflight))
+    useEffect(() => { if (memory) { memory.drafts = drafts; memory.step = step } }, [memory, drafts, step])
     const triggerRef = useRef<HTMLButtonElement>(null)
     const panelRef = useRef<HTMLElement>(null)
     const mountedRef = useRef(false)
@@ -89,25 +94,35 @@ function QuestionRequest({ input, onResolve, autoOpen = true, variant = 'float',
     const complete = input.questions.length > 0 && input.questions.every(item => answerFor(item, drafts[item.id]).length > 0)
     const answered = question ? answerFor(question, drafts[question.id]).length > 0 : false
     const last = current >= input.questions.length - 1
-    const submit = async () => {
-        if (!pending || !complete || submittingRef.current) return
-        submittingRef.current = true
-        setSubmitting(true)
-        setError('')
-        const answers: AcpUserInputAnswers = Object.fromEntries(input.questions.map(item => [item.id, answerFor(item, drafts[item.id])]))
+    // Every card instance for this request awaits the same submit, so a remount mid-submit stays busy and cannot send twice.
+    const settle = async (request: Promise<boolean>) => {
         let resolved = false
         try {
-            resolved = await onResolve(input.requestId, answers)
+            resolved = await request
+            if (resolved) { if (memory) { memory.accepted = true; memory.drafts = {} } onAnswered?.() }
             if (!mountedRef.current) return
-            if (resolved) { setAccepted(true); setDrafts({}); close(false); onAnswered?.() }
+            if (resolved) { setAccepted(true); setDrafts({}); close(false) }
             else setError('The provider did not accept the answers. Try again.')
         } catch {
             if (!mountedRef.current) return
             setError('Could not submit the answers. Try again.')
         } finally {
+            if (memory?.inflight === request) memory.inflight = undefined
             if (!resolved && mountedRef.current) { submittingRef.current = false; setSubmitting(false) }
         }
     }
+    const submit = async () => {
+        if (!pending || !complete || submittingRef.current || memory?.inflight) return
+        submittingRef.current = true
+        setSubmitting(true)
+        setError('')
+        const answers: AcpUserInputAnswers = Object.fromEntries(input.questions.map(item => [item.id, answerFor(item, drafts[item.id])]))
+        const request = (async () => onResolve(input.requestId, answers))()
+        if (memory) memory.inflight = request
+        await settle(request)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- adopt a submit started by the instance this one replaced
+    useEffect(() => { if (memory?.inflight) void settle(memory.inflight) }, [])
     const submitState: QuestionSubmitState = busy ? 'busy' : pending && complete && !accepted ? 'ready' : 'incomplete'
     useEffect(() => { onSubmitStateChange?.(submitState) }, [submitState, onSubmitStateChange])
     useEffect(() => {

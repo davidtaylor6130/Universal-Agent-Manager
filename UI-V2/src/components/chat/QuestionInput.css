@@ -70,7 +70,7 @@
 .qr-text-input::placeholder { color: var(--text-3); }
 .qr-text-answer--solo .qr-text-input { min-height: 34px; padding: 6px 10px; border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--bg); }
 .qr-text-answer--solo .qr-text-input:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 50%, var(--border-bright)); }
-.qr-text-answer--solo .qr-text-input:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.qr-text-answer--solo .qr-text-input:focus-visible { outline: var(--focus-ring); } /* offset comes from the global text-field inset rule */
 
 .qr-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-1) 0 10px; }
 .qr-error { margin: var(--sp-2) 0 0; color: var(--red); font-size: var(--fs-sm); }
