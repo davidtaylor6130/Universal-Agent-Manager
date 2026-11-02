@@ -58,7 +58,8 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   // otherwise a target that cannot reach the top (near the end) would hand the selection straight back.
   const [pin, setPin] = useState<{ index: number; seen: boolean } | null>(null)
   const railRef = useRef<HTMLDivElement>(null)
-  const hasMarks = count > 0
+  // One user message leaves nothing to step between, so the rail and its gutter stay away (ChatView mirrors this rule).
+  const hasMarks = count > 1
   // A jump whose row never shows (refused read, page budget spent) stops holding the selection.
   useEffect(() => {
     if (!pin || pin.seen || busy) return
@@ -139,7 +140,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
       if (frame !== null) cancelAnimationFrame(frame)
     }
   }, [viewportRef, hasMarks])
-  if (count === 0) return null
+  if (count < 2) return null
   // The transcript end only counts once the final user message is loaded, not at the end of an older page.
   const atEnd = view.visible.length > 0 && view.visible[view.visible.length - 1] >= view.lastRendered && view.lastRendered >= indices[count - 1]
   // Without visibility tracking the caller's position stands in.

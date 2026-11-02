@@ -833,7 +833,9 @@ code, pre, kbd, samp, .mono, .cli, .terminal, .xterm {
 }
 
 .uam-tool-row {
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  /* The status follows the tool name rather than sitting at the far edge. */
+  grid-template-columns: auto auto minmax(0, max-content) auto;
+  justify-content: start;
   align-items: center;
   gap: 6px;
   min-height: 30px;

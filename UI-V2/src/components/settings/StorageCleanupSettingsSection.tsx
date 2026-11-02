@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, Switch, usePresence } from '../ui'
+import { Button, ConfirmDialog, Reveal, Switch, usePresence } from '../ui'
 import { NumberField } from './NumberField'
 import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -79,9 +79,9 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
       </>}>
       <SettingRow title="Backup log retention" description="Current logs are kept. 0 keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
       <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
-      <SettingRow title="Cache interval" description="Starts counting without clearing at once." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)}>
+      <Reveal open={draft.periodic}><SettingRow title="Cache interval" description="Starts counting without clearing at once." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }))}>
         {storageAlert.mounted && <p role="alert" className="text-xs uam-presence" data-state={storageAlert.closing ? 'closed' : 'open'} style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
-      </SettingRow>
+      </SettingRow></Reveal>
     </SettingsSection>
     <ConfirmDialog open={Boolean(exit)} title="Discard unsaved cleanup changes?" confirmLabel="Discard and leave" cancelLabel="Keep editing"
       onCancel={() => setExit(null)}

@@ -104,7 +104,7 @@ describe('showComposer presentation contract, authored UNRUN', () => {
         expect(field()).toBeNull(); expect(button('Send prompt')).toBeUndefined()
         expect(host.querySelector('.uam-chat-transcript .uam-message-list')).not.toBeNull()
         expect(host.querySelector('.uam-message-list code')?.textContent).toContain('const value = 1')
-        expect(host.querySelector('[aria-label="Navigate user messages"]')).not.toBeNull()
+        expect(host.querySelector('[aria-label="Navigate user messages"]')).toBeNull() // one user message: the rail does not appear
         expect(host.querySelector('[style*="--composer-dock-h"]')?.getAttribute('style')).toContain('0px')
         expect(readChatComposerDraft(child.id).text).toBe('Unsent child draft')
     })

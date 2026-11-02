@@ -149,7 +149,8 @@
 /* Card items (non-flush cards): every item is one row on the card's inset (the same as SettingRow labels), with one divider
    from the item before it, however Reveal wrappers or plain grids nest it. Disclosures nested in a disclosure or in a row's
    extra area, and notices or rows in a row's extra area, keep their own layout. */
-.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row__extra *) { border-top: 1px solid var(--border); }
+/* Anything inside a row (its status Reveal, control Reveals, extra content) or inside a field is not a card item: no divider. */
+.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row *, .uam-set-field *) { border-top: 1px solid var(--border); }
 /* Disclosure trigger = full row: SettingRow height (32px + sp-3 each side), chevron on the label edge, label fills the row so a right-hand value sits at the card edge. */
 .uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary { padding-block: var(--sp-3); }
 .uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__label { flex: 1; min-width: 0; min-height: 32px; }

@@ -52,7 +52,12 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
     if (ok) { setPrefixes(titlePrefixes.join('\n')); setDirectories(excludedDirectories.join('\n')); reportAppNotice('Import filters saved.', 'success') }
     else reportAppFailure('Import filters could not be saved.', 'Your changes are kept. Use Save filters to try again.')
   }
-  return <SettingRow title="Import filters" description="Skipped sessions are never offered or imported." status="Chats already in UAM are not changed.">
+  return <SettingsSection title="Import filters" description="Skipped sessions are never offered or imported."
+    actions={<>
+      <Button size="sm" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
+      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
+    </>}>
+    <p className="uam-set-field__hint">Chats already in UAM are not changed.</p>
     <SettingsField label="Skip sessions whose title starts with" htmlFor="native-import-title-prefixes" hint="One per line. Case is ignored.">
       <textarea id="native-import-title-prefixes" name="titlePrefixes" value={prefixes} onChange={(event) => setPrefixes(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'[automation]\nRun the nightly report'} className="uam-field uam-field--area w-full font-mono" />
@@ -61,11 +66,7 @@ export function NativeImportFilters({ disabled = false, onDirtyChange }: { disab
       <textarea id="native-import-directories" name="directories" value={directories} onChange={(event) => setDirectories(event.currentTarget.value)}
         disabled={disabled || saving} rows={3} spellCheck={false} placeholder={'C:\\Users\\you\\scratch\n/home/you/experiments'} className="uam-field uam-field--area w-full font-mono" />
     </SettingsField>
-    <div className="flex justify-end gap-2">
-      <Button size="sm" variant="ghost" type="button" disabled={!dirty || saving} onClick={discard}>Discard</Button>
-      <SaveButton saving={saving} type="button" disabled={disabled || !dirty || saving} onClick={() => void save()}>Save filters</SaveButton>
-    </div>
-  </SettingRow>
+  </SettingsSection>
 }
 
 type IssueGroup = { provider: string; reason: string; items: string[] }
@@ -150,7 +151,8 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     : 'Discovery does not import or resume chats.'
   const idForName = (name: string) => providerIds.find((id) => providerMetadataForId(id).shortName === name)
   const reviewPresence = usePresence(status.phase === 'ready' && status.totalCount > 0)
-  return <SettingsSection title="Native provider history">
+  return <>
+  <SettingsSection title="Native provider history">
     <ProgressFill label="Native history scan" indeterminate active={active} className="uam-set-row">
     <SettingRow title="Scan this computer"
       status={<span role="status">{summary}</span>}
@@ -190,6 +192,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
       </Disclosure>
     </SettingRow>
     </ProgressFill>
-    <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
   </SettingsSection>
+  <NativeImportFilters disabled={companion} onDirtyChange={onFiltersDirtyChange} />
+  </>
 }

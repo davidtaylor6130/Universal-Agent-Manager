@@ -84,6 +84,8 @@
 .conversation-work__tool { display: flex; width: 100%; align-items: baseline; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
 .conversation-work__event-icon { position: absolute; left: -8px; top: 5px; color: var(--text-3); background: var(--bg); }
 .conversation-work__tool-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tool rows keep the status right after the name ("Bash ✓"), not at the far edge of the row. */
+.conversation-work__tool .conversation-work__tool-title { flex: 0 1 auto; }
 .conversation-work__status { display: inline-flex; align-items: center; flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-3); }
 .conversation-work__status[data-failed="true"] { color: var(--red); }
 .conversation-work__tool:hover .conversation-work__tool-title { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
@@ -119,8 +121,8 @@
    on the one active step and stops for Motion Off and reduced motion. */
 [data-processing-step="true"] .conversation-work__tool-title,
 [data-processing-step="true"] .conversation-work__thought-label { position: relative; overflow: hidden; }
-/* Size the running title to its text so the sweep crosses the label, not the empty row; status stays right. */
-[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }
+/* Size the running title to its text so the sweep crosses the label, not the empty row. */
+[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; }
 [data-processing-step="true"] .conversation-work__tool-title::after,
 [data-processing-step="true"] .conversation-work__thought-label::after {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; pointer-events: none;

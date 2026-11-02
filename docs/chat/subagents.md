@@ -6,7 +6,7 @@ David specified T3 alpha 0.1.0’s subagent experience on 2026-10-16 as the inte
 
 ## Thread cards
 
-Each child appears in the parent thread as the compact T3 card David supplied on 2026-10-16: a small filled rounded rectangle with the actual provider icon on the left, title and status on the first line, one truncated summary line below, and time plus an opening chevron on the right. Working children use UAM’s blue dashed spinning circle; there is no green status dot, and finished children do not keep spinning. Preserve supported elapsed time and make missing timing explicit rather than estimating it from parent activity. Opening the card follows the same child-only navigation as All Chats. Saved children retain their bounded task title when inspected after restart.
+Each child appears in the parent thread as the compact T3 card David supplied on 2026-10-16: a small filled rounded rectangle with the actual provider icon on the left, title and status on the first line, one truncated summary line below, a secondary metadata line (agent, provider, model) inside the card, and time plus an opening chevron on the right; in-card Details and Stop actions sit beside the card surface. Working children use UAM’s blue dashed spinning circle; there is no green status dot, and finished children do not keep spinning. Preserve supported elapsed time and make missing timing explicit rather than estimating it from parent activity. Opening the card follows the same child-only navigation as All Chats. Saved children retain their bounded task title when inspected after restart.
 
 ## Catalogue and navigation
 

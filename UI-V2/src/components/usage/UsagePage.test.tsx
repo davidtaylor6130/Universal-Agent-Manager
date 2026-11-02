@@ -116,6 +116,7 @@ describe('UsagePage', () => {
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
       expect(requests[0]).toBe('*')
+      expect(host.querySelector('[aria-label="Usage host"]')).not.toBeNull()
       expect(host.querySelector('[aria-label="Usage machine coverage"]')?.textContent).toContain('Windows: Cached')
       expect(host.textContent).toContain('Machine is offline.'); expect(host.textContent).not.toContain('Loading usage history')
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Usage host"]')!.click())
@@ -123,6 +124,25 @@ describe('UsagePage', () => {
       expect(requests.at(-1)).toBe('peer')
       await act(async () => useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer' }] as typeof previous.executionHosts }))
       expect(requests.at(-1)).toBe('*')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(previous, true) }
+  })
+
+  it.each(['Cost', 'Tokens', 'Limits'])('hides the machine picker on %s when this computer is the only machine', async tab => {
+    storage()
+    const previous = useAppStore.getState()
+    useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer' }] as typeof previous.executionHosts })
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request)
+      request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: false,
+        filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0,
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: true, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: [], days: [], hours: [], providerDays: [], providerHours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host); document.body.appendChild(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === tab)!.click())
+      expect(host.querySelector('[aria-label="Usage host"]')).toBeNull()
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(previous, true) }
   })
 

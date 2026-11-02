@@ -1281,8 +1281,8 @@ it('animates the running step side to side by transform only, with no idle, Moti
   const sweep = '[data-processing-step="true"] .conversation-work__tool-title::after'
   const rule = css.slice(css.indexOf(sweep), css.indexOf('}', css.indexOf(sweep)))
   expect(rule).toContain('animation: conversation-processing-sweep')
-  // The title shrinks to its text while running so the band crosses the label rather than the empty row.
-  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }')
+  // Tool titles shrink to their text so the band crosses the label and the status follows the name.
+  expect(css).toContain('.conversation-work__tool .conversation-work__tool-title { flex: 0 1 auto; }')
   const keyframes = css.slice(css.indexOf('@keyframes conversation-processing-sweep'))
   expect(keyframes.slice(0, keyframes.indexOf('\n'))).toMatch(/transform: translateX\(-100%\).*transform: translateX\(250%\)/)
   // Only the active step selector animates; a background-position text sweep repaints every frame.

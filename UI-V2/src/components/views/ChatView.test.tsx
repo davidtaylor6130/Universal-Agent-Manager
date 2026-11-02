@@ -9632,9 +9632,9 @@ describe('ChatView', () => {
       expect(content.indexOf(taskTitle)).toBeLessThan(content.indexOf('After managed launch'))
       const launchOpen = slot.querySelector<HTMLButtonElement>(`[aria-label="Open managed conversation for ${taskTitle}"]`)!
       expect(launchOpen).not.toBeNull()
-      expect(launchOpen.textContent).toContain(taskTitle)
-      expect(launchOpen.textContent).not.toContain('Verifier')
-      expect(slot.querySelector('.uam-inline-subagents__meta')?.textContent).toContain('Verifier')
+      expect(launchOpen.querySelector('.uam-subagent-card__title')?.textContent).toBe(taskTitle)
+      expect(launchOpen.querySelector('.uam-subagent-card__title')?.textContent).not.toContain('Verifier')
+      expect(launchOpen.querySelector('.uam-subagent-card__meta')?.textContent).toContain('Verifier')
       const waitStatus = host.querySelector<HTMLElement>('.chat-status-strip[data-tone="agents"]')!
       expect(waitStatus).not.toBeNull()
       expect(slot.compareDocumentPosition(waitStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

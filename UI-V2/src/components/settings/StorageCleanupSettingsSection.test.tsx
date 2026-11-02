@@ -30,10 +30,14 @@ describe('Cleanup policy controls', () => {
   it('renders numeric inputs with the themed field class so text follows the theme tokens', () => {
     const { host, root } = mount()
     try {
-      for (const label of ['Worktree retention age', 'Backup log retention', 'HTTP cache interval']) {
+      for (const label of ['Worktree retention age', 'Backup log retention']) {
         const field = host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
         expect(field.classList.contains('uam-field')).toBe(true)
       }
+      // Cache interval is only shown while HTTP cache clearing is on.
+      expect(host.querySelector('[aria-label="HTTP cache interval"]')).toBeNull()
+      act(() => host.querySelector<HTMLInputElement>('[aria-label="HTTP cache clearing"]')!.click())
+      expect(host.querySelector<HTMLInputElement>('[aria-label="HTTP cache interval"]')!.classList.contains('uam-field')).toBe(true)
     } finally { act(() => root.unmount()) }
   })
   it('keeps independent endpoint acceptance when backup and cache persistence fails', async () => {

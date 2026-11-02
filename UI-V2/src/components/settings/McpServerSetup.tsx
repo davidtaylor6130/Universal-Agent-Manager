@@ -308,7 +308,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
       description={setup === null ? 'Running chats keep their old setup until restarted.' : undefined}
-      actions={<Reveal as="span" open={view === 'form'}><Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button></Reveal>}>
+      actions={<>
+        <Reveal as="span" open={view === 'form'}><Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button></Reveal>
+        <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
+        <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
+      </>}>
       <SettingRow title="Editor view" control={<Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
@@ -379,10 +383,6 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           </SettingRow></div></div>
         })}
       </>}</Swap>
-      <div className="uam-set-row"><div className="uam-set-row__main" style={{ justifyContent: 'flex-end' }}>
-        <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
-        <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
-      </div></div>
     </SettingsSection>
 
     <Reveal open={setup === null && Boolean(validationError)}><p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{validationError}</p></Reveal>

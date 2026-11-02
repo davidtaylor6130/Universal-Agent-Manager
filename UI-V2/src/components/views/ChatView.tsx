@@ -705,7 +705,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [messages, historyStartIndex, session.userMessageIndices, unsentProjection])
   // Mirrors MessageNavigationRail's own presence rule so the gutter exists exactly when the rail does.
   const messageNavigationVisible = Boolean(session.messagesDigest) &&
-    (navigableUserMessageIndices ?? messages.filter((message) => message.role === 'user')).length > 0
+    (navigableUserMessageIndices ?? messages.filter((message) => message.role === 'user')).length > 1
   // Queue-held and discarded inputs do not turn an otherwise empty chat into history; outgoing rows do.
   const composerCentred = showComposer && historyStartIndex === 0 && messages.length === unsentProjection.hiddenIndices.size &&
     outgoingReceipts.length === 0 && outgoingPresentation.tail.length === 0 && !chatHistoryError && !historyIncomplete
