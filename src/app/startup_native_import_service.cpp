@@ -69,21 +69,22 @@ namespace uam
 				struct Completion
 				{
 					const StartupNativeImportRemoteScope& scope;
-					const std::stop_token& cancelled;
+					bool paused = false;
 					~Completion()
 					{
 						std::lock_guard lock(scope.gate->mutex);
 						// A host pause leaves the scope pending so a later admission rescans it from the start.
-						if (!cancelled.stop_requested()) scope.complete->store(true);
+						if (!paused) scope.complete->store(true);
 						--scope.gate->active;
 					}
 				};
-				const Completion completion{scope, cancelled};
+				Completion completion{scope};
 				std::stop_source scope_stop;
 				const std::stop_callback forward_stop(stop, [&scope_stop]() { scope_stop.request_stop(); });
 				const std::stop_callback forward_pause(cancelled, [&scope_stop]() { scope_stop.request_stop(); });
 				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, request.open_code_profile ? &*request.open_code_profile : nullptr, scope_stop.get_token());
-				if (cancelled.stop_requested())
+				completion.paused = cancelled.stop_requested();
+				if (completion.paused)
 				{
 					diagnostics::Write("Startup native history: remote scan on host " + strings::SafeLine(scope.host.id, 128, true) + " cancelled for a helper install; it will rescan after the install.");
 					result.CancelPending();

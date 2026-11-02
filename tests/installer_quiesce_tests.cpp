@@ -537,6 +537,8 @@ UAM_TEST(InstallerQuiescePauseCancelsRunningHostScanAndRescansLater)
 		    active_entered->set_value();
 		    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 		    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		    // The interrupted pass reports a distinct partial session that must never be published.
+		    result.chats.front().id = result.chats.front().native_session_id = "ses_cancelled_partial";
 		    return result;
 	    });
 	uam::StartupNativeImportService& service = *app.startup_native_import_service;
@@ -558,7 +560,9 @@ UAM_TEST(InstallerQuiescePauseCancelsRunningHostScanAndRescansLater)
 	pause.reset();
 	WaitInstallerScan(service, app);
 	UAM_ASSERT_EQ(remote_calls->load(), 3);
-	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{2});
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{2});
+	UAM_ASSERT(std::ranges::find(ready.candidates, std::string("ses_cancelled_partial"), &uam::StartupNativeImportCandidate::native_session_id) == ready.candidates.end());
 }
 
 UAM_TEST(InstallerQuiesceDeferredScanRejectsChangedConnection)
