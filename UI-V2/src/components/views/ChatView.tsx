@@ -2,7 +2,7 @@ import { browserDictationAvailable } from '../../ipc/companionPlatform'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
-import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
+import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
 import { formatContextReferences } from '../../utils/contextReferences'
@@ -206,6 +206,22 @@ function fileUriToPath(uri: string): string {
   } catch {
     return uri.replace(/^file:\/\//, '')
   }
+}
+
+/** Each non-empty assistant_text event appears in content, in order; other content (e.g. an OpenCode compaction summary)
+ * may sit between chunks. ponytail: a short chunk such as "OK" can match coincidentally in an unrelated row; accepted,
+ * since a native message id would be needed to rule that out. */
+function contentContainsTurnTextInOrder(content: string, events: readonly AcpTurnEvent[]) {
+  let offset = 0
+  for (const event of events) {
+    if (event.type !== 'assistant_text') continue
+    const text = event.text.trim()
+    if (!text) continue
+    const found = content.indexOf(text, offset)
+    if (found < 0) return false
+    offset = found + text.length
+  }
+  return true
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -1122,12 +1138,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       ).trim(), [acp?.processing, turnEvents])
   // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
   // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
-  // the turn's user row and contain the turn text (includes: compaction summaries live in content, not turn text).
+  // the turn's user row and contain each turn text chunk in order (compaction summaries can sit between chunks).
   // While processing, a steer can leave the index on an earlier row; require the tail.
   const settledTurnAssistantRowValid =
     !acp?.processing &&
     turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
-    (completedTurnAssistantText.length === 0 || Boolean(messages[turnAssistantMessageIndex]?.content.includes(completedTurnAssistantText)))
+    messages[turnUserMessageIndex]?.role === 'user' &&
+    contentContainsTurnTextInOrder(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
     (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&

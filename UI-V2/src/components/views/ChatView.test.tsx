@@ -8339,11 +8339,12 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; leadingAssistant?: boolean }) => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
         'chat-1': [
+          ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', createdAt: new Date(1) },
           { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Follow-up row', createdAt: new Date(2) },
@@ -8380,12 +8381,19 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  it('binds a settled row whose content has a compaction summary between turn text chunks', () => {
+    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.' })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
   it.each([
     { name: 'processing turn whose assistant is not the tail', overrides: { processing: true } },
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
+    { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
   ])('keeps the trailing fallback card for a $name', ({ overrides }) => {
     const text = renderTurnAfterFollowUp(overrides)
     // The fallback renders the turn text after the follow-up row; the persisted row keeps its own content.
