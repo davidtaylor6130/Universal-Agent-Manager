@@ -124,6 +124,16 @@ it('keeps the dropdown after a child is opened directly from All Chats', async (
   expect(nativeSubagentChildren(parent.id, [parent, opened])).toEqual([opened])
 })
 
+it('keeps remote worktree children exact, matching the native open rule', async () => {
+  const { nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...session('remote-main-parent'), executionHostId: 'ssh-host', workspaceDirectory: '/repo' }
+  const child = { ...worktreeChild(parent, 'remote-worktree-child'), executionHostId: 'ssh-host' }
+  expect(subagentParentFor(child, [parent, child])).toBeUndefined()
+  expect(nativeSubagentChildren(parent.id, [parent, child])).toEqual([])
+  const exact = { ...child, id: 'remote-exact-child', workspaceDirectory: '/repo', workspaceWorktreeDirectory: '' }
+  expect(subagentParentFor(exact, [parent, exact])).toBe(parent)
+})
+
 it('keeps a browser-only open receipt for a worktree child without backend lineage', async () => {
   const { nativeSubagentChildren } = await import('./subagentNavigation')
   const parent = { ...session('receipt-only-parent'), workspaceDirectory: '/repo' }

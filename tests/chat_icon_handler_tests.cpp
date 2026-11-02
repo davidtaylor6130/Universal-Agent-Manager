@@ -1930,6 +1930,28 @@ UAM_TEST(NativeChildLineageHandlerWorktreeMoveRefreshKeepsReceipt)
 		}
 }
 
+// An ordinary native open without a display link still requires the exact workspace.
+UAM_TEST(NativeChildLineageHandlerOrdinaryOpenRequiresExactWorkspace)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		UAM_ASSERT(fixture.Child().subagent_parent_chat_id.empty());
+		const fs::path worktree = fixture.temp.root / ".uam" / "worktrees" / "child";
+		fs::create_directories(worktree);
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Ordinary worktree transcript";
+		snapshot.workspace_worktree_directory = worktree.string();
+		snapshot.workspace_source_directory = fixture.parent.workspace_directory;
+		snapshot.workspace_isolation_kind = "git-worktree";
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		UAM_ASSERT(!refresh.ok);
+		UAM_ASSERT(fixture.Child().messages.front().content != snapshot.messages.front().content);
+	}
+}
+
 UAM_TEST(NativeChildLineageHandlerOtherProjectRefreshRefused)
 {
 	for (const std::string provider : {"opencode-cli", "codex-cli"})

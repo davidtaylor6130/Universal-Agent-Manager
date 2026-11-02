@@ -2106,10 +2106,27 @@ namespace
 		    uam::execution_hosts::RemotePathsMatch(host->platform, source.workspace_directory, candidate.workspace_directory);
 	}
 
-	// Opening a known child also accepts its own worktree of the parent's checkout (#675).
+	// A chat (or its in-memory record) that already carries this source's subagent display link.
+	bool IsKnownSubagentChildOf(const uam::AppState& app, const ChatSession& source, const ChatSession& candidate)
+	{
+		const auto linked = [&](const ChatSession& chat)
+		{
+			return !source.id.empty() && chat.subagent_parent_chat_id == source.id && chat.subagent_parent_created_at == source.created_at;
+		};
+		if (linked(candidate)) return true;
+		const std::string native_id = uam::strings::Trim(candidate.native_session_id);
+		return std::ranges::any_of(app.chats, [&](const ChatSession& chat)
+		{
+			return linked(chat) && (chat.id == candidate.id || (!native_id.empty() && uam::strings::Trim(chat.native_session_id) == native_id));
+		});
+	}
+
+	// Only a known subagent child also accepts its own worktree of the parent's checkout (#675);
+	// every other native open still requires the exact workspace.
 	bool NativeOpenWorkspacesMatch(const uam::AppState& app, const ChatSession& source, const ChatSession& candidate)
 	{
-		return NativeHistoryWorkspacesMatch(app, source, candidate) || chat_identity::NativeProjectCheckoutsMatch(source, candidate);
+		return NativeHistoryWorkspacesMatch(app, source, candidate) ||
+		    (IsKnownSubagentChildOf(app, source, candidate) && chat_identity::NativeProjectCheckoutsMatch(source, candidate));
 	}
 
 	struct LocalChatOverlayIndex

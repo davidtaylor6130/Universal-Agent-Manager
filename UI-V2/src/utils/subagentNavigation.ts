@@ -21,8 +21,10 @@ const workspaces = (session: Session) => {
   return paths.length ? paths : [`folder:${session.folderId || ''}`]
 }
 const workspace = (session: Session) => workspaces(session)[0]
-// ponytail: same project, not same directory; a worktree child of a main-checkout parent still groups (#675).
-const sameWorkspace = (a: Session, b: Session) => workspaces(a).some(path => workspaces(b).includes(path))
+// Same project, not same directory, so a local worktree child of a main-checkout parent still groups (#675).
+// Remote chats stay exact, matching the native open rule.
+const sameWorkspace = (a: Session, b: Session) => workspace(a) === workspace(b) ||
+  (host(a) === 'local' && host(b) === 'local' && workspaces(a).some(path => workspaces(b).includes(path)))
 const parentWorkspaceMatches = (parent: Session, stored?: string) => stored === undefined || workspaces(parent).includes(stored)
 
 function parentVisit(child: Session): ParentVisit | undefined {
