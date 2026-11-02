@@ -47,6 +47,49 @@ UAM_TEST(LocalChatBundleImportedSideTranscriptSurvivesStartupCleanup)
 	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(source, original.id)), source_bytes);
 }
 
+UAM_TEST(LocalChatBundleImportKeepsOnlyAbsoluteLocalWorkspaceLocations)
+{
+	TempDir temp("uam-bundle-workspace-location");
+	const fs::path source = temp.root / "source", bundle = temp.root / "bundle", target = temp.root / "target";
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	ChatFolder folder;
+	folder.id = "repo-folder";
+	folder.directory = repo.string();
+	UAM_ASSERT(ChatFolderStore::Save(target, {folder}));
+	const auto save = [&](const std::string& id, const std::string& host, const std::string& directory)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = host;
+		chat.workspace_directory = directory;
+		chat.messages.push_back(Message{MessageRole::User, "Portable history"});
+		UAM_ASSERT(ChatRepository::SaveChat(source, chat));
+	};
+	save("absolute-local", "local", repo.string());
+	// A remote path naming a registered local folder must not survive the rebind to "local".
+	save("remote-host", "ssh-remote", repo.string());
+	save("relative-local", "local", "relative/repo");
+	save("home-local", "local", "~/repo");
+	UAM_ASSERT(uam::LocalChatBundleService::Export(source, bundle).ok);
+	UAM_ASSERT(uam::LocalChatBundleService::Import(target, bundle).ok);
+
+	const auto kept = ChatRepository::LoadLocalChat(target, "absolute-local");
+	UAM_ASSERT(kept.has_value());
+	UAM_ASSERT_EQ(kept->workspace_directory, repo.string());
+	UAM_ASSERT_EQ(kept->folder_id, folder.id);
+	for (const std::string id : {"remote-host", "relative-local", "home-local"})
+	{
+		const auto cleared = ChatRepository::LoadLocalChat(target, id);
+		UAM_ASSERT(cleared.has_value());
+		UAM_ASSERT(cleared->workspace_directory.empty());
+		UAM_ASSERT(cleared->folder_id.empty());
+		UAM_ASSERT_EQ(cleared->execution_host_id, std::string("local"));
+		UAM_ASSERT(cleared->imported_read_only);
+	}
+}
+
 UAM_TEST(LocalChatBundleImportDropsSourceCleanupAndHandoffAuthority)
 {
 	TempDir temp("uam-bundle-source-authority");

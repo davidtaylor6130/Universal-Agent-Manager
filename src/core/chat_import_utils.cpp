@@ -217,6 +217,8 @@ namespace uam
 	/// <summary>Depth of the UAM-managed worktree bucket for source <paramref name="folder"/> containing location, or 0.</summary>
 	/// UAM creates managed worktrees at &lt;data-root&gt;/worktrees/&lt;source key&gt;/&lt;branch&gt;, keyed like
 	/// GitWorktreeService::WorktreeRootForChat. The bucket still names its source after the worktree is removed.
+	/// The key hashes the Git top level of the source, so only a folder registered at exactly that directory
+	/// matches; a folder registered at a parent or subdirectory of it falls back to ordinary containment.
 	/// ponytail: bucket-name match only; a 64-bit FNV collision between registered folders is the ceiling.
 	static std::size_t ManagedWorktreeBucketDepth(const std::filesystem::path& location, const std::filesystem::path& folder)
 	{

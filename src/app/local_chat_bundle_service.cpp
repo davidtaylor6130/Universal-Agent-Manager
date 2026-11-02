@@ -857,7 +857,10 @@ namespace uam
 			chat.native_session_id.clear();
 			// The recorded local location is organisation, not execution authority: the copy stays
 			// read-only, and a remote path cannot be kept once the copy is rebound to this computer.
-			if (!uam::paths::IsControllerLocalWorkspace(chat)) chat.workspace_directory.clear();
+			// Bundles are untrusted: like native import, keep only an absolute path (no relative or ~ forms).
+			// This must run before execution_host_id is reset below.
+			if (!uam::paths::IsControllerLocalWorkspace(chat) ||
+			    !uam::paths::PathFromUtf8(uam::strings::Trim(chat.workspace_directory)).is_absolute()) chat.workspace_directory.clear();
 			chat.execution_host_id = "local";
 			chat.remote_turn_reconnect_pending = false;
 			chat.remote_process_exists = false;
@@ -1079,7 +1082,7 @@ namespace uam
 				candidate.chat.id = candidate.imported_id;
 				candidate.chat.title = candidate.imported_title;
 				StripImportedExecutionAuthority(candidate.chat);
-				if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(folders, uam::paths::ExpandTrimmedWorkspacePath(candidate.chat.workspace_directory)))
+				if (const ChatFolder* folder = uam::FindImportedWorkspaceFolder(folders, uam::paths::PathFromUtf8(uam::strings::Trim(candidate.chat.workspace_directory))))
 					candidate.chat.folder_id = folder->id;
 				candidate.document["id"] = candidate.imported_id;
 				candidate.chat.passive_queued_prompt_archive = ChatRepository::ParsePassiveQueuedPromptArchive(
