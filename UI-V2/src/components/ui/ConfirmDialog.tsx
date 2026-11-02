@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { TriangleAlert, X } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
+import { StatusDot } from './StatusDot'
 import { Button } from './Button'
 import { Overlay } from './Overlay'
 import { getTopmostModal } from '../../utils/modalFocus'
@@ -99,7 +100,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</div>
             <div className="mt-1.5 text-sm leading-5" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{children}</div>
-            {error && <p role="alert" className="mt-3 flex items-start gap-1.5 text-sm" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{error}</p>}
+            {error && <p role="alert" className="mt-3 flex items-start gap-1.5 text-sm" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{error}</p>}
           </div>
         </div>
         <div className="flex justify-end gap-2 px-5 pb-5">

@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Check, X } from 'lucide-react'
 import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
-import { Button, StatusDot, type StatusTone, Reveal } from '../ui'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { Button, type StatusTone, Reveal } from '../ui'
+import { SettingRow, SettingsSection, StatusMark } from './SettingsPrimitives'
 import './provider-settings.css'
 
 interface PermissionState {
@@ -65,11 +64,11 @@ export function PermissionsSettings() {
     ] : []),
   ]
   const toneFor = (status?: string): StatusTone => status === 'allowed' ? 'success' : status === 'denied' || status === 'restricted' ? 'error' : status === 'system_managed' ? 'warning' : 'neutral'
-  return <div className="grid gap-6">
+  return <div className="grid gap-0">
     <SettingsSection title="App permissions"
       actions={<Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>}>
       {rows.map((row) => <SettingRow key={row.id} title={row.label} description={row.purpose}
-        status={<span className="uam-prov-status" data-tone={toneFor(row.status)}><StatusDot tone={toneFor(row.status)}/>{row.status === 'allowed' ? <Check size={12} aria-hidden /> : row.status === 'denied' || row.status === 'restricted' ? <X size={12} aria-hidden /> : null}{row.status ? labels[row.status] ?? 'Not checked' : busy ? 'Checking…' : 'Not checked'}</span>}
+        status={<span className="uam-prov-status" data-tone={toneFor(row.status)}><StatusMark tone={toneFor(row.status)} label={row.status ? labels[row.status] ?? 'Not checked' : busy ? 'Checking…' : 'Not checked'} /></span>}
         control={<>
           <Reveal open={row.status !== 'allowed'}><Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button></Reveal>
           <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>

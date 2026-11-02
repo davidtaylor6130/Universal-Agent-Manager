@@ -15,10 +15,10 @@ Import from `components/ui` (index.ts):
 - Tooltip
 - Card (elevation 0|1|2, flush)
 - SectionHeader (title, description, icon, actions)
-- StatusDot
+- StatusDot (read-only state report only. `success` and `error` render a small rounded square (`.uam-status-box`, `--r-sm` radius, `--success-dim` or `--error-dim` fill, 1px border at 35% of the tone) holding a lucide tick or cross in the tone colour, sized `size + 8` px. Never a circle, never a bare icon, never colour alone. Every ad-hoc read-only success or failure icon uses it. Buttons, copy feedback, close marks and menu selection ticks are not status reports and keep their own icons. Neutral, warning, info and accent tones stay plain dots.)
 - MenuSelect
 - Notice (tone; one row: tone icon, semibold title with the message inline, optional `actions` and dismiss; `details` is the only collapsible part, a Details disclosure for long logs or output, collapsed by default; no header, divider or chevron otherwise)
-- Switch
+- Switch (the only on/off control. Inside Settings the track is `--success` when on and `--error` when off, with a white thumb and no accent or gradient variant; disabled keeps the colours at reduced opacity. In Settings, checkboxes used as toggles, segmented On/Off choices and custom toggle buttons are converted to Switch, and a switch or status mark carries no On/Off text beside it. The chat composer keeps its own controls. Multi-select checkboxes in lists and tables are not toggles and stay as checkboxes.)
 - ProgressFill (wraps the item doing the work: `label`, `value` 0-100 for a determinate fill, or `indeterminate` (implied when no value) for a sweep; sets role progressbar with aria-valuenow/min/max, or aria-busy when indeterminate. Rows that also hold controls cannot be a progressbar, so they take the `uam-progress-fill` class with `data-indeterminate`, `role="group"` and `aria-busy`. Styling lives in `index.css`; see [visual style](visual-style.md#quantities).)
 - Disclosure (replaces native `<details>`: `summary`, `children`, `defaultOpen` or controlled `open`/`onOpenChange`; the panel slides open from its summary and closes back into it.)
 - Reveal (wraps any conditional content: `open`, `as` div or span; enters from slightly below and leaves back the same way, keeping its last children on screen through the exit. Use it instead of a bare `cond && …`.)

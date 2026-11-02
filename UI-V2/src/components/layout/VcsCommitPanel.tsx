@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Presence, RowButton, Tab, Tabs } from '../ui'
+import { Button, IconButton, MenuSelect, Presence, RowButton, StatusDot, Tab, Tabs } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
@@ -230,7 +230,7 @@ export function VcsCommitPanel() {
           {(status.warning || status.error || notice) && (
             <div role="status" className="uam-rv-alert mb-3 flex items-start gap-2" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
               {notice === 'Commit created.'
-                ? <CheckCircle2 size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--success)' }} />
+                ? <StatusDot tone="success" className="mt-0.5" />
                 : <TriangleAlert size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: status.error || notice ? 'var(--error)' : 'var(--warning)' }} />}
               <span>{notice || status.error || status.warning}</span>
             </div>

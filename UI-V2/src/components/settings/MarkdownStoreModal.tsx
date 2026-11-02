@@ -1,7 +1,7 @@
 import { cloneElement, Fragment, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, ProgressFill, Reveal, RowButton, SegmentedControl, Switch, Tooltip, usePresence, Swap } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, ProgressFill, Reveal, RowButton, SegmentedControl, StatusDot, Switch, Tooltip, usePresence, Swap } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -398,7 +398,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <Reveal key={candidate.id} open><div title={candidate.sourcePath} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
-          {candidate.validationError && <span className="flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{candidate.validationError}</span>}
+          {candidate.validationError && <span className="flex items-center gap-1" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{candidate.validationError}</span>}
         </div>
         {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label="If a skill with this name exists" disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip' }, { value: 'replace', label: 'Replace' }, { value: 'separate', label: 'Keep both' }]} /></div>}
       </div></Reveal>)}</div>

@@ -1,6 +1,6 @@
 import { createContext, useId, useState, type ReactNode } from 'react'
-import { Check, Copy, X } from 'lucide-react'
-import { MenuItem, Tooltip } from '../ui'
+import { Copy } from 'lucide-react'
+import { MenuItem, StatusDot, Tooltip } from '../ui'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { useAppStore } from '../../store/useAppStore'
@@ -83,7 +83,7 @@ export function CopyDetailItems({ items }: { items: CopyDetail[] }) {
     {items.map((item) => <MenuItem key={item.label} nativeDisabled disabled={copying} className="uam-sb-menu-item"
       style={{ cursor: copying ? 'wait' : 'pointer' }} icon={<Copy size={13} aria-hidden />} label={item.label} onSelect={() => { void copy(item) }} />)}
     {result && <p role={result.ok ? 'status' : 'alert'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
-      {result.ok ? <Check size={13} className="shrink-0" style={{ color: 'var(--success)' }} aria-hidden /> : <X size={13} className="shrink-0" aria-hidden />}
+      <StatusDot tone={result.ok ? 'success' : 'error'} />
       {result.ok ? `${result.label} copied.` : 'Could not copy. Try again.'}
     </p>}
   </>

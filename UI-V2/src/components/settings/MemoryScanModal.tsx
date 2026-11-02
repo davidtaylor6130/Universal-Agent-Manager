@@ -108,12 +108,10 @@ export function MemoryScanModal() {
                   />
                 )
               })}
+              <SettingRow title={<span className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</span>} />
             </div>
           )}
           </Swap>
-          <Reveal open={!memoryScanLoading && memoryScanCandidates.length > 0}>
-            <p className="text-xs" style={{ color: 'var(--text-3)' }}>Only the chats you select are read.</p>
-          </Reveal>
         </div>
 
         <div className="uam-scan-foot">

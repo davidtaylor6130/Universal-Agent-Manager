@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2, X } from 'lucide-react'
+import { ArrowLeft, Braces, ChevronRight, Download, ListPlus, Plus, Server, Trash2, Wand2 } from 'lucide-react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, Disclosure, EXIT_MS, IconButton, MenuSelect, Notice, RowButton, StatusDot, Switch, Tab, Tabs, Tooltip, motionAllowed, scaledMs, usePresence, Reveal, Swap } from '../ui'
-import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -295,28 +295,24 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
 
   if (setup !== null) setupSnapshot.current = { step: setup, title: setupTitle, body: setupBody }
 
-  return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
+  return <div className="grid gap-0" style={{ color: 'var(--text)' }}>
 
     <Reveal open={view === 'form' && !scoped}><SettingsSection title="Built in">
       <Swap swapKey={String(uamEnabled)}><SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
-          ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
+          ? <span className="uam-prov-status" data-tone="success"><StatusMark tone="success" label="On" /></span>
           : <Button size="sm" disabled={busy} onClick={() => setUamEnabled(true)}>Turn back on</Button>} /></Swap>
       {COMPUTER_USE_ENABLED && <ComputerUseSettingRow disabled={busy} />}
     </SettingsSection></Reveal>
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
       description={setup === null ? 'Running chats keep their old setup until restarted.' : undefined}
-      actions={<>
-        <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
-        <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
-        <Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
+      actions={<Reveal as="span" open={view === 'form'}><Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button></Reveal>}>
+      <SettingRow title="Editor view" control={<Tabs value={view} onChange={switchView} aria-label="Editor view" variant="pill" className="uam-prov-seg">
           <Tab value="form" className="uam-prov-seg__item" disabled={busy}>Form</Tab>
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
-        </Tabs>
-        <Reveal as="span" open={view === 'form'}><Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setSetup('choose')}>Add server</Button></Reveal>
-      </>}>
+        </Tabs>} />
       <Swap swapKey={view}>{setupPresence.mounted && setupSnapshot.current && view === 'form' ? <div role="group" aria-label="MCP setup" tabIndex={-1} data-closing={setupPresence.closing ? 'true' : undefined}
         className="uam-skills-step grid gap-3 py-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) cancelSetup() } }}>
         <div className="flex items-center gap-2"><Button size="sm" disabled={busy} leadingIcon={<ArrowLeft size={14} aria-hidden />} onClick={cancelSetup}>Back</Button><strong className="text-sm">{setupSnapshot.current.title}</strong></div>
@@ -325,7 +321,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
         <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => setJsonText(event.currentTarget.value)} />
         <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads this machine's environment.</p>
       </div> : <>
-        <Reveal open={servers.length === 0}><p className="text-sm" style={{ color: 'var(--text-3)' }}>No servers yet.</p></Reveal>
+        <Reveal open={servers.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>No servers yet.</span>} /></Reveal>
         {servers.map((server, index) => {
           const expanded = open === server.id
           const removing = removingIds.has(server.id)
@@ -383,9 +379,13 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           </SettingRow></div></div>
         })}
       </>}</Swap>
+      <div className="uam-set-row"><div className="uam-set-row__main" style={{ justifyContent: 'flex-end' }}>
+        <Reveal open={dirty}><Button size="sm" className="uam-reveal" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)) }}>Undo changes</Button></Reveal>
+        <SaveButton size="sm" variant={dirty ? 'primary' : 'secondary'} saving={busy} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} disabledReason={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</SaveButton>
+      </div></div>
     </SettingsSection>
 
-    <Reveal open={setup === null && Boolean(validationError)}><p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><X size={14} aria-hidden className="shrink-0" />{validationError}</p></Reveal>
+    <Reveal open={setup === null && Boolean(validationError)}><p role="status" className="uam-reveal uam-prov-sub flex items-center gap-1.5" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{validationError}</p></Reveal>
     {warningNotice(setup === null && importWarnings.length > 0)}
   </div>
 }

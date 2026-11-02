@@ -56,17 +56,16 @@ it('keeps a same-named MCP server independent from the discovery preference', as
   let finish!: (value: unknown) => void
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
   await click('OpenCode progressive MCP discovery')
-  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('data-pending')).toBeNull()
   const discoveryReply = structuredClone(reply)
   discoveryReply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false
   await act(async () => finish({ ok: true, data: discoveryReply }))
-  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('aria-checked')).toBe('false')
+  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.checked).toBe(false)
   const serverReply = structuredClone(discoveryReply)
   serverReply.providers.find(row => row.providerId === 'opencode-cli')!.mcpServers[0].enabled = true
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: serverReply })
   await click('OpenCode Separate server')
   expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'local', providerId: 'opencode-cli', serverId: collision.id, enabled: true } })
-  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('[aria-label="OpenCode Separate server"]')?.checked).toBe(true)
   expect(host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')?.checked).toBe(false)
   expect(host.querySelector('[role="alert"]')).toBeNull()
 })
@@ -78,7 +77,7 @@ it.each(['server', 'discovery'])('keeps pending controls separate for a prefixed
   for (const row of reply.providers) row.mcpServers = [{ id: collision.id, name: collision.name, enabled: true }]
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: reply })
   await render('opencode-cli')
-  const serverControl = () => host.querySelector<HTMLButtonElement>('[aria-label="OpenCode Prefixed server"]')!
+  const serverControl = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode Prefixed server"]')!
   const discoveryControl = () => host.querySelector<HTMLInputElement>('[aria-label="OpenCode progressive MCP discovery"]')!
   let finish!: (value: unknown) => void
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
@@ -86,10 +85,9 @@ it.each(['server', 'discovery'])('keeps pending controls separate for a prefixed
   await click(discovery ? 'OpenCode progressive MCP discovery' : 'OpenCode Prefixed server')
   expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'local', providerId: 'opencode-cli', serverId: discovery ? 'opencode-progressive-mcp' : collision.id, enabled: false, ...(discovery ? { kind: 'preference' } : {}) } })
   expect(serverControl().disabled).toBe(!discovery)
-  expect(serverControl().getAttribute('data-pending')).toBe(discovery ? null : 'true')
   expect(discoveryControl().disabled).toBe(discovery)
   expect(host.textContent?.includes('Saving discovery preference')).toBe(discovery)
-  expect(serverControl().getAttribute('aria-checked')).toBe('true')
+  expect(serverControl().checked).toBe(true)
   expect(discoveryControl().checked).toBe(!discovery)
   const saved = structuredClone(reply)
   const row = saved.providers.find(item => item.providerId === 'opencode-cli')!
@@ -98,8 +96,7 @@ it.each(['server', 'discovery'])('keeps pending controls separate for a prefixed
   await act(async () => finish({ ok: true, data: saved }))
   expect(serverControl().disabled).toBe(false)
   expect(discoveryControl().disabled).toBe(false)
-  expect(serverControl().getAttribute('data-pending')).toBeNull()
-  expect(serverControl().getAttribute('aria-checked')).toBe(discovery ? 'true' : 'false')
+  expect(serverControl().checked).toBe(discovery)
   expect(discoveryControl().checked).toBe(!discovery)
   expect(host.querySelector('[role="alert"]')).toBeNull()
 })
@@ -187,8 +184,8 @@ it('renders six compact provider rows with all server columns and no guessed con
   expect(host.textContent).toContain('Docs')
   expect(host.textContent).not.toContain('0/0')
   expect(host.textContent).not.toContain('enabled server definitions')
-  expect(host.textContent).not.toContain('Connected')
-  expect(host.querySelector('[role="checkbox"][aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
+  expect(host.querySelector<HTMLInputElement>('[aria-label="Codex Docs"]')?.checked).toBe(true)
   expect(host.querySelector('[role="tablist"][aria-label="Provider settings host"]')).toBeNull()
 })
 
@@ -199,14 +196,14 @@ it('shows installations and Computer Use availability for the selected host', as
   await render('codex-cli', 'ssh-lab')
   expect(host.querySelector('button[title="9.1"]')).not.toBeNull()
   expect(host.textContent).not.toContain('npm')
-  expect(host.querySelector('[aria-label="Codex Computer Use"]')?.getAttribute('aria-checked')).toBe('false')
+  expect(host.querySelector('[aria-label="Codex Computer Use off"]')).not.toBeNull()
 })
 
 it('reads Off in the Computer Use column when the built-in setting is disabled', async () => {
   useAppStore.setState({ computerUseEnabled: false })
   await render('codex-cli')
-  const cell = host.querySelector('[aria-label="Codex Computer Use"]')
-  expect(cell?.getAttribute('aria-checked')).toBe('false')
+  const cell = host.querySelector('[aria-label="Codex Computer Use off"]')
+  expect(cell).not.toBeNull()
   expect(cell?.getAttribute('title')).toContain('Off')
   useAppStore.setState({ computerUseEnabled: undefined })
 })
@@ -214,9 +211,7 @@ it('reads Off in the Computer Use column when the built-in setting is disabled',
 it.each([true, undefined])('shows unresolved Computer Use cleanup %s without advertising re-enable', async pending => {
   useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: pending })
   await render('codex-cli')
-  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
-  expect(cell.getAttribute('aria-checked')).toBe('mixed')
-  expect(cell.disabled).toBe(true)
+  const cell = host.querySelector<HTMLElement>('[aria-label="Codex Computer Use (unknown)"]')!
   expect(cell.title).toContain(pending ? 'Cleanup pending' : 'Global status not confirmed')
   expect(cell.title).not.toContain('Turn Computer Use on')
 })
@@ -224,13 +219,11 @@ it.each([true, undefined])('shows unresolved Computer Use cleanup %s without adv
 it('distinguishes On with per-chat cleanup from a retry of global disable', async () => {
   useAppStore.setState({ computerUseEnabled: true, computerUseRevocationPending: true })
   await render('codex-cli')
-  const cell = host.querySelector<HTMLButtonElement>('[aria-label="Codex Computer Use (unknown)"]')!
+  const cell = host.querySelector<HTMLElement>('[aria-label="Codex Computer Use (unknown)"]')!
   expect(cell.title).toContain("On. Chat controls are still stopping.")
   expect(cell.title).toContain('Turn off for all chats to retry cleanup.')
   expect(cell.title).not.toContain('in that chat')
   expect(cell.title).not.toContain('Retry disabling')
-  expect(cell.getAttribute('aria-checked')).toBe('mixed')
-  expect(cell.disabled).toBe(true)
 })
 
 it('updates a provider server override only after successful verified backend reply', async () => {
@@ -239,17 +232,17 @@ it('updates a provider server override only after successful verified backend re
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
   await click('Codex Docs')
   expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'local', providerId: 'codex-cli', serverId: 'docs', enabled: false } })
-  expect(host.querySelector('[aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('[aria-label="Codex Docs"]')?.checked).toBe(true)
   const reply = status(); reply.providers.find(row => row.providerId === 'codex-cli')!.mcpServers[0].enabled = false
   await act(async () => finish({ ok: true, data: reply }))
-  expect(host.querySelector('[aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('false')
+  expect(host.querySelector('[aria-label="Codex Docs"]')?.checked).toBe(false)
 })
 
 it('keeps failed changes visible and reports their error beside controls', async () => {
   await render('codex-cli')
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Cannot save provider MCP configuration.' })
-  await click('Codex Shared setup on')
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
+  await click('Codex Shared setup')
+  expect(host.querySelector('[aria-label="Codex UAM MCP on"]')).not.toBeNull()
   expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider MCP change not confirmed.', 'Cannot save provider MCP configuration.')
 })
 
@@ -274,30 +267,29 @@ it('rejects stale host replies and wrong-host mutation replies', async () => {
   await render('codex-cli', 'ssh-lab')
   const old = status(); old.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
   await act(async () => finish({ ok: true, data: old }))
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('[aria-label="Codex UAM MCP on"]')).not.toBeNull()
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: old })
-  await click('Codex Shared setup on')
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
+  await click('Codex Shared setup')
+  expect(host.querySelector('[aria-label="Codex UAM MCP on"]')).not.toBeNull()
   expect(vi.mocked(reportAppFailure)).toHaveBeenCalled()
 })
 
 it('treats runtime structured support as authoritative for Antigravity and never chat permission as build availability', async () => {
   useAppStore.setState({ providers: [{ id: 'antigravity-cli', supportsStructured: true }] as ReturnType<typeof useAppStore.getState>['providers'] })
   await render('antigravity-cli')
-  expect(host.querySelector('[aria-label="Antigravity UAM MCP"]')).toHaveProperty('disabled', true)
-  expect(host.querySelector('[aria-label="Antigravity Computer Use"]')?.getAttribute('aria-checked')).toBe('true')
-  expect(host.querySelector('[aria-label="Antigravity Computer Use"]')).toHaveProperty('disabled', true)
+  expect(host.querySelector('[aria-label="Antigravity UAM MCP on"]')).not.toBeNull()
+  expect(host.querySelector('[aria-label="Antigravity Computer Use on"]')).not.toBeNull()
 })
 
 it('requires authoritative live evidence before displaying Connected', async () => {
   const historical = status(); historical.handshakeProofAvailable = true; historical.providers[0].status = 'handshake-confirmed'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: historical })
   await render('gemini-cli')
-  expect(host.textContent).not.toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
   const live = status(); live.connectedProofAvailable = true; live.providers[0].status = 'connected'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: live })
   await click('Refresh provider connections')
-  expect(host.textContent).toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeTruthy()
 })
 
 it('retains the global UAM warning and preserves instructions during its repair', async () => {
@@ -315,12 +307,12 @@ it('clears prior live connection evidence when refresh fails', async () => {
   const live = status(); live.connectedProofAvailable = true; live.providers[0].status = 'connected'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: live })
   await render('gemini-cli')
-  expect(host.textContent).toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeTruthy()
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Host check failed.' })
   await click('Refresh provider connections')
-  expect(host.textContent).not.toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
   expect(host.querySelector('[role="status"]')?.textContent).toContain('Host check failed.')
-  expect(host.querySelector('[aria-label="Gemini UAM MCP (unknown)"]')).toHaveProperty('disabled', true)
+  expect(host.querySelector('[aria-label="Gemini UAM MCP (unknown)"]')).not.toBeNull()
 })
 
 it.each(['loading', 'failed lookup'])('shows unknown controls instead of disabled red crosses during %s', async phase => {
@@ -329,11 +321,9 @@ it.each(['loading', 'failed lookup'])('shows unknown controls instead of disable
     : Promise.resolve({ ok: false, error: 'Status unavailable' }))
   await render('codex-cli')
   for (const label of ['UAM MCP', 'Computer Use', 'Shared setup', 'Docs']) {
-    const control = host.querySelector<HTMLButtonElement>(`[aria-label="Codex ${label} (unknown)"]`)
+    const control = host.querySelector<HTMLElement>(`[aria-label="Codex ${label} (unknown)"]`)
     expect(control).not.toBeNull()
-    expect(control?.getAttribute('aria-checked')).toBe('mixed')
-    expect(control?.classList.contains(label === 'Computer Use' || label === 'UAM MCP' ? 'uam-prov-avail' : 'uam-prov-switch')).toBe(true)
-    expect(control?.disabled).toBe(true)
+    expect(control?.querySelector('input')).toBeNull()
     expect(control?.title).not.toContain('Off')
   }
 })
@@ -343,8 +333,8 @@ it('retains disabled red controls when their false value is verified', async () 
   disabled.providers.find(row => row.providerId === 'codex-cli')!.sharedSetupEnabled = false
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: disabled })
   await render('codex-cli')
-  const control = host.querySelector<HTMLButtonElement>('[aria-label="Codex Shared setup off"]')!
-  expect(control.getAttribute('aria-checked')).toBe('false')
+  const control = host.querySelector<HTMLInputElement>('[aria-label="Codex Shared setup"]')!
+  expect(control.checked).toBe(false)
   expect(control.title).toBe('Off. Click to turn on.')
   expect(control.disabled).toBe(false)
 })
@@ -353,7 +343,7 @@ it('ignores structurally identical pushes and unrelated settings while retaining
   useAppStore.setState({ providers: [{ id: 'codex-cli', supportsStructured: true }] as ReturnType<typeof useAppStore.getState>['providers'] })
   await render('codex-cli')
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Save failed, retry this change.' })
-  await click('Codex Shared setup on')
+  await click('Codex Shared setup')
   const requests = vi.mocked(sendToCEF).mock.calls.length
   await act(async () => useAppStore.setState(state => ({
     centralProviderConfiguration: { ...state.centralProviderConfiguration, instructions: 'Updated unrelated instructions',
@@ -376,7 +366,7 @@ it('collapses many server columns into one count chip whose popover holds each s
   const chip = host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
   expect(chip.textContent).toContain('1 of 4 on')
   await act(async () => chip.click())
-  expect(document.body.querySelector('[aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(document.body.querySelector('[aria-label="Codex Docs"]')?.checked).toBe(true)
   expect(document.body.querySelector('[aria-label="Codex Git (unknown)"]')).not.toBeNull()
   const popover = document.body.querySelector('[aria-label="Codex MCP servers"]')!
   expect(popover.textContent).not.toContain(server.workspaceDirectory)
@@ -390,14 +380,14 @@ it.each(['local', 'ssh-lab'])('shows known MCP setup and handshake states for %s
   await render('gemini-cli', hostId)
   expect(sendToCEF).toHaveBeenCalledWith(expect.objectContaining({ action: 'getProviderMcpStatus', payload: { executionHostId: hostId } }))
   expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Set up, not checked')
-  expect(host.textContent).not.toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
   const confirmed = status(hostId)
   confirmed.handshakeProofAvailable = true
   confirmed.providers[0].status = 'handshake-confirmed'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: confirmed })
   await click('Refresh provider connections')
   expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Responding')
-  expect(host.textContent).not.toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
   confirmed.handshakeProofAvailable = false
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: confirmed })
   await click('Refresh provider connections')
@@ -426,12 +416,12 @@ it('shows only the selected host effective MCP servers in the popup without gues
   const popup = document.querySelector('[role="dialog"][aria-label="Codex MCP servers"]')!
   expect(popup.textContent).toContain('Remote 0')
   expect(popup.textContent).not.toContain('Global')
-  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.checked).toBe(true)
   expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Set up, not checked')
-  expect(host.textContent).not.toContain('Connected')
+  expect(host.querySelector('[role="img"][aria-label="Connected"]')).toBeNull()
   await act(async () => popup.querySelector<HTMLButtonElement>('[aria-label="Codex Remote 0"]')!.click())
   expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'ssh-lab', providerId: 'codex-cli', serverId: 'remote-0', enabled: false } })
-  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.getAttribute('aria-checked')).toBe('false')
+  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.checked).toBe(false)
 })
 
 it('refreshes when scoped MCP identities change and respects an explicitly empty host list', async () => {
@@ -448,7 +438,7 @@ it('refreshes when scoped MCP identities change and respects an explicitly empty
   expect(vi.mocked(sendToCEF).mock.calls.length).toBe(initial + 1)
   expect(host.querySelector('thead')?.textContent).toContain('Replacement')
   expect(host.querySelector('thead')?.textContent).not.toContain('Docs')
-  expect(host.querySelector('[aria-label="Codex Replacement"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('[aria-label="Codex Replacement"]')?.checked).toBe(true)
   await act(async () => useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: [] } } }))
   expect(host.querySelectorAll('th')).toHaveLength(5)
   expect(host.textContent).toContain('Set up, not checked')
@@ -463,13 +453,13 @@ it('filters foreign-host MCP definitions from inherited global columns', async (
 
 it('describes UAM MCP as on or off without implying opt-outs are forbidden', async () => {
   await render('codex-cli')
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('title')).toBe('On. Managed in the UAM MCP service section.')
+  expect(host.querySelector('[aria-label="Codex UAM MCP on"]')?.getAttribute('title')).toBe('On. Managed in the UAM MCP service section.')
   const disabled = status()
   disabled.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: disabled })
   await click('Refresh provider connections')
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('false')
-  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('title')).toBe('Off for this provider.')
+  expect(host.querySelector('[aria-label="Codex UAM MCP off"]')).not.toBeNull()
+  expect(host.querySelector('[aria-label="Codex UAM MCP off"]')?.getAttribute('title')).toBe('Off for this provider.')
 })
 
 it('closes an open MCP popup when its scoped list no longer has a chip', async () => {
@@ -492,7 +482,7 @@ it('keeps the discovery draft locked and unconfirmed when another switch save su
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
   await click('OpenCode progressive MCP discovery')
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(() => {}))
-  await click('OpenCode Shared setup on')
+  await click('OpenCode Shared setup')
   expect(control().disabled).toBe(true)
   const reply = status()
   reply.providers.find(row => row.providerId === 'opencode-cli')!.progressiveMcpDiscoveryEnabled = false

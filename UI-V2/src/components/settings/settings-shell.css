@@ -44,6 +44,9 @@
 .uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
 .uam-settings-frame { width: 100%; max-width: 960px; margin-inline: auto; }
 .uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
+/* Full-height store pages (Skills, Memory store) fill the content pane: no 960px column, title band spaced like a section head. */
+.uam-settings-frame--full { max-width: none; }
+.uam-settings-frame--full > .uam-settings-page-header { margin-bottom: var(--sp-2); }
 
 /* ── Settings language (SettingsPrimitives) ─────────────────── */
 .uam-set-section { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-6); animation: uam-set-in var(--dur-enter) var(--ease-out-soft) backwards; }
@@ -63,7 +66,7 @@
 .uam-set-row__icon { display: inline-flex; color: var(--text-2); flex-shrink: 0; }
 .uam-set-row__title { display: block; font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
 .uam-set-row__desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.uam-set-row__status { margin-top: 3px; font-size: var(--fs-xs); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.uam-set-row__status { margin-top: var(--sp-1);font-size: var(--fs-xs); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
 .uam-set-row__control { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; max-width: 55%; }
 .uam-set-row__control > select, .uam-set-row__control > .uam-menu-select, .uam-set-row__control > input:not([type="checkbox"]) { min-width: 220px; }
 .uam-set-row__extra { margin-top: var(--sp-3); }
@@ -139,6 +142,19 @@
 .uam-set-card:not(.uam-set-card--flush) > :where(* + *) { border-top: 1px solid var(--border); }
 .uam-set-card > :where(p, span), .uam-set-card > .uam-presence > :where(p:only-child) { display: block; padding-block: var(--sp-3); margin: 0; }
 .uam-set-section__head { min-height: 32px; align-items: center; }
-/* Rows wrapped in Reveal/AnimatedRows still get the row divider. */
-:is(.uam-set-row, .uam-presence) + .uam-presence > .uam-set-row:first-child,
+/* Rows wrapped in Reveal/AnimatedRows still get the row divider (non-flush cards use the card items rule below). */
+:is(.uam-set-row, .uam-presence) + .uam-presence > .uam-set-row:first-child:not(.uam-set-card:not(.uam-set-card--flush) *),
 .uam-presence + .uam-set-row { border-top: 1px solid var(--border); }
+
+/* Card items (non-flush cards): every item is one row on the card's inset (the same as SettingRow labels), with one divider
+   from the item before it, however Reveal wrappers or plain grids nest it. Disclosures nested in a disclosure or in a row's
+   extra area, and notices or rows in a row's extra area, keep their own layout. */
+.uam-set-card:not(.uam-set-card--flush) :is(.uam-set-row, .uam-set-field, .uam-presence, .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)):not(:first-child, .uam-set-row__extra *) { border-top: 1px solid var(--border); }
+/* Disclosure trigger = full row: SettingRow height (32px + sp-3 each side), chevron on the label edge, label fills the row so a right-hand value sits at the card edge. */
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary { padding-block: var(--sp-3); }
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__label { flex: 1; min-width: 0; min-height: 32px; }
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure) > .uam-disclosure__summary > .uam-disclosure__chevron { margin-left: -5px; }
+/* Open content sits under a divider; its rows bring their own padding, other content adds sp-3 itself. */
+.uam-set-card:not(.uam-set-card--flush) .uam-disclosure:not(.uam-disclosure__panel .uam-disclosure, .uam-set-row__extra .uam-disclosure)[data-open] > .uam-disclosure__panel > .uam-disclosure__inner { border-top: 1px solid var(--border); }
+/* A notice in a card is its own padded row: sp-3 above and below, on the card's inset, never touching a divider or the card edge. */
+.uam-set-card:not(.uam-set-card--flush) .uam-notice:not(.uam-set-row__extra *) { margin-block: var(--sp-3); }

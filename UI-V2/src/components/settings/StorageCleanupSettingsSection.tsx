@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, ConfirmDialog, SegmentedControl, Switch, usePresence } from '../ui'
+import { Button, ConfirmDialog, Switch, usePresence } from '../ui'
 import { NumberField } from './NumberField'
 import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -56,15 +56,14 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     } catch { reportAppFailure('Could not save cleanup policy.', 'Your changes are retained.') }
     finally { busy.current = false; setSaving(null) }
   }
-  const modes = (label: string, enabled: boolean, change: (value: boolean) => void) => <SegmentedControl aria-label={label} disabled={Boolean(saving)} value={enabled ? 'periodic' : 'disabled'}
-    options={[{ value: 'periodic', label: 'Periodic' }, { value: 'disabled', label: 'Disabled' }]} onChange={(value) => change(value === 'periodic')} />
+  const modes = (label: string, enabled: boolean, change: (value: boolean) => void) => <Switch hideLabel label={label} checked={enabled} disabled={Boolean(saving)} onChange={(event) => change(event.currentTarget.checked)} />
   // ponytail: NumberField clamps on commit, so the alerts below only show for values typed into the draft by other paths.
   const number = (label: string, value: string, minimum: number, change: (value: string) => void, disabled = false) => <fieldset disabled={Boolean(saving) || disabled} className="m-0 min-w-0 border-0 p-0"><NumberField label={label} value={Number(value)} min={minimum} max={3650} unit="days" onCommit={(next) => change(String(next))} /></fieldset>
   const discard = (group: 'worktree' | 'storage') => {
     const patch = group === 'worktree' ? { enabled: saved.enabled, worktree: saved.worktree } : { logs: saved.logs, cache: saved.cache, periodic: saved.periodic }
     setDraft((value) => ({ ...value, ...patch })); setBaseline((value) => ({ ...value, ...patch }))
   }
-  return <div className="grid gap-6">
+  return <div className="grid gap-0">
     <SettingsSection title="Worktrees" actions={<>
         <Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button>
         <SaveButton saving={saving === 'worktree'} disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>Save worktree settings</SaveButton>

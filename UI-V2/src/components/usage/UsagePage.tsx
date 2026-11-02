@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, Swap, Tooltip, cx, usePresence, Reveal } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, RowButton, SegmentedControl, StatusDot, Swap, Tooltip, cx, usePresence, Reveal } from '../ui'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
@@ -148,7 +148,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
       <input type="number" min="0" step="any" className="uam-field w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
-    <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{shownError.current}</p></Reveal>
+    <Reveal open={errorNote.mounted}><p role="alert" className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{shownError.current}</p></Reveal>
     <div className="flex gap-2"><Button size="sm" variant="primary" type="submit">Save prices</Button><Button size="sm" type="button" onClick={onClose}>Cancel</Button><Reveal as="span" open={!!existing}><Button size="sm" type="button" onClick={() => save(true)}>Remove override</Button></Reveal></div>
   </form>
 }
@@ -167,7 +167,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const [modelLimit, setModelLimit] = useState(100)
   const [hiddenProviders, setHiddenProviders] = useState<ReadonlySet<UsageProviderId>>(() => new Set())
   const includedPrices = useMemo(() => includedUsagePrices(prices), [prices])
-  const history = useUsageHistory(hostId, range, includedPrices, metric !== 'limits')
+  // Limits shows each provider's period tokens beside its allowance, so history stays live on every tab.
+  const history = useUsageHistory(hostId, range, includedPrices)
   const headingRef = useRef<HTMLHeadingElement>(null)
   const providerHeadingId = useId()
   useEffect(() => { headingRef.current?.focus() }, [])
@@ -276,14 +277,14 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       </Tooltip></Reveal>
       <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
       <SegmentedControl aria-label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
-      <SegmentedControl aria-label="Usage period" value={days} disabled={metric === 'limits'} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
+      <SegmentedControl aria-label="Usage period" value={days} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
       <Reveal as="span" open={metric !== 'limits'}><IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} className={cx('uam-usage-refresh', history.loading && 'is-busy')} onClick={refresh} /></Reveal>
       {/* Background refresh never hides or shifts the page: cached figures stay in place and this line reports progress. */}
       <Reveal as="span" open={metric !== 'limits'}><span aria-hidden className="uam-usage-progress text-xs uam-usage-muted tabular-nums">{history.loading ? data && !history.kept && data.collecting && data.filesTotal > 0 ? `Reading history · ${data.filesChecked.toLocaleString()} of ${data.filesTotal.toLocaleString()} files` : `Updating…${shownAt && !history.kept ? ` Showing ${shownAt}` : ''}` : ''}</span></Reveal>
       {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-      <Reveal open={metric === 'limits'}><UsageLimits executionHostId={hostId} /></Reveal>
+      <Reveal open={metric === 'limits'}><UsageLimits executionHostId={hostId} usage={{ providers: history.data?.providers ?? null, loading: history.loading, collecting: Boolean(history.data?.collecting), error: history.error, days }} /></Reveal>
       <Reveal open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
         {errorNote.mounted && <div className="uam-presence" data-state={errorNote.closing ? 'closed' : 'open'}><Notice tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={false} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}

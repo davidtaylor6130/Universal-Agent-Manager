@@ -227,7 +227,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       const next = pendingExit.next; setPendingExit(null); next()
     } : undefined}
   />}</Presence>
-  return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
+  return <div className="grid gap-0" style={{ color: 'var(--text)' }}>
     {leaveDialog}
     <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions"

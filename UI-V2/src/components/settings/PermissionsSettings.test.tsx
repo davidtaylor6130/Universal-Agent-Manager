@@ -20,12 +20,12 @@ it('keeps network status unverified and reports native request failures', async 
     await act(async () => root.render(<PermissionsSettings />))
     const network = [...host.querySelectorAll('.uam-set-row')].find((row) => row.textContent?.includes('Local network'))!
     expect(network.textContent).toContain('Check system settings')
-    expect(network.textContent).not.toContain('Allowed')
+    expect(network.querySelector('[aria-label="Allowed"]')).toBeNull()
     await act(async () => network.querySelector('button')!.click())
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'requestAppPermission', payload: { permission: 'localNetwork' } })
     expect(reportAppFailure).toHaveBeenCalledWith('Permission could not be requested.', 'Permission request failed.')
     const speech = [...host.querySelectorAll('.uam-set-row')].find((row) => row.textContent?.includes('Speech recognition'))!
-    expect(speech.textContent).toContain('Allowed')
+    expect(speech.querySelector('[role="img"][aria-label="Allowed"]')).toBeTruthy()
     expect(speech.textContent).not.toContain('Request')
   } finally {
     await act(async () => root.unmount())

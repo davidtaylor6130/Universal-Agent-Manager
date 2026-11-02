@@ -19,8 +19,8 @@ import type {
   AcpTurnEvent,
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
-import { Button, Notice, Tooltip } from '../ui'
-import { ArrowRight, Brain, Check, ChevronRight, Circle, CircleAlert, Loader, X } from 'lucide-react'
+import { Button, Notice, StatusDot, Tooltip } from '../ui'
+import { ArrowRight, Brain, Check, ChevronRight, Circle, CircleAlert, Loader } from 'lucide-react'
 import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
@@ -504,8 +504,8 @@ export function goalReviewForMessage(message: Message): GoalReviewDecision | nul
 }
 
 export function goalReviewDecisionStyle(decision: GoalReviewDecision['decision']) {
-  if (decision === 'complete') return { color: 'var(--success)', label: 'Complete', icon: <Check size={12} aria-hidden /> }
-  if (decision === 'blocked') return { color: 'var(--error)', label: 'Blocked', icon: <X size={12} aria-hidden /> }
+  if (decision === 'complete') return { color: 'var(--success)', label: 'Complete', icon: <StatusDot tone="success" /> }
+  if (decision === 'blocked') return { color: 'var(--error)', label: 'Blocked', icon: <StatusDot tone="error" /> }
   return { color: 'var(--purple)', label: 'Continue', icon: <ArrowRight size={12} aria-hidden /> }
 }
 

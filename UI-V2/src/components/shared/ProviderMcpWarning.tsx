@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Check } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Notice } from '../ui'
+import { Button, Notice, StatusDot } from '../ui'
 import '../settings/provider-settings.css'
 
 type Connection = { providerId: string; status: string; detail: string }
@@ -66,7 +65,7 @@ export function ProviderMcpWarning() {
   const showResult = result?.key === key && !(result.success && notice.connection.status === 'failed')
   return <div role="alert" className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
     <Notice tone="warning" title="UAM tools are unavailable in this chat" dismissLabel="Dismiss" dismissible={false}>
-    <p className="uam-prov-sub flex items-center gap-1.5">{showResult && result?.success && <Check size={14} aria-hidden style={{ color: 'var(--success)' }} />}{showResult ? result?.text : notice.connection.detail}</p>
+    <p className="uam-prov-sub flex items-center gap-1.5">{showResult && result?.success && <StatusDot tone="success" />}{showResult ? result?.text : notice.connection.detail}</p>
     <div className="mt-2 flex flex-wrap gap-2">
       <Button size="sm" variant="primary" loading={busy} onClick={() => {
         if (!session) return

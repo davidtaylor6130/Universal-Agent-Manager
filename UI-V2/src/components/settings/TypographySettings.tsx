@@ -14,7 +14,7 @@ export function TypographySettings() {
     { id: 'terminal', label: 'CLI fallback terminal', fonts: MONO_FONTS, min: 8, max: 20 },
   ] as const
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-0">
       <SettingsSection title="Fonts and sizes"
         actions={<Button size="sm" onClick={reset}>Reset typography</Button>}>
         {rows.map((row) => {

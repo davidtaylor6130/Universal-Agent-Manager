@@ -88,15 +88,15 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
     : busy === 'disable' ? 'Turning off and clearing chat access…'
     : busy === 'enable' ? 'Turning on…'
     : busy === 'check' ? 'Checking status…'
-    : pending && enabled === true ? "On. A chat's controls are still stopping. Turn off for all chats to retry cleanup."
-    : pending ? known ? 'Off. Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Status not confirmed.'
+    : pending && enabled === true ? "A chat's controls are still stopping. Turn off for all chats to retry cleanup."
+    : pending ? known ? 'Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Status not confirmed.'
     : !known ? 'Status not confirmed.'
-    : enabled ? 'On. Each chat still needs you to choose the window it can control.' : 'Off. Chat access cleared.'
+    : enabled ? 'Each chat still needs you to choose the window it can control.' : 'Chat access cleared.'
 
   // One description line: the consent copy and the live state share it, so the row stays one line tall plus its description.
   return <SettingRow title="UAM Computer Use" description={<>{COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'} <span id={statusId} role="status" aria-live="polite">{status}</span></>}
     control={COMPUTER_USE_ENABLED && <div ref={controls} className="flex flex-wrap items-center justify-end gap-2">
-      <Reveal open={known} as="span"><Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
+      <Reveal open={known} as="span"><Switch hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}
         onChange={event => void change(event.currentTarget.checked, event.currentTarget)} /></Reveal>
       <Reveal open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></Reveal>

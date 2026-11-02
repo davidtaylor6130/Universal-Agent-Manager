@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Reveal, Tooltip, cx } from '../ui'
-import type { ButtonProps } from '../ui'
+import { Button, Reveal, StatusDot, Tooltip, cx } from '../ui'
+import type { ButtonProps, StatusTone } from '../ui'
 import './settings-shell.css'
 import './settings-motion.css'
 
@@ -142,4 +142,11 @@ export function SettingsLoading({ label = 'Loading settings', rows = 3 }: { labe
       <span className="sr-only">{label}…</span>
     </div>
   )
+}
+
+/** Status mark with its state. Success and error boxes show no state text, so the word becomes their accessible name; other tones keep it visible. */
+export function StatusMark({ tone, label, size }: { tone: StatusTone; label: string; size?: number }) {
+  return tone === 'success' || tone === 'error'
+    ? <span role="img" aria-label={label}><StatusDot tone={tone} size={size} /></span>
+    : <><StatusDot tone={tone} size={size} />{label}</>
 }

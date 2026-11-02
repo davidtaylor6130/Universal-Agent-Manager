@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { AcpRateLimits } from '../../store/cpp/types'
-import { UsageLimits } from './UsageLimits'
+import { UsageLimits, type LimitsUsage } from './UsageLimits'
+import { EMPTY_USAGE_TOTALS, type UsageProvider, type UsageProviderId } from '../../services/usageHistory'
 import { clearProviderAllowanceCache, type ProviderAllowanceSnapshot } from '../../services/providerAllowances'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -108,7 +109,9 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(requests).toContainEqual(expect.objectContaining({ action: 'getProviderAllowances', payload: expect.objectContaining({ executionHostId: 'local' }) }))
       expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
-      expect(host.querySelectorAll('.uam-limits-section')).toHaveLength(6)
+      // One card, one row per provider: no per-provider sections or machine headings.
+      expect(host.querySelectorAll('.uam-set-card')).toHaveLength(1)
+      expect(host.querySelectorAll('.uam-limit-entry')).toHaveLength(6)
       expect(host.textContent).not.toContain('Latest provider snapshots from chats')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -180,9 +183,10 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="remote" />))
-      expect(host.textContent).toContain('Not available for remote computers.')
-      expect(host.textContent).not.toContain('Account allowances on this computer.')
-      expect(host.querySelector('button')).toBeNull()
+      expect(host.querySelector('.uam-limits-lede')?.textContent).toContain('Allowances are read on this computer only.')
+      expect(host.textContent).not.toContain('Refresh allowances')
+      // The unsupported remote feed is explained once, not as a lone not-available line on every row.
+      expect(host.querySelector('[aria-label="Codex"] .uam-limit-summary')?.textContent).not.toContain('Not')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
@@ -217,7 +221,7 @@ describe('UsageLimits independent account allowances', () => {
       expect(gemini.textContent).not.toContain('Primary window')
       expect(gemini.textContent).not.toContain('5 hour window')
       expect(gemini.textContent).toContain('Reset time unavailable')
-      const extra = gemini.querySelector<HTMLElement>('.uam-disclosure')!
+      const extra = gemini.querySelector<HTMLElement>('.uam-limits-more')!
       const extraToggle = extra.querySelector('button')!
       expect(extraToggle.getAttribute('aria-expanded')).toBe('false')
       expect(extraToggle.textContent).toBe('2 more model allowances')
@@ -379,7 +383,7 @@ describe('UsageLimits observed native consumption', () => {
       expect(tokenDetails).not.toBeNull()
       const tokenToggle = tokenDetails!.querySelector('button')!
       expect(tokenToggle.getAttribute('aria-expanded')).toBe('false')
-      expect(tokenToggle.textContent).toContain('Context and tokens')
+      expect(tokenToggle.textContent).toContain('Latest chat context and tokens')
       const facts = Object.fromEntries([...tokenDetails!.querySelectorAll('dt')].map(term => [term.textContent?.trim(), term.nextElementSibling?.textContent?.trim()]))
       expect(facts).toMatchObject({ Input: '25', Output: '4', 'Last turn': 'Unavailable' })
       expect(host.textContent).toContain('Account allowances unavailable.')
@@ -388,5 +392,94 @@ describe('UsageLimits observed native consumption', () => {
       if (previousQuery) window.cefQuery = previousQuery; else delete window.cefQuery
       vi.restoreAllMocks()
     }
+  })
+})
+
+describe('UsageLimits overview', () => {
+  afterEach(() => { delete window.cefQuery; vi.restoreAllMocks() })
+  const tokens = (providerId: UsageProviderId, totalTokens: number, available = true): UsageProvider => ({ ...EMPTY_USAGE_TOTALS, providerId, totalTokens, inputTokens: totalTokens, records: totalTokens ? 3 : 0, sessions: totalTokens ? 2 : 0, available, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })
+  const usage = (providers: UsageProvider[]): LimitsUsage => ({ providers, loading: false, collecting: false, error: '', days: 7 })
+  async function render(providers: ProviderAllowanceSnapshot['providers'], history?: LimitsUsage, host = 'local') {
+    const previous = useAppStore.getState()
+    useAppStore.setState({ sessions: [], acpBindingBySessionId: {} })
+    window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: JSON.parse(request.request).payload.executionHostId, refreshing: false, providers }))
+    const element = document.createElement('div'), root = createRoot(element)
+    await act(async () => root.render(<UsageLimits executionHostId={host} usage={history} />))
+    return { host: element, close: () => { act(() => root.unmount()); useAppStore.setState(previous, true) } }
+  }
+
+  it('still shows each provider usefully when no allowance is readable (the seeded demo state)', async () => {
+    const failed = 'The provider could not return account allowances; check its existing sign-in and CLI compatibility.'
+    const keychain = 'No existing account credential was found in the login keychain.'
+    const view = await render([
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'error', limits: null, error: failed },
+      { providerId: 'claude-cli', scope: 'local:claude', status: 'error', limits: null, error: 'No existing Claude Code subscription login is available.' },
+      { providerId: 'gemini-cli', scope: 'local:gemini', status: 'error', limits: null, error: 'No existing Gemini CLI subscription login is available.' },
+      { providerId: 'opencode-cli', scope: 'local:opencode', status: 'unavailable', limits: null, error: 'Account allowance is not available from this provider connection.' },
+      { providerId: 'copilot-cli', scope: 'local:copilot', status: 'error', limits: null, error: failed },
+      { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'error', limits: null, error: keychain },
+    ], usage([tokens('codex-cli', 1_200_000), tokens('claude-cli', 340_000), tokens('gemini-cli', 0), tokens('opencode-cli', 5000), tokens('copilot-cli', 0, false), tokens('antigravity-cli', 800)]))
+    try {
+      const lede = view.host.querySelector('.uam-limits-lede')!.textContent
+      expect(lede).toContain('No allowances to show.')
+      expect(lede).toContain('1.5M tokens used in the past 7 days.')
+      const summary = (name: string) => view.host.querySelector(`[aria-label="${name}"] .uam-limit-summary`)!.textContent
+      expect(summary('Codex')).toContain('1.2M tokens')
+      expect(summary('Codex')).toContain("Couldn't read")
+      expect(summary('Claude')).toContain('Not signed in')
+      expect(summary('Gemini')).toContain('No usage')
+      expect(summary('OpenCode')).toContain('Not offered by OpenCode')
+      expect(summary('Copilot')).toContain('No history')
+      expect(summary('Antigravity')).toContain('Not signed in')
+      // Short reasons on the row; every native message is kept whole in the row details.
+      expect(summary('Codex')).not.toContain(failed)
+      expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain(failed)
+      expect(view.host.querySelector('[aria-label="Antigravity"]')!.textContent).toContain(keychain)
+      expect(view.host.querySelectorAll('.uam-limit-summary .uam-status-dot--warning')).toHaveLength(5)
+      expect(view.host.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
+      expect(view.host.textContent).not.toContain('This computer')
+    } finally { view.close() }
+  })
+
+  it('leads with the window closest to its limit and fills each row to its most-used window', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const limits = (primary: number, secondary: number): AcpRateLimits => ({ ...allowance(now / 1000 + 7200), planType: 'plus', primary: { usedPercent: primary, resetsAt: now / 1000 + 7200, windowDurationMinutes: 300 }, secondary: { usedPercent: secondary, resetsAt: now / 1000 + 3 * 86400, windowDurationMinutes: 10080 } })
+    const view = await render([
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', limits: limits(30, 86), error: '' },
+      { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', limits: limits(12, 40), error: '' },
+    ], usage([tokens('codex-cli', 2_000_000), tokens('claude-cli', 10_000)]))
+    try {
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Codex is close to its limit. 86% of Weekly window used, resets in 3d. 2M tokens used in the past 7 days.')
+      const codex = view.host.querySelector<HTMLElement>('[aria-label="Codex"]')!
+      expect(codex.style.getPropertyValue('--progress')).toBe('0.86')
+      expect(codex.style.getPropertyValue('--limit-fill')).toBe('var(--warning-dim)')
+      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('Weekly window · Resets in 3d86% used')
+      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('plus')
+      expect(view.host.querySelector<HTMLElement>('[aria-label="Claude"]')!.style.getPropertyValue('--limit-fill')).toBe('var(--accent-dim)')
+      // Expanding keeps every window as its own meter.
+      expect(codex.querySelectorAll('[role="progressbar"]')).toHaveLength(2)
+    } finally { view.close() }
+  })
+
+  it('leaves a turned-off provider out of rows, summary and token totals', async () => {
+    const previous = useAppStore.getState().providerAvailability
+    useAppStore.setState({ providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }] })
+    const view = await render([{ providerId: 'claude-cli', scope: 'local:claude', status: 'unavailable', limits: null, error: '' }], usage([tokens('codex-cli', 9_000_000), tokens('claude-cli', 1000)]))
+    try {
+      expect(view.host.querySelector('[aria-label="Codex"]')).toBeNull()
+      expect(view.host.textContent).not.toContain('Codex')
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toContain('1K tokens used')
+    } finally { view.close(); useAppStore.setState({ providerAvailability: previous }) }
+  })
+
+  it('names a remote computer once and shows its tokens without per-row not-available lines', async () => {
+    const previous = useAppStore.getState().executionHosts
+    useAppStore.setState({ executionHosts: [{ id: 'lab', label: 'Lab PC' }] as typeof previous })
+    const view = await render(['codex-cli', 'claude-cli'].map(providerId => ({ providerId: providerId as UsageProviderId, scope: 'remote', status: 'unavailable' as const, limits: null, error: 'Independent account allowances are not available on this remote connection.' })), usage([tokens('codex-cli', 4000)]), 'lab')
+    try {
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Allowances are read on this computer only. 4K tokens used in the past 7 days on Lab PC.')
+      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side')!.textContent).toBe('')
+      expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain('Independent account allowances are not available on this remote connection.')
+    } finally { view.close(); useAppStore.setState({ executionHosts: previous }) }
   })
 })

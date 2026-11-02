@@ -1,16 +1,16 @@
 import { useId } from 'react'
 import type { ButtonHTMLAttributes } from 'react'
-import { Check, ChevronRight, CircleDashed, X } from 'lucide-react'
+import { ChevronRight, CircleDashed } from 'lucide-react'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { providerMetadataForId, SUPPORTED_CLI_PROVIDER_IDS } from '../../utils/providerMetadata'
-import { Button, Tooltip } from '../ui'
+import { Button, StatusDot, Tooltip } from '../ui'
 import './SubagentCard.css'
 
 /** Completed and failed outcomes use the shared tick/cross colours; other states show no outcome glyph. */
 export function SubagentOutcomeIcon({ status }: { status: string }) {
   const value = status.trim().toLowerCase()
-  if (value === 'completed') return <Check size={13} aria-hidden style={{ color: 'var(--success)' }} />
-  if (value === 'failed') return <X size={13} aria-hidden style={{ color: 'var(--error)' }} />
+  if (value === 'completed') return <StatusDot tone="success" />
+  if (value === 'failed') return <StatusDot tone="error" />
   return null
 }
 

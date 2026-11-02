@@ -73,7 +73,8 @@ it('retains persisted Off after failed revocation and retries only the global di
     { action: 'getComputerUseSettings' },
     { action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } },
   ])
-  expect(host.textContent).toContain('Off.')
+  expect(host.textContent).toContain('Chat access cleared.')
+  expect(toggle()?.checked).toBe(false)
   expect(toggle()?.disabled).toBe(false)
 })
 
@@ -166,7 +167,7 @@ it.each(['switch', 'Turn off'])('keeps On with per-chat cleanup truthful and per
   await act(async () => useAppStore.setState({ computerUseRevocationPending: true }))
   expect(toggle()?.checked).toBe(true)
   expect(toggle()?.disabled).toBe(false)
-  expect(host.textContent).toContain("On. A chat's controls are still stopping.")
+  expect(host.textContent).toContain("A chat's controls are still stopping.")
   expect(host.textContent).toContain('Turn off for all chats to retry cleanup.')
   expect(host.textContent).not.toContain('in that chat')
   expect(host.textContent).not.toContain('before enabling')

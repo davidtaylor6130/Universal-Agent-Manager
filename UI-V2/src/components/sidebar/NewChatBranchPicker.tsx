@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { CircleX, LoaderCircle } from 'lucide-react'
+import { LoaderCircle } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { sanitizeGitBaseBranch } from '../../store/cpp/sanitizers'
 import { useAppStore } from '../../store/useAppStore'
 import { chatWorktreeBranches, preferredStartingBranch, rankBranches } from '../../utils/branchRecency'
-import { Button, MenuSelect } from '../ui'
+import { Button, MenuSelect, StatusDot } from '../ui'
 
 interface BranchContext {
   vcs: string
@@ -143,7 +143,7 @@ export function NewChatBranchPicker({ folderId, defaultBranch, value, onChange, 
         {!loading && ready && value !== undefined && value === autoPicked && (
           <p style={{ color: 'var(--text-3)' }}>Preselected: furthest ahead (newest commit).</p>
         )}
-        {error && !loading && <p role="alert" className="flex items-center gap-1.5" style={{ color: 'var(--error)' }}><CircleX size={12} aria-hidden />{error}</p>}
+        {error && !loading && <p role="alert" className="flex items-center gap-1.5" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{error}</p>}
       </div>
       {!unavailableReason && (
         <Button

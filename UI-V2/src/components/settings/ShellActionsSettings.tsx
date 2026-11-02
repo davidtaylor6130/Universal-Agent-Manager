@@ -227,7 +227,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   })
 
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-0">
       <Presence open={Boolean(pendingExit)}>{pendingExit && <UnsavedChangesDialog title="Save shell action changes?" label="Unsaved shell actions" busy={applying} saveDisabled={Boolean(invalidAction)} error={validationError || undefined}
         onStay={() => { setPendingExit(null); revealInvalidAction() }}
         onDiscard={() => { const next = pendingExit; setActions(appliedActions); setPendingExit(null); next() }}

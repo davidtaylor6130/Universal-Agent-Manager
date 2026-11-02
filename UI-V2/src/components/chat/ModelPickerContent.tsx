@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, RefreshCw, Search, Star, X } from 'lucide-react'
-import { Button, IconButton, Tooltip } from '../ui'
+import { Check, RefreshCw, Search, Star } from 'lucide-react'
+import { Button, IconButton, StatusDot, Tooltip } from '../ui'
 import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -261,7 +261,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
           onClick={() => void requestCatalog(selectedProvider)}>{error ? 'Retry' : 'Refresh'}</Button>}
       </div>}
       {loading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
-      {error && <div role="status" className="flex items-center gap-1 px-2 py-1 text-xs" style={{ color: 'var(--error)' }}><X size={13} aria-hidden />{error}</div>}
+      {error && <div role="status" className="flex items-center gap-1 px-2 py-1 text-xs" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{error}</div>}
       <div ref={listRef} data-testid="model-options" style={{ maxHeight: listHeight, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
         {models.length === 0 && (
           <div role="status" className="uam-np-empty">

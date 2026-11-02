@@ -5,7 +5,7 @@ import { routingConfigurationError, sanitizeRepositoryMatches, shortRepositoryId
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, MenuSelect, Presence, StatusDot, Switch, usePresence, type StatusTone, Reveal } from '../ui'
 import { NumberField } from './NumberField'
-import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
@@ -149,7 +149,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         </div>
 
     return <>
-      <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-6"><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-6 m-0 p-0 border-0'}>
+      <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-0"><fieldset disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-0 m-0 p-0 border-0'}>
         <SettingsSection title="Automatic routing" actions={variant === 'page' ? footer : undefined}>
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
@@ -157,20 +157,17 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
 
         <Reveal open={sshHosts.length === 0}>
           <SettingsSection title="Computers">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="uam-rt-dialog__empty">No SSH computers yet.</p>
-                <Reveal open={!!(onAddComputer)}><Button size="sm" onClick={onAddComputer}>Add computer</Button></Reveal>
-              </div>
+              <SettingRow title={<span className="uam-rt-dialog__empty">No SSH computers yet.</span>} control={<Reveal open={!!(onAddComputer)}><Button size="sm" onClick={onAddComputer}>Add computer</Button></Reveal>} />
           </SettingsSection>
         </Reveal>
-        <Reveal open={sshHosts.length > 0} className="grid min-w-0 gap-6">{sshHosts.map((host) => {
+        <Reveal open={sshHosts.length > 0} className="grid min-w-0 gap-0">{sshHosts.map((host) => {
             const policy = draft.hosts.find((item) => item.hostId === host.id)
             const look = RUNNER_STATUS[host.runnerStatus]
             const mapped = localFolders.filter((source) => policy?.workspaceMappings.some((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)).length
             const remoteFolders = folders.filter((folder) => folder.executionHostId === host.id)
             return <SettingsSection key={host.id} title={host.label}
               description={<span className="uam-rt-alias">{host.sshAlias}</span>}
-              actions={<span className="uam-rt-status"><StatusDot tone={look.tone} size={7} />{look.label}</span>}>
+              actions={<span className="uam-rt-status"><StatusMark tone={look.tone} label={look.label} size={7} /></span>}>
               <SettingRow htmlFor={`routing-enabled-${host.id}`} title="Use this computer"
                 control={<Switch id={`routing-enabled-${host.id}`} hideLabel label={`Route to ${host.label}`} checked={policy?.enabled ?? false} onChange={(event) => update(host.id, (item) => ({ ...item, enabled: event.target.checked }))} />} />
               <SettingRow title="Concurrent sessions" description="How many chats can run here at the same time."

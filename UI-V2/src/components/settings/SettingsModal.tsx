@@ -5,7 +5,7 @@ import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './Data
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
-import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
@@ -110,8 +110,8 @@ function StatusMessage({ message, className = 'text-xs' }: { message: StatusMess
   if (!message) return null
   const color = message.tone === 'error' ? 'var(--error)' : message.tone === 'success' ? 'var(--success)' : 'var(--text-2)'
   return <div role="status" className={cx('inline-flex items-center gap-1', className)} style={{ color }}>
-    {message.tone === 'success' && <Check size={13} aria-hidden />}
-    {message.tone === 'error' && <X size={13} aria-hidden />}
+    {message.tone === 'success' && <StatusDot tone="success" />}
+    {message.tone === 'error' && <StatusDot tone="error" />}
     {message.text}
   </div>
 }
@@ -308,7 +308,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       <Reveal as="span" open={applied === 'enabled'}><span>Starts automatically</span></Reveal>
       <Reveal as="span" open={applied === 'disabled'}><span>Doesn't start automatically</span></Reveal>
       <Reveal as="span" open={applied === 'pending'}><span>Applying…</span></Reveal>
-      <Reveal as="span" open={applied === 'failed'}><span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><X size={12} aria-hidden />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span></Reveal>
+      <Reveal as="span" open={applied === 'failed'}><span className="inline-flex items-center gap-1" style={{ color: 'var(--error)' }}><StatusDot tone="error" />{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span></Reveal>
       <Reveal as="span" open={startupMismatch}><span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span></Reveal>
     </span>
   ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · starts with your login session`
@@ -1622,7 +1622,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <SettingRow
           title="Connection"
           description={companionLoadError ? undefined : repairAddresses.length > 0 ? 'Choose a current network address below to repair the connection.' : companionSettings?.reason?.replace(/\bLAN\b/g, 'network')}
-          status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <X size={13} aria-hidden /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? 'Needs attention' : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? 'Needs attention' : 'Off'}</span>}
+          status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <StatusDot tone="error" /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? <span className="sr-only">Needs attention</span> : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? <span className="sr-only">Needs attention</span> : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
             <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
@@ -1704,7 +1704,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={
             <Switch
               hideLabel
-              className="uam-switch--accent"
               label="Allow UAM Control requests"
               checked={Boolean(activeSession?.uamControlEnabled)}
               disabled={!activeUamControlSupported || computerUseBusy}
@@ -1729,8 +1728,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           key={permission}
           title={label}
           status={<span className="inline-flex items-center gap-1.5" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>
-            {state ? (state.available ? <Check size={13} aria-hidden /> : <X size={13} aria-hidden />) : <StatusDot tone="neutral" />}
-            {state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}
+            {state ? (state.available ? <StatusMark tone="success" label="Available" /> : <><StatusMark tone="error" label="Not available" />{state.error}</>) : <StatusMark tone="neutral" label="Not checked" />}
           </span>}
           control={<div className="flex flex-wrap justify-end gap-1">
             <Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button>
@@ -2037,7 +2035,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                   </div>
                                 )
                               })}
-                              <div className="px-1 pt-1" style={{ color: 'var(--text-3)' }}>Hidden models stay available in existing chats.</div>
+                              <div className="py-3" style={{ color: 'var(--text-3)' }}>Hidden models stay available in existing chats.</div>
                             </div>
                           </Disclosure>
                         </Reveal>
@@ -2096,7 +2094,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
                           } }, settingsScope))} />} />
                         <Disclosure summary="Advanced">
-                          <div className="grid gap-3">
+                          <div className="grid">
                             <SettingRow title="Feature preference" control={renderDefaultsMenu(
                               `${provider.id}:feature-preference`,
                               defaults.featurePreference ?? 'uam',
@@ -2134,7 +2132,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         <Reveal open={!refreshFailed}>
                           <SettingRow title="Models" status={
                             <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-                              <ProgressFill label={`Refreshing ${providerName} models`} indeterminate active={modelsLoading}>{modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <><Check size={13} aria-hidden style={{ color: 'var(--success)', verticalAlign: '-2px', marginRight: 4 }} />Model catalog available</> : 'Using provider defaults; refresh to discover models'}</ProgressFill>
+                              <ProgressFill label={`Refreshing ${providerName} models`} indeterminate active={modelsLoading}>{modelsLoading ? 'Refreshing models…' : !providerWorkspace ? 'Add a workspace to refresh models' : hasDiscoveredModels ? <StatusMark tone="success" label="Model catalog available" /> :'Using provider defaults; refresh to discover models'}</ProgressFill>
                             </span>
                           } />
                         </Reveal>
@@ -2287,9 +2285,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 />
               }
             />
-            <div className="grid gap-3">
-              <SettingsField label="Native Markdown file" htmlFor="agent-import-path">
-                <div className="flex gap-2">
+            <div className="grid gap-0">
+              <SettingRow title="Native Markdown file" htmlFor="agent-import-path" control={
+                <div className="flex gap-2" style={{ width: 440, maxWidth: '100%' }}>
                   <input
                     id="agent-import-path"
                     aria-label="Native agent Markdown file"
@@ -2310,7 +2308,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   }}>Browse</Button>
                   <Button size="sm" variant={agentImportPath.trim() ? 'primary' : 'secondary'} aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
                 </div>
-              </SettingsField>
+              } />
 
               <Reveal open={Boolean(agentImportPreview)} className="grid gap-3">
                 {agentImportPreview && (
@@ -2432,7 +2430,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </Reveal>
                 <Reveal open={Boolean(manager.lastCommand || manager.lastOutput)}>
                   <Disclosure summary="Last command output">
-                    <div className="grid gap-2">
+                    <div className="grid gap-2 py-3">
                       <Reveal open={Boolean(manager.lastCommand)}>
                         <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
                           {manager.lastCommand}
@@ -2529,10 +2527,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
       return (
         <div className="grid gap-0">
-          {COMPUTER_USE_ENABLED && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</p>}
-
           <ProgressFill label="Remote host setup running" indeterminate active={remoteBusy}>{addHostSection}</ProgressFill>
           <SettingsSection title="Configured hosts">
+            {COMPUTER_USE_ENABLED && <SettingRow title={<span className="text-xs" style={{ color: 'var(--text-3)' }}>Remote Computer Use is off. Remote chats can't see or control the screen.</span>} />}
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
             <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
               <SettingRow
@@ -2541,8 +2538,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 description={<span className="font-mono">{host.sshAlias}</span>}
                 status={(
                   <span className="inline-flex flex-wrap items-center gap-1.5">
-                    {host.runnerStatus === 'ready' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }} /> : host.runnerStatus === 'error' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }} /> : <StatusDot tone="neutral" />}
-                    <span>{host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus}</span>
+                    <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
                     <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
                   </span>
                 )}
@@ -2651,8 +2647,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <Reveal open={Boolean(memoryLastStatus)}><SettingRow title="Last run" description={memoryLastStatus || undefined} /></Reveal>
 
             <Reveal open={hasWorkerLog}>
-              <Disclosure className="mt-3 text-xs" summary={<span className="inline-flex items-center gap-1" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>{workerLogIsFailure && <X size={13} aria-hidden />}Last worker log</span>}>
-                <div style={{ color: 'var(--text-2)' }}>
+              <Disclosure className="text-xs" summary={<span className="inline-flex items-center gap-1" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>{workerLogIsFailure && <StatusDot tone="error" />}Last worker log</span>}>
+                <div className="py-3" style={{ color: 'var(--text-2)' }}>
                 <Reveal open={Boolean(memoryActivity.lastWorkerStatus)}><p className="mt-2" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{memoryActivity.lastWorkerStatus}</p></Reveal>
                 <Reveal open={Boolean(workerLogMeta)}><p className="mt-0.5" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)' }}>{workerLogMeta}</p></Reveal>
                 <pre
@@ -2948,7 +2944,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
                   </div>
                 </div>
-                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6"><div className="uam-settings-frame flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-3"><div className="uam-settings-frame uam-settings-frame--full flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden">{renderSectionContent()}</SettingsPageSwap></div></div>
                   return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}</Swap>

@@ -289,8 +289,8 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   expect(reportAppFailure).toHaveBeenLastCalledWith('Computer Use could not be turned off.', expect.any(String))
   useAppStore.setState({ computerUseEnabled: false, computerUseRevocationPending: false })
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
-  expect(document.body.textContent).toContain('Off')
-  expect(document.body.textContent).toContain('Off. Chat access cleared.')
+  expect(document.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')?.checked).toBe(false)
+  expect(document.body.textContent).toContain('Chat access cleared.')
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {

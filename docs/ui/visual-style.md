@@ -25,7 +25,8 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 
 ## Status
 
-- Success/failure use the same colour and tick/cross icon everywhere.
+- Success/failure use the same colour and tick/cross icon everywhere, drawn by `StatusDot` as a rounded square (tinted fill and border, tone-coloured tick or cross). Never a circle, never colour alone.
+- On/off is always the `Switch` control: green track (`--success`) when on, red track (`--error`) when off, white thumb. Never a black or text-coloured track, an accent or gradient variant, or a checkbox or segmented On/Off standing in for it.
 - On/off states must stay visibly distinct, not only by switch position.
 - Use `StatusDot` only where state matters. Custom themes let users choose semantic status colours (error/stop/cancel, success, warning) so colour-blind users can adjust them.
 
@@ -40,7 +41,7 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 
 Quantities such as allowances, token usage, spend and counts versus capacity use bars, meters, sparklines or segmented bars where useful, with exact numbers as secondary text. Use semantic thresholds where the value has a real limit (for example over 80% warning and over 95% error); do not invent capacity for unknown values.
 
-Progress on work is never a thin line or bar at the bottom of a rounded box. The row or item doing the work is the progress bar: its background fills left to right in `var(--accent-dim)` by percentage when one is known, or sweeps when none is known. Text stays readable on top and the fill follows the item's border radius. Under reduced motion or Motion Off the sweep stops and a static partial fill (or no fill, when there is no percentage) is shown. Meters for measured quantities (allowances, context fill) are not work progress and keep their own form.
+Progress on work is never a thin line or bar at the bottom of a rounded box. The row or item doing the work is the progress bar: its background fills left to right in `var(--accent-dim)` by percentage when one is known, or sweeps when none is known. Text stays readable on top and the fill follows the item's border radius. Under reduced motion or Motion Off the sweep stops and a static partial fill (or no fill, when there is no percentage) is shown. Measured quantities with a real limit (allowance windows, context fill) use the same row fill, switching to the warning or error tint at their thresholds.
 
 ## Model picker
 

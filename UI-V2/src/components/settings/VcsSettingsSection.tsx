@@ -52,7 +52,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   }
   const toggle = (label: string, checked: boolean, change: (checked: boolean) => void, disabled = false) =>
     <Switch hideLabel label={label} checked={checked} disabled={saving || disabled} onChange={(event) => change(event.currentTarget.checked)} />
-  return <div className="grid gap-6">
+  return <div className="grid gap-0">
     <SettingsSection title="Git" actions={<>
         <Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setBaseline(saved) }}>Discard</Button>
         <SaveButton saving={saving} disabled={saving || !dirty || Boolean(validation)} onClick={() => void save()}>Save VCS settings</SaveButton>

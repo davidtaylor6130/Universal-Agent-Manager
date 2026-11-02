@@ -1,8 +1,8 @@
-import { ArrowUpCircle, ArrowUpRight, Check, CheckCircle2, Copy, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { ArrowUpCircle, ArrowUpRight, CheckCircle2, Copy, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, ConfirmDialog, IconButton, ProgressFill, cx } from '../ui'
+import { Button, ConfirmDialog, IconButton, ProgressFill, StatusDot, cx } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { Notice } from '../ui/Notice'
 import { useRowLeave } from './useRowLeave'
@@ -207,7 +207,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const helper = Boolean(__UAM_FEATURE_SSH__ && target?.remoteHostId)
               return (
                 <article key={key} className="uam-update-row uam-update-row--error flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5">
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <StatusDot tone="error" />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${result.name} update failed`}</span>
                   <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${result.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(result.output || result.message) }} />
                   {target && (
@@ -259,7 +259,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const rowClass = cx('uam-update-row flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5', failed && 'uam-update-row--error')
               const content = failed ? (
                 <>
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <StatusDot tone="error" />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${update.name} update failed`}</span>
                   {outcome.output && (
                     <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${update.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(outcome.output ?? '') }} />
@@ -269,7 +269,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                 </>
               ) : (
                 <>
-                  {succeeded ? <Check size={14} aria-hidden className="shrink-0" style={{ color: 'var(--success)' }} />
+                  {succeeded ? <StatusDot tone="success" />
                     : update.providerId ? <ProviderLogo providerId={update.providerId} size={14} className="shrink-0" /> : <ArrowUpCircle size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />}
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{update.name}</span>
                   {!succeeded && <span className="shrink-0 font-mono text-xs" style={{ color: 'var(--text-3)' }}>

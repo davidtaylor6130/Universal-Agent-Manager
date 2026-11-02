@@ -11,12 +11,13 @@ export interface StatusDotProps {
   className?: string
 }
 
-/** Small semantic status indicator dot. Pair with a Tooltip for meaning. */
+/** Small semantic status indicator. Success and error render a rounded square with a tick or cross (never a circle, never colour alone); other tones render a dot. Pair with a Tooltip for meaning. */
 export function StatusDot({ tone = 'neutral', pulse = false, size = 8, className }: StatusDotProps) {
-  // Success and failure are read as a tick or cross, not colour alone.
   if (tone === 'success' || tone === 'error') {
     const Icon = tone === 'success' ? Check : X
-    return <Icon size={size + 4} strokeWidth={2.5} className={cx('shrink-0', className)} style={{ color: `var(--${tone})` }} aria-hidden />
+    return <span className={cx('uam-status-box', `uam-status-box--${tone}`, className)} style={{ width: size + 8, height: size + 8 }} aria-hidden>
+      <Icon size={size + 4} strokeWidth={2.5} aria-hidden />
+    </span>
   }
   return (
     <span

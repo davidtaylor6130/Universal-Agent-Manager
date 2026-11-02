@@ -5,11 +5,10 @@ import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataF
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
-import { Check, Minus, RefreshCw, X } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { Button, IconButton, Notice, StatusDot, Switch, ViewportMenu, usePresence, type StatusTone, Reveal } from '../ui'
-import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { SettingRow, SettingsSection, StatusMark } from './SettingsPrimitives'
 import './provider-settings.css'
-import './provider-overview.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { COMPUTER_USE_ENABLED, OPENCODE_ENABLED } from '../../config/buildFeatures'
 
@@ -119,10 +118,10 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
     }
     finally { if (save === latestSave.current) { setBusy(false); busyRef.current = false; setPendingKey('') } }
   }
-  /** Configuration switch. Unknown (undefined) renders as a dashed, disabled switch. Only the saving switch is pending; the rest stay steady. */
-  // ui: raw button kept — role=checkbox configuration cell with dashed unknown and pending states; Switch has no mixed state.
-  const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => <button type="button" role="checkbox" className="uam-prov-switch" aria-label={checked === undefined ? `${label} (unknown)` : label} aria-checked={checked === undefined ? 'mixed' : checked} data-pending={pendingId !== '' && pendingKey === pendingId || undefined} disabled={(pendingId !== '' && pendingKey === pendingId) || checked === undefined || !onChange} title={checked === undefined ? 'Not known yet' : checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onClick={onChange}/>
-  /** Read-only availability glyph: state is shown, not set here. */
+  /** Configuration switch. Unknown (undefined) is a neutral dot, not a switch: a switch would read as off. Only the saving switch is disabled; the rest stay steady. */
+  const configSwitch = (label: string, checked: boolean | undefined, onChange?: () => void, pendingId = '') => checked === undefined
+    ? <span role="img" aria-label={`${label} (unknown)`} title="Not known yet"><StatusDot tone="neutral" /></span>
+    : <Switch hideLabel label={label} checked={checked} disabled={(pendingId !== '' && pendingKey === pendingId) || !onChange} title={checked ? 'On. Click to turn off.' : 'Off. Click to turn on.'} onChange={onChange} />
   const collapseServers = servers.length > MAX_SERVER_COLUMNS
   const [menuId, setMenuId] = useState<string | null>(null)
   const menuPresence = usePresence(menuId !== null)
@@ -161,8 +160,8 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       <span className="tabular-nums">{label}</span>
     </button>
   }
-  // ui: raw button kept — read-only overview tick/cross cell (role=checkbox); the overview cells are not restyled.
-  const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available === undefined ? <Minus size={13}/> : available ? <Check size={13}/> : <X size={13}/>}</button>
+  /** Read-only availability: state is shown, not set here. */
+  const glyph = (label: string, available: boolean | undefined, title: string) => <span role="img" aria-label={available === undefined ? `${label} (unknown)` : `${label} ${available ? 'on' : 'off'}`} title={title}>{available === undefined ? <StatusDot tone="neutral" /> : <StatusDot tone={available ? 'success' : 'error'} />}</span>
   const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
   /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
@@ -217,23 +216,19 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             : computerUseRevocationPending ? 'Cleanup pending. Retry disabling in Computer Use settings.'
             : !computerUseKnown ? 'Global status not confirmed. Check Computer Use settings.'
             : computerUseEnabled ? 'Available. Each chat still needs you to choose the window it can control.' : 'Off. Turn Computer Use on in Computer Use settings.'
-          // ui: raw buttons kept — provider name cell and shared-setup tick/cross cell are table cells with bespoke overview styling.
+          // ui: raw button kept — provider name cell is a table cell with bespoke overview styling.
           return <tr key={id} style={{ borderTop: '1px solid var(--border)' }}>
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>
-            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}>{!terminalOnly && healthLabel === 'Connected' ? <Check size={13} aria-hidden style={{ color: 'var(--success)' }}/> : !terminalOnly && healthLabel === 'Failed' ? <X size={13} aria-hidden style={{ color: 'var(--error)' }}/> : <StatusDot tone={healthTone}/>}{terminalOnly ? 'Terminal only' : healthLabel}</span>
+            <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusMark tone={healthTone} label={terminalOnly ? 'Terminal only' : healthLabel} /></span>
               <Reveal open={!terminalOnly && health?.status === 'failed' && !!health.detail}>{!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</Reveal></td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             {COMPUTER_USE_ENABLED && <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>}
-            <td className="uam-prov-glyph-cell px-1 py-2">{health?.sharedSetupEnabled === undefined
-              ? checkbox(`${metadata.shortName} Shared setup`, undefined)
-              : <button type="button" role="checkbox" className="uam-prov-avail uam-prov-avail--action" data-state={health.sharedSetupEnabled ? 'on' : 'off'} aria-label={`${metadata.shortName} Shared setup ${health.sharedSetupEnabled ? 'on' : 'off'}`} aria-checked={health.sharedSetupEnabled}
-                data-pending={pendingKey === configurationKey(activeHostId, id, 'server', 'shared-setup') || undefined} disabled={terminalOnly || pendingKey === configurationKey(activeHostId, id, 'server', 'shared-setup')} title={health.sharedSetupEnabled ? 'On. Click to turn off.' : 'Off. Click to turn on.'}
-                onClick={() => void setConfiguration(id, 'shared-setup', !health.sharedSetupEnabled)}>{health.sharedSetupEnabled ? <Check size={13}/> : <X size={13}/>}</button>}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{configSwitch(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
               : servers.map(server => {
                 const enabled = serverEnabled(health, server.id)
-                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}</td>
+                return <td key={server.id} className="uam-prov-glyph-cell px-1 py-2">{configSwitch(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}</td>
               })}
           </tr>
         })}</tbody>
@@ -261,7 +256,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">
             <span className="min-w-0 grid"><span className="truncate text-sm" style={{ color: 'var(--text)' }}>{server.name}</span></span>
-            {checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}
+            {configSwitch(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), configurationKey(activeHostId, id, 'server', server.id))}
           </div>
         })}
       </ViewportMenu>

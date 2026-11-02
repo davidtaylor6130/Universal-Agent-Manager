@@ -500,7 +500,7 @@ describe('UsageLimits', () => {
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
-  it('keeps local allowances separate from unavailable remote account reads without chats', async () => {
+  it('shows account allowances once on All machines, without machine headings or remote reads', async () => {
     const previous = useAppStore.getState()
     const limits = (percent: number) => ({ updatedAt: Date.now(), limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: null, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
     useAppStore.setState({ executionHosts: [{ id: 'local', label: 'Mac' }, { id: 'peer', label: 'Windows' }] as typeof previous.executionHosts,
@@ -510,20 +510,17 @@ describe('UsageLimits', () => {
       const { action, payload } = JSON.parse(request.request)
       expect(action).toBe('getProviderAllowances')
       requestedHosts.push(payload.executionHostId)
-      const local = payload.executionHostId === 'local'
-      request.onSuccess(JSON.stringify({ executionHostId: payload.executionHostId, refreshing: false, providers: [{ providerId: 'codex-cli', scope: local ? 'local:codex-command' : 'remote-unavailable', status: local ? 'ready' : 'unavailable', limits: local ? limits(25) : null, error: local ? '' : 'Account allowance reads are unavailable on remote hosts.' }] }))
+      request.onSuccess(JSON.stringify({ executionHostId: payload.executionHostId, refreshing: false, providers: [{ providerId: 'codex-cli', scope: 'local:codex-command', status: 'ready', limits: limits(25), error: '' }] }))
     }
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="*" />))
-      expect(requestedHosts).toEqual(['local', 'peer'])
-      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).toContain('25% used')
-      const remote = host.querySelector('[aria-label="Windows limits"]')!
-      expect(remote.textContent).toContain('Not available for remote computers.')
-      expect(remote.textContent).toContain('Account allowance reads are unavailable on remote hosts.')
-      expect(remote.textContent).not.toContain('25% used')
-      expect(remote.querySelector('button')).toBeNull()
-      expect(host.querySelector('[aria-label="Mac limits"]')?.querySelector('button')?.textContent).toBe('Refresh allowances')
+      expect(requestedHosts).toEqual(['local'])
+      expect(host.textContent).not.toContain('Mac')
+      expect(host.textContent).not.toContain('Windows')
+      expect(host.querySelectorAll('.uam-set-card')).toHaveLength(1)
+      expect(host.querySelector('[aria-label="Codex"]')?.textContent).toContain('25% used')
+      expect(host.textContent).toContain('Refresh allowances')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 

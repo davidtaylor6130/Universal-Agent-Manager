@@ -1602,7 +1602,8 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
     try {
-      expect(section.querySelector('[role="status"]')?.textContent).toBe(discovered ? 'Model catalog available' : 'Using provider defaults; refresh to discover models')
+      if (discovered) expect(section.querySelector('[role="img"][aria-label="Model catalog available"]')).not.toBeNull()
+      else expect(section.querySelector('[role="status"]')?.textContent).toBe('Using provider defaults; refresh to discover models')
       if (discovered) expect(section.textContent).toContain('Discovered model')
     } finally {
       act(() => root.unmount())
@@ -2598,7 +2599,7 @@ describe('SettingsModal memory settings', () => {
       expect(host.textContent).toContain('Cleanup pending.')
       const retry = [...host.querySelectorAll('button')].find(button => button.textContent === 'Retry disabling')!
       await act(async () => retry.click())
-      expect(host.textContent).toContain('Off. Chat access cleared.')
+      expect(host.textContent).toContain('Chat access cleared.')
       expect(toggle().disabled).toBe(false)
       await act(async () => toggle().click())
       expect(toggle().checked).toBe(true)
@@ -2645,7 +2646,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Request Accessibility')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Check permissions')?.click())
     expect(host.textContent).toContain('Screen Recording')
-    expect(host.textContent).toContain('Available')
+    expect(host.querySelector('[role="img"][aria-label="Available"]')).not.toBeNull()
     expect(host.textContent).toContain('Accessibility')
     expect(host.textContent).toContain('Denied')
     expect(host.textContent).not.toContain('Accessibility request granted')
