@@ -1,4 +1,5 @@
 #include "app/worktree_launch_preparation_service.h"
+#include "common/platform/background_thread_priority.h"
 
 #include "app/chat_domain_service.h"
 #include "app/vcs_commit_service.h"
@@ -504,7 +505,7 @@ namespace uam
 			});
 			task->worker = validation.get_future();
 			app.worktree_operation_chat_ids.insert(chat.id);
-			try { std::thread(std::move(validation)).detach(); }
+			try { uam::platform::StartBackgroundThread(std::move(validation)).detach(); }
 			catch (const std::exception&)
 			{
 				task->lease.reset();
@@ -851,7 +852,7 @@ namespace uam
 		task->worker = worker.get_future();
 		app.worktree_launch_preparations.emplace(chat.id, task);
 		app.worktree_operation_chat_ids.insert(chat.id);
-		try { std::thread(std::move(worker)).detach(); }
+		try { uam::platform::StartBackgroundThread(std::move(worker)).detach(); }
 		catch (const std::exception&)
 		{
 			app.worktree_launch_preparations.erase(chat.id);
