@@ -857,12 +857,11 @@ namespace uam
 			chat.native_session_id.clear();
 			// The recorded local location is organisation, not execution authority: the copy stays
 			// read-only, and a remote path cannot be kept once the copy is rebound to this computer.
-			// Bundles are untrusted: like native import, keep only an absolute path (no relative or ~ forms),
-			// and never a UNC/device path, which folder matching would probe over SMB on Windows.
+			// Bundles are untrusted: keep only a plain local absolute path (allowlist), never a network,
+			// device, relative or ~ form that folder matching would otherwise probe.
 			// This must run before execution_host_id is reset below.
 			if (!uam::paths::IsControllerLocalWorkspace(chat) ||
-			    uam::paths::IsNetworkOrDevicePathSpelling(chat.workspace_directory) ||
-			    !uam::paths::PathFromUtf8(uam::strings::Trim(chat.workspace_directory)).is_absolute()) chat.workspace_directory.clear();
+			    !uam::paths::IsPlainLocalAbsoluteWorkspacePath(uam::strings::Trim(chat.workspace_directory))) chat.workspace_directory.clear();
 			chat.execution_host_id = "local";
 			chat.remote_turn_reconnect_pending = false;
 			chat.remote_process_exists = false;

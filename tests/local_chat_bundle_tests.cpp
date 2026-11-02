@@ -92,14 +92,27 @@ UAM_TEST(LocalChatBundleImportKeepsOnlyAbsoluteLocalWorkspaceLocations)
 
 UAM_TEST(LocalChatBundleImportNeverRetainsOrProbesNetworkWorkspaceLocations)
 {
-	for (const std::string_view spelling : {"\\\\server\\share\\x", "//server/share/x", "\\\\?\\UNC\\server\\share\\x", "\\\\.\\pipe\\x", "/\\server\\share", "  //server/share"})
-		UAM_ASSERT(uam::paths::IsNetworkOrDevicePathSpelling(spelling));
-	for (const std::string_view spelling : {"", "/", "/Users/me/repo", "C:\\repo", "C:/repo", "\\repo", "relative//x", "~/repo"})
-		UAM_ASSERT(!uam::paths::IsNetworkOrDevicePathSpelling(spelling));
+	// Allowlist, checked for both path shapes regardless of the host OS.
+	const std::vector<std::string_view> rejected = {"", "\\??\\UNC\\x\\y", "\\??\\C:\\x", "\\\\?\\C:\\x", "\\\\.\\pipe\\x", "//x/y", "\\\\x\\y",
+	    "C:x", "\\x", "file:///x", "/\\x", " C:\\repo", " /Users/a/repo", "relative/x", "~/repo"};
+	for (const bool windows : {true, false})
+		for (const std::string_view spelling : rejected)
+			UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, windows));
+	for (const std::string_view spelling : {"C:\\repo", "C:/repo", "z:\\repo"})
+	{
+		UAM_ASSERT(uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, true));
+		UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, false));
+	}
+	for (const std::string_view spelling : {"/Users/a/repo", "/"})
+	{
+		UAM_ASSERT(uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, false));
+		UAM_ASSERT(!uam::paths::IsPlainLocalAbsoluteWorkspacePath(spelling, true));
+	}
 
 	TempDir temp("uam-bundle-network-location");
 	const fs::path source = temp.root / "source", bundle = temp.root / "bundle", target = temp.root / "target";
-	const std::vector<std::string> network = {"\\\\attacker\\share\\repo", "//attacker/share/repo", "\\\\?\\UNC\\attacker\\share\\repo", "\\\\.\\pipe\\repo"};
+	const std::vector<std::string> network = {"\\\\attacker\\share\\repo", "//attacker/share/repo", "\\\\?\\UNC\\attacker\\share\\repo", "\\\\.\\pipe\\repo",
+	    "\\??\\UNC\\attacker\\share\\repo", "\\??\\C:\\repo", "\\\\?\\C:\\repo", "C:repo", "\\repo", "file:///repo"};
 	for (std::size_t index = 0; index < network.size(); ++index)
 	{
 		ChatSession chat;
@@ -119,23 +132,28 @@ UAM_TEST(LocalChatBundleImportNeverRetainsOrProbesNetworkWorkspaceLocations)
 		UAM_ASSERT(imported->folder_id.empty());
 	}
 
-	// Shared folder recovery also refuses a network location already saved on an imported copy.
+	// Shared folder recovery also refuses non-plain locations already saved on an imported copy,
+	// even when a registered folder spells the same location.
 	uam::AppState app;
-	ChatFolder folder;
-	folder.id = "share-folder";
-	folder.directory = "//attacker/share/repo";
-	app.folders.push_back(folder);
-	ChatSession imported;
-	imported.id = "saved-network-copy";
-	imported.imported_read_only = true;
-	imported.workspace_directory = folder.directory;
-	app.chats.push_back(imported);
+	for (const std::string directory : {"//attacker/share/repo", "\\??\\UNC\\attacker\\share\\repo"})
+	{
+		ChatFolder folder;
+		folder.id = "folder-" + std::to_string(app.folders.size());
+		folder.directory = directory;
+		app.folders.push_back(folder);
+		ChatSession imported;
+		imported.id = "saved-copy-" + std::to_string(app.chats.size());
+		imported.imported_read_only = true;
+		imported.workspace_directory = directory;
+		app.chats.push_back(imported);
+	}
 	ChatDomainService().NormalizeChatFolderAssignments(app);
-	UAM_ASSERT(app.chats.front().folder_id.empty());
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(chat.folder_id.empty());
 	const auto preview = uam::PreviewUnsortedWorkspaceFolders(app);
 	UAM_ASSERT(preview.groups.empty() && preview.missing.empty());
-	UAM_ASSERT_EQ(preview.unavailable.size(), std::size_t{1});
-	UAM_ASSERT_EQ(preview.unavailable.front().reason, std::string("Imported network locations are not checked"));
+	UAM_ASSERT_EQ(preview.unavailable.size(), app.chats.size());
+	for (const auto& chat : preview.unavailable)
+		UAM_ASSERT_EQ(chat.reason, std::string("Imported location is not a plain local path"));
 }
 
 UAM_TEST(LocalChatBundleImportDropsSourceCleanupAndHandoffAuthority)
