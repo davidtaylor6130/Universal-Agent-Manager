@@ -589,6 +589,23 @@ UAM_TEST(LegacyChatAttentionCanBeAcknowledgedWithoutClearingANewerCompletion)
 	UAM_ASSERT_EQ(app.chats.front().attention_revision, fresh);
 }
 
+UAM_TEST(OpeningImportedIsoChatDoesNotCreateLegacyAttention)
+{
+	// Native imports keep ISO UTC updated_at; selection stamps local "YYYY-MM-DD HH:MM:SS".
+	// Same-date strings compare 'T' > ' ', which used to mark every first open as new work (#629).
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "imported-iso";
+	chat.updated_at = "2026-10-01T00:00:01.000Z";
+	chat.last_opened_at = "2026-10-01 23:59:59";
+	app.chats.push_back(chat);
+	ChatDomainService domain;
+	UAM_ASSERT(domain.AttentionRevision(app, app.chats.front()).empty());
+	app.chats.front().updated_at = "2026-10-02T12:00:00.000Z";
+	app.chats.front().last_opened_at = "2026-10-01 00:00:00";
+	UAM_ASSERT(!domain.AttentionRevision(app, app.chats.front()).empty());
+}
+
 #if defined(__APPLE__)
 UAM_TEST(MacOwnedProviderGroupIsCleanedBeforeExitedLeaderIsReaped)
 {

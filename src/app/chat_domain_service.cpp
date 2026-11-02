@@ -1290,7 +1290,11 @@ bool ChatDomainService::SetChatSettled(uam::AppState& app, const std::string& ch
 std::string ChatDomainService::AttentionRevision(const uam::AppState& app, const ChatSession& chat) const
 {
 	if (!chat.attention_revision.empty()) return chat.attention_revision;
-	if (app.chats_with_unseen_updates.contains(chat.id) || (!chat.last_opened_at.empty() && chat.updated_at > chat.last_opened_at))
+	// Selection stamps local time while native imports carry ISO UTC; compare instants, not strings (#629).
+	const auto opened_order = uam::time::CompareHistoryTimestamps(chat.updated_at, chat.last_opened_at).order;
+	const bool updated_after_open = opened_order == uam::time::HistoryTimestampOrder::Unknown ? chat.updated_at > chat.last_opened_at
+	                                                                                           : opened_order == uam::time::HistoryTimestampOrder::After;
+	if (app.chats_with_unseen_updates.contains(chat.id) || (!chat.last_opened_at.empty() && updated_after_open))
 		return "legacy:" + chat.updated_at;
 	return "";
 }
