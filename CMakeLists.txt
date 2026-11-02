@@ -1457,6 +1457,8 @@ if(UAM_BUILD_TESTS)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/macos_helper_signing_test.py"
         --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}")
     set_tests_properties(uam_macos_helper_signing PROPERTIES TIMEOUT 120)
+    add_test(NAME uam_code_sign_clone_prune
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/code_sign_clone_prune_test.py")
   endif()
   if(WIN32)
     add_test(NAME uam_app_icon_resource

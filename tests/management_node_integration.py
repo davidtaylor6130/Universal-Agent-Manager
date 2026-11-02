@@ -13,8 +13,12 @@ import sys
 import tempfile
 import time
 import urllib.request
+import atexit
 
 import companion_integration
+
+# macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
+atexit.register(subprocess.run, [sys.executable, str(Path(__file__).resolve().parents[1] / 'scripts/prune_code_sign_clones.py')])
 
 fixture = r'''
 import json, os, sys
