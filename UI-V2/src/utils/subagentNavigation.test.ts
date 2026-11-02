@@ -98,3 +98,47 @@ it('prefers explicit lineage over conflicting legacy visits and rejects foreign 
   const localParent = { ...parent, createdAt: new Date('2026-10-16 10:00:00') }
   expect(subagentParentFor({ ...child, subagentParentCreatedAt: '2026-10-16 10:00:00' }, [localParent, child])).toBe(localParent)
 })
+
+// #675: the sidebar hides a linked child and renders it under its parent through one predicate.
+const worktreeChild = (parent: Session, id: string): Session => ({
+  ...session(id), workspaceDirectory: '/repo/.uam/worktrees/child', workspaceWorktreeDirectory: '/repo/.uam/worktrees/child',
+  workspaceSourceDirectory: '/repo', workspaceIsolationKind: 'git-worktree', subagentParentChatId: parent.id, subagentParentCreatedAt: parent.createdAt.toISOString(),
+})
+
+it('groups a worktree child under its main-checkout parent', async () => {
+  const { nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...session('main-checkout-parent'), workspaceDirectory: '/repo/' }
+  const child = worktreeChild(parent, 'worktree-child')
+  expect(subagentParentFor(child, [parent, child])).toBe(parent)
+  expect(nativeSubagentChildren(parent.id, [parent, child])).toEqual([child])
+})
+
+it('keeps the dropdown after a child is opened directly from All Chats', async () => {
+  const { nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...session('all-chats-parent'), workspaceDirectory: '/repo' }
+  const listed = { ...worktreeChild(parent, 'all-chats-child'), workspaceDirectory: '/repo', workspaceWorktreeDirectory: '', workspaceIsolationKind: '' }
+  expect(nativeSubagentChildren(parent.id, [parent, listed])).toEqual([listed])
+  // Opening records a navigation receipt and the refreshed child now reports its own worktree.
+  rememberSubagentParent(parent, listed.id)
+  const opened = worktreeChild(parent, listed.id)
+  expect(subagentParentFor(opened, [parent, opened])).toBe(parent)
+  expect(nativeSubagentChildren(parent.id, [parent, opened])).toEqual([opened])
+})
+
+it('never groups an unrelated chat or another provider, host or project', async () => {
+  const { hasNativeSubagentLineage, nativeSubagentChildren } = await import('./subagentNavigation')
+  const parent = { ...session('strict-scope-parent'), workspaceDirectory: '/repo' }
+  const unrelated = { ...session('strict-scope-unrelated'), workspaceDirectory: '/repo' }
+  expect(nativeSubagentChildren(parent.id, [parent, unrelated])).toEqual([])
+  expect(hasNativeSubagentLineage(unrelated)).toBe(false)
+  const child = worktreeChild(parent, 'strict-scope-child')
+  for (const mismatch of [
+    { ...child, providerId: 'claude-cli' },
+    { ...child, executionHostId: 'foreign-host' },
+    { ...child, workspaceDirectory: '/other/.uam/worktrees/child', workspaceWorktreeDirectory: '/other/.uam/worktrees/child', workspaceSourceDirectory: '/other' },
+    { ...child, workspaceDirectory: '/repo-two', workspaceWorktreeDirectory: '', workspaceSourceDirectory: '' },
+  ]) {
+    expect(subagentParentFor(mismatch, [parent, mismatch])).toBeUndefined()
+    expect(nativeSubagentChildren(parent.id, [parent, mismatch])).toEqual([])
+  }
+})

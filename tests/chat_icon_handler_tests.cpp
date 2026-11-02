@@ -1875,6 +1875,30 @@ UAM_TEST(NativeChildLineageHandlerPassiveRefreshAndColdReopenPreserveReceipt)
 	}
 }
 
+// #675: refreshing a writable child for the same native session keeps its display link,
+// even when the parent has no loaded delegation evidence to derive it again.
+UAM_TEST(NativeChildLineageHandlerWritableRefreshKeepsReceiptForSameSession)
+{
+	for (const std::string provider : {"opencode-cli", "codex-cli"})
+	{
+		NativeLineageHandlerFixture fixture(provider);
+		fixture.SeedReceipt(fixture.parent.id, fixture.parent.created_at);
+		fixture.Parent().messages.clear(); // Preservation must not manufacture new source evidence.
+		auto handler_owner = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		auto& handler = *handler_owner;
+		ChatSession snapshot = fixture.child;
+		snapshot.messages.front().content = "Refreshed native child transcript";
+		UAM_ASSERT(snapshot.subagent_parent_chat_id.empty() && snapshot.subagent_parent_created_at.empty());
+		const auto refresh = ChatIconHandlerTestAccess::FinishNative(handler, fixture.Payload(), &snapshot);
+		UAM_ASSERT(refresh.ok);
+		UAM_ASSERT_EQ(fixture.Child().messages.front().content, snapshot.messages.front().content);
+		fixture.AssertReceipt(fixture.Child());
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.child.id);
+		UAM_ASSERT(saved);
+		fixture.AssertReceipt(*saved);
+	}
+}
+
 UAM_TEST(NativeChildLineageHandlerExistingSaveFailureRestoresReceiptAndMappings)
 {
 	for (int failure = 0; failure < 3; ++failure)
