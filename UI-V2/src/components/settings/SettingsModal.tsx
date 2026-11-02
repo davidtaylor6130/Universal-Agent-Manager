@@ -1793,7 +1793,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           description={computerUseAllowlistEnabled ? 'Chats can target only the apps checked below.' :'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
-        <Reveal open={computerUseApps.length === 0}><SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." /></Reveal>
+        <Reveal open={computerUseApps.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>Refresh to list apps UAM can target.</span>} control={<Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>} /></Reveal>
         <AnimatedRows items={computerUseApps} keyOf={(app) => `${app.identityKind}:${app.identity}`} render={(app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
@@ -1977,7 +1977,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="grid gap-0">
-          {!scopedProviderId && <SettingsSection title="Chats">
+          {!scopedProviderId && <div className="uam-set-card">
             <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
                   defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
@@ -2010,7 +2010,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
                   )} />
             </Reveal>
-          </SettingsSection>}
+          </div>}
           {scopedProviderId && <div>
             <div className="grid gap-0">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
@@ -2303,7 +2303,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             <Reveal open={favoriteUamAgentIds.length === 0}>
-              <SettingRow title="No custom favourites" description="The cycle is Build, then Plan." />
+              <SettingRow title={<span style={{ color: 'var(--text-3)' }}>The cycle is Build, then Plan.</span>} />
             </Reveal>
             <AnimatedRows items={favoriteUamAgentIds} keyOf={(agentId) => agentId} render={(agentId) => {
               const index = favoriteUamAgentIds.indexOf(agentId)
@@ -2887,7 +2887,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </SettingRow>
                 )
               }} />
-              <Reveal open={editorAssociationsDraft.length === 0}><SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." /></Reveal>
+              <Reveal open={editorAssociationsDraft.length === 0}><SettingRow title={<span style={{ color: 'var(--text-3)' }}>No file types. Add a group to choose an editor for a set of extensions.</span>} control={renderAddEditor()} /></Reveal>
             </div>
           </SettingsSection>
 

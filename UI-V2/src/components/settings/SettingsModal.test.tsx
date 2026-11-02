@@ -562,7 +562,7 @@ describe('SettingsModal memory settings', () => {
     const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Agent preferences')?.parentElement
     for (const label of ['Central setup', 'Agents', 'Skills', 'Memory settings', 'Memory store', 'Shell actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
-    expect(host.querySelector('[aria-label="Chats"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Chats"]')).toBeNull()
     expect(host.textContent).toContain('Reviewer provider')
     expect(host.querySelector('[aria-label="Show Codex chat defaults"]')).toBeNull()
     act(() => root.unmount()); host.remove()

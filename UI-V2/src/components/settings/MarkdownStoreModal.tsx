@@ -1,7 +1,7 @@
 import { cloneElement, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, Reveal, RowButton, SegmentedControl, Switch, usePresence, Swap } from '../ui'
+import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, ProgressFill, Reveal, RowButton, SegmentedControl, Switch, usePresence, Swap } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -370,7 +370,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </RowButton>)}
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
-        <div className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></div>
+        <ProgressFill label="Reading skills" indeterminate active={previewing} className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></ProgressFill>
       </>}</Swap>
       {previewPresence.mounted && <p role="status" data-state={previewPresence.closing ? 'closed' : 'open'} className="uam-presence text-xs">Reading skills...</p>}
     </>}</Swap>
