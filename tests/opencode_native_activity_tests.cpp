@@ -365,6 +365,25 @@ UAM_TEST(OpenCodeNativeCompanionLateAnswersHoldNewPromptsVisibly)
 	fixture.service->Stop();
 }
 
+UAM_TEST(OpenCodeNativeCompanionIdleLateAnswersAreBoundedBySetupTimeout)
+{
+	// A server that accepts but never answers in time must not hold the next prompt indefinitely while idle.
+	NativeCompanionFixture fixture;
+	fixture.app.settings.acp_setup_inactivity_timeout_seconds = 1;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	fixture.Session().processing = false;
+	fixture.Until([&] { return !fixture.Session().running; });
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures"; }));
+	UAM_ASSERT(fixture.Session().timeout_stop_error.empty());
+	fixture.service->Stop();
+}
+
 UAM_TEST(OpenCodeNativeCompanionLateAnswersBeforeFirstSnapshotKeepFailureLimit)
 {
 	// A server that never answers in time before readiness fails within three tries, not the whole turn timeout.

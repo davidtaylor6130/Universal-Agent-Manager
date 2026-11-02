@@ -193,6 +193,24 @@ namespace uam::provider_setup
 		return valid ? std::string(id) : std::string{};
 	}
 
+	/// Seconds of the OpenCode request timeout a launch actually configured: the manifest value when Apply wrote it
+	/// into this environment (or, for a remote host whose environment is built there, the manifest value), else 0.
+	inline int AppliedOpenCodeRequestTimeoutSeconds(const nlohmann::json& manifest, const std::vector<std::pair<std::string, std::string>>* local_environment)
+	{
+		if (!manifest.is_object() || !manifest.contains("openCodeRequestTimeout")) return 0;
+		const auto& timeout = manifest["openCodeRequestTimeout"];
+		const int seconds = static_cast<int>(timeout["milliseconds"].get<std::int64_t>() / 1000);
+		if (!local_environment) return seconds;
+		std::string inline_config;
+		for (const auto& [name, value] : *local_environment) if (name == "OPENCODE_CONFIG_CONTENT") inline_config = value;
+		const nlohmann::json config = nlohmann::json::parse(inline_config, nullptr, false);
+		const std::string id = timeout["provider"].get<std::string>();
+		const bool written = config.is_object() && config.contains("provider") && config["provider"].is_object() && config["provider"].contains(id) &&
+		    config["provider"][id].is_object() && config["provider"][id].contains("options") && config["provider"][id]["options"].is_object() &&
+		    config["provider"][id]["options"].value("timeout", nlohmann::json()) == timeout["milliseconds"];
+		return written ? seconds : 0;
+	}
+
 	inline bool ValidateManifest(const nlohmann::json& manifest, std::string& error)
 	{
 		if (!manifest.is_object() || !manifest.contains("format") || !manifest["format"].is_number_integer() || manifest["format"] != 1 || !manifest.contains("files") || !manifest["files"].is_object() || manifest["files"].size() > kMaxFiles)

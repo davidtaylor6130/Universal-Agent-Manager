@@ -222,10 +222,12 @@ struct OpenCodeNativeCompanion::State
 	std::string failure_reason;
 	Clock::time_point next{};
 	// Late answers after the first complete snapshot: the gate holds new prompts while late is set. slow_since
-	// times consecutive late answers during one in-flight turn (slow_turn) and is cleared by idle, a new turn or success.
+	// times consecutive late answers within one phase (slow_turn: an in-flight turn's serial, or kIdleSlowPhase)
+	// and restarts when the phase changes; success clears it.
 	bool late = false;
 	std::optional<Clock::time_point> slow_since;
 	int slow_turn = 0;
+	static constexpr int kIdleSlowPhase = -1;
 	std::map<std::string, Json> permissions;
 	std::set<std::string> published;
 	std::map<std::string, std::string> replies;
@@ -602,8 +604,9 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				// decision failed. Hold new prompts and retry the complete observation;
 				// queued decisions remain gated by fresh ownership proof before delivery.
 				// A busy server streaming from a slow model answers late. After the first complete snapshot, late
-				// answers are not failures: only the user-adjustable turn timeout bounds them during an in-flight
-				// turn, reported as a timeout. Before it, they keep the consecutive-failure limit.
+				// answers are not failures: the user-adjustable turn timeout bounds them during an in-flight turn,
+				// reported as a timeout; while idle the setup timeout bounds them, so a server that accepts but
+				// never answers cannot hold the next prompt indefinitely. Before it, the failure limit applies.
 				const bool late = owner->ready && !result.authority_conflict && result.error == opencode_native::kQueryTimedOutError;
 				const auto owning = std::ranges::find_if(app.acp_sessions, [&](const auto& candidate)
 				{ return candidate && candidate->opencode_native_companion && candidate->opencode_native_companion->state == owner; });
@@ -611,13 +614,15 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				if (late)
 				{
 					owner->late = true;
-					if (!turn || owner->slow_turn != turn->turn_serial) owner->slow_since.reset();
-					if (turn && !owner->slow_since) { owner->slow_since = Clock::now(); owner->slow_turn = turn->turn_serial; }
+					const int phase = turn ? turn->turn_serial : OpenCodeNativeCompanion::State::kIdleSlowPhase;
+					if (owner->slow_turn != phase) owner->slow_since.reset();
+					if (!owner->slow_since) { owner->slow_since = Clock::now(); owner->slow_turn = phase; }
 				}
-				if (late && owner->slow_since && Clock::now() - *owner->slow_since >= std::chrono::seconds(app.settings.active_turn_inactivity_timeout_seconds))
+				const int slow_limit = turn ? app.settings.active_turn_inactivity_timeout_seconds : app.settings.acp_setup_inactivity_timeout_seconds;
+				if (late && Clock::now() - *owner->slow_since >= std::chrono::seconds(slow_limit))
 				{
 					owner->failed = true;
-					owner->failure_reason = "turn_timeout";
+					owner->failure_reason = turn ? "turn_timeout" : "observation_failures";
 				}
 				else if (!late && (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit))
 				{

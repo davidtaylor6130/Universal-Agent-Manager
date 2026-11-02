@@ -2747,13 +2747,21 @@ UAM_TEST(OpenCodeProviderRequestTimeoutFollowsTurnTimeout)
 			UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
 			UAM_ASSERT_EQ(nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"))["provider"]["ollama"]["options"]["timeout"], kept);
 		}
-		AppSettings short_limit = settings;
-		short_limit.active_turn_inactivity_timeout_seconds = 300;
-		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", short_limit, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		// The launch records only what OpenCode actually received.
 		std::vector<std::string> argv{"opencode", "acp"};
-		uam::provider_setup::Environment environment;
-		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
-		UAM_ASSERT(!nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT")).contains("provider"));
+		uam::provider_setup::Environment written;
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, written, error));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, &written), 2700);
+		uam::provider_setup::Environment kept{{"OPENCODE_CONFIG_CONTENT", R"({"provider":{"ollama":{"options":{"timeout":false}}}})"}};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, kept, error));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, &kept), 0);
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, nullptr), 2700);
+		// A value at or below OpenCode's 5-minute default is never sent, so nothing is recorded or restarted for it.
+		AppSettings short_limit = settings;
+		short_limit.active_turn_inactivity_timeout_seconds = 240;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", short_limit, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, "1.18.35"));
+		UAM_ASSERT(!bundle.manifest.contains("openCodeRequestTimeout"));
+		UAM_ASSERT_EQ(uam::provider_setup::AppliedOpenCodeRequestTimeoutSeconds(bundle.manifest, nullptr), 0);
 	}
 	// No provider prefix means no known provider to configure; nothing is invented.
 	chat.execution_host_id = "local";

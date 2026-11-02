@@ -16670,7 +16670,7 @@ UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
 UAM_TEST(AcpOpenCodeChangedTurnTimeoutRestartsBeforeTheNextTurnOnly)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("opencode-cli").IsEnabled()) return;
-	for (const std::string_view scenario : {"unchanged", "changed", "changed_mid_turn"})
+	for (const std::string_view scenario : {"unchanged", "changed", "changed_mid_turn", "changed_below_default"})
 	{
 		RestartQueuedSettingsFixture fixture("opencode-cli");
 		auto& chat = fixture.app.chats.front();
@@ -16681,12 +16681,14 @@ UAM_TEST(AcpOpenCodeChangedTurnTimeoutRestartsBeforeTheNextTurnOnly)
 		chat.remote_process_control_token.clear();
 		session.remote_runner_protocol_version = 0;
 		session.current_model_id = chat.model_id;
-		session.launch_turn_timeout_seconds = 1800;
-		fixture.app.settings.active_turn_inactivity_timeout_seconds = scenario == "unchanged" ? 1800 : 2700;
+		// Below OpenCode's 5-minute default nothing was sent, so changing between such values needs no relaunch.
+		session.launch_turn_timeout_seconds = scenario == "changed_below_default" ? 0 : 1800;
+		session.launch_turn_timeout_setting_seconds = scenario == "changed_below_default" ? 240 : 1800;
+		fixture.app.settings.active_turn_inactivity_timeout_seconds = scenario == "unchanged" ? 1800 : scenario == "changed_below_default" ? 120 : 2700;
 		if (scenario == "changed_mid_turn") { session.processing = true; session.prompt_request_id = 9; }
 		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
 		const bool drained = uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat);
-		if (scenario == "unchanged")
+		if (scenario == "unchanged" || scenario == "changed_below_default")
 		{
 			UAM_ASSERT(drained);
 			UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());

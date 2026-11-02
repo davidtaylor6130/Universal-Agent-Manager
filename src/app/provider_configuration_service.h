@@ -76,7 +76,9 @@ namespace uam
 		// ponytail: only the launch model's provider; a mid-session switch to another provider keeps its own limit until relaunch.
 		const std::string open_code_model_provider = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli)
 		    ? provider_setup::OpenCodeModelProviderId(chat.model_id) : std::string{};
-		const bool open_code_request_timeout = !open_code_model_provider.empty();
+		// Only a value that raises OpenCode's built-in default is sent, so the launch records exactly what OpenCode received.
+		const bool open_code_request_timeout = !open_code_model_provider.empty() &&
+		    static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000 > provider_setup::kOpenCodeDefaultRequestTimeoutMilliseconds;
 		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !open_code_request_timeout && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration) return true;
 		std::set<std::string> executable_files;
 		bool memory_resources_added = false;
