@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Check, ChevronLeft, ChevronRight, MessageSquare, ChevronUp, ChevronDown } from 'lucide-react'
-import { Button, RowButton, StatusDot, usePresence } from '../ui'
+import { Button, RowButton, usePresence } from '../ui'
 import type { AcpPendingUserInput, AcpUserInputAnswers } from '../../store/useAppStore'
 import './QuestionInput.css'
 
@@ -93,7 +93,7 @@ function QuestionRequest({ input, onResolve, autoOpen = true, ...wait }: Props)
         }
     }}>
         <header className="qr-header">
-            {accepted ? <StatusDot tone="success" /> : <MessageSquare size={14} aria-hidden />}
+            {accepted ? <Check size={14} aria-hidden style={{ color: 'var(--success)' }} /> : <MessageSquare size={14} aria-hidden />}
             <h2>{accepted ? 'Answers submitted' : input.questions[step]?.header || 'Answer questions'}</h2>
             <span className="qr-count">{Math.min(step + 1, input.questions.length)} of {input.questions.length}</span>
             <Button ref={triggerRef} type="button" variant="ghost" size="sm" aria-expanded={open && !accepted} onClick={() => { if (open) close(); else setOpen(true) }} disabled={accepted || !pending}>

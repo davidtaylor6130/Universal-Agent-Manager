@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, EyeOff, FolderPlus, Loader2, RefreshCw, X } from 'lucide-react'
+import { Check, Download, EyeOff, FolderPlus, Loader2, RefreshCw, X, XCircle } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, IconButton, Notice, Overlay, ProgressFill, StatusDot, Tooltip, cx } from '../ui'
+import { Button, IconButton, Notice, Overlay, ProgressFill, Tooltip, cx } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import '../shared/review.css'
 
@@ -297,10 +297,10 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
                     <span className="uam-rv-row__note">Workspace required</span>
                     <Button size="sm" variant="ghost" leadingIcon={<FolderPlus size={14} />} aria-label={`Assign workspace for ${candidate.title}`} aria-expanded={assigning} aria-controls={assigning ? formId : undefined} disabled={busy || importing || assigning} onClick={() => { setAssignmentId(candidate.candidateId); setWorkspaceName(lastDirectoryName(candidate.workspaceDirectory) || 'Imported workspace') }}>Assign workspace</Button>
                   </>}
-                  {chatState === 'done' && <StatusDot tone="success" />}
+                  {chatState === 'done' && <Check size={14} aria-hidden className="shrink-0" style={{ color: 'var(--success)' }} />}
                   {chatState === 'importing' && <Loader2 size={14} aria-hidden className="uam-rv-spin shrink-0" style={{ color: 'var(--accent)' }} />}
                   {chatState === 'failed' && chatFailure && <Tooltip label={chatFailure.reason}>
-                    <span role="img" tabIndex={0} aria-label={`Not imported: ${chatFailure.reason}`} className="grid shrink-0 place-items-center"><StatusDot tone="error" /></span>
+                    <span role="img" tabIndex={0} aria-label={`Not imported: ${chatFailure.reason}`} className="grid shrink-0 place-items-center" style={{ color: 'var(--error)' }}><XCircle size={14} aria-hidden /></span>
                   </Tooltip>}
                 </>
                 const rowClass = cx('uam-rv-row', chatState === 'failed' && 'uam-rv-row--failed')

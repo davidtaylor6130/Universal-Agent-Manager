@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { Check, X } from 'lucide-react'
 import { cx } from './cx'
 
@@ -11,11 +12,11 @@ export interface StatusDotProps {
   className?: string
 }
 
-/** Small semantic status indicator. Success and error render a rounded square with a tick or cross (never a circle, never colour alone); other tones render a dot. Pair with a Tooltip for meaning. */
+/** Small semantic status indicator. Success and error render a tick or cross (never colour alone), boxed in a rounded square inside Settings only; other tones render a dot. Pair with a Tooltip for meaning. */
 export function StatusDot({ tone = 'neutral', pulse = false, size = 8, className }: StatusDotProps) {
   if (tone === 'success' || tone === 'error') {
     const Icon = tone === 'success' ? Check : X
-    return <span className={cx('uam-status-box', `uam-status-box--${tone}`, className)} style={{ width: size + 8, height: size + 8 }} aria-hidden>
+    return <span className={cx('uam-status-box', `uam-status-box--${tone}`, className)} style={{ '--status-box-size': `${size + 8}px` } as CSSProperties} aria-hidden>
       <Icon size={size + 4} strokeWidth={2.5} aria-hidden />
     </span>
   }

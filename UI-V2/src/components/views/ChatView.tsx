@@ -3599,8 +3599,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               }}
             />
             {showComposer && (!isCompanionContext() || displayedGoal || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
-            {(!isCompanionContext() || displayedGoal) && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
-            {!isCompanionContext() && (
+            {!isCompanionContext() && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
               <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
@@ -3700,19 +3699,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>
-            )}
-            {/* ui: raw button kept — conversation-goal-chip look (its own status and title layout); Chip would add the uam-chip look */}
+            </div>}
+            {/* ui: raw button kept — goal tab look (its own status and objective layout); Chip would add the uam-chip look */}
             {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
               aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
-              className="conversation-goal-chip" title={displayedGoal.objective}
+              className="uam-composer-goal-tab" title={displayedGoal.objective}
               onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
                 else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
               }}>
-              <Target size={13} aria-hidden /><span className="conversation-goal-chip__status">{displayedGoal.status}</span><span className="conversation-goal-chip__title">{displayedGoal.objective}</span>
+              <Target size={13} aria-hidden /><span className="uam-composer-goal-tab__status">{displayedGoal.status}</span><span className="uam-composer-goal-tab__objective">{displayedGoal.objective}</span>
             </button>}
-            </div>}
             <div className="uam-composer-tabs__end">
               {showSideChatControls && (session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Activity, MessageSquare, RefreshCw, Settings, Pin, PinOff, CircleAlert, ChevronRight, Plus } from 'lucide-react'
+import { ArrowLeft, Activity, MessageSquare, RefreshCw, Settings, Pin, PinOff, CircleAlert, Check, ChevronRight, Plus } from 'lucide-react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import type { CppAppState, CppCompanionUnchangedState } from '../../store/cpp/types'
@@ -8,7 +8,7 @@ import { FolderTree } from '../sidebar/FolderTree'
 import { sidebarStatusIcon } from '../sidebar/SessionItem'
 import { displayedChatStatus } from '../sidebar/chatSearch'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, Presence, RowButton, StatusDot } from '../ui'
+import { Button, IconButton, Presence, RowButton } from '../ui'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
 import { CompanionPreferences } from './CompanionPreferences'
@@ -133,7 +133,7 @@ export function CompanionShell() {
       ? <span aria-hidden="true" />
       : status?.type === 'attention'
         ? attentionIcon
-        : <StatusDot tone="success" />
+        : <Check size={14} aria-hidden="true" />
     return <RowButton key={candidate.id} type="button" className="uam-companion-activity-row" data-session-id={candidate.id} aria-label={`Open ${candidate.name}`} onClick={() => { useAppStore.getState().setActiveSession?.(candidate.id); setConversationOpen(true) }}>
       <ProviderLogo providerId={candidate.providerId} size={24} className="uam-companion-provider" />
       <span className="uam-companion-row-copy"><strong>{candidate.name}</strong><small>{projectLabel(candidate)} · {workspaceLabel(candidate)}</small></span>
@@ -323,7 +323,7 @@ export function CompanionShell() {
         </select>
         <IconButton icon={session.isPinned ? <PinOff size={16} /> : <Pin size={16} />} label={session.isPinned ? 'Unpin chat' : 'Pin chat'} active={Boolean(session.isPinned)} disabled={pinning} aria-busy={pinning || undefined} onClick={() => void togglePin()} />
         <span role="status" aria-label={currentStatus?.type === 'processing' ? 'Agent running' : currentStatus?.type === 'attention' ? `Needs attention: ${currentStatus.kind}` : currentStatus?.type === 'done' ? 'Done' : 'Idle'} className={`session-status session-status--${currentStatus?.type === 'processing' ? 'processing' : currentStatus?.type === 'attention' ? 'attention' : 'idle'}`}>
-          {currentStatus?.type === 'attention' ? <CircleAlert size={16} /> : currentStatus?.type === 'done' ? <StatusDot tone="success" /> : <span />}
+          {currentStatus?.type === 'attention' ? <CircleAlert size={16} /> : currentStatus?.type === 'done' ? <Check size={16} /> : <span />}
         </span>
       </>}
       {!conversationOpen && <IconButton icon={<Settings size={18} />} label="Settings" active={tab === 'settings'} onClick={() => { manualTabChoice.current = true; setTab('settings'); setPinError('') }} />}

@@ -527,8 +527,9 @@ it('uses the work purpose as inline primary title and keeps the different agent 
   bridge.send.mockResolvedValue(page([{ ...run(0), taskTitle: 'Audit the workspace parser', agentId: 'Definition Reader' }]))
   const open = await showSaved([prose('Before purpose'), call(0), prose('After purpose')])
   const card = host.querySelector<HTMLButtonElement>('[data-managed-open]')!
-  expect(card.querySelector('.uam-subagent-card__title')?.textContent).toBe('Audit the workspace parser')
-  expect(card.querySelector('.uam-subagent-card__meta')?.textContent).toContain('Definition Reader')
+  expect(card.textContent).toContain('Audit the workspace parser')
+  expect(card.textContent).not.toContain('Definition Reader')
+  expect(host.querySelector('.uam-inline-subagents__meta')?.textContent).toContain('Definition Reader')
   await act(async () => card.click())
   expect(open).toHaveBeenCalledExactlyOnceWith(ids[0])
 })

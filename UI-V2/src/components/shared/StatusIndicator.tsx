@@ -1,5 +1,5 @@
-import { TriangleAlert } from 'lucide-react'
-import { StatusDot, Tooltip } from '../ui'
+import { Check, TriangleAlert } from 'lucide-react'
+import { Tooltip } from '../ui'
 
 /** Shared ready/warning state, with details available on hover and keyboard focus. */
 export function StatusIndicator({ issues = [], okLabel = 'Ready', focusable = true }: {
@@ -13,7 +13,7 @@ export function StatusIndicator({ issues = [], okLabel = 'Ready', focusable = tr
     <span tabIndex={focusable ? 0 : undefined} role="img" aria-label={label} className="uam-status-indicator" style={{ color: warnings.length ? 'var(--warning)' : 'var(--success)' }}>
       {warnings.length > 1
         ? <span className="uam-status-count">{warnings.length}</span>
-        : warnings.length ? <TriangleAlert size={16} aria-hidden /> : <StatusDot tone="success" />}
+        : warnings.length ? <TriangleAlert size={16} aria-hidden /> : <Check size={16} aria-hidden />}
     </span>
   </Tooltip>
 }

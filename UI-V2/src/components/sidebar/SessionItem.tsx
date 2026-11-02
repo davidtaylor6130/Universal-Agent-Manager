@@ -14,7 +14,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
-import { ConfirmDialog, IconButton, MenuItem, StatusDot, Tooltip, ViewportMenu } from '../ui'
+import { ConfirmDialog, IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -830,7 +830,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               )}
               {!activityLayout && lifecycleStatus?.type === 'done' && (
                 <span role="img" className="session-status session-status--idle" aria-label="Done" title="Done">
-                  <StatusDot tone="success" />
+                  <CircleCheck size={12} aria-hidden style={{ color: 'var(--success)' }} />
                 </span>
               )}
             </div>}
@@ -971,7 +971,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           {generatingTitle && <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={cancellingTitle}
             label={cancellingTitle ? 'Cancelling…' : 'Cancel title generation'} onSelect={() => { void cancelTitle() }} />}
           {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>
-            <StatusDot tone={titleFeedback.error ? 'error' : 'success'} />{titleFeedback.text}
+            {titleFeedback.error ? <CircleAlert size={12} aria-hidden /> : <Check size={12} aria-hidden />}{titleFeedback.text}
           </p>}
           <MenuItem className="uam-sb-menu-item" icon={<Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />} label={isPinned ? 'Unpin chat' : 'Pin chat'}
             onSelect={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }} />

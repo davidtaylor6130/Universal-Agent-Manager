@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlarmClockOff } from 'lucide-react'
+import { AlarmClockOff, Check, CircleX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, MenuItem, StatusDot, usePresence } from '../ui'
+import { Button, MenuItem, usePresence } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 
@@ -117,7 +117,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
       </fieldset>
     </form>}
     {feedback && <p role={feedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>
-      <StatusDot tone={feedback.error ? 'error' : 'success'} />{feedback.text}
+      {feedback.error ? <CircleX size={12} aria-hidden /> : <Check size={12} aria-hidden />}{feedback.text}
     </p>}
   </>
 }

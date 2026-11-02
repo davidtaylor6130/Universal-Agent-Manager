@@ -346,6 +346,9 @@ describe('ChatView', () => {
       expect(host.querySelector('.uam-goal-banner')).toBeNull()
       const trigger = host.querySelector<HTMLButtonElement>('button[aria-label="Goals"]')!
       expect(trigger.textContent).toContain('Ship the popup')
+      expect(trigger.classList.contains('uam-composer-goal-tab')).toBe(true)
+      expect(trigger.parentElement?.classList.contains('uam-composer-tabs')).toBe(true)
+      expect(trigger.previousElementSibling?.classList.contains('uam-composer-workspace-tab')).toBe(true)
       const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Unsent next prompt'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       openComposerGoals(host)
@@ -9632,9 +9635,9 @@ describe('ChatView', () => {
       expect(content.indexOf(taskTitle)).toBeLessThan(content.indexOf('After managed launch'))
       const launchOpen = slot.querySelector<HTMLButtonElement>(`[aria-label="Open managed conversation for ${taskTitle}"]`)!
       expect(launchOpen).not.toBeNull()
-      expect(launchOpen.querySelector('.uam-subagent-card__title')?.textContent).toBe(taskTitle)
-      expect(launchOpen.querySelector('.uam-subagent-card__title')?.textContent).not.toContain('Verifier')
-      expect(launchOpen.querySelector('.uam-subagent-card__meta')?.textContent).toContain('Verifier')
+      expect(launchOpen.textContent).toContain(taskTitle)
+      expect(launchOpen.textContent).not.toContain('Verifier')
+      expect(slot.querySelector('.uam-inline-subagents__meta')?.textContent).toContain('Verifier')
       const waitStatus = host.querySelector<HTMLElement>('.chat-status-strip[data-tone="agents"]')!
       expect(waitStatus).not.toBeNull()
       expect(slot.compareDocumentPosition(waitStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

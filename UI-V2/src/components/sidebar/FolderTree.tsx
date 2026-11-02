@@ -13,7 +13,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import './sidebar.css'
-import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, StatusDot, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -1686,7 +1686,7 @@ function WorkspaceFolderRecoveryModal({
               {preview.groups.length > 0 && (
                 <section aria-label="Ready workspace folders">
                   <div className="mb-2 flex items-center gap-2">
-                    <StatusDot tone="success" />
+                    <Check size={15} style={{ color: 'var(--success)' }} aria-hidden />
                     <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Ready · {readyChatCount} chat{readyChatCount === 1 ? '' : 's'}</h3>
                   </div>
                   <div className="grid gap-2">

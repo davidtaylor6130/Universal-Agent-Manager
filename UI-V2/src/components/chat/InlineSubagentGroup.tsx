@@ -119,15 +119,15 @@ export function InlineSubagentGroup({ tools, sourceChatId, onSelectTool, renderN
     const label = run ? managedRunLabel(run.status, run.lastReported) : 'Status unavailable'
     const title = run ? managedTaskTitle(run) : 'Subagent task'
     return <li key={tool.id} data-launch-tool={tool.id}>
-      <SubagentCard data-managed-open title={title} status={label} providerId={run?.providerId} summary={run?.summary}
-        meta={run ? [run.agentId, run.providerId, run.modelId].filter(Boolean).join(' · ') : undefined}
-        working={Boolean(run && active(run))} elapsed={run ? managedElapsed(run, feed?.now ?? Date.now()) : 'Timing unavailable'}
-        aria-label={`Open managed conversation for ${title}`} disabled={!isCefContext() || !run?.transcriptChatId || !feed?.open}
-        onClick={() => feed?.open?.(id)}
-        actions={<>
-          {run?.canCancel && !run.lastReported && <Button size="sm" variant="ghost" leadingIcon={<Square size={12} aria-hidden />} disabled={Boolean(feed?.stopping) || feed?.error} onClick={event => { event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[data-managed-open]')?.focus(); void feed?.stop(id!) }} aria-label={`Stop managed subagent ${title}`}>Stop</Button>}
-          <Button size="sm" variant="ghost" onClick={() => onSelectTool(tool.id)} aria-label={`Launch details for ${title}`}>Details</Button>
-        </>} />
+      <div className="uam-inline-subagents__row">
+        <SubagentCard data-managed-open title={title} status={label} providerId={run?.providerId} summary={run?.summary}
+          working={Boolean(run && active(run))} elapsed={run ? managedElapsed(run, feed?.now ?? Date.now()) : 'Timing unavailable'}
+          aria-label={`Open managed conversation for ${title}`} disabled={!isCefContext() || !run?.transcriptChatId || !feed?.open}
+          onClick={() => feed?.open?.(id)} />
+        {run?.canCancel && !run.lastReported && <Button size="sm" variant="ghost" leadingIcon={<Square size={12} aria-hidden />} disabled={Boolean(feed?.stopping) || feed?.error} onClick={event => { event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[data-managed-open]')?.focus(); void feed?.stop(id!) }} aria-label={`Stop managed subagent ${title}`}>Stop</Button>}
+        <Button size="sm" variant="ghost" onClick={() => onSelectTool(tool.id)} aria-label={`Launch details for ${title}`}>Details</Button>
+      </div>
+      {run && <p className="uam-inline-subagents__meta">{[run.agentId, run.providerId, run.modelId].filter(Boolean).join(' · ')}</p>}
     </li>
   })
   if (!ids.length) return <section className="uam-inline-subagents" aria-label={tools.length > 1 ? 'Consecutive subagent launches' : 'Subagent launch'} data-source-chat={sourceChatId}>{renderNative(tools)}</section>
@@ -152,13 +152,13 @@ export function InitialManagedSubagentGroup({ runId, sourceChatId }: { runId: st
   </section> : null
   const title = managedTaskTitle(run)
   return <section className="uam-inline-subagents" aria-label="Subagent launch" data-source-chat={sourceChatId} data-managed-origin={id}>
-    <ul><li>
+    <ul><li><div className="uam-inline-subagents__row">
       <SubagentCard data-managed-open title={title} status={managedRunLabel(run.status, run.lastReported)} providerId={run.providerId} summary={run.summary}
         working={active(run)} elapsed={managedElapsed(run, feed.now)} aria-label={`Open managed conversation for ${title}`}
-        disabled={!isCefContext() || !run.transcriptChatId || !feed.open} onClick={() => feed.open?.(id)}
-        actions={run.canCancel && !run.lastReported ? <Button size="sm" variant="ghost" leadingIcon={<Square size={12} aria-hidden />}
-          disabled={Boolean(feed.stopping) || feed.error} onClick={event => { event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[data-managed-open]')?.focus(); void feed.stop(id) }} aria-label={`Stop managed subagent ${title}`}>Stop</Button> : undefined} />
-    </li></ul>
+        disabled={!isCefContext() || !run.transcriptChatId || !feed.open} onClick={() => feed.open?.(id)} />
+      {run.canCancel && !run.lastReported && <Button size="sm" variant="ghost" leadingIcon={<Square size={12} aria-hidden />}
+        disabled={Boolean(feed.stopping) || feed.error} onClick={event => { event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[data-managed-open]')?.focus(); void feed.stop(id) }} aria-label={`Stop managed subagent ${title}`}>Stop</Button>}
+    </div></li></ul>
     {feed.readError && <p role="status">Status not refreshed. Showing last read.</p>}
     {feed.feedback && <p role="status">{feed.feedback}</p>}
   </section>

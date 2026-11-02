@@ -84,8 +84,6 @@
 .conversation-work__tool { display: flex; width: 100%; align-items: baseline; gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
 .conversation-work__event-icon { position: absolute; left: -8px; top: 5px; color: var(--text-3); background: var(--bg); }
 .conversation-work__tool-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Tool rows keep the status right after the name ("Bash ✓"), not at the far edge of the row. */
-.conversation-work__tool .conversation-work__tool-title { flex: 0 1 auto; }
 .conversation-work__status { display: inline-flex; align-items: center; flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-3); }
 .conversation-work__status[data-failed="true"] { color: var(--red); }
 .conversation-work__tool:hover .conversation-work__tool-title { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
@@ -121,8 +119,8 @@
    on the one active step and stops for Motion Off and reduced motion. */
 [data-processing-step="true"] .conversation-work__tool-title,
 [data-processing-step="true"] .conversation-work__thought-label { position: relative; overflow: hidden; }
-/* Size the running title to its text so the sweep crosses the label, not the empty row. */
-[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; }
+/* Size the running title to its text so the sweep crosses the label, not the empty row; status stays right. */
+[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }
 [data-processing-step="true"] .conversation-work__tool-title::after,
 [data-processing-step="true"] .conversation-work__thought-label::after {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; pointer-events: none;
@@ -210,13 +208,8 @@
 @keyframes conversation-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes conversation-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
-/* Goals popup and chip, edit-mode strip above the composer. */
+/* Goals popup, edit-mode strip above the composer. */
 .conversation-goals-popup { border: 1px solid var(--border-bright); border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); box-shadow: var(--elev-3); animation: conversation-pop-in var(--dur-base) var(--ease-out-soft) backwards; }
-.conversation-goal-chip { display: inline-flex; align-items: center; gap: var(--sp-1); min-width: 0; max-width: 100%; height: 26px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: 999px; background: var(--surface-up); color: var(--text-2); font-size: var(--fs-xs); text-align: left; cursor: pointer; transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
-.conversation-goal-chip:hover { color: var(--text); border-color: var(--border-bright); }
-.conversation-goal-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.conversation-goal-chip__status { flex-shrink: 0; color: var(--text-3); font-weight: 500; text-transform: capitalize; }
-.conversation-goal-chip__title { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-edit-strip { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; margin-bottom: var(--sp-1); padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3); border-radius: var(--r-md); background: var(--accent-dim); color: var(--text-2); font-size: var(--fs-sm); animation: conversation-pop-in var(--dur-fast) var(--ease-out-soft) backwards; }
 .conversation-edit-strip > svg { flex-shrink: 0; color: var(--accent); }
 @keyframes conversation-pop-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }

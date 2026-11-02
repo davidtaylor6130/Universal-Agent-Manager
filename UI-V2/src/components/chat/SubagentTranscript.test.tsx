@@ -221,7 +221,7 @@ describe('agent surface tone', () => {
       if (theme.bg > 0.5) expect(theme.up, theme.selector).toBeLessThan(theme.bg)
       else expect(theme.up, theme.selector).toBeGreaterThan(theme.bg)
     }
-    expect(cardCss).toMatch(/\.uam-subagent-card-shell \{[^}]*background: var\(--surface-up\)/)
+    expect(cardCss).toMatch(/\.uam-btn\.uam-subagent-card \{[^}]*background: var\(--surface-up\)/)
     expect(groupCss).toMatch(/summary:hover \{[^}]*background: var\(--surface-up\)/)
     expect(panelCss).toMatch(/summary:hover \{[^}]*background: var\(--surface-up\)/)
   })
