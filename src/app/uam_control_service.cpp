@@ -37,6 +37,8 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/diagnostic_log.h"
+#include "common/config/provider_chat_defaults.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
@@ -112,6 +114,9 @@ namespace uam
 		constexpr std::size_t kMaxAuditRecords = 64;
 		constexpr std::size_t kMaxProcessedPerTick = 16;
 		constexpr std::size_t kMaxActiveWaits = 16;
+		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
+		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
+		constexpr std::size_t kMaxChatTitleBytes = 256;
 		constexpr std::size_t kMaxWaitActionsPerTick = 2;
 		constexpr std::size_t kMaxCancelledWaitsPerConnection = 8;
 		constexpr auto kAgentWaitSlice = std::chrono::seconds(80);
@@ -317,6 +322,8 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"agentId", "task"}, {"providerId", "modelId"});
 			if (method == "goal_create")
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
+			if (method == "chat_create")
+				return HasOnlyStringArguments(arguments, {"task"}, {"providerId", "modelId", "title"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
 			if (method == "user_question")
@@ -358,7 +365,7 @@ namespace uam
 
 		bool IsMutation(std::string_view method)
 		{
-			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create";
+			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create" || method == "chat_create";
 		}
 
 		bool ReadOnlyAgent(const AppState& app, const UamControlCapability& capability)
@@ -779,6 +786,117 @@ namespace uam
 			        .reason = "Created one visible bounded UAM-owned goal."};
 		}
 
+		const AcpSessionState* WaitSession(const AppState& app, const UamControlCapability& capability);
+
+		/// <summary>Shared chat_create ceilings for immediate and user-approved creation; YOLO is checked by the caller.</summary>
+		std::string ChatCreateRefusal(const AppState& app, const UamControlCapability& capability, const ChatSession* caller)
+		{
+			if (!ControlEnabled(caller, capability, true)) return "UAM Control is disabled or the owning chat is unavailable.";
+			if (!capability.agent_run_id.empty()) return "Managed subagents cannot start top-level chats.";
+			if (ReadOnlyAgent(app, capability)) return "This UAM agent has read-only access. Mutation tools are unavailable.";
+			if (uam::approval_modes::AppApprovalModeOrEmpty(caller->approval_mode) == uam::approval_modes::kPlanApprovalMode)
+				return "Chats cannot be started in Plan mode.";
+			if (caller->imported_read_only || !caller->temporary_parent_chat_id.empty() || !caller->goal_owner_chat_id.empty())
+				return "This chat cannot start other chats.";
+			// ponytail: depth 1 only; a created chat would need its own provenance chain to delegate further.
+			if (!caller->created_by_chat_id.empty()) return "A chat started by another chat cannot start further chats.";
+			return {};
+		}
+
+		std::string ChatCreateArgumentError(const nlohmann::json& arguments)
+		{
+			const std::string task = uam::strings::Trim(arguments.value("task", ""));
+			if (task.empty() || !SafeText(task, kMaxTaskBytes)) return "The first prompt must be between 1 byte and 128 KiB.";
+			if (!SafeText(arguments.value("title", ""), kMaxChatTitleBytes)) return "The chat title exceeds 256 bytes.";
+			return {};
+		}
+
+		ToolResult ChatCreate(AppState& app, UamControlCapability& capability, const nlohmann::json& arguments)
+		{
+			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
+			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
+			const std::string task = uam::strings::Trim(arguments.value("task", ""));
+			const std::string requested_provider = uam::strings::Trim(arguments.value("providerId", ""));
+			const std::string requested_model = uam::strings::Trim(arguments.value("modelId", ""));
+			const std::string title = uam::strings::SafeLine(uam::strings::Trim(arguments.value("title", "")), 120, true);
+			const std::string key = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(
+			    nlohmann::json::array({caller->id, task, requested_provider, requested_model, title}).dump()));
+			// A model retry gets a new transport request ID; identical arguments return the chat already started.
+			const auto existing = std::ranges::find_if(app.chats, [&](const ChatSession& chat)
+			{ return chat.created_by_chat_id == caller->id && chat.created_by_request_key == key; });
+			if (existing != app.chats.end())
+				return {.ok = true, .result = {{"chatId", existing->id}, {"status", "started"}, {"reused", true}},
+				        .reason = "Returned the chat already started for identical arguments."};
+			const AcpSessionState* session = WaitSession(app, capability);
+			const int turn = session != nullptr ? session->turn_serial : 0;
+			if (capability.chat_create_turn_serial != turn)
+			{
+				capability.chat_create_turn_serial = turn;
+				capability.chat_create_turn_count = 0;
+			}
+			if (capability.chat_create_turn_count >= kMaxChatCreatesPerTurn)
+				return {.error = "UAM may start at most 2 chats per turn."};
+			if (static_cast<std::size_t>(std::ranges::count(app.chats, caller->id, &ChatSession::created_by_chat_id)) >= kMaxChatCreatesPerCaller)
+				return {.error = "This chat may start at most 8 chats."};
+			const std::string provider_id = provider_ids::NormalizeCliProviderAliasOrSelf(
+			    uam::strings::NonEmptyOrFallback(requested_provider, caller->provider_id));
+			const nlohmann::json targets = AgentProviderTargets(app, *caller);
+			const auto target = std::ranges::find_if(targets, [&](const nlohmann::json& value) { return value.value("providerId", "") == provider_id; });
+			if (target == targets.end() || !target->value("eligible", false))
+				return {.error = "Requested provider is unavailable on this chat's execution host" +
+				                 (target == targets.end() ? std::string(".") : ": " + target->value("unavailableReason", std::string("unknown reason")))};
+
+			// The same constructor as the New chat action; the worktree follows the existing Git automatic-worktree rules at launch.
+			ChatSession chat = ChatDomainService().CreateNewChat(caller->folder_id, provider_id, true);
+			chat.execution_host_id = uam::strings::NonEmptyOrFallback(caller->execution_host_id, "local");
+			chat.workspace_directory = uam::paths::IsGitWorktreeIsolated(*caller) && !caller->workspace_source_directory.empty()
+			    ? caller->workspace_source_directory : caller->workspace_directory;
+			if (chat.workspace_directory.empty())
+				if (const ChatFolder* folder = ChatDomainService().FindFolderById(app, caller->folder_id)) chat.workspace_directory = folder->directory;
+			chat.svn_update_pending = chat.execution_host_id == execution_hosts::kLocalHostId &&
+			    app.settings.svn_enabled && app.settings.svn_update_before_chat;
+			if (!title.empty()) chat.title = title;
+			uam::provider_chat_defaults::ApplyToChat(app.settings, chat);
+			const bool same_provider = provider_id == provider_ids::NormalizeCliProviderAliasOrSelf(caller->provider_id);
+			if (!requested_model.empty()) chat.model_id = requested_model;
+			else if (same_provider) chat.model_id = caller->model_id;
+			if (same_provider && chat.model_id == caller->model_id)
+			{
+				chat.reasoning_effort = caller->reasoning_effort;
+				chat.service_tier = caller->service_tier;
+				chat.service_tier_explicit = caller->service_tier_explicit;
+			}
+			// Exact copies: the new chat can never be more permissive than its caller.
+			chat.approval_mode = caller->approval_mode;
+			chat.command_safety_tier = caller->command_safety_tier;
+			chat.uam_control_enabled = caller->uam_control_enabled;
+			chat.uam_agent_id = caller->uam_agent_id;
+			chat.created_by_chat_id = caller->id;
+			chat.created_by_request_key = key;
+			if (!ChatRepository::SaveChat(app.data_root, chat)) return {.error = "The new chat could not be saved."};
+			const std::string caller_id = caller->id;
+			nlohmann::json result = {{"chatId", chat.id}, {"status", "started"}, {"providerId", chat.provider_id},
+			                         {"modelId", chat.model_id}, {"title", chat.title}, {"reused", false}};
+			uam::diagnostics::Write("UAM chat_create: started chat " + chat.id + " for " + caller_id + " provider=" +
+			                        provider_id + " host=" + chat.execution_host_id + ".");
+			app.uam_chat_create_initial_prompts.emplace_back(chat.id, task);
+			app.chats.push_back(std::move(chat)); // Invalidates caller.
+			++capability.chat_create_turn_count;
+			return {.ok = true, .result = std::move(result), .reason = "Started one top-level chat."};
+		}
+
+		/// <summary>Removes a chat_create result whose audit could not be recorded.</summary>
+		void RollbackChatCreate(AppState& app, UamControlCapability* capability, const ToolResult& result)
+		{
+			if (!result.ok || result.result.value("reused", true)) return;
+			const std::string id = result.result.value("chatId", "");
+			std::erase_if(app.chats, [&](const ChatSession& chat) { return chat.id == id; });
+			std::erase_if(app.uam_chat_create_initial_prompts, [&](const auto& prompt) { return prompt.first == id; });
+			(void)ChatRepository::DeleteChatStorageFiles(app.data_root, id, "create_rollback");
+			if (capability != nullptr && capability->chat_create_turn_count > 0) --capability->chat_create_turn_count;
+		}
+
 		ToolResult QueueApproval(AppState& app, UamControlCapability& capability,
 		                         UamControlCapability::PendingApproval pending)
 		{
@@ -790,7 +908,7 @@ namespace uam
 			    (!(*session)->pending_user_input.request_id_json.empty() ||
 			     !(*session)->pending_permission.request_id_json.empty()))
 				return {.error = "Finish the current provider question or permission request first."};
-			const std::string_view target_chat_id = pending.method == "goal_create"
+			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create"
 			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
 			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
@@ -831,6 +949,18 @@ namespace uam
 			return QueueApproval(app, capability, {.request_id = std::string(request_id),
 			                                     .method = "goal_create", .objective = objective,
 			                                     .idempotency_key = key,
+			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
+		}
+
+		ToolResult ChatCreateRequest(AppState& app, UamControlCapability& capability,
+		                             std::string_view request_id, const nlohmann::json& arguments,
+		                             int64_t now_epoch_ms)
+		{
+			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
+			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "chat_create",
+			                                     .chat_create_arguments = arguments,
 			                                     .expires_at_epoch_ms = now_epoch_ms + kApprovalLifetimeMs});
 		}
 
@@ -956,6 +1086,7 @@ namespace uam
 			if (method == "agent_cancel") return AgentCancel(app, capability, arguments);
 			if (method == "goal_get") return GoalGet(app, capability);
 			if (method == "goal_create") return GoalCreate(app, capability, arguments);
+			if (method == "chat_create") return ChatCreate(app, capability, arguments);
 			return {.error = "Unknown UAM control method."};
 		}
 
@@ -1401,7 +1532,7 @@ namespace uam
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
 			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" ? std::nullopt : std::optional<ChatSession>{*before_chat};
-			const bool goal_needs_approval = method == "goal_create" && before_chat != nullptr &&
+			const bool needs_approval = (method == "goal_create" || method == "chat_create") && before_chat != nullptr &&
 			    !MutationsAllowed(*before_chat);
 			ToolResult result = method == "agent_wait"
 			                        ? AgentWait(app, *capability, request_id, arguments)
@@ -1409,8 +1540,9 @@ namespace uam
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                        : method == "user_question"
 			                            ? UserQuestionRequest(app, *capability, request_id, arguments, now_epoch_ms)
-			                        : goal_needs_approval
-			                            ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : needs_approval
+			                            ? (method == "goal_create" ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
 			                            : ExecuteTool(app, *capability, method, arguments);
 			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} : nlohmann::json{{"pendingApproval", true}};
 			const UamControlCapability capability_snapshot = *capability;
@@ -1422,6 +1554,7 @@ namespace uam
 					(void)AgentRunScheduler::CancelTree(app, result.result.value("runId", ""), &cancel_error);
 					ManagedParentContinuationService::Revoke(app, capability_snapshot.chat_id, "delegation_save_failed");
 				}
+				if (method == "chat_create") RollbackChatCreate(app, capability, result);
 				if (rollback.has_value())
 				{
 					if (ChatSession* chat = ChatDomainService().FindChatById(app, capability_snapshot.chat_id); chat != nullptr)
@@ -1477,6 +1610,9 @@ namespace uam
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}}, {"agentId", "task"});
 			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
+			nlohmann::json chat_create = MutationToolSchema("chat_create", {{"task", {{"type", "string"}, {"description", "First prompt for the new chat."}}},
+			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"title", {{"type", "string"}}}}, {"task"});
+			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and gets its own Git worktree when Git automatic worktrees are enabled. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat.";
 			nlohmann::json agent_wait = ToolSchema("agent_wait", {{"runId", {{"type", "string"}}}}, {"runId"});
 			agent_wait["description"] = "Wait in this active turn for one owned child for up to 80 seconds. Returns its exact status/result and timedOut. If still running, another explicit agent_wait on the same run is allowed; do not redelegate. This read never cancels the child or starts a new turn.";
 			nlohmann::json tools = nlohmann::json::array({
@@ -1489,6 +1625,7 @@ namespace uam
 			    std::move(agent_delegate),
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    std::move(goal_create),
+			    std::move(chat_create),
 			    std::move(user_question),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
@@ -1548,7 +1685,7 @@ namespace uam
 			if (request_text.size() > kMaxRequestBytes ||
 			    !uam::io::WriteTextFile(capability / "requests" / (id + ".json"), request_text)) return std::nullopt;
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
-			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question"
+			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question" || method == "chat_create"
 			    ? 4000 : 400;
 			for (int attempt = 0; !cancel.stop_requested(); ++attempt)
 			{
@@ -1948,14 +2085,25 @@ namespace uam
 			AcpUserInputQuestionState question;
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
-			question.id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
-			question.header = computer_use ? "Computer Use" : user_question ? "Question" : "Goal";
+			const bool chat_create = capability.pending_approval->method == "chat_create";
+			question.id = computer_use ? "computerUse" : user_question ? "userQuestion" : chat_create ? "chatCreate" : "goalCreate";
+			question.header = computer_use ? "Computer Use" : user_question ? "Question" : chat_create ? "New chat" : "Goal";
 			if (computer_use)
 				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
 				                   " to enable Computer Use in " + uam::strings::SafeLine(chat->title, 120, true) +
 				                   "? " + capability.pending_approval->reason;
 			else if (user_question)
 				question.question = uam::strings::SafeLine(capability.pending_approval->question, 2048, true);
+			else if (chat_create)
+			{
+				const nlohmann::json& arguments = capability.pending_approval->chat_create_arguments;
+				const std::string title = uam::strings::Trim(arguments.value("title", ""));
+				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) + " in " +
+				                   uam::strings::SafeLine(chat->title, 120, true) + " to start a new " +
+				                   uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(uam::strings::Trim(arguments.value("providerId", "")), chat->provider_id), 64, true) +
+				                   " chat" + (title.empty() ? std::string{} : " \"" + uam::strings::SafeLine(title, 120, true) + "\"") +
+				                   "? " + uam::strings::SafeLine(uam::strings::Trim(arguments.value("task", "")), 2048, true);
+			}
 			else
 				question.question = "Allow " + uam::strings::SafeLine(capability.provider_id, 64, true) +
 				                   " to create this goal in " + uam::strings::SafeLine(chat->title, 120, true) +
@@ -1969,6 +2117,9 @@ namespace uam
 			else question.options = computer_use
 			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Enable Computer Use for this chat."},
 			                                          {"Deny", "Keep Computer Use disabled."}}
+			    : chat_create
+			    ? std::vector<AcpUserInputOptionState>{{"Allow", "Start this chat."},
+			                                          {"Deny", "Do not start this chat."}}
 			    : std::vector<AcpUserInputOptionState>{{"Allow", "Create this goal."},
 			                                          {"Deny", "Do not create this goal."}};
 			input.questions.push_back(std::move(question));
@@ -2005,7 +2156,8 @@ namespace uam
 			if (!authority_current) return fail("This UAM request is no longer active in this chat.");
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
-			const std::string question_id = computer_use ? "computerUse" : user_question ? "userQuestion" : "goalCreate";
+			const bool chat_create = capability.pending_approval->method == "chat_create";
+			const std::string question_id = computer_use ? "computerUse" : user_question ? "userQuestion" : chat_create ? "chatCreate" : "goalCreate";
 			if (answers.size() != 1 || !answers.contains(question_id) ||
 			    answers.at(question_id).size() != 1)
 				return fail(user_question ? "Provide one answer to this UAM question." : "Choose Allow or Deny for this UAM request.");
@@ -2060,6 +2212,13 @@ namespace uam
 						result.reason = "The user approved Computer Use for this chat.";
 					}
 				}
+				else if (chat_create)
+				{
+					result = ChatCreate(app, capability, capability.pending_approval->chat_create_arguments);
+					// Creation appends to app.chats; reacquire the borrowed rows.
+					chat = ChatDomainService().FindChatById(app, std::string(chat_id));
+					root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+				}
 				else
 				{
 					result = GoalCreate(app, capability,
@@ -2069,6 +2228,7 @@ namespace uam
 			}
 			else result.error = computer_use
 			    ? "The user denied Computer Use for this chat. Do not retry without a new user request."
+			    : chat_create ? "The user denied starting this chat. Do not retry without a new user request."
 			    : "The user denied goal creation for this chat. Do not retry without a new user request.";
 			const nlohmann::json response = result.ok
 			    ? nlohmann::json{{"ok", true}, {"result", result.result}}
@@ -2083,6 +2243,7 @@ namespace uam
 				if (chat != root_chat) *root_chat = root_before;
 				(void)ChatRepository::SaveChat(app.data_root, *chat);
 				if (chat != root_chat) (void)ChatRepository::SaveChat(app.data_root, *root_chat);
+				if (chat_create) RollbackChatCreate(app, &capability, result);
 				return fail("UAM decision could not be delivered. Try again.");
 			}
 			capability.pending_approval.reset();
@@ -2191,6 +2352,15 @@ namespace uam
 			++capability_index;
 		}
 		ProcessAgentWaits(app, response_write_hook);
+		// Sent after every capability borrow ends: a provider launch may issue new capabilities.
+		for (const auto& [chat_id, task] : std::exchange(app.uam_chat_create_initial_prompts, {}))
+		{
+			std::string error;
+			if (!uam::SendAcpPrompt(app, chat_id, task, &error))
+				uam::diagnostics::Write("UAM chat_create: first prompt for chat " + chat_id + " was not sent: " +
+				                        uam::strings::SafeLine(error, 160, true));
+			changed = true;
+		}
 		return changed;
 	}
 

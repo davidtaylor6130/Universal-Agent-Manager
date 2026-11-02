@@ -486,6 +486,8 @@ namespace uam
 			std::string computer_use_origin;
 			std::shared_ptr<const std::uint8_t> computer_use_chat_incarnation;
 			std::shared_ptr<const std::uint8_t> computer_use_root_incarnation;
+			/// Validated chat_create arguments awaiting the user's decision.
+			nlohmann::json chat_create_arguments;
 			int64_t expires_at_epoch_ms = 0;
 		};
 
@@ -514,6 +516,9 @@ namespace uam
 		// Current-connection cancellation tombstones; overflow refuses new waits until renewal.
 		std::unordered_set<std::string> cancelled_wait_ids;
 		bool wait_cancellation_overflow = false;
+		// chat_create admissions within the caller's current structured turn.
+		int chat_create_turn_serial = -1;
+		std::size_t chat_create_turn_count = 0;
 		std::optional<PendingApproval> pending_approval;
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
@@ -1358,6 +1363,8 @@ namespace uam
 		std::unordered_map<std::string, std::shared_ptr<ManagedInitialRuntimeOwner>> managed_initial_runtime_owners;
 		bool managed_initial_shutdown = false;
 		std::vector<UamControlCapability> uam_control_capabilities;
+		/// (chat ID, first prompt) for chats started by chat_create, sent after control requests finish.
+		std::vector<std::pair<std::string, std::string>> uam_chat_create_initial_prompts;
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
