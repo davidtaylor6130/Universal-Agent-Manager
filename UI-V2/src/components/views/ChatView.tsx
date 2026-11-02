@@ -3,7 +3,7 @@ import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import type { AcpBinding, AcpQueuedPrompt, ManualCompactionAvailability } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
-import { messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
+import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
 import { formatContextReferences } from '../../utils/contextReferences'
 import { acknowledgeComposerReferences, captureComposerReferenceSubmission, composerReferenceSubmissionIsCurrent, type ComposerReferenceSubmission } from '../../utils/composerReferenceSubmission'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
@@ -39,6 +39,7 @@ import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isCl
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
@@ -894,6 +895,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootChatId)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())))
   const retryFailedMessage = useAppStore((s) => s.retryFailedMessage)
+  const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
@@ -1950,7 +1952,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     !messages.some((message) => message.stopReason === acp.lastStopReason)
     ? stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')
     : ''
-  const liveDividerOpen = Boolean(acp?.compacting) || isWaitingOnSubagents(acp) || Boolean(stoppedStatusLabel)
+  // A timeout stop is a transcript status notice with its own recovery action, not a raw composer error.
+  const timeoutStop = acp?.timeoutStop && currentAcpError && !acp.promptActionError ? acp.timeoutStop : undefined
+  const timeoutStopShown = Boolean(timeoutStop) && currentAcpErrorKey !== dismissedAcpErrorKey
+  const liveDividerOpen = Boolean(acp?.compacting) || isWaitingOnSubagents(acp) || Boolean(stoppedStatusLabel) || timeoutStopShown
   useEffect(() => {
     // Live dividers sit at the end of the transcript; bring them into view as a new message would.
     if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
@@ -2017,6 +2022,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const retryUnsentReceipt = async (receipt: { id: string; revision: number }) => {
     if (session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null) return false
     return retryUnsentAcpPrompt(session.id, receipt)
+  }
+  // Raise the turn timeout, then re-deliver the same user message in place (never a duplicate row).
+  // A next turn on a running OpenCode process relaunches it so the new limit applies.
+  const restartTimedOutTurn = async () => {
+    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
+    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return 'Could not save the new timeout. Nothing was restarted.'
+    const chatMessages = useAppStore.getState().messages[session.id] ?? []
+    let lastUser = chatMessages.length - 1
+    while (lastUser >= 0 && chatMessages[lastUser].role !== 'user') lastUser -= 1
+    if (lastUser < 0 || !canRetryMessageInPlace(chatMessages, lastUser))
+      return `Timeout raised to ${formatTimeoutDuration(timeout)}. This turn already produced output, so send a follow-up to continue it.`
+    const result = await retryFailedMessage(session.id, lastUser + historyStartIndex)
+    return result.ok ? undefined : `Timeout raised to ${formatTimeoutDuration(timeout)}, but the turn did not restart: ${result.error || 'retry was refused.'}`
   }
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
@@ -3461,6 +3479,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
               <SubagentWaitStatus binding={acp} />
               <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
+              {acp && timeoutStop && timeoutStopShown && (
+                <TimeoutStopNotice
+                  key={currentAcpErrorKey}
+                  timeoutStop={timeoutStop}
+                  onRestart={restartTimedOutTurn}
+                  onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
+                  copyAction={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
+                />
+              )}
               </div>
               </SubAgentDisclosureProvider>
               </InlineSubagentProvider>
@@ -3583,7 +3610,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
+            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && !timeoutStop && (
               <div
                 role="alert"
                 className="uam-notice mb-2 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs"

@@ -51,7 +51,8 @@ import {
 import type { Provider } from '../../types/provider'
 import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
 import type { MemoryLevel } from '../../types/memory'
-import { sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
+import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
+import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/TimeoutStopNotice'
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
@@ -87,6 +88,7 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryRecallBudgetBytes: 'Memory recall budget',
   goalMaxLoopIterations: 'Goal loop limit',
   acpSetupInactivityTimeoutSeconds: 'Provider setup timeout',
+  activeTurnInactivityTimeoutSeconds: 'Provider turn timeout',
   acpTurnOutputLimitMiB: 'Provider output limit',
   memoryWorkerBindings: 'Memory worker selections',
   permissionReviewerProviderId: 'Permission reviewer provider',
@@ -745,6 +747,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
+  const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
@@ -3072,6 +3075,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 ]}
                 onChange={(value) => void setMemorySettings({ acpSetupInactivityTimeoutSeconds: Number(value) })}
               />
+            }
+          />
+          <SettingRow
+            title="Provider turn timeout"
+            description="Stops a turn after this long with no provider activity. OpenCode also uses it as its request timeout."
+            control={
+              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                <IconButton icon={<Minus size={14} />} label="Decrease provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.max(TIMEOUT_RESTART_STEP_SECONDS, activeTurnInactivityTimeoutSeconds - TIMEOUT_RESTART_STEP_SECONDS) })} />
+                <output aria-label="Provider turn timeout" className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(activeTurnInactivityTimeoutSeconds)}</output>
+                <IconButton icon={<Plus size={14} />} label="Increase provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS) })} />
+              </div>
             }
           />
           <SettingRow

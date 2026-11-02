@@ -660,6 +660,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		{
 			(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 			FailAcpTurnOrSession(session, &chat, formatted_error);
+			// OpenCode's provider request timeout (an aborted fetch) follows UAM's turn timeout from launch.
+			if (method == uam::acp_methods::kSessionPrompt && provider_ids::IsCliProviderAliasOf(session.provider_id, provider_ids::kOpenCodeCli) &&
+			    formatted_error.find("The operation timed out") != std::string::npos)
+				MarkAcpTimeoutStop(session, "OpenCode request timeout", session.launch_turn_timeout_seconds);
 			SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 		}

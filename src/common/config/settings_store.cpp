@@ -785,7 +785,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		    normalized.acp_turn_output_limit_mib,
 		    normalized.memory_worker_bindings,
 		    normalized.permission_reviewer_provider_id,
-		    normalized.permission_reviewer_model_id};
+		    normalized.permission_reviewer_model_id,
+		    normalized.active_turn_inactivity_timeout_seconds};
 		memory_receipt->canonical_values_ready = true;
 		const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
 		{

@@ -487,8 +487,15 @@ export interface ManualCompactionAvailability {
   nativeSessionId: string
 }
 
+/** The current lastError is a timeout stop: which limit expired and its value (0 when unknown). */
+export interface AcpTimeoutStop {
+  label: string
+  seconds: number
+}
+
 export interface CppAcpSession {
   lastStopReason?: string
+  timeoutStop?: AcpTimeoutStop | null
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -753,6 +760,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   memoryRecallBudgetBytes: number
   goalMaxLoopIterations: number
   acpSetupInactivityTimeoutSeconds?: number
+  activeTurnInactivityTimeoutSeconds?: number
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -994,6 +1002,7 @@ export interface CliBinding {
 
 export interface AcpBinding {
   lastStopReason?: string
+  timeoutStop?: AcpTimeoutStop
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number

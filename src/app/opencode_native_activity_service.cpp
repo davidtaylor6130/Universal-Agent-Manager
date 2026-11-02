@@ -1,6 +1,7 @@
 #include "app/opencode_native_activity_service.h"
 #include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/opencode/opencode_permission_policy.h"
+#include "common/provider/opencode_native_http.h"
 #include "app/chat_domain_service.h"
 #include "common/config/approval_modes.h"
 #include "common/config/execution_host_config.h"
@@ -220,6 +221,7 @@ struct OpenCodeNativeCompanion::State
 	std::string error;
 	std::string failure_reason;
 	Clock::time_point next{};
+	std::optional<Clock::time_point> slow_since; // First of consecutive late answers; cleared by any complete snapshot.
 	std::map<std::string, Json> permissions;
 	std::set<std::string> published;
 	std::map<std::string, std::string> replies;
@@ -590,7 +592,16 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				// A missing snapshot is not evidence that the provider or a pending
 				// decision failed. Hold new prompts and retry the complete observation;
 				// queued decisions remain gated by fresh ownership proof before delivery.
-				if (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit)
+				// A busy server streaming from a slow model answers late. Late answers are not failures;
+				// only the user-adjustable turn timeout bounds them, and that stop is reported as a timeout.
+				const bool late = !result.authority_conflict && result.error == opencode_native::kQueryTimedOutError;
+				if (late && !owner->slow_since) owner->slow_since = Clock::now();
+				if (late && Clock::now() - *owner->slow_since >= std::chrono::seconds(app.settings.active_turn_inactivity_timeout_seconds))
+				{
+					owner->failed = true;
+					owner->failure_reason = "turn_timeout";
+				}
+				else if (!late && (result.authority_conflict || ++owner->failures >= kConsecutiveFailureLimit))
 				{
 					owner->failed = true;
 					owner->failure_reason = result.authority_conflict ? "ownership_conflict" : "observation_failures";
@@ -598,6 +609,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			}
 			else
 			{
+				owner->slow_since.reset();
 				owner->retry_recovered = owner->failures > 0;
 				owner->failures = 0; owner->ready = true;
 				if (ChatSession* chat = ChatDomainService().FindChatById(app, iterator->identity.chat); chat &&
@@ -683,7 +695,11 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				acp_detail::AppendAcpDiagnostic(session, "native_companion", owner->failure_reason,
 				    "", "", false, 0, gate_error, "failures=" + std::to_string(owner->failures));
 				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Interrupt, true);
-				acp_detail::FailAcpTurnOrSession(session, chat, gate_error + " UAM stopped sending approvals and requested the provider stop.");
+				const bool timed_out = owner->failure_reason == "turn_timeout";
+				acp_detail::FailAcpTurnOrSession(session, chat, timed_out
+				    ? "OpenCode stayed busy past the provider turn timeout, so UAM stopped the turn. Saved messages were kept."
+				    : gate_error + " UAM stopped sending approvals and requested the provider stop.");
+				if (timed_out) acp_detail::MarkAcpTimeoutStop(session, "Provider turn timeout", app.settings.active_turn_inactivity_timeout_seconds);
 				acp_detail::SaveChatQuietly(app, *chat);
 				changed = true;
 			}

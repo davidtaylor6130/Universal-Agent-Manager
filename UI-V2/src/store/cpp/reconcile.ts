@@ -587,6 +587,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
+    existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
     toolCallsEquivalent(existing.toolCalls, next.toolCalls) &&
     existing.planSummary === next.planSummary &&
@@ -722,6 +723,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     recentStderr: acp?.recentStderr ?? '',
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
     lastStopReason: acp?.lastStopReason,
+    timeoutStop: acp?.timeoutStop ?? undefined,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',

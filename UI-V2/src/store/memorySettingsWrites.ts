@@ -2,12 +2,12 @@ import type { MemoryLevel } from '../types/memory'
 import type { MemoryWorkerBinding } from './cpp/types'
 import {
   clampedFiniteNumberOr, normalizeMemoryLevel, normalizeGoalMaxLoopIterations,
-  normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB,
+  normalizeAcpSetupInactivityTimeoutSeconds, normalizeActiveTurnInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB,
   MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS,
   MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES,
 } from './cpp/sanitizers'
 
-/** Only this action's ten canonical fields; never an export of all settings. */
+/** Only this action's eleven canonical fields; never an export of all settings. */
 export interface MemorySettingsValues {
   memoryEnabledDefault: boolean
   memoryLevelDefault: MemoryLevel
@@ -16,6 +16,7 @@ export interface MemorySettingsValues {
   goalMaxLoopIterations: number
   acpSetupInactivityTimeoutSeconds: number
   acpTurnOutputLimitMiB: number
+  activeTurnInactivityTimeoutSeconds: number
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   permissionReviewerProviderId: string
   permissionReviewerModelId: string
@@ -44,14 +45,14 @@ export interface MemorySettingsWriteDependencies {
 }
 const fields = [
   'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-  'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB',
+  'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds',
   'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
 ] as const
 const wireNames: Record<keyof MemorySettingsValues, string> = {
   memoryEnabledDefault: 'enabledDefault', memoryLevelDefault: 'levelDefault',
   memoryIdleDelaySeconds: 'idleDelaySeconds', memoryRecallBudgetBytes: 'recallBudgetBytes',
   goalMaxLoopIterations: 'goalMaxLoopIterations', acpSetupInactivityTimeoutSeconds: 'acpSetupInactivityTimeoutSeconds',
-  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', memoryWorkerBindings: 'workerBindings',
+  acpTurnOutputLimitMiB: 'acpTurnOutputLimitMiB', activeTurnInactivityTimeoutSeconds: 'activeTurnInactivityTimeoutSeconds', memoryWorkerBindings: 'workerBindings',
   permissionReviewerProviderId: 'permissionReviewerProviderId', permissionReviewerModelId: 'permissionReviewerModelId',
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -71,6 +72,7 @@ export function parseMemorySettingsValues(value: unknown): MemorySettingsValues 
     !integer(value.goalMaxLoopIterations) || value.goalMaxLoopIterations !== normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations) ||
     !integer(value.acpSetupInactivityTimeoutSeconds) || value.acpSetupInactivityTimeoutSeconds !== normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds) ||
     !integer(value.acpTurnOutputLimitMiB) || value.acpTurnOutputLimitMiB !== normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB) ||
+    !integer(value.activeTurnInactivityTimeoutSeconds) || value.activeTurnInactivityTimeoutSeconds !== normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds) ||
     !text(value.permissionReviewerProviderId) || !text(value.permissionReviewerModelId) || !record(value.memoryWorkerBindings)) return null
   const bindings: Record<string, unknown> = value.memoryWorkerBindings
   for (const [key, entry] of Object.entries(bindings)) {
@@ -108,6 +110,7 @@ function normalizeRequested(partial: Partial<MemorySettingsValues>, previous: Me
   if (partial.goalMaxLoopIterations !== undefined) next.goalMaxLoopIterations = normalizeGoalMaxLoopIterations(partial.goalMaxLoopIterations)
   if (partial.acpSetupInactivityTimeoutSeconds !== undefined) next.acpSetupInactivityTimeoutSeconds = normalizeAcpSetupInactivityTimeoutSeconds(partial.acpSetupInactivityTimeoutSeconds)
   if (partial.acpTurnOutputLimitMiB !== undefined) next.acpTurnOutputLimitMiB = normalizeAcpTurnOutputLimitMiB(partial.acpTurnOutputLimitMiB)
+  if (partial.activeTurnInactivityTimeoutSeconds !== undefined) next.activeTurnInactivityTimeoutSeconds = normalizeActiveTurnInactivityTimeoutSeconds(partial.activeTurnInactivityTimeoutSeconds)
   if (partial.permissionReviewerProviderId !== undefined) next.permissionReviewerProviderId = partial.permissionReviewerProviderId
   if (partial.permissionReviewerModelId !== undefined) next.permissionReviewerModelId = partial.permissionReviewerModelId
   if (partial.memoryWorkerBindings !== undefined) {

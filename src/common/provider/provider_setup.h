@@ -181,6 +181,15 @@ namespace uam::provider_setup
 
 	inline std::string Digest(std::string_view bytes) { return uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(bytes)); }
 
+	/// The provider part of an OpenCode "provider/model" ID, when it is a plain configuration key.
+	inline std::string OpenCodeModelProviderId(std::string_view model_id)
+	{
+		const std::string_view id = model_id.substr(0, model_id.find('/'));
+		const bool valid = id.size() < model_id.size() && !id.empty() && id.size() <= 128 &&
+		    std::ranges::all_of(id, [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_' || c == '.'; });
+		return valid ? std::string(id) : std::string{};
+	}
+
 	inline bool ValidateManifest(const nlohmann::json& manifest, std::string& error)
 	{
 		if (!manifest.is_object() || !manifest.contains("format") || !manifest["format"].is_number_integer() || manifest["format"] != 1 || !manifest.contains("files") || !manifest["files"].is_object() || manifest["files"].size() > kMaxFiles)
@@ -188,6 +197,15 @@ namespace uam::provider_setup
 		if (manifest.contains("mcpOnly") && !manifest["mcpOnly"].is_boolean()) { error = "MCP-only metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeCodeMode") && !manifest["openCodeCodeMode"].is_boolean()) { error = "OpenCode discovery metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeUamControlDeadline") && !manifest["openCodeUamControlDeadline"].is_boolean()) { error = "OpenCode UAM control deadline metadata must be boolean."; return false; }
+		if (manifest.contains("openCodeRequestTimeout"))
+		{
+			const auto& timeout = manifest["openCodeRequestTimeout"];
+			const auto valid_id = [](const nlohmann::json& id)
+			{ return id.is_string() && !id.get_ref<const std::string&>().empty() && OpenCodeModelProviderId(id.get_ref<const std::string&>() + "/") == id.get_ref<const std::string&>(); };
+			if (!timeout.is_object() || timeout.size() != 2 || !timeout.contains("provider") || !valid_id(timeout["provider"]) ||
+			    !timeout.contains("milliseconds") || !timeout["milliseconds"].is_number_integer() || timeout["milliseconds"] < 60000 || timeout["milliseconds"] > 86400000)
+			{ error = "OpenCode request timeout metadata requires a provider ID and 1 minute to 24 hours."; return false; }
+		}
 		if (manifest.contains("claudeTerminalFastMode") && !manifest["claudeTerminalFastMode"].is_boolean()) { error = "Claude terminal fast-mode metadata must be boolean."; return false; }
 		if (manifest.contains("geminiThinking"))
 		{
@@ -741,6 +759,14 @@ namespace uam::provider_setup
 				if (!native_servers.contains("uam-control"))
 					config["mcp"]["uam-control"] = {{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}};
 				config["mcp"]["uam-control"]["timeout"] = 120000;
+			}
+			if (manifest.contains("openCodeRequestTimeout"))
+			{
+				const std::string id = manifest["openCodeRequestTimeout"]["provider"].get<std::string>();
+				if ((config.contains("provider") && !config["provider"].is_object()) || (config.contains("provider") && config["provider"].contains(id) &&
+				    (!config["provider"][id].is_object() || (config["provider"][id].contains("options") && !config["provider"][id]["options"].is_object()))))
+				{ error = "OpenCode provider settings must be objects."; return false; }
+				config["provider"][id]["options"]["timeout"] = manifest["openCodeRequestTimeout"]["milliseconds"];
 			}
 			SetEnvironment(environment, "OPENCODE_CONFIG_CONTENT", config.dump());
 		}

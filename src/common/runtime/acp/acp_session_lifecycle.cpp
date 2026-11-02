@@ -2649,6 +2649,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return false;
 	}
 	if (!session.recovering_remote_turn && !session.recovering_remote_process) session.provider_configuration_directory = configuration_bundle.local_directory;
+	// A later turn restarts when the user changes the timeout this process was given (see the queued-turn restart check).
+	if (!session.recovering_remote_turn && !session.recovering_remote_process)
+		session.launch_turn_timeout_seconds = configuration_bundle.manifest.contains("openCodeRequestTimeout")
+		    ? static_cast<int>(configuration_bundle.manifest["openCodeRequestTimeout"]["milliseconds"].get<std::int64_t>() / 1000) : 0;
 	const auto structured_version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider.id, execution_host->id));
 	const std::string structured_provider_version = structured_version != app.runtime_cli_versions_by_provider_id.end() &&
 	    structured_version->second.checked && structured_version->second.check_error.empty() && execution_hosts::SameConnection(structured_version->second.execution_host, *execution_host)
