@@ -1769,6 +1769,7 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	{
 		existing->provider_id = provider.id;
 		existing->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
+		if (existing->managed_agent_run_id != chat.agent_run_id) existing->managed_launch_attempted = false; // A new run starts unlaunched.
 		existing->managed_agent_run_id = chat.agent_run_id;
 		return *existing;
 	}
