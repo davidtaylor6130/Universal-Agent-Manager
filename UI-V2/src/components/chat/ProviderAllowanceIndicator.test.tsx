@@ -141,7 +141,11 @@ describe('ProviderAllowanceIndicator', () => {
     try {
       expect(view.host.textContent).toBe('')
       expect(accessibleName(view)).toBe('Account allowance: 20% remaining')
-      expect(view.host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('80')
+      // Button children are presentational, so the gauge is decorative and the value lives in the button's name.
+      expect(view.host.querySelector('[role="meter"]')).toBeNull()
+      expect(view.host.querySelector('[data-usage-gauge]')?.getAttribute('aria-hidden')).toBe('true')
+      expect(view.host.querySelector('button')?.className).toContain('uam-composer-action')
+      expect(view.host.querySelector('button')?.hasAttribute('data-marker')).toBe(false)
       expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(54deg)')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, spendControlReached: true }} running nowMs={now} />))
       expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(90deg)')
@@ -149,14 +153,27 @@ describe('ProviderAllowanceIndicator', () => {
   })
 
   it.each([
-    ['unavailable', null],
-    ['unlimited credits only', { ...limits, primary: null, secondary: null, credits: { hasCredits: true, unlimited: true, balance: null } }],
-  ])('shows a neutral gauge without a needle or meter value when allowance is %s', (_name, rateLimits) => {
+    ['unavailable', null, null],
+    ['unlimited credits only', { ...limits, primary: null, secondary: null, credits: { hasCredits: true, unlimited: true, balance: null } }, 'unlimited'],
+    ['credits only', { ...limits, primary: null, secondary: null }, 'credits'],
+  ])('shows a neutral gauge without a needle or meter value when allowance is %s', (_name, rateLimits, marker) => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits, running: true, nowMs: now })
     try {
+      expect(view.host.querySelector('button')?.getAttribute('data-marker')).toBe(marker)
+      expect(view.host.querySelectorAll('button svg').length).toBe(marker ? 2 : 1)
       expect(view.host.querySelector('[data-usage-gauge]')?.getAttribute('aria-hidden')).toBe('true')
       expect(view.host.querySelector('[data-needle]')).toBeNull()
       expect(view.host.querySelector('[role="meter"]')).toBeNull()
+    } finally { view.close() }
+  })
+
+  it('dims cached snapshots and adds a visible history mark that does not rely on colour', () => {
+    const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: false, nowMs: now })
+    try {
+      expect(accessibleName(view)).toBe('Account allowance: Cached 20% remaining')
+      expect(view.host.querySelector('button')?.getAttribute('data-marker')).toBe('cached')
+      expect(view.host.querySelectorAll('button svg').length).toBe(2)
+      expect(view.host.querySelector<HTMLElement>('[data-usage-gauge]')?.parentElement?.style.opacity).toBe('0.55')
     } finally { view.close() }
   })
 })

@@ -33,6 +33,8 @@
   --green:           #16a34a;
   --red:             #ef4444;
   --yellow:          #eab308;
+  /* Meter warning band: --yellow is ~1.9:1 on light surfaces, below the 3:1 graphic minimum. Dark themes reuse --warning below. */
+  --meter-warning:   #a16207;
   --purple:          var(--accent);
   --message-user-bg: #fff3eb;
   --message-assistant-bg: #ffffff;
@@ -164,6 +166,7 @@
 
 /* Token categories on dark surfaces: bright enough for --bg label text inside segments. */
 [data-theme="dark"], [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
+  --meter-warning:     var(--warning);
   --token-input:       #f472b6;
   --token-cache-read:  #bef264;
   --token-cache-write: #818cf8;
@@ -2400,3 +2403,9 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer 1.2s ease-in-out infinite; }
 @keyframes uam-icon-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-icon-skeleton { animation: none; } .uam-icon-cell { transition: none; } }
+
+@media (forced-colors: active) {
+  .uam-usage-gauge path { stroke: CanvasText; }
+  .uam-usage-gauge__needle line { stroke: Highlight; }
+  .uam-usage-gauge__needle circle { fill: Highlight; }
+}

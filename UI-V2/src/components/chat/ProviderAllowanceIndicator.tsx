@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Coins, History, Infinity as InfinityIcon } from 'lucide-react'
 import type { AcpRateLimits } from '../../store/cpp/types'
 import { Tooltip, UsageGauge } from '../ui'
 import { providerShortName } from '../../utils/providerMetadata'
@@ -35,6 +36,8 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   const label = limits && timestampValid && value ? `${cached ? 'Cached ' : ''}${value}` : 'Unavailable'
   // The gauge needle shows the most-used window; unknown, unavailable and credit-only (including unlimited) stay neutral.
   const usedPercent = percent === null || label === 'Unavailable' ? null : 100 - percent
+  // Visible, non-colour cues for states the label carries: cached snapshots dim with a history mark; credit-only shows its credit kind.
+  const marker = label === 'Unavailable' ? null : percent === null ? limits?.credits?.unlimited ? 'unlimited' : creditOnly ? 'credits' : null : cached ? 'cached' : null
   const detail = limits ? <div className="flex flex-col gap-1">
     <span>{providerShortName(undefined, providerId)} session-reported account allowance</span>
     <span>{running ? 'Current session snapshot' : 'Last session snapshot'}</span>
@@ -47,8 +50,11 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
     {limits.planType && <span>Plan: {limits.planType}</span>}
   </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
   return <Tooltip label={detail}>
-    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center">
-      <UsageGauge usedPercent={usedPercent} />
+    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} data-marker={marker ?? undefined} className="uam-composer-action inline-flex h-[26px] shrink-0 items-center gap-1 rounded-[6px] px-1.5" style={{ color: 'var(--text-2)', border: '1px solid transparent', background: 'transparent' }}>
+      <span className="inline-flex" style={{ opacity: label.startsWith('Cached') ? 0.55 : 1 }}><UsageGauge usedPercent={usedPercent} decorative /></span>
+      {marker === 'cached' && <History size={12} aria-hidden />}
+      {marker === 'unlimited' && <InfinityIcon size={12} aria-hidden />}
+      {marker === 'credits' && <Coins size={12} aria-hidden />}
     </button>
   </Tooltip>
 }
