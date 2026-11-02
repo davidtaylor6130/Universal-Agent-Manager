@@ -4043,6 +4043,7 @@ const ChatFolder* ChatHistorySyncService::PlanImportWorkspace(uam::AppState& pla
 	// ponytail: remote histories are discovered only inside registered host workspaces, so a missing remote owner was removed and stays removed.
 	if (!uam::paths::IsControllerLocalWorkspace(chat) || chat.workspace_directory.size() > 32768 || chat.workspace_directory.find('\0') != std::string::npos) return nullptr;
 	const fs::path workspace = uam::paths::PathFromUtf8(chat.workspace_directory);
+	// ponytail: existence and git-root checks run on the app thread, one stat walk per unmatched history; move planning into the scan worker if large discoveries stall the UI.
 	if (!workspace.is_absolute() || !uam::paths::IsDirectoryNoThrow(workspace)) return nullptr;
 	ProviderChatSource source;
 	source.folder_directory = chat.workspace_directory;

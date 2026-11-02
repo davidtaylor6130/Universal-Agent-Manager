@@ -320,7 +320,7 @@ UAM_TEST(SettingsNativeAssignmentRejectsLateHiddenOwnerBeforePublication)
 	UAM_ASSERT(!fs::exists(app.data_root / "folders.txt"));
 }
 
-UAM_TEST(SettingsNativeAssignmentsResolvePathAliasesAndRefuseLinkedWorktreeConflicts)
+UAM_TEST(SettingsNativeAssignmentsResolvePathAliasesAndLinkedWorktreesToOneWorkspace)
 {
 	TempDir temp("uam-native-assignment-overlap");
 	const fs::path main = temp.root / "main", worktree = temp.root / "worktree";
@@ -361,6 +361,14 @@ UAM_TEST(SettingsNativeAssignmentsResolvePathAliasesAndRefuseLinkedWorktreeConfl
 			UAM_ASSERT_EQ(assigned.candidates[0].folder_id, assigned.candidates[1].folder_id);
 			UAM_ASSERT(app.folders.empty());
 			UAM_ASSERT(app.chats.empty());
+			UAM_ASSERT(service.Decide(app, ready.generation, {main_id, worktree_id}, {}));
+			WaitForStartup(service, app);
+			UAM_ASSERT_EQ(service.Snapshot().imported_count, 2);
+			UAM_ASSERT_EQ(app.chats.size(), std::size_t{2});
+			UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+			// The user's name applies to the new workspace even though its path is the main checkout, not the worktree.
+			UAM_ASSERT_EQ(app.folders.front().title, std::string("Same main"));
+			UAM_ASSERT_EQ(app.folders.front().directory, main.string());
 		}
 	}
 	uam::AppState app;
@@ -952,6 +960,64 @@ UAM_TEST(StartupNativeUnmatchedLocalHistoriesPlanOneWorkspacePerExistingDirector
 	WaitForStartup(rerun, app);
 	UAM_ASSERT_EQ(app.chats.size(), std::size_t{4});
 	UAM_ASSERT_EQ(app.folders.size(), std::size_t{3});
+}
+
+UAM_TEST(SettingsNativeAssignmentRefusesWhenALaterWorkspaceTakesAnotherCandidate)
+{
+	TempDir temp("uam-settings-native-assignment-conflict");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path nested = temp.root / "workspace" / "nested";
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(nested, "owned"), StartupHistory(temp.root / "missing", "unassigned")}));
+	UAM_ASSERT(service.DiscoverLocalHistory(app));
+	WaitForStartup(service, app);
+	const auto ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{2});
+	std::string unassigned;
+	for (const auto& candidate : ready.candidates)
+		if (candidate.folder_id.empty()) unassigned = candidate.candidate_id;
+	UAM_ASSERT(!unassigned.empty());
+	// A workspace registered after review would now own the reviewed history in place of its captured owner.
+	app.folders.push_back({"nested", "Nested", nested.string(), false, "local"});
+	std::string error;
+	UAM_ASSERT(!service.AssignWorkspace(app, ready.generation, unassigned, "Missing", &error));
+	UAM_ASSERT(error.find("conflicts") != std::string::npos);
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{2});
+}
+
+UAM_TEST(StartupNativePlannedWorkspaceSaveFailureKeepsCatalogueAndRetriesChats)
+{
+	TempDir temp("uam-startup-auto-workspace-save-failure");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path source = temp.root / "planned";
+	fs::create_directories(source);
+	fs::create_directories(app.data_root / "folders.txt");
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(source, "planned")}));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const auto ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{1});
+	UAM_ASSERT(ready.candidates.front().new_workspace);
+	UAM_ASSERT(service.Decide(app, ready.generation, {ready.candidates.front().candidate_id}, {}));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().imported_count, 0);
+	UAM_ASSERT(!service.Snapshot().errors.empty());
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.folders.front().id, std::string("known"));
+	// The history stays offered with its planned workspace and imports once saving works.
+	const auto retry = service.Snapshot();
+	UAM_ASSERT_EQ(retry.total_count, std::size_t{1});
+	UAM_ASSERT(retry.candidates.front().new_workspace);
+	UAM_ASSERT(fs::remove(app.data_root / "folders.txt"));
+	UAM_ASSERT(service.Decide(app, retry.generation, {retry.candidates.front().candidate_id}, {}));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().imported_count, 1);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{2});
+	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).size(), std::size_t{2});
 }
 
 UAM_TEST(StartupNativeDeclinedUnmatchedHistoryCreatesNoWorkspace)

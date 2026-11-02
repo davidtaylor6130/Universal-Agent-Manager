@@ -505,7 +505,7 @@ namespace uam
 			assignment.directory = found->chat.workspace_directory;
 			assignment.execution_host_id = "local";
 		}
-		if (ChatDomainService().FindFolderById(app, assignment.id) == nullptr && assignment.directory == found->chat.workspace_directory) assignment.title = name;
+		if (ChatDomainService().FindFolderById(app, assignment.id) == nullptr) assignment.title = name;
 		if (ChatDomainService().FindFolderById(plan, assignment.id) == nullptr) plan.folders.push_back(assignment);
 		for (const Candidate& candidate : m_candidates)
 		{
