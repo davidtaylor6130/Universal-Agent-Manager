@@ -656,6 +656,21 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		if (SaveChatQuietly(app, chat))
 		{
 			session.pending_remote_input_receipt_id.clear();
+			// The helper wrote this exact delivery to the provider: that is the remote input-write fact (#628).
+			// Only rows with one unique matching native input ID settle; unknown or duplicate IDs stay unconfirmed.
+			for (const std::string& input_id : session.pending_remote_delivery_input_ids)
+			{
+				Message* exact = nullptr;
+				int matches = 0;
+				for (Message& row : chat.messages)
+					if (row.role == MessageRole::User && row.native_input_id == input_id && ++matches == 1) exact = &row;
+				if (matches == 1 && !exact->input_write_completed)
+				{
+					exact->input_write_completed = true;
+					ScheduleChatSave(app, chat, 0.0);
+				}
+			}
+			session.pending_remote_delivery_input_ids.clear();
 			changed = true;
 		}
 		else

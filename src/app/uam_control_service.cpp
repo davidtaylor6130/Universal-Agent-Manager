@@ -1,4 +1,5 @@
 #include "app/managed_parent_continuation_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "common/config/provider_availability.h"
 #include "common/provider/provider_setup.h"
 #include <condition_variable>
@@ -1309,7 +1310,7 @@ namespace uam
 					return publication;
 				});
 				wait->response_future = publisher.get_future();
-				std::thread(std::move(publisher)).detach();
+				uam::platform::StartBackgroundThread(std::move(publisher)).detach();
 				response_busy = true;
 				++actions;
 			}
