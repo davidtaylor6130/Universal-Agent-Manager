@@ -7,3 +7,4 @@
 .uam-disclosure[data-open] .uam-disclosure__panel { grid-template-rows: 1fr; }
 .uam-disclosure__inner { min-height: 0; overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .uam-disclosure__panel, .uam-disclosure__chevron { transition: none; } }
+.uam-disclosure__label { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; }

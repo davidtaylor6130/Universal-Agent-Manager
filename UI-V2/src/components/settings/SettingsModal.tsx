@@ -810,7 +810,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
   const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
   const [expandedEditorGroups, setExpandedEditorGroups] = useState<Record<string, boolean>>({})
-  const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
   const [defaultEditorDraft, setDefaultEditorDraft] = useState(defaultEditorPresetId)
   const [mcpDraftDirty, setMcpDraftDirty] = useState(false)
@@ -1137,10 +1136,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
-
-  useEffect(() => {
-    setMarkdownStoreDraftDirectory(markdownStoreDirectory)
-  }, [markdownStoreDirectory])
 
   useEffect(() => {
     setEditorAssociationsDraft(editorFileAssociations)
@@ -2688,27 +2683,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'voice-input') return <VoiceInputControls ref={voiceRef} />
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
-    if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
-      <SettingsSection title="Skills folder">
-        <div className="grid gap-3 p-3 text-xs" style={{color:'var(--text-2)'}}>
-          <div><Button size="sm" variant="primary" leadingIcon={<FolderOpen size={14} aria-hidden/>} onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) void setMarkdownStoreDirectory(selected) })}>Choose folder…</Button></div>
-          <div className="flex items-center gap-2">
-            <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Or type a folder path" className="uam-field min-w-0 flex-1"/>
-            <Button size="sm" disabled={!markdownStoreDraftDirectory.trim()} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}>Use path</Button>
-          </div>
-        </div>
-      </SettingsSection>
-    </div>
-    if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
-      <Disclosure className="shrink-0" summary={<span style={{fontSize:'var(--fs-xs)',color:'var(--text-3)'}}>Enter folder path manually</span>}>
-        <div className="flex items-center gap-2 pt-2">
-          <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="uam-field min-w-0 flex-1"/>
-          <IconButton icon={<FolderOpen size={15}/>} label="Browse for Skills directory" onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) setMarkdownStoreDraftDirectory(selected) })}/>
-          <IconButton icon={<Save size={15}/>} label="Save Skills directory" disabled={!markdownStoreDraftDirectory.trim() || markdownStoreDraftDirectory.trim() === markdownStoreDirectory} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}/>
-        </div>
-      </Disclosure>
-      <MarkdownStoreModal embedded/>
-    </div>
+    // The folder setting (choose or type a path) lives inside the Skills card, so the page is just the library.
+    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded/>
 
     if (selectedSection === 'goal-loops') {
       return (
@@ -2975,7 +2951,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                   </div>
                 </div>
-                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6"><div className="uam-settings-frame flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div></div>
                   return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}</Swap>

@@ -1267,6 +1267,16 @@ describe('SettingsModal memory settings', () => {
     act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
   }
 
+  /** Opens the Skills folder menu, then picks one of its actions ("Choose folder…" or "Enter path…"). */
+  async function folderAction(host: HTMLElement, option: string) {
+    act(() => (host.querySelector('button[role="combobox"][aria-label="Change skills folder"]') as HTMLButtonElement).click())
+    await act(async () => {
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent === option)!.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
   function openMarkdownStoreSection(host: HTMLElement) {
     const button = Array.from(host.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.includes('Skills')
@@ -2207,10 +2217,11 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
 
-    const saveButton = host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement
     const library = host.querySelector('[role="region"][aria-label="Skills"]')
 
-    expect(saveButton.disabled).toBe(true)
+    // The folder setting is a row inside the Skills card, not a disclosure above it.
+    expect(host.querySelector('[role="region"][aria-label="Skills"] button[role="combobox"][aria-label="Change skills folder"]')).toBeTruthy()
+    expect(host.textContent).not.toContain('Enter folder path manually')
     expect(library).toBeTruthy()
     expect(host.querySelectorAll('[aria-modal="true"]')).toHaveLength(0)
 
@@ -2239,6 +2250,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
+    await folderAction(host, 'Enter path…')
 
     const input = host.querySelector('input[placeholder="Skills directory"]') as HTMLInputElement
     act(() => {
@@ -2246,7 +2258,7 @@ describe('SettingsModal memory settings', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      (host.querySelector('button[aria-label="Save Skills directory"]') as HTMLButtonElement).click()
+      (Array.from(host.querySelectorAll('button')).find((item) => item.textContent === 'Use path') as HTMLButtonElement).click()
       await Promise.resolve()
     })
 
@@ -2271,28 +2283,29 @@ describe('SettingsModal memory settings', () => {
         useAppStore.setState({ markdownStoreError: '' })
         return '/tmp/chosen-store'
       })
-    useAppStore.setState({ browseMarkdownStoreDirectory: browse })
+    const setDirectory = vi.fn(async () => true)
+    useAppStore.setState({ browseMarkdownStoreDirectory: browse, setMarkdownStoreDirectory: setDirectory })
     const { host, root } = renderModal()
     openMarkdownStoreSection(host)
+    await folderAction(host, 'Enter path…')
 
     const input = host.querySelector('input[aria-label="Skills directory"]') as HTMLInputElement
-    const browseButton = host.querySelector('button[aria-label="Browse for Skills directory"]') as HTMLButtonElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, '/tmp/typed-store')
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
 
-    await act(async () => { browseButton.click(); await Promise.resolve() })
+    await folderAction(host, 'Choose folder…')
     expect(input.value).toBe('/tmp/typed-store')
     expect(failures.at(-1)?.detail).toContain('Folder picker failed.')
 
-    await act(async () => { browseButton.click(); await Promise.resolve() })
+    await folderAction(host, 'Choose folder…')
     expect(input.value).toBe('/tmp/typed-store')
     expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => useAppStore.setState({ markdownStoreError: 'Stale picker error.' }))
-    await act(async () => { browseButton.click(); await Promise.resolve() })
-    expect(input.value).toBe('/tmp/chosen-store')
+    await folderAction(host, 'Choose folder…')
+    expect(setDirectory).toHaveBeenCalledWith('/tmp/chosen-store')
     expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => root.unmount())
@@ -2317,7 +2330,7 @@ describe('SettingsModal memory settings', () => {
   it('guards an embedded memory draft before changing Settings pages', () => {
     const {host,root} = renderModal()
     openMemoryStoreSection(host)
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add memory"]')?.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'New memory')?.click())
     const title = host.querySelector<HTMLInputElement>('[aria-label="Title"]')!
     act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(title,'Unsaved lesson'); title.dispatchEvent(new Event('input',{bubbles:true})) })
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())

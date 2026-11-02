@@ -1,11 +1,12 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { SaveButton, SettingsField, SettingsLoading } from './SettingsPrimitives'
 import './stores.css'
 import './settings-shell.css'
-import { ArrowLeft, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ExternalLink, FolderOpen, Globe, Plus, RefreshCw, Search, Trash2, X, type LucideIcon } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Reveal, RowButton, motionAllowed, scaledMs, usePresence, useOverlayState, Swap } from '../ui'
+import { Button, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Reveal, RowButton, Swap, Tooltip, motionAllowed, scaledMs, usePresence, useOverlayState } from '../ui'
+import type { MenuSelectOption } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -20,6 +21,23 @@ const MEMORY_CATEGORIES = [
 const MEMORY_CONFIDENCE = ['high', 'medium', 'low'] as const
 const confidenceLabel = (value: string) => value.charAt(0).toUpperCase() + value.slice(1)
 
+// Display names only: stored category values are unchanged. Your and AI entries share one label.
+const MEMORY_CATEGORY_LABELS: Record<string, { label: string; detail: string }> = {
+  'Failures/AI_Failures': { label: 'Mistakes to avoid', detail: 'Noticed by AI' },
+  'Failures/User_Failures': { label: 'Mistakes to avoid', detail: 'Written by you' },
+  'Lessons/AI_Lessons': { label: 'Lessons', detail: 'Noticed by AI' },
+  'Lessons/User_Lessons': { label: 'Lessons', detail: 'Written by you' },
+}
+const memoryCategoryLabel = (category: string) => MEMORY_CATEGORY_LABELS[category]?.label ?? category.replace(/_/g, ' ').replace('/', ' · ')
+// List sections: categories with the same label form one section.
+const MEMORY_SECTION_LABELS = [...new Set(MEMORY_CATEGORIES.map(memoryCategoryLabel))]
+const CATEGORY_OPTIONS: MenuSelectOption[] = MEMORY_CATEGORIES.map((category) => ({
+  value: category,
+  label: memoryCategoryLabel(category),
+  description: MEMORY_CATEGORY_LABELS[category].detail,
+}))
+const GLOBAL_LABEL = 'Global'
+
 const memoryFolderLabel = (folder: Folder, hosts: ExecutionHost[]) => (folder.executionHostId || 'local') === 'local' ? folder.name : `${folder.name} · ${hosts.find((host) => host.id === folder.executionHostId)?.label || folder.executionHostId}`
 /** "3 hours ago" / "12 Sept" — raw ISO stamps are hard to scan. */
 function formatObserved(value: string): string {
@@ -31,13 +49,8 @@ function formatObserved(value: string): string {
   if (minutes < 60 * 24) return `${Math.round(minutes / 60)} h ago`
   return date.toLocaleDateString([], { day: 'numeric', month: 'short', year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
 }
-
-const memoryCategoryLabel = (category: string) => ({
-  'Failures/AI_Failures': 'AI failures',
-  'Failures/User_Failures': 'Your failures',
-  'Lessons/AI_Lessons': 'AI lessons',
-  'Lessons/User_Lessons': 'Your lessons',
-}[category] ?? category.replace(/_/g, ' ').replace('/', ' · '))
+/** Full path stays in the tooltip; the detail shows only the file name. */
+const shortFileName = (filePath: string) => `~/…/${filePath.split(/[\\/]/).pop() || filePath}`
 
 const EMPTY_DRAFT: MemoryEntryDraft = {
   category: MEMORY_CATEGORIES[2],
@@ -49,7 +62,7 @@ const EMPTY_DRAFT: MemoryEntryDraft = {
 }
 
 interface MemoryCategoryGroup {
-  category: string
+  label: string
   entries: MemoryEntry[]
 }
 
@@ -63,11 +76,6 @@ interface MemoryLocationGroup {
   entries: MemoryEntry[]
 }
 
-interface MenuOption {
-  value: string
-  label: string
-}
-
 function InlineMenu({
   label,
   value,
@@ -76,7 +84,7 @@ function InlineMenu({
 }: {
   label: string
   value: string
-  options: MenuOption[]
+  options: MenuSelectOption[]
   onChange: (value: string) => void
 }) {
   return (
@@ -105,7 +113,7 @@ function memoryLocationKey(entry: MemoryEntry, scope: MemoryScope): string {
 
 function memoryLocationLabel(entry: MemoryEntry, scope: MemoryScope): string {
   if (entry.scopeType === 'global' || entry.scope === 'global') {
-    return 'Global memory'
+    return GLOBAL_LABEL
   }
 
   const scopeLabel = (entry.scopeLabel || '').trim()
@@ -117,7 +125,7 @@ function memoryLocationLabel(entry: MemoryEntry, scope: MemoryScope): string {
     return scope.label
   }
 
-  return entry.scope === 'global' ? 'Global memory' : 'Project memory'
+  return 'Project memory'
 }
 
 function memoryLocationRootPath(entry: MemoryEntry, scope: MemoryScope): string {
@@ -152,7 +160,7 @@ function buildMemoryLocationGroups(
   }>()
 
   if (scope.scopeType === 'all' || scope.scopeType === 'global') {
-    groups.set('global', { label: 'Global memory', rootPath: scope.scopeType === 'global' ? scope.rootPath : 'Global memory root', sortIndex: -1, entries: [] })
+    groups.set('global', { label: GLOBAL_LABEL, rootPath: scope.scopeType === 'global' ? scope.rootPath : 'Global memory root', sortIndex: -1, entries: [] })
   }
   if (scope.scopeType === 'all') {
     projectFolders.forEach((folder, index) => groups.set(`folder:${folder.id}`, {
@@ -195,12 +203,12 @@ function buildMemoryLocationGroups(
       count: group.entries.length,
       sortIndex: group.sortIndex,
       entries: group.entries,
-      categories: MEMORY_CATEGORIES
-        .map((category) => ({
-          category,
-          entries: group.entries.filter((entry) => entry.category === category),
+      categories: MEMORY_SECTION_LABELS
+        .map((label) => ({
+          label,
+          entries: group.entries.filter((entry) => memoryCategoryLabel(entry.category) === label),
         }))
-        .filter((categoryGroup) => categoryGroup.entries.length > 0),
+        .filter((section) => section.entries.length > 0),
     }))
     .sort((left, right) => {
       if (left.sortIndex !== right.sortIndex) {
@@ -214,6 +222,25 @@ export interface MemoryLibraryHandle { requestLeave(next: () => void): void }
 
 // Location rows: colour follows the active state here instead of inline styles.
 const LOCATION_ROW_CLASS = 'relative z-[1] flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-2)] transition-colors duration-[var(--dur-fast)] data-[active=true]:text-[var(--text)]'
+
+/** One location in the rail. The root path is the tooltip, so the pane never repeats it. */
+function LocationRow({ location, active, icon: Icon, onChoose }: { location: MemoryLocationGroup; active: boolean; icon: LucideIcon; onChoose: () => void }) {
+  return (
+    <Tooltip label={location.rootPath}>
+      <RowButton
+        type="button"
+        data-active={active}
+        aria-current={active ? 'page' : undefined}
+        onClick={onChoose}
+        className={LOCATION_ROW_CLASS}
+      >
+        <Icon size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)', flexShrink: 0 }} />
+        <span className="min-w-0 flex-1 truncate text-xs">{location.label}</span>
+        <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
+      </RowButton>
+    </Tooltip>
+  )
+}
 
 export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: boolean }>(function MemoryLibraryModal({ embedded = false }, ref) {
   const liveScope = useAppStore((s) => s.memoryLibraryScope)
@@ -248,7 +275,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const exitPrompt = usePresence(Boolean(pendingExit))
   const formPresence = usePresence(!pendingExit)
-  const toolbarPresence = usePresence(!isAdding)
   const lastPendingExit = useRef<(() => void) | null>(null)
   if (pendingExit) lastPendingExit.current = pendingExit
   const libraryRef = useRef<HTMLDivElement>(null)
@@ -267,9 +293,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
   const [viewingEntryId, setViewingEntryId] = useState<string | null>(null)
-  const addPresence = usePresence(isAdding)
-  const deletePresence = usePresence(Boolean(pendingDeleteEntryId))
-  const massDeletePresence = usePresence(Boolean(pendingMassDeleteEntryIds))
   const errorPresence = usePresence(Boolean(memoryLibraryError))
   // Confirmations and the error keep their last content mounted while they animate out.
   const lastDeleteEntry = useRef<MemoryEntry | null>(null)
@@ -352,14 +375,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   // ponytail: re-measures every commit (bails out when unchanged); add deps if it ever shows in a profile.
   const locationNavRef = useRef<HTMLElement>(null)
   const [locationIndicator, setLocationIndicator] = useState<{ top: number; height: number } | null>(null)
-  const deleteConfirmRef = useRef<HTMLDivElement>(null)
-  const deleteCancelRef = useRef<HTMLButtonElement>(null)
-  // The inline confirm renders at the top of a scrolled pane; bring it into view and focus Cancel.
-  useEffect(() => {
-    if (!pendingDeleteEntryId) return
-    deleteConfirmRef.current?.scrollIntoView?.({ block: 'nearest' })
-    deleteCancelRef.current?.focus()
-  }, [pendingDeleteEntryId])
   useLayoutEffect(() => {
     const nav = locationNavRef.current
     if (!nav) return
@@ -391,13 +406,12 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const targetValue = draft.targetScopeType === 'folder' && draft.targetFolderId
     ? `folder:${draft.targetFolderId}`
     : 'global'
-  const targetOptions = [
+  const targetOptions: MenuSelectOption[] = [
     { value: 'global', label: 'Global memory' },
     ...folders
 	  .filter((folder) => folder.directory.trim().length > 0)
       .map((folder) => ({ value: `folder:${folder.id}`, label: memoryFolderLabel(folder, executionHosts) })),
   ]
-  const categoryOptions = MEMORY_CATEGORIES.map((category) => ({ value: category, label: memoryCategoryLabel(category) }))
   const confidenceOptions = MEMORY_CONFIDENCE.map((confidence) => ({ value: confidence, label: confidenceLabel(confidence) }))
 
   // Rows slide out before the delete runs; a failed delete puts them back.
@@ -461,7 +475,6 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const pendingMassDeleteCount = massDeleteIds.length
   if (memoryLibraryError) lastError.current = memoryLibraryError
   const hasSearchQuery = searchQuery.trim().length > 0
-  const massDeleteLabel = hasSearchQuery ? 'Delete matches' : 'Delete all'
   const requestedLocation = groupedEntries.find((location) => location.key === selectedLocationKey) ?? groupedEntries[0]
   const selectedLocation = hasSearchQuery && requestedLocation?.count === 0
     ? groupedEntries.find((location) => location.count > 0) ?? requestedLocation
@@ -471,6 +484,248 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const groupedFolderIds = new Set(resourceCollections.flatMap((collection) => collection.references
     .filter((reference) => reference.type === 'workspace-folder')
     .map((reference) => reference.target)))
+  const unassignedLocations = isAllMemory
+    ? groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7)))
+    : []
+  const addSaveReason = !draft.title.trim()
+    ? 'Add a title to save'
+    : !draft.memory.trim() ? 'Add the memory text to save' : undefined
+  const pendingCountLabel = `${pendingMassDeleteCount} ${pendingMassDeleteCount === 1 ? 'memory' : 'memories'}`
+
+  const listNavItem = (location: MemoryLocationGroup, icon: LucideIcon) => (
+    <LocationRow key={location.key} location={location} active={location.key === selectedLocation?.key} icon={icon} onChoose={() => chooseLocation(location.key)} />
+  )
+
+  const addForm = (
+    <div role="group" aria-label="New memory" className="grid gap-3">
+      {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
+      {exitPrompt.mounted && (
+        <div role="group" aria-label="Unsaved memory" data-state={exitPrompt.closing ? 'closed' : 'open'} className="uam-memory-exit space-y-4">
+          <p className="text-sm font-semibold">Save this memory before leaving?</p>
+          <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=lastPendingExit.current; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next?.()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = lastPendingExit.current; setPendingExit(null); next?.()} }}>Save and leave</Button></div>
+        </div>
+      )}
+      <div hidden={!formPresence.mounted} data-state={formPresence.closing ? 'closed' : 'open'} className="uam-memory-form grid gap-3">
+        <SettingsField label="Title" htmlFor="memory-draft-title">
+          <input
+            id="memory-draft-title"
+            autoFocus
+            aria-label="Title"
+            value={draft.title}
+            onChange={(event) => {
+              const value = event.currentTarget.value
+              setDraft((current) => ({ ...current, title: value }))
+            }}
+            className="uam-field"
+          />
+        </SettingsField>
+
+        <SettingsField label="Memory" htmlFor="memory-draft-memory">
+          <textarea
+            id="memory-draft-memory"
+            value={draft.memory}
+            onChange={(event) => {
+              const value = event.currentTarget.value
+              setDraft((current) => ({ ...current, memory: value }))
+            }}
+            rows={4}
+            className="uam-field uam-field--area"
+          />
+        </SettingsField>
+
+        <div className="flex gap-2">
+          {isAllMemory && (
+            <div className="min-w-0 flex-1">
+              <InlineMenu
+                label="Save to"
+                value={targetValue}
+                options={targetOptions}
+                onChange={(value) => {
+                  if (value === 'global') {
+                    setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
+                    return
+                  }
+                  const folderId = value.replace(/^folder:/, '')
+                  setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
+                }}
+              />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <InlineMenu
+              label="Category"
+              value={draft.category}
+              options={CATEGORY_OPTIONS}
+              onChange={(value) => {
+                setDraft((current) => ({ ...current, category: value }))
+              }}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <InlineMenu
+              label="Confidence"
+              value={draft.confidence}
+              options={confidenceOptions}
+              onChange={(value) => {
+                setDraft((current) => ({ ...current, confidence: value }))
+              }}
+            />
+          </div>
+        </div>
+
+        <Disclosure summary="More details">
+          <div className="grid gap-3 pt-3">
+            <SettingsField label="Evidence" htmlFor="memory-draft-evidence">
+              <textarea
+                id="memory-draft-evidence"
+                value={draft.evidence}
+                onChange={(event) => {
+                  const value = event.currentTarget.value
+                  setDraft((current) => ({ ...current, evidence: value }))
+                }}
+                rows={3}
+                className="uam-field uam-field--area"
+              />
+            </SettingsField>
+
+            <SettingsField label="Source chat" htmlFor="memory-draft-source-chat">
+              <input
+                id="memory-draft-source-chat"
+                value={draft.sourceChatId}
+                onChange={(event) => {
+                  const value = event.currentTarget.value
+                  setDraft((current) => ({ ...current, sourceChatId: value }))
+                }}
+                className="uam-field"
+              />
+            </SettingsField>
+          </div>
+        </Disclosure>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" disabled={submitting} onClick={requestClose}>Cancel</Button>
+          <SaveButton
+            saving={submitting}
+            pendingLabel="Saving..."
+            disabled={submitting || Boolean(addSaveReason)}
+            disabledReason={submitting ? undefined : addSaveReason}
+            onClick={() => void submitDraft()}
+          >
+            Save memory
+          </SaveButton>
+        </div>
+      </div>
+    </div>
+  )
+
+  const detailView = viewingEntry && (
+    <div key={viewingEntry.id} className="grid gap-4">
+      <div className="uam-memory-detail__title">{viewingEntry.title}</div>
+      <div className="flex flex-wrap gap-1.5">
+        <span className="uam-chip uam-chip--sm">{memoryCategoryLabel(viewingEntry.category)}</span>
+        <span className="uam-chip uam-chip--sm" data-tone={viewingEntry.confidence === 'low' ? 'danger' : undefined}>{confidenceLabel(viewingEntry.confidence)} confidence</span>
+        <span className="uam-chip uam-chip--sm">{memoryLocationLabel(viewingEntry, memoryLibraryScope)}</span>
+      </div>
+      <p className="uam-store-markdown whitespace-pre-line">{viewingEntry.preview || 'No preview available.'}</p>
+      <Disclosure summary="Details">
+        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pt-3 text-xs" style={{ color: 'var(--text-3)' }}>
+          <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>
+          {viewingEntry.sourceChatId && <><dt>Source chat</dt><dd style={{ color: 'var(--text-2)' }}>{chatTitleById.get(viewingEntry.sourceChatId) ?? viewingEntry.sourceChatId}</dd></>}
+          {viewingEntry.lastObserved && <><dt>Last seen</dt><dd style={{ color: 'var(--text-2)' }} title={viewingEntry.lastObserved}>{formatObserved(viewingEntry.lastObserved)}</dd></>}
+          <dt>File</dt>
+          <dd className="flex min-w-0 items-center gap-2" style={{ color: 'var(--text-2)' }}>
+            <Tooltip label={viewingEntry.filePath}><span className="uam-store-path min-w-0 truncate">{shortFileName(viewingEntry.filePath)}</span></Tooltip>
+            <IconButton size="sm" icon={<FolderOpen size={14} />} label="Reveal in Finder" onClick={() => void revealMemoryEntry(viewingEntry.id)} />
+          </dd>
+        </dl>
+      </Disclosure>
+    </div>
+  )
+
+  const listView = selectedLocation && (
+    <div key={selectedLocation.key} className="grid gap-5">
+      {selectedLocation.categories.map(({ label, entries }) => (
+        <section key={`${selectedLocation.key}:${label}`}>
+          <div className="mb-1 flex items-baseline justify-between gap-2 px-3">
+            <div className="uam-set-section__title">{label}</div>
+            <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{entries.length}</span>
+          </div>
+          <div className="grid">
+            {entries.map((entry) => (
+              <div key={entry.id} className="uam-memory-row" data-state={removingEntryIds.has(entry.id) ? 'closed' : 'open'}>
+                <RowButton className="uam-memory-row__open" onClick={() => setViewingEntryId(entry.id)}>
+                  <span className="uam-memory-row__title">{entry.title}</span>
+                  <span className="uam-memory-row__summary">{entry.preview || 'No preview available.'}</span>
+                </RowButton>
+                <span className="uam-memory-row__meta" title={entry.lastObserved || undefined}>{entry.lastObserved ? formatObserved(entry.lastObserved) : ''}</span>
+                <div className="uam-memory-row__actions">
+                  <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
+                  <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+
+  const emptyView = (
+    <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-3 text-center">
+      <p className="text-sm" style={{ color: 'var(--text-3)' }}>{hasSearchQuery ? 'No memory matches this search.' : 'No memory saved here yet.'}</p>
+      <Reveal open={!hasSearchQuery}><Button variant="primary" size="sm" leadingIcon={<Plus size={14} aria-hidden />} onClick={() => setIsAdding(true)}>New memory</Button></Reveal>
+    </div>
+  )
+
+  const renderBody = (): ReactNode => {
+    if (isAdding) return addForm
+    if (viewingEntry) return detailView
+    if (memoryLibraryLoading) return <SettingsLoading label="Loading memory library" rows={4} />
+    if (!selectedLocation || selectedLocation.entries.length === 0) return memoryLibraryError ? null : emptyView
+    return listView
+  }
+  const bodyKey = isAdding ? 'add' : viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`
+  const toolbarKey = isAdding ? 'add' : viewingEntry ? 'entry' : 'list'
+
+  const toolbar = isAdding ? (
+    <>
+      <IconButton icon={<ArrowLeft size={15} />} label="Back" disabled={submitting} onClick={requestClose} />
+      <div className="min-w-0 flex-1 truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>New memory</div>
+    </>
+  ) : viewingEntry ? (
+    <>
+      <IconButton icon={<ArrowLeft size={15} />} label="Back" onClick={() => setViewingEntryId(null)} />
+      <div className="flex-1" />
+      <IconButton icon={<ExternalLink size={15} />} label="Open externally" onClick={() => void revealMemoryEntry(viewingEntry.id)} />
+      <IconButton variant="danger" icon={<Trash2 size={15} />} label={`Delete ${viewingEntry.title}`} onClick={() => setPendingDeleteEntryId(viewingEntry.id)} />
+    </>
+  ) : (
+    <>
+      <label className="uam-field uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2">
+        <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
+        <input
+          aria-label="Search memory library"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          placeholder="Search memory"
+          className="min-w-0 flex-1 bg-transparent text-sm text-[var(--text)] outline-none"
+        />
+      </label>
+      <Reveal as="span" open={!isAllMemory}><IconButton icon={<FolderOpen size={15} />} label="Open memory root" onClick={() => void openMemoryRoot()} /></Reveal>
+      <IconButton icon={<RefreshCw size={15} />} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()} />
+      <div className="shrink-0">
+        <MenuSelect
+          label="More memory actions"
+          value=""
+          placeholder="⋯"
+          disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
+          options={[{ value: 'delete-all', label: hasSearchQuery ? 'Delete matches…' : 'Delete all in this location…' }]}
+          onChange={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
+        />
+      </div>
+      <Button variant="primary" size="sm" leadingIcon={<Plus size={14} aria-hidden />} onClick={() => setIsAdding(true)}>New memory</Button>
+    </>
+  )
 
   const panel = (
       <div
@@ -479,7 +734,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         aria-modal={embedded ? undefined : true}
         aria-label={memoryTitle}
         tabIndex={-1}
-        className={embedded ? "flex flex-col min-h-0 h-full" : "flex w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border-bright)] bg-[var(--surface)] shadow-[var(--elev-3)] h-[min(780px,calc(100vh-2rem))]"}
+        className={embedded ? "uam-set-card uam-set-card--flush flex flex-col min-h-0 h-full" : "flex w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border-bright)] bg-[var(--surface)] shadow-[var(--elev-3)] h-[min(780px,calc(100vh-2rem))]"}
         style={embedded ? { minHeight: 0 } : undefined}
       >
         {!embedded && <div
@@ -501,36 +756,12 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           />
         </div>}
 
-        <div className="grid grid-cols-[208px_minmax(0,1fr)] flex-1 min-h-0">
-          <aside
-            className="p-3 space-y-4 overflow-y-auto overflow-x-hidden min-w-0"
-            style={{
-              background: 'color-mix(in srgb, var(--surface-up) 72%, var(--surface))',
-              borderRight: '1px solid var(--border)',
-            }}
-          >
+        <div className="grid grid-cols-[220px_minmax(0,1fr)] flex-1 min-h-0">
+          <aside className="min-w-0 overflow-y-auto overflow-x-hidden p-3" style={{ borderRight: '1px solid var(--border)' }}>
             <Reveal open={groupedEntries.length > 0}>
               <nav ref={locationNavRef} aria-label="Memory locations" className="uam-settings-nav grid gap-1 min-w-0">
                 {locationIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${locationIndicator.top}px)`, height: locationIndicator.height }} />}
-                <div className="uam-set-section__title px-2" style={{ color: 'var(--text-3)' }}>Locations</div>
-                {groupedEntries.filter((location) => location.key === 'global').map((location) => {
-                  const active = location.key === selectedLocation?.key
-                  return (
-                    <RowButton
-                      key={location.key}
-                      type="button"
-                      data-active={active}
-                      aria-current={active ? 'page' : undefined}
-                      onClick={() => chooseLocation(location.key)}
-                      title={location.rootPath}
-                      className={LOCATION_ROW_CLASS}
-                    >
-                      <Library size={14} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} />
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium">{location.label}</span>
-                      <span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span>
-                    </RowButton>
-                  )
-                })}
+                {groupedEntries.filter((location) => location.key === 'global').map((location) => listNavItem(location, Globe))}
                 {isAllMemory && resourceCollections.map((collection) => {
                   const locations = collection.references.flatMap((reference) => {
                     if (reference.type !== 'workspace-folder') return []
@@ -539,271 +770,78 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   })
                   return (
                     <Reveal key={collection.id} open={locations.length > 0}>
-                      <div className="mt-1">
-                        <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold" style={{ color: 'var(--text-2)' }}>
-                          <Library size={13} aria-hidden />
-                          <span className="truncate">{collection.name}</span>
-                        </div>
-                        <div className="ml-4 grid gap-0.5 border-l pl-1" style={{ borderColor: 'var(--border)' }}>
-                          {locations.map((location) => {
-                            const active = location.key === selectedLocation?.key
-                            return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
-                          })}
+                      <div className="mt-3">
+                        <div className="uam-set-section__title uam-store-truncate px-2 py-1" title={collection.name}>{collection.name}</div>
+                        <div className="grid gap-0.5">
+                          {locations.map((location) => listNavItem(location, FolderOpen))}
                         </div>
                       </div>
                     </Reveal>
                   )
                 })}
-                <Reveal open={isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7)))}>
-                  <div className="mt-1">
-                    <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
-                    {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
-                      const active = location.key === selectedLocation?.key
-                      return <RowButton key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => chooseLocation(location.key)} title={location.rootPath} className={LOCATION_ROW_CLASS} data-active={active}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></RowButton>
-                    })}
+                <Reveal open={unassignedLocations.length > 0}>
+                  <div className="mt-3">
+                    <div className="uam-set-section__title px-2 py-1">Workspaces</div>
+                    {unassignedLocations.map((location) => listNavItem(location, FolderOpen))}
                   </div>
                 </Reveal>
               </nav>
             </Reveal>
-
           </aside>
 
-          <div className="p-5 md:p-6 overflow-y-auto min-h-0">
-            {/* Delete confirmations are steps inside this dialog, like the unsaved-memory prompt; they never stack a second dialog. */}
-            {deletePresence.mounted && deleteShown && (
-              <div ref={deleteConfirmRef} role="group" aria-label="Delete memory entry" data-state={deletePresence.closing ? 'closed' : 'open'} className="uam-presence mb-4">
-                <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Delete memory entry?" actions={<>
-                  <Button ref={deleteCancelRef} onClick={() => setPendingDeleteEntryId(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { const entry = deleteShown; setPendingDeleteEntryId(null); void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') }) }}>Delete memory</Button>
-                </>}>
-                  This permanently deletes "{deleteShown.title}" and its file. This cannot be undone.
-                </Notice>
-              </div>
-            )}
-            {massDeletePresence.mounted && (
-              <div role="group" aria-label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'} data-state={massDeletePresence.closing ? 'closed' : 'open'} className="uam-presence mb-4">
-                <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'} actions={<>
-                  <Button autoFocus onClick={() => setPendingMassDeleteEntryIds(null)}>Cancel</Button>
-                  <Button variant="danger" onClick={() => { const count = pendingMassDeleteCount; void deleteMemoryEntries(massDeleteIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') }); setPendingMassDeleteEntryIds(null) }}>Delete {pendingMassDeleteCount} {pendingMassDeleteCount === 1 ? 'memory' : 'memories'}</Button>
-                </>}>
-                  This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
-                </Notice>
-              </div>
-            )}
-            {toolbarPresence.mounted && <div data-state={toolbarPresence.closing ? 'closed' : 'open'} className="uam-memory-toolbar flex items-center gap-2 mb-4">
-              <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 bg-[var(--surface-up)] border border-[var(--border)]">
-              <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
-              <input
-                aria-label="Search memory library"
-                value={searchQuery}
-                onChange={(event) => {
-                  const value = event.currentTarget.value
-                  setSearchQuery(value)
-                }}
-                placeholder="Search memory"
-                className="w-full bg-transparent py-2 text-sm text-[var(--text)] outline-none"
-              />
-              </label>
-              <Reveal as="span" open={!isAllMemory}><IconButton icon={<FolderOpen size={15}/>} label="Open memory root" onClick={() => void openMemoryRoot()}/></Reveal>
-              <IconButton icon={<RefreshCw size={15}/>} label="Refresh memory library" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}/>
-              <IconButton icon={<Plus size={15}/>} label="Add memory" onClick={() => setIsAdding(true)}/>
-              <IconButton
-                variant="danger"
-                icon={<Trash2 size={15} />}
-                label={massDeleteLabel}
-                disabled={memoryLibraryLoading || visibleEntryIds.length === 0}
-                onClick={() => setPendingMassDeleteEntryIds(visibleEntryIds)}
-              />
-            </div>}
+          <div className="flex min-h-0 min-w-0 flex-col">
+            <div className="shrink-0 px-4" style={{ height: 'var(--pane-header-h)' }}>
+              <Swap swapKey={toolbarKey} className="h-full">
+                <div className="flex h-full items-center gap-2">{toolbar}</div>
+              </Swap>
+            </div>
 
-            {errorPresence.mounted && (
-              <div data-state={errorPresence.closing ? 'closed' : 'open'} className="uam-presence">
-                <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
-                  actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
-                  {lastError.current}
-                </Notice>
-              </div>
-            )}
-
-            {addPresence.mounted ? (
-              <div role="group" aria-label="New memory" data-state={addPresence.closing ? 'closed' : 'open'} className="space-y-3 uam-presence">
-              <div className="flex justify-end"><IconButton icon={<X size={16}/>} label="Close add memory" disabled={submitting} onClick={requestClose}/></div>
-              {/* The unsaved-memory prompt is a step in this pane, not a second dialog. The form stays mounted under it. */}
-              {exitPrompt.mounted && (
-                <div role="group" aria-label="Unsaved memory" data-state={exitPrompt.closing ? 'closed' : 'open'} className="uam-memory-exit space-y-4">
-                  <p className="text-sm font-semibold">Save this memory before leaving?</p>
-                  <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=lastPendingExit.current; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next?.()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = lastPendingExit.current; setPendingExit(null); next?.()} }}>Save and leave</Button></div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
+              {errorPresence.mounted && (
+                <div data-state={errorPresence.closing ? 'closed' : 'open'} className="uam-presence mb-4">
+                  <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
+                    actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
+                    {lastError.current}
+                  </Notice>
                 </div>
               )}
-              <div hidden={!formPresence.mounted} data-state={formPresence.closing ? 'closed' : 'open'} className="uam-memory-form space-y-3">
-
-
-                    {isAllMemory && (
-                      <InlineMenu
-                        label="Save to"
-                        value={targetValue}
-                        options={targetOptions}
-                        onChange={(value) => {
-                          if (value === 'global') {
-                            setDraft((current) => ({ ...current, targetScopeType: 'global', targetFolderId: '' }))
-                            return
-                          }
-                          const folderId = value.replace(/^folder:/, '')
-                          setDraft((current) => ({ ...current, targetScopeType: 'folder', targetFolderId: folderId }))
-                        }}
-                      />
-                    )}
-
-                    <InlineMenu
-                      label="Category"
-                      value={draft.category}
-                      options={categoryOptions}
-                      onChange={(value) => {
-                        setDraft((current) => ({ ...current, category: value }))
-                      }}
-                    />
-
-                    <SettingsField label="Title" htmlFor="memory-draft-title">
-                      <input
-                        id="memory-draft-title"
-                        autoFocus
-                        aria-label="Title"
-                        value={draft.title}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value
-                          setDraft((current) => ({ ...current, title: value }))
-                        }}
-                        className="uam-field"
-                      />
-                    </SettingsField>
-
-                    <SettingsField label="Memory" htmlFor="memory-draft-memory">
-                      <textarea
-                        id="memory-draft-memory"
-                        value={draft.memory}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value
-                          setDraft((current) => ({ ...current, memory: value }))
-                        }}
-                        rows={5}
-                        className="uam-field uam-field--area"
-                      />
-                    </SettingsField>
-
-                    <SettingsField label="Evidence" htmlFor="memory-draft-evidence">
-                      <textarea
-                        id="memory-draft-evidence"
-                        value={draft.evidence}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value
-                          setDraft((current) => ({ ...current, evidence: value }))
-                        }}
-                        rows={3}
-                        className="uam-field uam-field--area"
-                      />
-                    </SettingsField>
-
-                    <div className="grid gap-2">
-                      <InlineMenu
-                        label="Confidence"
-                        value={draft.confidence}
-                        options={confidenceOptions}
-                        onChange={(value) => {
-                          setDraft((current) => ({ ...current, confidence: value }))
-                        }}
-                      />
-
-                      <SettingsField label="Source chat" htmlFor="memory-draft-source-chat">
-                        <input
-                          id="memory-draft-source-chat"
-                          value={draft.sourceChatId}
-                          onChange={(event) => {
-                            const value = event.currentTarget.value
-                            setDraft((current) => ({ ...current, sourceChatId: value }))
-                          }}
-                          className="uam-field"
-                        />
-                      </SettingsField>
-                    </div>
-
-                    <SaveButton
-                      saving={submitting}
-                      pendingLabel="Saving..."
-                      block
-                      disabled={submitting || !draft.title.trim() || !draft.memory.trim()}
-                      onClick={() => void submitDraft()}
-                    >
-                      Save memory
-                    </SaveButton>
-              </div>
-              </div>
-            ) : <Swap swapKey={viewingEntry ? `entry:${viewingEntry.id}` : memoryLibraryLoading ? 'loading' : !selectedLocation || selectedLocation.entries.length === 0 ? 'empty' : `list:${selectedLocation.key}`}>{viewingEntry ? (
-              <div key={viewingEntry.id} className="space-y-4">
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => setViewingEntryId(null)}><ArrowLeft size={14} aria-hidden />Back</Button>
-                  <div className="flex-1" />
-                  <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${viewingEntry.title} file`} onClick={() => void revealMemoryEntry(viewingEntry.id)} />
-                  <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${viewingEntry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(viewingEntry.id)} />
-                </div>
-                <div className="text-base font-semibold" style={{ color: 'var(--text)' }}>{viewingEntry.title}</div>
-                <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--text-3)' }}>
-                  <dt>Category</dt><dd style={{ color: 'var(--text-2)' }}>{memoryCategoryLabel(viewingEntry.category)}</dd>
-                  <dt>Confidence</dt><dd style={{ color: 'var(--text-2)' }}>{confidenceLabel(viewingEntry.confidence)}</dd>
-                  <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>
-                  <dt>Scope</dt><dd style={{ color: 'var(--text-2)' }}>{memoryLocationLabel(viewingEntry, memoryLibraryScope)}</dd>
-                  {viewingEntry.sourceChatId && <><dt>Source chat</dt><dd style={{ color: 'var(--text-2)' }}>{chatTitleById.get(viewingEntry.sourceChatId) ?? viewingEntry.sourceChatId}</dd></>}
-                  {viewingEntry.lastObserved && <><dt>Last seen</dt><dd style={{ color: 'var(--text-2)' }} title={viewingEntry.lastObserved}>{formatObserved(viewingEntry.lastObserved)}</dd></>}
-                  <dt>File</dt><dd className="uam-store-path" style={{ color: 'var(--text-2)' }}>{viewingEntry.filePath}</dd>
-                </dl>
-                <p className="uam-store-markdown whitespace-pre-wrap">{viewingEntry.preview || 'No preview available.'}</p>
-              </div>
-            ) : memoryLibraryLoading ? (
-              <SettingsLoading label="Loading memory library" rows={4} />
-            ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
-              memoryLibraryError ? null : <div className="grid justify-items-start gap-3">
-                <p className="text-sm" style={{ color: 'var(--text-3)' }}>{hasSearchQuery ? 'No memory matches this search.' : 'No memory saved here yet.'}</p>
-                <Reveal open={!hasSearchQuery}><Button variant="primary" size="sm" onClick={() => setIsAdding(true)}>Add memory</Button></Reveal>
-              </div>
-            ) : selectedLocation ? (
-              <div key={selectedLocation.key} className="space-y-4">
-                {embedded && <div className="min-w-0">
-                  <div className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{selectedLocation.label}</div>
-                  <div className="mt-0.5 text-xs truncate" style={{ color: 'var(--text-3)' }}>{selectedLocation.rootPath}</div>
-                </div>}
-                {selectedLocation.categories.map(({ category, entries }) => (
-                          <section key={`${selectedLocation.key}:${category}`}>
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="uam-set-section__title" style={{ color: 'var(--text-3)' }}>
-                                {memoryCategoryLabel(category)}
-                              </div>
-                              <div className="text-xs tabular-nums rounded-full px-2 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)' }}>
-                                {entries.length}
-                              </div>
-                            </div>
-                            <div className="grid gap-2">
-                              {entries.map((entry) => (
-                                <div key={entry.id} className="uam-memory-row" data-state={removingEntryIds.has(entry.id) ? 'closed' : 'open'}>
-                                  <RowButton className="uam-memory-row__open" onClick={() => setViewingEntryId(entry.id)}>
-                                    <span className="uam-memory-row__title">{entry.title}</span>
-                                    <span className="uam-memory-row__summary">{entry.preview || 'No preview available.'}</span>
-                                  </RowButton>
-                                  <span className="uam-memory-row__meta">
-                                    <span>{memoryLocationLabel(entry, memoryLibraryScope)}</span>
-                                    {entry.lastObserved && <span title={entry.lastObserved}>{formatObserved(entry.lastObserved)}</span>}
-                                  </span>
-                                  <div className="uam-memory-row__actions flex items-center gap-1">
-                                    <IconButton size="sm" icon={<ExternalLink size={14} />} label={`Reveal ${entry.title} file`} onClick={() => void revealMemoryEntry(entry.id)} />
-                                    <IconButton size="sm" icon={<Trash2 size={14} />} label={`Delete ${entry.title}`} variant="danger" onClick={() => setPendingDeleteEntryId(entry.id)} />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </section>
-                        ))}
-              </div>
-            ) : null}</Swap>}
+              <Swap swapKey={bodyKey} className="min-h-0 flex-1">{renderBody()}</Swap>
+            </div>
           </div>
         </div>
+
+        {/* Destructive confirmations: the library is a page inside Settings, so one confirm dialog is allowed here. */}
+        <ConfirmDialog
+          open={Boolean(pendingDeleteEntryId)}
+          title="Delete memory entry?"
+          label="Delete memory entry"
+          tone="danger"
+          confirmLabel="Delete memory"
+          onCancel={() => setPendingDeleteEntryId(null)}
+          onConfirm={() => {
+            const entry = deleteShown
+            setPendingDeleteEntryId(null)
+            if (!entry) return
+            void removeWithExit([entry.id], () => deleteMemoryEntry(entry.id)).then((ok) => { if (ok) reportAppNotice(`Deleted “${entry.title}”.`, 'success') })
+          }}
+        >
+          This permanently deletes &quot;{deleteShown?.title}&quot; and its file. This cannot be undone.
+        </ConfirmDialog>
+        <ConfirmDialog
+          open={Boolean(pendingMassDeleteEntryIds)}
+          title={hasSearchQuery ? 'Delete matching memories?' : 'Delete all memories?'}
+          label={hasSearchQuery ? 'Delete matching memories' : 'Delete all memories'}
+          tone="danger"
+          confirmLabel={`Delete ${pendingCountLabel}`}
+          onCancel={() => setPendingMassDeleteEntryIds(null)}
+          onConfirm={() => {
+            const count = pendingMassDeleteCount
+            void deleteMemoryEntries(massDeleteIds).then((ok) => { if (ok) reportAppNotice(`Deleted ${count} ${count === 1 ? 'memory' : 'memories'}.`, 'success') })
+            setPendingMassDeleteEntryIds(null)
+          }}
+        >
+          This permanently deletes {pendingMassDeleteCount} memory {pendingMassDeleteCount === 1 ? 'entry' : 'entries'}. This cannot be undone.
+        </ConfirmDialog>
       </div>
   )
   // Embedded in Settings it sits in the page; standalone it is an Overlay dialog.

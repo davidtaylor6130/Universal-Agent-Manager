@@ -76,6 +76,37 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
   return nodes
 }
 
+const BULLET_ITEM = /^[-*]\s+/
+const ORDERED_ITEM = /^\d+[.)]\s+/
+/** Lines that open another block, so they end a list item rather than continue it. */
+const BLOCK_START = /^(#{1,3}\s|>|[-*]\s|\d+[.)]\s)/
+
+/** A list item runs on through indented or lazy lines, as in Markdown; a blank line only ends the list when no item or indented line follows. */
+function readListItems(lines: string[], start: number, marker: RegExp): { items: string[]; next: number } {
+  const items: string[] = []
+  let index = start
+  while (index < lines.length) {
+    const trimmed = lines[index].trim()
+    if (marker.test(trimmed)) {
+      items.push(trimmed.replace(marker, ''))
+      index++
+    } else if (!trimmed) {
+      let following = index + 1
+      while (following < lines.length && !lines[following].trim()) following++
+      if (following >= lines.length) break
+      const next = lines[following]
+      if (!marker.test(next.trim()) && !(/^\s/.test(next) && !BLOCK_START.test(next.trim()))) break
+      index = following
+    } else if (BLOCK_START.test(trimmed) || isPotentialTableRow(trimmed)) {
+      break
+    } else {
+      items[items.length - 1] += ` ${trimmed}`
+      index++
+    }
+  }
+  return { items, next: index }
+}
+
 // Settled text before a streaming code fence keeps its props, so memo skips re-parsing it.
 export const MarkdownTextBlock = memo(function MarkdownTextBlock({ text, blockKey, chips }: { text: string; blockKey: string; chips: boolean }) {
   const inspect = useContext(FileInspectionContext)
@@ -162,41 +193,14 @@ export const MarkdownTextBlock = memo(function MarkdownTextBlock({ text, blockKe
       continue
     }
 
-    if (/^[-*]\s+/.test(trimmed)) {
+    if (BULLET_ITEM.test(trimmed) || ORDERED_ITEM.test(trimmed)) {
       flushParagraph()
-      const items: string[] = []
-      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
-        items.push(lines[index].trim().replace(/^[-*]\s+/, ''))
-        index++
-      }
-      nodes.push(
-        <ul key={`${blockKey}-ul-${index}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${blockKey}-ul-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ul-${index}-${itemIndex}`, inspect, chipBranches)}
-            </li>
-          ))}
-        </ul>
-      )
-      continue
-    }
-
-    if (/^\d+[.)]\s+/.test(trimmed)) {
-      flushParagraph()
-      const items: string[] = []
-      while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) {
-        items.push(lines[index].trim().replace(/^\d+[.)]\s+/, ''))
-        index++
-      }
-      nodes.push(
-        <ol key={`${blockKey}-ol-${index}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${blockKey}-ol-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ol-${index}-${itemIndex}`, inspect, chipBranches)}
-            </li>
-          ))}
-        </ol>
-      )
+      const ordered = !BULLET_ITEM.test(trimmed)
+      const list = readListItems(lines, index, ordered ? ORDERED_ITEM : BULLET_ITEM)
+      const key = `${blockKey}-${ordered ? 'ol' : 'ul'}-${index}`
+      index = list.next
+      const items = list.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`}>{renderInlineMarkdown(item, `${key}-${itemIndex}`, inspect, chipBranches)}</li>)
+      nodes.push(ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>)
       continue
     }
 

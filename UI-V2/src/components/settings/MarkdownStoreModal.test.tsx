@@ -35,6 +35,12 @@ function button(label: string, host: ParentNode = document.body) {
   return found!
 }
 function click(label: string) { act(() => button(label).click()) }
+/** Skills open in place from their list row; the preview actions exist only in that detail view. */
+function openSkill(title: string) {
+  const row = Array.from(document.querySelectorAll<HTMLButtonElement>('.uam-store-row__open')).find((item) => item.textContent?.includes(title))
+  expect(row, `Skill row: ${title}`).toBeTruthy()
+  act(() => row!.click())
+}
 function changeField(label: string, value: string) {
   const field = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
   act(() => {
@@ -49,7 +55,7 @@ function escape() {
   return event
 }
 async function openProviderImports(provider = 'Codex CLI') {
-  click('Add skill')
+  click('New skill')
   click('Import from provider')
   click(provider)
   await act(async () => { button('Review imports').click(); await Promise.resolve() })
@@ -95,10 +101,10 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     const dialog = host.querySelector('[role="dialog"][aria-label="Skills"]') as HTMLElement
-    const create = host.querySelector('button[aria-label="Add skill"]') as HTMLButtonElement
+    const create = button('New skill', host)
     expect(dialog.className).toContain('h-[min(780px,90vh)]')
     expect(dialog.querySelector('.overflow-y-auto')).toBeTruthy()
-    expect(create.textContent).toBe('')
+    expect(create.textContent).toBe('New skill')
 
     const search = host.querySelector('input[aria-label="Search skills"]') as HTMLInputElement
     act(() => {
@@ -109,7 +115,8 @@ describe('MarkdownStoreModal', () => {
 
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
-    expect(host.querySelector('[aria-current="true"]')?.textContent).toContain('Review code')
+    openSkill('Review code')
+    expect(host.querySelector('[aria-label="Skill preview"] h3')?.textContent).toBe('Review code')
 
     act(() => (host.querySelector('button[aria-label="Open in external editor"]') as HTMLButtonElement)?.click())
     expect(useAppStore.getState().editMarkdownStoreEntry).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }))
@@ -122,12 +129,14 @@ describe('MarkdownStoreModal', () => {
   it('keeps the preview and actions on the visible filtered entry', () => {
     const { host } = mountSkills()
 
-    act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Review code'))?.click())
+    openSkill('Review code')
+    click('Back to skills')
     const search = host.querySelector('input[aria-label="Search skills"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(search, 'Release notes')
       search.dispatchEvent(new Event('input', { bubbles: true }))
     })
+    openSkill('Release notes')
 
     expect(host.querySelector('button[aria-label="Edit Release notes in app"]')).toBeTruthy()
     act(() => (host.querySelector('button[aria-label="Attach to message"]') as HTMLButtonElement).click())
@@ -149,9 +158,9 @@ describe('MarkdownStoreModal', () => {
     const { host } = mountSkills()
 
     const choose = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Choose folder')
-    const publish = host.querySelector('button[aria-label="Add skill"]') as HTMLButtonElement
     expect(choose).toBeTruthy()
-    expect(publish.disabled).toBe(true)
+    // Creating is not offered until a folder exists, so the library toolbar is absent.
+    expect(Array.from(host.querySelectorAll('button')).some((item) => item.textContent === 'New skill')).toBe(false)
 
     await act(async () => { choose?.click(); await Promise.resolve() })
     expect(useAppStore.getState().setMarkdownStoreDirectory).not.toHaveBeenCalled()
@@ -175,7 +184,8 @@ describe('MarkdownStoreModal', () => {
     pickFilter('Source: codex')
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
-    pickFilter('Group: Coding')
+    // Folders are chosen in the nav, not the filter menu.
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-store-nav__item')).find((item) => item.textContent?.includes('Coding'))!.click())
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
 
@@ -186,6 +196,7 @@ describe('MarkdownStoreModal', () => {
 
   it('disables Save for clean and reverted existing skill drafts', () => {
     const { host } = mountSkills()
+    openSkill('Review code')
     click('Edit Review code in app')
     expect(button('Save').disabled).toBe(true)
     click('Save')
@@ -205,6 +216,7 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ updateMarkdownStoreEntry: update })
     const { host } = mountSkills()
 
+    openSkill('Review code')
     act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement)?.click())
     const title = host.querySelector('input[aria-label="Entry title"]') as HTMLInputElement
     act(() => {
@@ -234,6 +246,7 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ updateMarkdownStoreEntry: update })
     const { host } = mountSkills()
 
+    openSkill('Review code')
     const editTrigger = host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement
     act(() => {
       editTrigger.focus()
@@ -263,7 +276,7 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ previewMarkdownStoreImports: preview, importMarkdownStoreEntries: importEntries })
     const { host } = mountSkills()
 
-    const importTrigger = button('Add skill')
+    const importTrigger = button('New skill')
     await openProviderImports()
     expect(host.textContent).toContain('Import preview')
     expect(host.textContent).toContain('Unsupported file type')
@@ -286,7 +299,7 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ markdownStoreError: 'Previous save failed.' })
     const { host } = mountSkills()
 
-    click('Add skill')
+    click('New skill')
     click('Create')
 
     expect(host.querySelector('[role="group"][aria-label="Create skill"]')).toBeTruthy()
@@ -305,6 +318,7 @@ describe('MarkdownStoreModal', () => {
     })
     const { host } = mountSkills()
 
+    openSkill('Review code')
     act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement).click())
     let child = host.querySelector('[role="group"][aria-label="Edit skill"]') as HTMLElement
     expect(useAppStore.getState().markdownStoreError).toBe('')
@@ -314,6 +328,7 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().markdownStoreError).toBe('')
 
     act(() => useAppStore.setState({ markdownStoreError: 'Another stale error.' }))
+    click('Back to skills')
     await openProviderImports()
     child = host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement
     expect(useAppStore.getState().markdownStoreError).toBe('')
@@ -400,6 +415,7 @@ describe('MarkdownStoreModal', () => {
     const update = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
     useAppStore.setState({ updateMarkdownStoreEntry: update })
     const { host } = mountSkills()
+    openSkill('Review code')
     act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement).click())
     changeField('Entry title', 'Changed review')
     click('Save')
@@ -430,7 +446,7 @@ describe('MarkdownStoreModal', () => {
       importMarkdownStoreEntries: importEntries,
     })
     const { host } = mountSkills()
-    click('Add skill')
+    click('New skill')
     await act(async () => { button('Import file').click(); await Promise.resolve() })
     const run = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import selected') as HTMLButtonElement
 
@@ -456,10 +472,10 @@ describe('MarkdownStoreModal', () => {
     expect(region.className).toContain('min-h-0')
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(host.querySelector('[aria-label="Close skills"]')).toBeNull()
-    expect(host.querySelector('[aria-label="Search skills"]')?.closest('.uam-search-field')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Search skills"]')?.closest('.uam-field')).toBeTruthy()
     expect(escape().defaultPrevented).toBe(false)
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
-    click('Add skill')
+    click('New skill')
     const choices = host.querySelector('[aria-label="Add skill choices"]') as HTMLElement
     expect(choices.className).toContain('grid')
     expect(Array.from(choices.querySelectorAll('button')).map((item) => item.textContent)).toEqual(['Create', 'Import from provider', 'Import file', 'Import folder'])
@@ -468,7 +484,7 @@ describe('MarkdownStoreModal', () => {
     }
     expect(escape().defaultPrevented).toBe(true)
     expect(host.querySelector('[role="dialog"]')).toBeNull()
-    expect(document.activeElement).toBe(button('Add skill'))
+    expect(document.activeElement).toBe(button('New skill'))
   })
 
   it('slides the library out inert while a step is open, keeping it mounted', async () => {
@@ -478,7 +494,7 @@ describe('MarkdownStoreModal', () => {
     const search = host.querySelector('[aria-label="Search skills"]')
     expect(library.hasAttribute('data-away')).toBe(false)
     expect(library.hasAttribute('inert')).toBe(false)
-    click('Add skill')
+    click('New skill')
     expect(library.hasAttribute('data-away')).toBe(true)
     expect(library.hasAttribute('inert')).toBe(true)
     expect(library.getAttribute('aria-hidden')).toBe('true')
@@ -488,32 +504,33 @@ describe('MarkdownStoreModal', () => {
     expect(escape().defaultPrevented).toBe(true)
     expect(library.hasAttribute('data-away')).toBe(false)
     expect(library.hasAttribute('inert')).toBe(false)
-    expect(document.activeElement).toBe(button('Add skill'))
+    expect(document.activeElement).toBe(button('New skill'))
   })
 
-  it('renders subfolder lines and keeps all four preview actions outside long content', () => {
+  it('renders nested folders in the nav and keeps all preview actions outside long content', () => {
     const entry = useAppStore.getState().markdownStoreEntries[0]
     useAppStore.setState({ markdownStoreEntries: [{ ...entry, group: 'Coding/Review/Safety', body: '# Review\n\n' + 'Long content\n'.repeat(300) }] })
     const { host } = mountSkills()
     const folders = host.querySelector('[aria-label="Skill folders"]')!
-    expect(folders.querySelectorAll('.uam-disclosure').length).toBe(3)
-    expect(folders.querySelector('.uam-disclosure .uam-disclosure .uam-disclosure')).toBeTruthy()
-    for (const disclosure of folders.querySelectorAll('.uam-disclosure')) {
-      expect((disclosure.querySelector('.uam-disclosure__inner > div') as HTMLElement).style.borderLeft).toContain('var(--border)')
-      expect(disclosure.querySelector(':scope > button[aria-expanded="true"] svg')).toBeTruthy()
-    }
+    // All skills, Coding, Review, Safety; the two parents are expanded by default.
+    expect(folders.querySelectorAll('.uam-store-nav__item').length).toBe(4)
+    expect(folders.querySelectorAll('button[aria-expanded="true"]').length).toBe(2)
+    act(() => (folders.querySelector('button[aria-label="Collapse Coding"]') as HTMLButtonElement).click())
+    expect(folders.querySelectorAll('.uam-store-nav__item').length).toBe(2)
+    act(() => (folders.querySelector('button[aria-label="Expand Coding"]') as HTMLButtonElement).click())
+    act(() => Array.from(folders.querySelectorAll<HTMLButtonElement>('.uam-store-nav__item')).find((item) => item.textContent?.includes('Safety'))!.click())
+    expect(folders.querySelector('[aria-current="true"]')?.textContent).toContain('Safety')
+    openSkill('Review code')
     const preview = host.querySelector('[aria-label="Skill preview"]')!
-    expect(preview.children[0].querySelectorAll('button').length).toBe(4)
-    expect(preview.children[0].className).toContain('shrink-0')
-    expect(preview.children[1].className).toContain('overflow-auto')
+    // Back plus the four preview actions sit in the toolbar; the body scrolls beneath it.
+    expect(preview.children[0].querySelectorAll('button').length).toBe(5)
+    expect(preview.children[1].className).toContain('overflow-y-auto')
     expect(preview.children[1].querySelector('[aria-label="Attach to message"]')).toBeNull()
-    const row = folders.querySelector('[aria-current="true"]')!
-    expect(row.children.length).toBe(2)
-    expect(row.children[1].className).toContain('truncate')
   })
 
   it('guards dirty edits on Escape and Cancel, then confirms overwrite before saving', async () => {
     const { host } = mountSkills()
+    openSkill('Review code')
     click('Edit Review code in app')
     changeField('Entry Markdown body', 'Authored replacement')
     const unload = new Event('beforeunload', { cancelable: true })
@@ -538,6 +555,7 @@ describe('MarkdownStoreModal', () => {
 
   it('never redirects an existing edit to another entry after a store refresh', async () => {
     const { host } = mountSkills()
+    openSkill('Review code')
     const target = useAppStore.getState().markdownStoreEntries[0]
     click('Edit Review code in app')
     changeField('Entry Markdown body', 'Keep on the original path')
@@ -551,7 +569,7 @@ describe('MarkdownStoreModal', () => {
   it('creates through the store and retains rejected new drafts until explicitly discarded', async () => {
     useAppStore.setState({ createMarkdownStoreEntry: vi.fn().mockRejectedValueOnce(new Error('Disk full')).mockResolvedValueOnce(true) })
     const { host } = mountSkills()
-    click('Add skill'); click('Create')
+    click('New skill'); click('Create')
     expect(button('Save').disabled).toBe(true)
     changeField('Entry title', 'New skill')
     changeField('Entry Markdown body', 'New body')
@@ -563,7 +581,7 @@ describe('MarkdownStoreModal', () => {
     await act(async () => { button('Save').click(); await Promise.resolve() })
     expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledWith({ title: 'New skill', maker: '', review: '', body: 'New body', group: '' })
     expect(host.querySelector('[aria-label="Create skill"]')).toBeNull()
-    click('Add skill'); click('Create'); changeField('Entry title', 'Discard me'); click('Cancel'); click('Discard')
+    click('New skill'); click('Create'); changeField('Entry title', 'Discard me'); click('Cancel'); click('Discard')
     expect(host.querySelector('[aria-label="Create skill"]')).toBeNull()
     expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledTimes(2)
   })
@@ -611,11 +629,11 @@ describe('MarkdownStoreModal', () => {
     const browse = vi.fn(() => new Promise<string | null>((resolve) => { resolvePicker = resolve }))
     useAppStore.setState({ browseMarkdownStoreImport: browse })
     const { host } = mountSkills()
-    click('Add skill'); click('Import folder'); click('Close add skill')
+    click('New skill'); click('Import folder'); click('Close add skill')
     await act(async () => { resolvePicker('/tmp/stale-folder'); await Promise.resolve() })
     expect(useAppStore.getState().previewMarkdownStoreImports).not.toHaveBeenCalled()
     expect(host.querySelector('[aria-label="Import skills"]')).toBeNull()
-    click('Add skill'); click('Import file')
+    click('New skill'); click('Import file')
     await act(async () => { resolvePicker(null); await Promise.resolve() })
     expect(useAppStore.getState().previewMarkdownStoreImports).not.toHaveBeenCalled()
     expect(button('Import file').disabled).toBe(false)

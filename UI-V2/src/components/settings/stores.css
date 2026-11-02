@@ -4,10 +4,6 @@
 .uam-search-field.uam-store-search:focus-within { box-shadow: none; }
 .uam-search-field.uam-store-search:has(input:focus-visible) { box-shadow: var(--focus-ring); }
 
-/* Add is the one primary action only while the library is empty. */
-.uam-iconbtn.uam-store-add--primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
-.uam-iconbtn.uam-store-add--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--on-accent); }
-
 /* Long sidebar and folder labels: one line, full text on hover. */
 .uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
@@ -20,21 +16,64 @@
 @keyframes uam-skills-step-out { to { transform: translateX(100%); opacity: 0; } }
 .uam-store-path { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
 
-/* Preview body: readable measure, comfortable leading. */
+/* Preview body: readable measure and leading. Lists keep their markers; list text shares the paragraph line-height. */
 .uam-store-markdown { max-width: 68ch; font-size: var(--fs-base); line-height: 1.6; color: var(--text); }
+.uam-store-markdown ul { list-style: disc; padding-left: 1.4em; margin: 0 0 0.6em; }
+.uam-store-markdown ol { list-style: decimal; padding-left: 1.4em; margin: 0 0 0.6em; }
+.uam-store-markdown li { line-height: inherit; }
+.uam-store-markdown li::marker { color: var(--text-3); }
+.uam-store-markdown h1, .uam-store-markdown h2, .uam-store-markdown h3 { color: var(--text); font-weight: var(--fw-semibold); line-height: 1.35; margin: 1em 0 0.35em; }
+.uam-store-markdown h1 { font-size: var(--fs-xl); }
+.uam-store-markdown h2 { font-size: var(--fs-lg); }
+.uam-store-markdown h3 { font-size: var(--fs-md); }
+.uam-store-markdown > .prose-msg > :first-child { margin-top: 0; }
 
 /* Pinned skill: a quiet filled pin; the accent appears only on hover or focus. */
 .uam-iconbtn.uam-skill-pin.is-active { background: transparent; color: var(--text-2); }
 .uam-iconbtn.uam-skill-pin.is-active:hover:not(:disabled) { color: var(--accent); }
 
-/* Memory rows: one line each. The title and summary button takes the free width; scope and date sit right, then actions. */
-.uam-memory-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; border-radius: var(--r-md); }
-.uam-memory-row:hover { background: var(--surface-up); }
-.uam-memory-row__open { display: flex; flex: 1; align-items: baseline; gap: var(--sp-3); min-width: 0; padding: var(--sp-2) var(--sp-3); text-align: left; }
+/* Skills library: one bordered card. A 220px folder nav sits beside the pane; the pane's 44px toolbar holds search and actions. */
+.uam-store-toolbar { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; height: var(--pane-header-h); min-width: 0; padding: 0 var(--sp-3); border-bottom: 1px solid var(--border); }
+.uam-field.uam-store-field:focus-within { border-color: var(--border-bright); box-shadow: var(--focus-ring); }
+.uam-store-nav { width: 220px; min-height: 0; overflow-y: auto; padding: var(--sp-2); border-right: 1px solid var(--border); }
+.uam-store-nav__row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.uam-store-nav__spacer { flex-shrink: 0; width: 26px; }
+.uam-store-nav__item { display: flex; flex: 1; align-items: center; gap: var(--sp-2); min-width: 0; height: 30px; padding: 0 var(--sp-2); border-radius: var(--r-md); color: var(--text-2); font-size: var(--fs-sm); text-align: left; }
+.uam-store-nav__item:hover { background: var(--surface-up); color: var(--text); }
+.uam-store-nav__item[aria-current="true"] { background: var(--accent-dim); color: var(--text); }
+.uam-store-nav__count { flex-shrink: 0; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.uam-store-chevron { transform: rotate(0deg); }
+.uam-store-chevron.is-open { transform: rotate(90deg); }
+
+/* One-line skill rows: 40px, title, quiet mono command, muted summary, fixed pin column. */
+.uam-store-row { display: flex; align-items: center; gap: var(--sp-1); min-width: 0; height: 40px; border-radius: var(--r-md); }
+.uam-store-row:hover { background: var(--surface-up); }
+.uam-store-row__open { display: flex; flex: 1; align-items: center; gap: var(--sp-2); height: 100%; min-width: 0; padding: 0 var(--sp-2); border-radius: var(--r-md); text-align: left; }
+.uam-store-row__pin { display: flex; flex-shrink: 0; justify-content: center; width: 28px; }
+.uam-store-row__pin .uam-iconbtn:not(.is-active) { opacity: 0; }
+.uam-store-row:hover .uam-store-row__pin .uam-iconbtn, .uam-store-row:focus-within .uam-store-row__pin .uam-iconbtn { opacity: 1; }
+.uam-chip.uam-store-command { font-family: var(--font-mono); color: var(--text-3); border-color: var(--border); }
+
+/* Detail: title, chips, body as the hero, then a collapsed Details list. */
+.uam-store-detail__title { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text); }
+.uam-store-detail__chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0 var(--sp-4); }
+.uam-store-details dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--sp-1) var(--sp-3); padding: var(--sp-2) 0; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-store-details dt { color: var(--text-3); }
+.uam-store-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* Memory rows: one 40px line. Title, then muted summary (truncates), date right, then a fixed action column shown on hover or focus. */
+.uam-memory-row { display: flex; align-items: center; gap: var(--sp-2); height: 40px; min-width: 0; padding-right: var(--sp-2); border-radius: var(--r-md); }
+.uam-memory-row:hover, .uam-memory-row:focus-within { background: var(--surface-up); }
+.uam-memory-row__open { display: flex; flex: 1; align-items: center; gap: var(--sp-3); min-width: 0; height: 100%; padding: 0 var(--sp-3); text-align: left; }
 .uam-memory-row__title { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text); }
 .uam-memory-row__summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-2); }
-.uam-memory-row__meta { display: flex; flex-shrink: 0; gap: var(--sp-2); font-size: var(--fs-xs); white-space: nowrap; color: var(--text-3); }
-.uam-memory-row__actions { flex-shrink: 0; opacity: .55; transform: translateX(var(--sp-1)); transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-memory-row__meta { flex-shrink: 0; min-width: 6rem; text-align: right; font-size: var(--fs-xs); white-space: nowrap; color: var(--text-3); }
+.uam-memory-row__actions { display: flex; flex-shrink: 0; justify-content: flex-end; gap: var(--sp-1); width: 56px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+
+/* Memory detail: title at the large size, body keeps the shared preview measure. */
+.uam-memory-detail__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text); }
+/* New memory: the body grows with its text, starting at four rows. */
+.uam-memory-form textarea { field-sizing: content; }
 /* Unsaved-memory prompt: fades and rises in, and reverses on leave. */
 .uam-memory-exit { animation: uam-memory-exit-in var(--dur-base) var(--ease) backwards; }
 .uam-memory-exit[data-state="closed"] { animation: uam-memory-exit-out var(--dur-fast) var(--ease) forwards; }
@@ -45,7 +84,7 @@
 .uam-memory-row[data-state="closed"] { animation: uam-memory-row-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 @keyframes uam-memory-row-out { to { opacity: 0; transform: translateX(calc(var(--sp-3) * -1)); } }
 .uam-memory-row:hover .uam-memory-row__actions,
-.uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; transform: none; }
+.uam-memory-row:focus-within .uam-memory-row__actions { opacity: 1; }
 
 /* Skills dialog panel: the Overlay supplies the backdrop; this is the panel's edge and elevation. */
 .uam-skills-dialog { border: 1px solid var(--border-bright); box-shadow: var(--elev-3); }
