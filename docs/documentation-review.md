@@ -120,6 +120,10 @@ R6 reviewed all 46 candidate paths and found no further actionable production-so
 
 R7 completed the 47-path candidate review with no actionable P0–P3 defect, resolving the shared Windows test finding and retaining R6 production/interface coverage for 40 byte-identical paths. The recorded safe controls remain qualified to their exact inputs; only review-status documentation changed afterward. Required code review is recorded, while CEF/other caller and original full-core compilation, native Linux/Windows execution acceptance and David’s explicit approval remain pending. The V5 acceptance flags and Unassigned ownership remain unchanged.
 
+## Helper build identity source
+
+Open, pending David: [#627](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/627) asks Updates to compare the packaged helper's checksum with the installed helper's published remote metadata. The current implementation compares it with a local install receipt: the SHA-256 this computer verified and published at installation, saved on the host as `runnerSha256`. That receipt cannot see a different build installed on the same host by another computer, or files changed on the host afterwards. Should UAM instead read the remote `uam-runner.sha256` (or a helper-reported checksum) at the handshake or status probe, at the cost of an extra remote read and a protocol or probe change? Until decided, keep the local receipt, treat a missing receipt as unknown and offer a reinstall, and do not describe it as remote verification. See the [Updates agreement](updates/updates.md) and the [execution-host reference](reference/architecture/execution-hosts.md#transactional-installed-metadata).
+
 ## Provider parity decisions
 
 The provider implementation work preserves all six providers and excludes account-usage changes. Source capability rows now distinguish implemented native adapters from protocol limits and unverified acceptance; the [V5 log](<../V5 Improvement Change log.md>) records actual build and test outcomes.

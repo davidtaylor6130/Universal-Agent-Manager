@@ -94,13 +94,26 @@ namespace uam::execution_hosts
 		else { host.runner_status = "ready"; host.runner_install_unresolved = false; host.runner_install_nonce.clear(); host.runner_install_identity.clear(); }
 	}
 
+	/// A confirmed rollback restores the prior host, including its recorded helper checksum, without a settled fence.
+	inline ExecutionHost RestoredPreviousInstallation(ExecutionHost previous)
+	{
+		if (HasInstallFence(previous))
+		{
+			previous.runner_install_unresolved = false;
+			previous.runner_install_nonce.clear();
+			previous.runner_install_identity.clear();
+			if (previous.runner_status == "installing") previous.runner_status = "error";
+		}
+		return previous;
+	}
+
 	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
 	inline bool SameConnection(const ExecutionHost& left, const ExecutionHost& right)
 	{
 		return left.id == right.id && left.transport == right.transport &&
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
-		       left.runner_protocol_version == right.runner_protocol_version &&
+		       left.runner_protocol_version == right.runner_protocol_version && left.runner_sha256 == right.runner_sha256 &&
 		       left.runner_directory == right.runner_directory && left.runner_install_unresolved == right.runner_install_unresolved &&
 		       left.runner_install_nonce == right.runner_install_nonce && left.runner_install_identity == right.runner_install_identity &&
 		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;

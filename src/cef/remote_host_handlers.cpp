@@ -9,7 +9,6 @@
 #include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/platform/platform_services.h"
-#include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "remote/runner_bootstrap.h"
@@ -101,19 +100,17 @@ namespace
 			const std::filesystem::path directory = artifact_root /
 			    (platform + "-" + architecture);
 			const std::filesystem::path runner = directory / executable;
-			const auto checksum = uam::io::ReadFirstTextFileLine(directory /
-			                                                      "uam-runner.sha256");
+			const std::string checksum = uam::remote::PackagedRunnerSha256(platform, architecture);
 			std::error_code status_error;
 			const bool has_runner = std::filesystem::is_regular_file(runner, status_error) &&
 			                        !status_error;
-			if (!has_runner && !checksum) continue;
-			if (!has_runner || !checksum)
+			if (!has_runner && checksum.empty()) continue;
+			if (!has_runner || checksum.empty())
 			{
 				error = "A packaged UAM remote runner or checksum is missing.";
 				return false;
 			}
-			artifacts.push_back({platform, architecture, runner,
-			                     uam::strings::Trim(*checksum)});
+			artifacts.push_back({platform, architecture, runner, checksum});
 		}
 		std::string version = uam::constants::kAppVersion;
 		if (!version.empty() && (version.front() == 'V' || version.front() == 'v'))
@@ -399,14 +396,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    if (previous_host.has_value())
 			    {
 				    // Recovery under the owned lock settled any earlier interrupted install.
-				    ExecutionHost restored = *previous_host;
-				    if (uam::execution_hosts::HasInstallFence(restored))
-				    {
-					    restored.runner_install_unresolved = false;
-					    restored.runner_install_nonce.clear();
-					    restored.runner_install_identity.clear();
-					    if (restored.runner_status == "installing") restored.runner_status = "error";
-				    }
+				    ExecutionHost restored = uam::execution_hosts::RestoredPreviousInstallation(*previous_host);
 				    if (current != m_app.settings.execution_hosts.end()) *current = std::move(restored);
 				    else m_app.settings.execution_hosts.push_back(std::move(restored));
 			    }
@@ -572,9 +562,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    found->last_seen_at = uam::time::IsoUtcTimestampNow();
 			    found->runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 			    // The checksum the bootstrap verified before publishing the remote manifest; it identifies a rebuild with an unchanged version.
-			    const auto installed = std::ranges::find_if(install_plan->artifacts, [&](const uam::remote::RunnerArtifact& artifact)
-			    { return artifact.platform == result->platform && artifact.architecture == result->architecture; });
-			    found->runner_sha256 = installed == install_plan->artifacts.end() ? std::string{} : installed->sha256;
+			    found->runner_sha256 = uam::remote::InstalledArtifactSha256(*install_plan, *result);
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {

@@ -164,6 +164,13 @@ describe('update catalog', () => {
     expect(availableRemoteHelperUpdates('5.0.0', 3, nextBuild, dismissed)).toHaveLength(5)
   })
 
+  it('keeps an earlier version offer dismissal when the bundled checksum also differs', () => {
+    const host = { id: 'lab', label: 'Lab', transport: 'ssh' as const, sshAlias: 'lab', runnerStatus: 'ready' as const, runnerVersion: '5.0.0', runnerProtocolVersion: 3, platform: 'linux', architecture: 'x86_64', lastSeenAt: '', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) }
+    const [offer] = availableRemoteHelperUpdates('5.1.0', 3, [host], {})
+    expect(offer.latestVersion).toBe('5.1.0 · helper protocol 3')
+    expect(availableRemoteHelperUpdates('5.1.0', 3, [host], { 'remote-helper-lab': '5.1.0 · helper protocol 3' })).toEqual([])
+  })
+
   it('rejects malformed cached catalog entries', () => {
     const values = new Map<string, string>()
     Object.defineProperty(window, 'localStorage', {

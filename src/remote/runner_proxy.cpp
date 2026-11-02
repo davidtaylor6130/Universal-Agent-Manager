@@ -23,7 +23,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -334,21 +333,36 @@ namespace uam::remote
 #endif
 	}
 
+	PackagedRunnerChecksums ReadPackagedRunnerChecksums(const std::filesystem::path& root)
+	{
+		PackagedRunnerChecksums values;
+		if (root.empty()) return values;
+		for (const char* target : {"linux-arm64", "linux-x86_64", "windows-x86_64"})
+			if (const auto checksum = uam::io::ReadFirstTextFileLine(root / target / "uam-runner.sha256"))
+				values[target] = uam::strings::Trim(*checksum);
+		return values;
+	}
+
+	namespace
+	{
+		PackagedRunnerChecksums& PackagedRunnerChecksumCache()
+		{
+			// ponytail: packaged resources are immutable while the app runs, so read the checksums once; only tests replace them.
+			static PackagedRunnerChecksums checksums = ReadPackagedRunnerChecksums(PackagedRunnerPath().parent_path());
+			return checksums;
+		}
+	}
+
 	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture)
 	{
-		// ponytail: packaged resources are immutable while the app runs, so read the three checksums once.
-		static const std::map<std::string, std::string, std::less<>> checksums = []
-		{
-			std::map<std::string, std::string, std::less<>> values;
-			const std::filesystem::path root = PackagedRunnerPath().parent_path();
-			if (root.empty()) return values;
-			for (const char* target : {"linux-arm64", "linux-x86_64", "windows-x86_64"})
-				if (const auto checksum = uam::io::ReadFirstTextFileLine(root / target / "uam-runner.sha256"))
-					values[target] = uam::strings::Trim(*checksum);
-			return values;
-		}();
+		const PackagedRunnerChecksums& checksums = PackagedRunnerChecksumCache();
 		const auto found = checksums.find(std::string(platform) + "-" + std::string(architecture));
 		return found == checksums.end() ? std::string{} : found->second;
+	}
+
+	PackagedRunnerChecksums SetPackagedRunnerChecksumsForTesting(PackagedRunnerChecksums checksums)
+	{
+		return std::exchange(PackagedRunnerChecksumCache(), std::move(checksums));
 	}
 
 	std::string BuildProcessProxySpec(

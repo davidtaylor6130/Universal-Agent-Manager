@@ -884,6 +884,13 @@ namespace uam::remote
 		return result;
 	}
 
+	std::string InstalledArtifactSha256(const BootstrapPlan& plan, const BootstrapResult& result)
+	{
+		const auto artifact = std::ranges::find_if(plan.artifacts, [&](const RunnerArtifact& value)
+		{ return value.platform == result.platform && value.architecture == result.architecture; });
+		return artifact == plan.artifacts.end() ? std::string{} : artifact->sha256;
+	}
+
 	std::string BootstrapInstallIdentity(const BootstrapPlan& plan, const BootstrapResult& result)
 	{
 		const auto artifact = std::ranges::find_if(plan.artifacts, [&](const RunnerArtifact& value)

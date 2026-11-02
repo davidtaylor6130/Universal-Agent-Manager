@@ -110,9 +110,11 @@ export function availableRemoteHelperUpdates(
     // A rebuilt helper can keep its version; the bundled checksum identifies the build, and an unrecorded installed checksum is unknown.
     const bundledBuild = host.bundledRunnerSha256 ?? ''
     const buildOutdated = Boolean(bundledBuild) && host.runnerSha256 !== bundledBuild
-    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}${bundledBuild ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
     const versionOutdated = !currentVersion || compareVersions(latestVersion, currentVersion) > 0
     const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
+    // Only a build-only offer carries the build in its dismissal key, so earlier version/protocol dismissals still hold.
+    const buildOnly = buildOutdated && !versionOutdated && !protocolOutdated
+    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}${buildOnly ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
     if (!isSshHost(host) || (!versionOutdated && !protocolOutdated && !buildOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
