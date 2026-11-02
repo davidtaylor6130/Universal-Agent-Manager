@@ -1,6 +1,7 @@
 /* Stable composer presentation belongs in CSS; mounting only publishes dynamic values. */
 .uam-composer-surface {
-  border: none;
+  /* Theme-linked edge so the composer never blends into the chat background. */
+  border: 1px solid var(--composer-border, color-mix(in srgb, var(--text) 16%, transparent));
   border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--elev-1);
@@ -142,3 +143,7 @@
 .uam-cmenu__setting:not(.uam-cmenu__setting--nested) { grid-template-columns: minmax(0, 1fr) auto; }
 .uam-cmenu__setting:not(.uam-cmenu__setting--nested) > .relative { justify-self: end; }
 .uam-cmenu__setting:not(.uam-cmenu__setting--nested) .uam-menu-select__trigger { width: auto; }
+
+/* Tabs above the composer share its edge and join it seamlessly. */
+.uam-composer-workspace-tab, .uam-composer-goal-tab { border: 1px solid var(--composer-border, color-mix(in srgb, var(--text) 16%, transparent)); border-bottom: 0; }
+.uam-composer-tabs { margin-bottom: -1px; position: relative; z-index: 1; }
