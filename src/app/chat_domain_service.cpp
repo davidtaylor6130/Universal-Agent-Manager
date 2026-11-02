@@ -1210,7 +1210,7 @@ bool ChatDomainService::AcknowledgeChatAttention(uam::AppState& app, const std::
 	const std::string previous_revision = chat->attention_revision;
 	const std::string previous_opened = chat->last_opened_at;
 	chat->attention_revision.clear();
-	chat->last_opened_at = std::max(uam::time::TimestampNow(), chat->updated_at);
+	chat->last_opened_at = uam::time::LaterHistoryTimestamp(uam::time::TimestampNow(), chat->updated_at);
 	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
 	{
 		chat->attention_revision = previous_revision;
@@ -1291,10 +1291,8 @@ std::string ChatDomainService::AttentionRevision(const uam::AppState& app, const
 {
 	if (!chat.attention_revision.empty()) return chat.attention_revision;
 	// Selection stamps local time while native imports carry ISO UTC; compare instants, not strings (#629).
-	const auto opened_order = uam::time::CompareHistoryTimestamps(chat.updated_at, chat.last_opened_at).order;
-	const bool updated_after_open = opened_order == uam::time::HistoryTimestampOrder::Unknown ? chat.updated_at > chat.last_opened_at
-	                                                                                           : opened_order == uam::time::HistoryTimestampOrder::After;
-	if (app.chats_with_unseen_updates.contains(chat.id) || (!chat.last_opened_at.empty() && updated_after_open))
+	if (app.chats_with_unseen_updates.contains(chat.id) ||
+	    (!chat.last_opened_at.empty() && uam::time::HistoryTimestampIsAfter(chat.updated_at, chat.last_opened_at)))
 		return "legacy:" + chat.updated_at;
 	return "";
 }
