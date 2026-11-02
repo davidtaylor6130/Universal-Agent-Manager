@@ -491,6 +491,12 @@ export interface ManualCompactionAvailability {
 export interface AcpTimeoutStop {
   label: string
   seconds: number
+  /** 'loop' when the stream watch stopped repeated output (#636); absent for a timeout. */
+  kind?: 'loop'
+  /** Loop: the repeated stream (text, thought or tool call), its repeat count and a bounded example. */
+  channel?: string
+  count?: number
+  example?: string
 }
 
 export interface CppAcpSession {
@@ -761,6 +767,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   goalMaxLoopIterations: number
   acpSetupInactivityTimeoutSeconds?: number
   activeTurnInactivityTimeoutSeconds?: number
+  streamLoopRepeatLimit?: number
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean

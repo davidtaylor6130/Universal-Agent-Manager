@@ -1357,7 +1357,11 @@ namespace uam
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
 			acp_json["lastError"] = session->last_error;
 			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
-			    ? nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}} : nlohmann::json(nullptr);
+			    ? (session->timeout_stop_kind.empty()
+			           ? nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}}
+			           : nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}, {"kind", session->timeout_stop_kind},
+			                            {"channel", session->timeout_stop_channel}, {"count", session->timeout_stop_count}, {"example", session->timeout_stop_example}})
+			    : nlohmann::json(nullptr);
 			acp_json["recentStderr"] = session->recent_stderr;
 			acp_json["lastExitCode"] = uam::nlohmann_json::IntOrNull(session->has_last_exit_code, session->last_exit_code);
 			acp_json["agentInfo"] = {

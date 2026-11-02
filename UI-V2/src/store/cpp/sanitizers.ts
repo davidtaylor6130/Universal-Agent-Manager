@@ -94,6 +94,10 @@ export const MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS = 3600
 export const DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 1800
 export const MIN_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 60
 export const MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS = 86400
+/** Stream loop stop (#636): repeats of the same output in one turn; 0 turns it off. Mirrors stream_watch.h. */
+export const DEFAULT_STREAM_LOOP_REPEAT_LIMIT = 20
+/** The offered choices; any other value rounds up to the next one, as the native normalizer does. */
+export const STREAM_LOOP_REPEAT_LIMIT_OPTIONS = [0, 10, 20, 50] as const
 export const DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB = 1024
 export const MIN_ACP_TURN_OUTPUT_LIMIT_MIB = 256
 export const MAX_ACP_TURN_OUTPUT_LIMIT_MIB = 4096
@@ -112,6 +116,11 @@ export function normalizeAcpTurnOutputLimitMiB(value: unknown): number {
 
 export function normalizeAcpSetupInactivityTimeoutSeconds(value: unknown): number {
   return clampedFiniteNumberOr(value, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS)
+}
+
+export function normalizeStreamLoopRepeatLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_STREAM_LOOP_REPEAT_LIMIT
+  return STREAM_LOOP_REPEAT_LIMIT_OPTIONS.find((option) => value <= option) ?? 50
 }
 
 export function normalizeActiveTurnInactivityTimeoutSeconds(value: unknown): number {
@@ -927,7 +936,18 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     recentStderr: isString(value.recentStderr) ? value.recentStderr : undefined,
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
     timeoutStop: isRecord(value.timeoutStop) && isString(value.timeoutStop.label) && value.timeoutStop.label
-      ? { label: value.timeoutStop.label, seconds: nonNegativeInteger(value.timeoutStop.seconds) ?? 0 }
+      ? {
+          label: value.timeoutStop.label,
+          seconds: nonNegativeInteger(value.timeoutStop.seconds) ?? 0,
+          ...(value.timeoutStop.kind === 'loop'
+            ? {
+                kind: 'loop' as const,
+                channel: isString(value.timeoutStop.channel) ? value.timeoutStop.channel : '',
+                count: nonNegativeInteger(value.timeoutStop.count) ?? 0,
+                example: isString(value.timeoutStop.example) ? value.timeoutStop.example : '',
+              }
+            : {}),
+        }
       : undefined,
     lastExitCode: typeof value.lastExitCode === 'number' && Number.isFinite(value.lastExitCode) ? value.lastExitCode : null,
     diagnostics: Array.isArray(value.diagnostics)
@@ -1748,6 +1768,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
       acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
       activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
+      streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
       acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
       updateChecksEnabled: true,
       automaticProviderUpdates: false,
@@ -1905,6 +1926,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     goalMaxLoopIterations: normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations),
     acpSetupInactivityTimeoutSeconds: normalizeAcpSetupInactivityTimeoutSeconds(value.acpSetupInactivityTimeoutSeconds),
     activeTurnInactivityTimeoutSeconds: normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds),
+    streamLoopRepeatLimit: normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),

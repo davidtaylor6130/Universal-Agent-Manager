@@ -443,7 +443,7 @@ namespace
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).Ok() && payload["workerBindings"]["codex-cli"]["workerModelId"] == "", "Changing worker provider clears an incompatible model as agreed");
 		payload = {{"workerBindings", {{"gemini-cli", {{"workerModelId", "new-model"}}}}}};
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).status == 400, "A model edit cannot invent an unconfigured worker provider");
-		payload = {{"goalMaxLoopIterations", 200}, {"acpTurnOutputLimitMiB", 1024}, {"acpSetupInactivityTimeoutSeconds", 600}, {"activeTurnInactivityTimeoutSeconds", 2700}, {"permissionReviewerProviderId", "opencode-cli"}, {"permissionReviewerModelId", "example-provider/normal"}};
+		payload = {{"goalMaxLoopIterations", 200}, {"acpTurnOutputLimitMiB", 1024}, {"acpSetupInactivityTimeoutSeconds", 600}, {"activeTurnInactivityTimeoutSeconds", 2700}, {"streamLoopRepeatLimit", 0}, {"permissionReviewerProviderId", "opencode-cli"}, {"permissionReviewerModelId", "example-provider/normal"}};
 		const auto original = payload;
 		Require(PrepareSettingsDispatch("setMemorySettings", payload, state).Ok() && payload == original, "Reviewer and runtime-limit changes must leave memory defaults untouched");
 	}
@@ -515,6 +515,7 @@ namespace
 		         {"setMemorySettings", {{"enabledDefault", false}, {"levelDefault", "open"}}},
 		         {"setMemorySettings", {{"recallBudgetBytes", 8193}}},
 		         {"setMemorySettings", {{"activeTurnInactivityTimeoutSeconds", 30}}},
+		         {"setMemorySettings", {{"streamLoopRepeatLimit", 201}}},
 		         {"setMemorySettings", {{"idleDelaySeconds", true}}},
 		         {"setMemorySettings", {{"goalMaxLoopIterations", std::uint64_t(1) << 63}}},
 		         {"setStorageSettings", {{"backupLogRetentionDays", 1.5}}},

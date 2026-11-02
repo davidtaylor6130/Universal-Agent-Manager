@@ -3179,6 +3179,215 @@ UAM_TEST(AcpTurnInactivityRecoveryUsesTransportActivityAndCancelGrace)
 	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, 205.0, 60.0), uam::AcpTurnInactivityRecoveryAction::Stop);
 }
 
+UAM_TEST(StreamWatchCountsNearConsecutiveToolAndTextRepeats)
+{
+	uam::stream_watch::StreamWatch watch;
+	for (int i = 0; i < 6; ++i) watch.ObserveTool("Read src/app.cpp", R"({"path":"src/app.cpp"})", "same contents", 0.1, 10.0 + i);
+	UAM_ASSERT_EQ(watch.PeakCount(), 6u);
+	UAM_ASSERT(watch.PeakChannel() == uam::stream_watch::Channel::Tool);
+	UAM_ASSERT(watch.PeakExample().find("Read src/app.cpp") == 0);
+
+	uam::stream_watch::StreamWatch text;
+	// Token-sized chunks, a three-sentence cycle and reflowed whitespace still count as one repeat.
+	for (int i = 0; i < 7; ++i)
+		for (const char* chunk : {"I will check the ", "configuration file once more.\n", "Then I  will compare it with the saved copy.", " Nothing ", "changed since the previous attempt, so retry.\n"})
+			text.ObserveText(uam::stream_watch::Channel::Thought, chunk);
+	UAM_ASSERT_EQ(text.PeakCount(), 7u);
+	UAM_ASSERT(text.PeakChannel() == uam::stream_watch::Channel::Thought);
+	UAM_ASSERT(text.PeakExample().size() <= uam::stream_watch::kExampleBytes);
+}
+
+UAM_TEST(StreamWatchIgnoresPollingChangedResultsAndShortRepeats)
+{
+	uam::stream_watch::StreamWatch watch;
+	// Waiting calls (sleep, poll, build) never count, however identical.
+	for (int i = 0; i < 30; ++i) watch.ObserveTool("Run gh run view", R"({"cmd":"sleep 30; gh run view"})", "in_progress", 30.0, 30.0 * i);
+	UAM_ASSERT_EQ(watch.PeakCount(), 0u);
+	// Quick identical checks spaced beyond the polling gap are deliberate polling.
+	for (int i = 0; i < 30; ++i) watch.ObserveTool("Run status", "{}", "pending", 0.2, 1000.0 + 90.0 * i);
+	UAM_ASSERT_EQ(watch.PeakCount(), 1u);
+	// Re-reading a file after each edit sees a changed result each time.
+	for (int i = 0; i < 30; ++i)
+	{
+		watch.ObserveTool("Edit src/app.cpp", "{\"edit\":" + std::to_string(i) + "}", "ok", 0.1, 5000.0 + i);
+		watch.ObserveTool("Read src/app.cpp", "{}", "contents revision " + std::to_string(i), 0.1, 5000.5 + i);
+	}
+	UAM_ASSERT_EQ(watch.PeakCount(), 1u);
+	// Short repeated fragments (list markers, braces, "Done.") are not loop evidence.
+	for (int i = 0; i < 100; ++i) watch.ObserveText(uam::stream_watch::Channel::Text, "- Done.\n}\n");
+	UAM_ASSERT_EQ(watch.PeakCount(), 1u);
+	UAM_ASSERT_EQ(uam::stream_watch::NormalizeLoopRepeatLimit(0), 0);
+	UAM_ASSERT_EQ(uam::stream_watch::NormalizeLoopRepeatLimit(2), 10);
+	UAM_ASSERT_EQ(uam::stream_watch::NormalizeLoopRepeatLimit(21), 50);
+	UAM_ASSERT_EQ(uam::stream_watch::NormalizeLoopRepeatLimit(500), 50);
+}
+
+namespace
+{
+	struct StreamWatchTurnFixture
+	{
+		TempDir temp{"uam-stream-watch-turn"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+
+		StreamWatchTurnFixture()
+		{
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			app.settings.active_turn_inactivity_timeout_seconds = 60;
+			ChatSession chat;
+			chat.id = "chat-stream-watch";
+			chat.provider_id = "gemini-cli";
+			chat.workspace_directory = temp.root.string();
+			chat.messages.push_back(Message{MessageRole::User, "Inspect the app."});
+			app.chats.push_back(std::move(chat));
+			auto owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = app.chats.front().id;
+			owned->provider_id = "gemini-cli";
+			owned->running = true;
+			owned->initialized = true;
+			owned->session_ready = true;
+			owned->session_id = "stream-watch-session";
+			owned->lifecycle_state = "processing";
+			owned->processing = true;
+			owned->prompt_request_id = 5;
+			owned->turn_user_message_index = 0;
+			owned->turn_started_time_s = uam::GetAppTimeSeconds();
+			owned->last_runtime_activity_time_s = owned->turn_started_time_s;
+			uam::AcpQueuedUserPromptState future;
+			future.text = "future prompt";
+			owned->queued_user_prompts.push_back(future);
+			session = owned.get();
+#if defined(_WIN32)
+			const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+			const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, sink_argv, &error));
+			app.acp_sessions.push_back(std::move(owned));
+		}
+		~StreamWatchTurnFixture() { (void)uam::StopAcpSession(app, app.chats.front().id); }
+		ChatSession& Chat() { return app.chats.front(); }
+		bool Line(const std::string& update) { return uam::ProcessAcpLineForTests(app, *session, Chat(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":)" + update + "}}"); }
+	};
+}
+
+namespace
+{
+	std::string ToolUpdate(const std::string& id, const std::string& status, const std::string& extra = R"(,"title":"Read src/app.cpp","kind":"read")")
+	{
+		return R"({"sessionUpdate":"tool_call","toolCallId":")" + id + R"(","status":")" + status + "\"" + extra + "}";
+	}
+	const std::string kSameResult = R"(,"content":[{"type":"content","content":{"type":"text","text":"int main() {}"}}])";
+}
+
+UAM_TEST(AcpStreamLoopStopsTheTurnThroughTheCancelPath)
+{
+	StreamWatchTurnFixture fixture;
+	fixture.app.settings.stream_loop_repeat_limit = 10;
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Checking."}})"));
+	// Each call starts, then its result arrives in a later update; the next call starting makes it final.
+	for (int i = 0; i < 10; ++i)
+	{
+		UAM_ASSERT(fixture.Line(ToolUpdate("read-" + std::to_string(i), "in_progress")));
+		UAM_ASSERT(fixture.Line(ToolUpdate("read-" + std::to_string(i), "completed", kSameResult)));
+		if (i == 8) UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), uam::GetAppTimeSeconds()));
+	}
+	UAM_ASSERT(fixture.Line(ToolUpdate("read-10", "in_progress")));
+	const std::size_t messages = fixture.Chat().messages.size();
+
+	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), uam::GetAppTimeSeconds()));
+	// The normal cancel path: session/cancel was written and the turn awaits its settlement.
+	UAM_ASSERT(fixture.session->cancel_requested);
+	UAM_ASSERT(fixture.session->inactivity_timeout_pending);
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_kind, std::string("loop"));
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_count, 10);
+	UAM_ASSERT(fixture.session->timeout_stop_example.find("Read src/app.cpp") == 0);
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_error, fixture.session->last_error);
+	UAM_ASSERT(fixture.session->last_error.find("int main") == std::string::npos);
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), messages);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls.size(), std::size_t{11});
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	UAM_ASSERT_EQ(stop.value("kind", ""), std::string("loop"));
+	UAM_ASSERT_EQ(stop.value("count", 0), 10);
+	UAM_ASSERT_EQ(stop.value("seconds", -1), 0);
+	// Detection fires once; the pending cancel is not re-sent while it settles.
+	UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), uam::GetAppTimeSeconds()));
+}
+
+UAM_TEST(AcpStreamLoopIgnoresUntimedEmptyRestoredAndDisabledRepeats)
+{
+	StreamWatchTurnFixture fixture;
+	fixture.app.settings.stream_loop_repeat_limit = 10;
+	// Calls first reported already finished have no known duration.
+	for (int i = 0; i < 30; ++i) UAM_ASSERT(fixture.Line(ToolUpdate("done-" + std::to_string(i), "completed", R"(,"title":"Read src/app.cpp","kind":"read")" + kSameResult)));
+	// report_intent-style short calls carry neither arguments nor a result.
+	for (int i = 0; i < 30; ++i)
+	{
+		UAM_ASSERT(fixture.Line(ToolUpdate("intent-" + std::to_string(i), "in_progress", R"(,"title":"report_intent","kind":"other")")));
+		UAM_ASSERT(fixture.Line(ToolUpdate("intent-" + std::to_string(i), "completed", R"(,"title":"report_intent","kind":"other")")));
+	}
+	UAM_ASSERT_EQ(fixture.session->stream_watch.PeakCount(), 0u);
+	// A reattach restores finished history without counting it again.
+	Message restored;
+	restored.role = MessageRole::Assistant;
+	for (int i = 0; i < 30; ++i)
+	{
+		ToolCall call;
+		call.id = "restored-" + std::to_string(i);
+		call.name = "Read src/app.cpp";
+		call.status = "completed";
+		call.result_text = "int main() {}";
+		restored.tool_calls.push_back(call);
+	}
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(*fixture.session, restored);
+	UAM_ASSERT(fixture.Line(ToolUpdate("after-restore", "in_progress")));
+	UAM_ASSERT_EQ(fixture.session->stream_watch.PeakCount(), 0u);
+	UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), uam::GetAppTimeSeconds()));
+
+	fixture.app.settings.stream_loop_repeat_limit = 0;
+	for (int i = 0; i < 12; ++i)
+	{
+		UAM_ASSERT(fixture.Line(ToolUpdate("off-" + std::to_string(i), "in_progress")));
+		UAM_ASSERT(fixture.Line(ToolUpdate("off-" + std::to_string(i), "completed", kSameResult)));
+	}
+	UAM_ASSERT(fixture.Line(ToolUpdate("off-last", "in_progress")));
+	UAM_ASSERT(fixture.session->stream_watch.PeakCount() >= 10u);
+	UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), uam::GetAppTimeSeconds()));
+	UAM_ASSERT(!fixture.session->cancel_requested);
+}
+
+UAM_TEST(AcpStreamStallStopsOnlyAfterSilenceAndReportsItsDuration)
+{
+	StreamWatchTurnFixture fixture;
+	// Slow but steady streaming and long reasoning keep resetting the stall clock.
+	for (int i = 0; i < 5; ++i)
+	{
+		const double before = uam::GetAppTimeSeconds();
+		UAM_ASSERT(fixture.Line(i % 2 ? R"({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Still reasoning about the constraint "}})"
+		                              : R"({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"word "}})"));
+		UAM_ASSERT(fixture.session->last_runtime_activity_time_s >= before);
+		UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + 59.0));
+	}
+	UAM_ASSERT(fixture.Line(R"({"sessionUpdate":"tool_call","toolCallId":"build","title":"Run build","kind":"execute","status":"in_progress"})"));
+	UAM_ASSERT(!uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + 59.0));
+	UAM_ASSERT(!fixture.session->cancel_requested);
+
+	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(fixture.app, *fixture.session, fixture.Chat(), fixture.session->last_runtime_activity_time_s + 61.0));
+	UAM_ASSERT(fixture.session->cancel_requested);
+	// A stall is the #635 provider turn timeout stop.
+	UAM_ASSERT(fixture.session->timeout_stop_kind.empty());
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_label, std::string("Provider turn timeout"));
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_seconds, 60);
+	UAM_ASSERT_EQ(fixture.session->timeout_stop_error, fixture.session->last_error);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	UAM_ASSERT(!stop.contains("kind"));
+	UAM_ASSERT_EQ(stop.value("seconds", 0), 60);
+}
+
 UAM_TEST(AcpSendFailsClosedForExplicitMissingProvider)
 {
 	TempDir temp("uam-acp-missing-provider");

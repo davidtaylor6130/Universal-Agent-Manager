@@ -3100,6 +3100,59 @@ describe('ChatView', () => {
     }
   })
 
+  it.each(['in-place', 'output', 'settling'] as const)('presents a stream-watch loop stop on the timeout notice (%s)', async (branch) => {
+    const setMemorySettings = vi.fn(async () => true)
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const branchFromMessage = vi.fn(async () => 'chat-branch')
+    const user = { ...useAppStore.getState().messages['chat-1'][0] }
+    useAppStore.setState((state) => ({
+      setMemorySettings,
+      retryFailedMessage,
+      branchFromMessage,
+      messages: { ...state.messages, 'chat-1': branch === 'in-place' ? [user] : [user, { ...user, id: 'partial', role: 'assistant', content: 'Reading the file again.' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', processing: branch === 'settling', running: true,
+          lastError: 'Gemini turn stopped after the same tool call repeated 20 times.',
+          timeoutStop: { label: 'Repeated output limit', seconds: 0, kind: 'loop', channel: 'tool call', count: 20, example: 'Read src/app.cpp {"path":"src/app.cpp"}' },
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('[aria-label="Dismiss composer error"]')).toBeNull()
+      const notice = Array.from(host.querySelectorAll('[role="status"]')).find((node) => node.textContent?.includes('Turn stopped: repeating output'))
+      if (branch === 'settling') {
+        // The cancel is still settling, so nothing can be restarted yet.
+        expect(notice).toBeUndefined()
+        return
+      }
+      expect(notice).toBeTruthy()
+      expect(notice!.textContent).toContain('repeated the same tool call 20 times')
+      expect(notice!.querySelector('[aria-label="Repeated content"]')?.textContent).toBe('Read src/app.cpp {"path":"src/app.cpp"}')
+      const buttons = Array.from(notice!.querySelectorAll('button'))
+      expect(buttons.some((button) => button.textContent === 'Restart with +15 min')).toBe(false)
+      const action = buttons.find((button) => button.textContent === (branch === 'output' ? 'Continue in new chat' : 'Restart'))!
+      expect(action).toBeTruthy()
+      await act(async () => { action.click() })
+      expect(setMemorySettings).not.toHaveBeenCalled()
+      if (branch === 'output') {
+        expect(notice!.textContent).toContain('queued messages stay in this chat')
+        expect(retryFailedMessage).not.toHaveBeenCalled()
+        expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+      } else {
+        expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+        expect(branchFromMessage).not.toHaveBeenCalled()
+      }
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each([
     { notSent: true, interrupted: true, expectedRetry: true },
     { notSent: false, interrupted: true, expectedRetry: true },

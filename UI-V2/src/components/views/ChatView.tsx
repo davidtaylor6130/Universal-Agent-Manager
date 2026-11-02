@@ -1954,7 +1954,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : ''
   // A timeout stop is a transcript status notice with its own recovery action, not a raw composer error.
   const timeoutStop = acp?.timeoutStop && currentAcpError && !acp.promptActionError ? acp.timeoutStop : undefined
-  const timeoutStopShown = Boolean(timeoutStop) && currentAcpErrorKey !== dismissedAcpErrorKey
+  // While the stop's cancel is still settling, the turn is not yet restartable.
+  const timeoutStopShown = Boolean(timeoutStop) && !acp?.processing && currentAcpErrorKey !== dismissedAcpErrorKey
   const liveDividerOpen = Boolean(acp?.compacting) || isWaitingOnSubagents(acp) || Boolean(stoppedStatusLabel) || timeoutStopShown
   useEffect(() => {
     // Live dividers sit at the end of the transcript; bring them into view as a new message would.
@@ -2025,11 +2026,23 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }
   // Raise the turn timeout, then re-deliver the same user message in place (never a duplicate row).
   // A next turn on a running OpenCode process relaunches it so the new limit applies.
+  const lastUserMessageIndex = (chatMessages: Message[]) => {
+    let lastUser = chatMessages.length - 1
+    while (lastUser >= 0 && chatMessages[lastUser].role !== 'user') lastUser -= 1
+    return lastUser
+  }
+  // A loop stop usually follows output, so Restart re-runs the message in a new branch chat; the label says so.
+  const loopRestartsInNewChat = timeoutStop?.kind === 'loop' && !canRetryMessageInPlace(messages, lastUserMessageIndex(messages))
+  const restartLoopedTurn = async (): Promise<TimeoutRestartOutcome | undefined> => {
+    const lastUser = lastUserMessageIndex(useAppStore.getState().messages[session.id] ?? [])
+    if (lastUser < 0) return { tone: 'error', message: 'There is no message to restart from.' }
+    await createMessageBranch(lastUser + historyStartIndex)
+    return undefined
+  }
   const restartTimedOutTurn = async (): Promise<TimeoutRestartOutcome | undefined> => {
     // Decide whether an in-place restart is possible before any side effect.
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
-    let lastUser = chatMessages.length - 1
-    while (lastUser >= 0 && chatMessages[lastUser].role !== 'user') lastUser -= 1
+    const lastUser = lastUserMessageIndex(chatMessages)
     const queued = (acp?.queuedPrompts?.length ?? 0) > 0
     const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
     const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
@@ -3487,7 +3500,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <TimeoutStopNotice
                   key={currentAcpErrorKey}
                   timeoutStop={timeoutStop}
-                  onRestart={restartTimedOutTurn}
+                  onRestart={timeoutStop.kind === 'loop' ? restartLoopedTurn : restartTimedOutTurn}
+                  restartLabel={loopRestartsInNewChat ? 'Continue in new chat' : 'Restart'}
                   onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
                   copyAction={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
                 />

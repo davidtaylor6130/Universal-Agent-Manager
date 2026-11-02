@@ -35,6 +35,7 @@ struct SettingsMemoryCanonicalValues
 	std::string permission_reviewer_provider_id;
 	std::string permission_reviewer_model_id;
 	int active_turn_inactivity_timeout_seconds = 0;
+	int stream_loop_repeat_limit = 0;
 };
 
 // canonical is authoritative only when outcome is Committed and canonical_values_ready.

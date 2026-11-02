@@ -51,7 +51,7 @@ import {
 import type { Provider } from '../../types/provider'
 import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
 import type { MemoryLevel } from '../../types/memory'
-import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
+import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, STREAM_LOOP_REPEAT_LIMIT_OPTIONS, sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
 import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/TimeoutStopNotice'
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -89,6 +89,7 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   goalMaxLoopIterations: 'Goal loop limit',
   acpSetupInactivityTimeoutSeconds: 'Provider setup timeout',
   activeTurnInactivityTimeoutSeconds: 'Provider turn timeout',
+  streamLoopRepeatLimit: 'Repeated output limit',
   acpTurnOutputLimitMiB: 'Provider output limit',
   memoryWorkerBindings: 'Memory worker selections',
   permissionReviewerProviderId: 'Permission reviewer provider',
@@ -748,6 +749,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
+  const streamLoopRepeatLimit = useAppStore((s) => s.streamLoopRepeatLimit)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
@@ -3079,13 +3081,25 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <SettingRow
             title="Provider turn timeout"
-            description="Stops a turn after this long without provider activity."
+            description="Stops a turn after this long with no output of any kind (text, thinking or tool activity)."
             control={
               <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <IconButton icon={<Minus size={14} />} label="Decrease provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.max(TIMEOUT_RESTART_STEP_SECONDS, activeTurnInactivityTimeoutSeconds - TIMEOUT_RESTART_STEP_SECONDS) })} />
                 <output aria-label="Provider turn timeout" className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(activeTurnInactivityTimeoutSeconds)}</output>
                 <IconButton icon={<Plus size={14} />} label="Increase provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS) })} />
               </div>
+            }
+          />
+          <SettingRow
+            title="Repeated output limit"
+            description="Stops a turn that repeats the same tool call, text or thinking this many times."
+            control={
+              <MenuSelect
+                label="Repeated output limit"
+                value={String(streamLoopRepeatLimit)}
+                options={STREAM_LOOP_REPEAT_LIMIT_OPTIONS.map((option) => ({ value: String(option), label: option ? `${option} repeats` : 'Off' }))}
+                onChange={(value) => void setMemorySettings({ streamLoopRepeatLimit: Number(value) })}
+              />
             }
           />
           <SettingRow
