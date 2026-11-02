@@ -1,4 +1,5 @@
 #include "common/usage/account_credentials.h"
+#include "common/platform/credential_store.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 
@@ -8,50 +9,12 @@
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <wincred.h>
-#endif
-
 namespace uam::usage
 {
 	namespace
 	{
 		constexpr std::size_t kCredentialLimit = 64 * 1024;
 		constexpr std::size_t kOutputLimit = kCredentialLimit * 6 + 1024;
-		// No Apple events or UI automation. kSecUseAuthenticationUIFail does not stop login-keychain ACL dialogs,
-		// so automatic reads also disable Keychain interaction for this helper process.
-		// The fixed system host lets cancellation reap a slow Keychain request without
-		// leaving an uninterruptible Security.framework call in the desktop process.
-		constexpr std::string_view kCredentialReadScript = R"JXA(ObjC.import('Foundation');
-ObjC.import('Security');
-ObjC.bindFunction('SecItemCopyMatching', ['int', ['id', 'id*']]);
-function run(argv)
-{
-    function object(value) { return ObjC.castRefToObject(value); }
-    const prompt = argv[2] === 'prompt';
-    if (!prompt)
-    {
-        ObjC.bindFunction('SecKeychainSetUserInteractionAllowed', ['int', ['bool']]);
-        if ($.SecKeychainSetUserInteractionAllowed(false) !== 0) return JSON.stringify({ status: -25308 });
-    }
-    const query = $.NSMutableDictionary.alloc.init;
-    query.setObjectForKey(object($.kSecClassGenericPassword), object($.kSecClass));
-    query.setObjectForKey($(argv[0]), object($.kSecAttrService));
-    query.setObjectForKey($(argv[1]), object($.kSecAttrAccount));
-    query.setObjectForKey($.NSNumber.numberWithBool(true), object($.kSecReturnData));
-    query.setObjectForKey(object($.kSecMatchLimitOne), object($.kSecMatchLimit));
-    if (!prompt) query.setObjectForKey(object($.kSecUseAuthenticationUIFail), object($.kSecUseAuthenticationUI));
-    const result = Ref();
-    const status = $.SecItemCopyMatching(query, result);
-    if (status !== 0) return JSON.stringify({ status: status });
-    const credential = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(result[0], $.NSUTF8StringEncoding));
-    if (typeof credential !== 'string' || credential.length > 65536) return JSON.stringify({ status: -1 });
-    return JSON.stringify({ status: 0, credential: credential });
-})JXA";
 		AccountCredentialResult Failure(std::string message, bool unavailable = false)
 		{
 			AccountCredentialResult result; result.error = std::move(message); result.account_unavailable = unavailable; return result;
@@ -66,7 +29,12 @@ function run(argv)
 		}
 
 		enum class HelperOutcome { Exited, StartFailed, ReadFailed, Oversized, Canceled, TimedOut };
-		struct HelperRun { HelperOutcome outcome = HelperOutcome::StartFailed; std::string output; int exit_code = -1; };
+		struct HelperRun
+		{
+			HelperOutcome outcome = HelperOutcome::StartFailed; std::string output; int exit_code = -1;
+			// Helper output can hold the secret: every copy is wiped however its reader returns.
+			~HelperRun() { std::fill(output.begin(), output.end(), '\0'); }
+		};
 
 		// Runs one bounded credential helper. Its stderr can contain diagnostics, so it is drained and never exposed or logged.
 		HelperRun RunCredentialHelper(const IPlatformProcessService& process_service, const std::vector<std::string>& arguments,
@@ -83,7 +51,7 @@ function run(argv)
 			} guard{process_service, process};
 			process_service.CloseStdioProcessInput(process);
 			std::array<char, 8192> bytes{};
-			const auto fail = [&run](HelperOutcome outcome) { std::fill(run.output.begin(), run.output.end(), '\0'); run.output.clear(); run.outcome = outcome; return run; };
+			const auto fail = [&run](HelperOutcome outcome) { return HelperRun{outcome, {}, run.exit_code}; };
 			while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
 			{
 				// Observe exit before the final read: output written before exit is already in the pipe.
@@ -106,6 +74,7 @@ function run(argv)
 		constexpr const char* kStoreCanceled = "Credential store access was canceled.";
 		constexpr const char* kStoreTimedOut = "Credential store access timed out; unlock this computer's keyring and refresh.";
 		constexpr const char* kStoreInvalidIdentifiers = "Credential store identifiers are invalid.";
+		constexpr const char* kStoreMissing = "No existing login was found in this computer's credential store.";
 		constexpr const char* kStoreUnreadable = "The existing login could not be read from this computer's credential store.";
 		constexpr const char* kStoreInvalid = "This computer's credential store returned an invalid credential.";
 
@@ -114,18 +83,11 @@ function run(argv)
 		{
 			if (stop.stop_requested()) return Failure(kStoreCanceled);
 			if (!ValidIdentifiers(service, account)) return Failure(kStoreInvalidIdentifiers);
-			// go-keyring stores a generic credential named "service:account" whose blob is the UTF-8 secret; CredRead never shows UI.
-			// ponytail: ANSI target name is fine for the ASCII identifiers callers pass; switch to CredReadW for non-ASCII names.
-			const std::string target = std::string(service) + ":" + std::string(account);
-			PCREDENTIALA stored = nullptr;
-			if (!CredReadA(target.c_str(), CRED_TYPE_GENERIC, 0, &stored))
-				return GetLastError() == ERROR_NOT_FOUND ? Failure("No existing login was found in this computer's credential store.", true) : Failure(kStoreUnreadable);
-			AccountCredentialResult result;
-			if (stored->CredentialBlob && stored->CredentialBlobSize > 0 && stored->CredentialBlobSize <= kCredentialLimit)
-				result.credential.assign(reinterpret_cast<const char*>(stored->CredentialBlob), stored->CredentialBlobSize);
-			if (stored->CredentialBlob) SecureZeroMemory(stored->CredentialBlob, stored->CredentialBlobSize);
-			CredFree(stored);
-			if (result.credential.empty()) return Failure(kStoreInvalid);
+			// go-keyring stores a generic credential named "service:account" whose blob is the UTF-8 secret.
+			auto stored = platform::ReadWindowsGenericCredential(std::string(service) + ":" + std::string(account), kCredentialLimit);
+			if (stored.status == platform::StoredCredentialStatus::NotFound) return Failure(kStoreMissing, true);
+			if (stored.status != platform::StoredCredentialStatus::Found) return Failure(kStoreUnreadable);
+			AccountCredentialResult result; result.credential = std::move(stored.secret);
 			return result;
 		}
 #endif
@@ -150,12 +112,7 @@ function run(argv)
 		if (stop.stop_requested()) return Failure(kStoreCanceled);
 		if (timeout.count() <= 0) return Failure(kStoreTimedOut);
 		if (!ValidIdentifiers(service, account)) return Failure(kStoreInvalidIdentifiers);
-		// go-keyring's Secret Service items carry "service" and "username" attributes. Without --unlock, search
-		// returns a locked item's attributes but not its secret and never shows an unlock prompt.
-		std::vector<std::string> arguments{"secret-tool", "search"};
-		if (allow_prompt) arguments.push_back("--unlock");
-		arguments.insert(arguments.end(), {"service", std::string(service), "username", std::string(account)});
-		auto run = RunCredentialHelper(process_service, arguments, stop, timeout);
+		auto run = RunCredentialHelper(process_service, platform::SecretServiceSearchArguments(service, account, allow_prompt), stop, timeout);
 		constexpr const char* kStoreAbsent = "No Secret Service credential store is available on this computer; install secret-tool (libsecret) and a keyring to read the existing login.";
 		switch (run.outcome)
 		{
@@ -166,20 +123,18 @@ function run(argv)
 		case HelperOutcome::Exited: break;
 		}
 		if (run.exit_code == 127) return Failure(kStoreAbsent, true);
-		// secret-tool exits nonzero both when nothing matches and when no Secret Service answers.
-		if (run.exit_code != 0) return Failure("No existing login was found in this computer's credential store, or no Secret Service is running.", true);
+		// secret-tool exits nonzero when no Secret Service answers, and exits 0 with no output when nothing matches.
+		if (run.exit_code != 0) return Failure("The existing login could not be read because no Secret Service credential store is running on this computer.", true);
+		// Each matching item starts with a "[<id>]" header line; its attribute lines go to stderr, which is never kept.
+		if (!run.output.starts_with('[') && run.output.find("\n[") == std::string::npos) return Failure(kStoreMissing, true);
 		// ponytail: reads a one-line secret; go-keyring callers store compact JSON. Parse multi-line output if a store needs it.
 		std::size_t begin = run.output.starts_with("secret = ") ? 0 : run.output.find("\nsecret = ");
-		AccountCredentialResult result;
-		if (begin != std::string::npos)
-		{
-			begin += run.output[begin] == '\n' ? 10 : 9;
-			const std::size_t end = run.output.find('\n', begin);
-			result.credential = run.output.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
-		}
-		std::fill(run.output.begin(), run.output.end(), '\0');
+		// An item without its secret is locked: automatic reads never unlock, so only Refresh can.
 		if (begin == std::string::npos)
 			return Failure(allow_prompt ? "This computer's credential store did not unlock the existing login." : "The existing login is in a locked credential store; unlock this computer's keyring or choose Refresh allowances.");
+		begin += run.output[begin] == '\n' ? 10 : 9;
+		const std::size_t end = run.output.find('\n', begin);
+		AccountCredentialResult result; result.credential = run.output.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
 		if (result.credential.empty() || result.credential.size() > kCredentialLimit) { std::fill(result.credential.begin(), result.credential.end(), '\0'); return Failure(kStoreInvalid); }
 		return result;
 	}
@@ -190,8 +145,7 @@ function run(argv)
 		if (stop.stop_requested()) return Failure("macOS account access was canceled.");
 		if (timeout.count() <= 0) return Failure("macOS account access timed out; unlock your existing login keychain and refresh.");
 		if (!ValidIdentifiers(service, account)) return Failure("macOS account storage identifiers are invalid.");
-		const std::vector<std::string> arguments{"/usr/bin/osascript", "-l", "JavaScript", "-e", std::string(kCredentialReadScript), std::string(service), std::string(account), allow_prompt ? "prompt" : "silent"};
-		auto run = RunCredentialHelper(process_service, arguments, stop, timeout);
+		auto run = RunCredentialHelper(process_service, platform::MacKeychainReadArguments(service, account, allow_prompt), stop, timeout);
 		switch (run.outcome)
 		{
 		case HelperOutcome::StartFailed: return Failure("macOS account storage could not be opened.");
@@ -202,7 +156,7 @@ function run(argv)
 		case HelperOutcome::Exited: break;
 		}
 		if (run.exit_code != 0) return Failure("macOS could not read the existing account without a permission prompt.");
-		const auto response = nlohmann::json::parse(run.output, nullptr, false); std::fill(run.output.begin(), run.output.end(), '\0');
+		const auto response = nlohmann::json::parse(run.output, nullptr, false);
 		if (!response.is_object() || !response.contains("status") || !response["status"].is_number_integer()) return Failure("macOS account storage response is invalid.");
 		if (response["status"] == -25300) return Failure("No existing account credential was found in the login keychain.", true);
 		if (!allow_prompt && (response["status"] == -25293 || response["status"] == -25308))

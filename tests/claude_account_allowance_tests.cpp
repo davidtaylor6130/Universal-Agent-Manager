@@ -245,10 +245,12 @@ UAM_TEST(MacAccountCredentialHelperRejectsInvalidIdentifiersBeforeSpawning)
 UAM_TEST(SecretServiceCredentialReaderReadsExistingGoKeyringItemWithoutUnlocking)
 {
 	ClaudeAccountHttpsFixture fixture; fixture.chunk_size = 8192;
-	fixture.response = "[/org/freedesktop/secrets/collection/login/1]\nlabel = Password for 'antigravity' on 'gemini'\nsecret = {\"token\":\"synthetic-private-login\"}\ncreated = 2026-01-01 00:00:00\nattribute.service = gemini\nattribute.username = antigravity\n";
+	// secret-tool prints the item to stdout and its attribute.* lines to stderr, which the reader never keeps.
+	fixture.response = "[1]\nlabel = Password for 'antigravity' on 'gemini'\nsecret = {\"token\":\"synthetic-private-login\"}\ncreated = 2026-01-01 00:00:00\nmodified = 2026-01-01 00:00:00\nschema = org.freedesktop.Secret.Generic\n";
 	const auto result = uam::usage::ReadSecretServiceCredentialWithProcessService(fixture, "gemini", "antigravity");
 	UAM_ASSERT(result.error.empty()); UAM_ASSERT_EQ(result.credential, "{\"token\":\"synthetic-private-login\"}");
-	UAM_ASSERT(fixture.arguments == (std::vector<std::string>{"secret-tool", "search", "service", "gemini", "username", "antigravity"}));
+	UAM_ASSERT(fixture.arguments.at(0).ends_with("secret-tool"));
+	UAM_ASSERT(std::vector<std::string>(fixture.arguments.begin() + 1, fixture.arguments.end()) == (std::vector<std::string>{"search", "service", "gemini", "username", "antigravity"}));
 	UAM_ASSERT_EQ(fixture.input_closes, 1); UAM_ASSERT_EQ(fixture.stops, 1);
 	ClaudeAccountHttpsFixture explicit_refresh; explicit_refresh.response = fixture.response; explicit_refresh.chunk_size = 8192;
 	UAM_ASSERT(uam::usage::ReadSecretServiceCredentialWithProcessService(explicit_refresh, "gemini", "antigravity", true).error.empty());
@@ -261,8 +263,9 @@ UAM_TEST(SecretServiceCredentialReaderExplainsUnavailableStoreWithoutNamingMacOS
 	for (const auto& [start_fails, exit_code, response, account_unavailable] : std::vector<Case>{
 	         {true, 0, "", true},                                   // secret-tool cannot start
 	         {false, 127, "", true},                                // secret-tool is not installed
-	         {false, 1, "", true},                                  // no item or no Secret Service
-	         {false, 0, "[/org/freedesktop/secrets/collection/login/1]\nlabel = locked\n", false}}) // locked keyring
+	         {false, 1, "", true},                                  // no Secret Service answers
+	         {false, 0, "", true},                                  // no matching login: secret-tool exits 0 silently
+	         {false, 0, "[1]\nlabel = Password for 'antigravity' on 'gemini'\ncreated = 2026-01-01 00:00:00\nmodified = 2026-01-01 00:00:00\nschema = org.freedesktop.Secret.Generic\n", false}}) // locked keyring
 	{
 		ClaudeAccountHttpsFixture fixture; fixture.start_fails = start_fails; fixture.exit_code = exit_code; fixture.response = response;
 		const auto result = uam::usage::ReadSecretServiceCredentialWithProcessService(fixture, "gemini", "antigravity");
