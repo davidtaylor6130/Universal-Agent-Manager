@@ -634,7 +634,7 @@ add_library(uam_core_objects OBJECT
   src/common/usage/multi_host_history.cpp
   src/common/usage/account_allowance_fetcher.cpp
   src/common/usage/account_allowance_service.cpp
-  src/common/usage/account_credentials_macos.cpp
+  src/common/usage/account_credentials.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
