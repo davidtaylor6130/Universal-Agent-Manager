@@ -1114,9 +1114,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     turnAssistantMessageIndex === messages.length - 2
       ? messages.length - 1
       : -1
+  // A settled turn's events were synced into the backend's turn assistant row, so bind them to that row even when a
+  // later user row follows (#278). While processing, a steer can leave the index on an earlier row; require the tail.
   const turnAssistantMessageMatches =
     turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
+    (!acp?.processing || turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0) &&
     messages[turnAssistantMessageIndex]?.role === 'assistant'
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&

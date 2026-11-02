@@ -8338,6 +8338,44 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
+  it('renders a settled turn once at its owning assistant row when a later user row follows it', () => {
+    useAppStore.setState((state) => ({
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: 'Status update.\n\nSettled answer.', createdAt: new Date(1) },
+          { id: 'm-3', sessionId: 'chat-1', role: 'user', content: 'Follow-up row', createdAt: new Date(2) },
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'error',
+          processing: false,
+          pendingPermission: null,
+          turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
+          turnUserMessageIndex: 0,
+          turnAssistantMessageIndex: 1,
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(host.textContent?.match(/Settled answer\./g)).toHaveLength(1)
+    expect(host.textContent).toContain('Follow-up row')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps the fallback visible while processing even when persisted text matches', () => {
     useAppStore.setState((state) => ({
       messages: {
