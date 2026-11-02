@@ -381,7 +381,8 @@ endif()
 
 set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_native_attachment_assets.cpp
-  src/common/platform/platform_incremental_sha256.cpp)
+  src/common/platform/platform_incremental_sha256.cpp
+  src/common/platform/background_thread_priority.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 # Connected handler fixtures replace the PTY, so it stays out of the shared objects.
 if(WIN32)
@@ -1522,6 +1523,7 @@ if(UAM_BUILD_TESTS)
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp
     tests/async_byte_writer_receipt_tests.cpp
+    tests/background_thread_priority_tests.cpp
     tests/platform_observed_input_write_tests.cpp
     tests/input_provenance_codec_tests.cpp
     tests/acp_input_admission_bridge_tests.cpp
@@ -1759,6 +1761,9 @@ if(UAM_BUILD_TESTS)
         "$<TARGET_FILE_DIR:uam_core_tests>/chrome_elf.dll"
     )
   endif()
+  # Source scans in this file must not depend on the test working directory.
+  set_source_files_properties(tests/background_thread_priority_tests.cpp PROPERTIES
+    COMPILE_DEFINITIONS "UAM_TEST_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
   target_compile_definitions(uam_core_tests PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
     NOMINMAX

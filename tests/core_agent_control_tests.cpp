@@ -3225,3 +3225,20 @@ UAM_TEST(AgentRunSchedulerEnforcesWallClockDeadlineAndReturnsOneDurableBoundedRe
 	UAM_ASSERT_EQ(durable.output, first.output);
 	UAM_ASSERT(!uam::AgentRunScheduler::PollAtForTests(app, 3000));
 }
+
+UAM_TEST(AgentRunSchedulerReusedSessionStartsNewRunUnlaunched)
+{
+	uam::AppState app;
+	ChatSession transcript;
+	transcript.id = "managed-reused-transcript";
+	transcript.agent_run_id = "previous-run";
+	app.chats = {transcript};
+	uam::AcpSessionState& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
+	session.managed_launch_attempted = true;
+	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
+	UAM_ASSERT(session.managed_launch_attempted); // Same run keeps its launch record.
+	app.chats.front().agent_run_id = "next-run";
+	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
+	UAM_ASSERT_EQ(session.managed_agent_run_id, std::string("next-run"));
+	UAM_ASSERT(!session.managed_launch_attempted);
+}

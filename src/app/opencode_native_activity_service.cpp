@@ -1,4 +1,5 @@
 #include "app/opencode_native_activity_service.h"
+#include "common/platform/background_thread_priority.h"
 #include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/opencode/opencode_permission_policy.h"
 #include "common/provider/opencode_native_http.h"
@@ -692,7 +693,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		m_state->image_jobs.push_back(std::move(job));
 		image.service_cancel = m_state->image_stop.get_token();
 		image.in_flight = true;
-		try { std::thread(std::move(task)).detach(); }
+		try { uam::platform::StartBackgroundThread(std::move(task)).detach(); }
 		catch (...)
 		{
 			m_state->image_jobs.back().stop.request_stop(); m_state->image_jobs.pop_back();
@@ -930,7 +931,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		job.future = task.get_future();
 		owner->in_flight = true;
 		m_state->jobs.push_back(std::move(job));
-		std::thread(std::move(task)).detach();
+		uam::platform::StartBackgroundThread(std::move(task)).detach();
 	}
 	return changed;
 }
