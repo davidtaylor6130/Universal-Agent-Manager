@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { Gauge } from 'lucide-react'
 import type { AcpRateLimits } from '../../store/cpp/types'
-import { Tooltip } from '../ui'
+import { Tooltip, UsageGauge } from '../ui'
 import { providerShortName } from '../../utils/providerMetadata'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 
@@ -34,9 +33,8 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   const creditOnly = limits?.credits?.unlimited ? 'Unlimited' : limits?.credits?.hasCredits ? 'Credits available' : null
   const value = percent === null ? creditOnly : `${percent}% remaining`
   const label = limits && timestampValid && value ? `${cached ? 'Cached ' : ''}${value}` : 'Unavailable'
-  // Mini meter shows the most-used window; colour follows the same thresholds as the usage page.
+  // The gauge needle shows the most-used window; unknown, unavailable and credit-only (including unlimited) stay neutral.
   const usedPercent = percent === null || label === 'Unavailable' ? null : 100 - percent
-  const tone = usedPercent === null ? 'var(--text-3)' : usedPercent >= 95 ? 'var(--error)' : usedPercent >= 80 ? 'var(--warning)' : 'var(--success)'
   const detail = limits ? <div className="flex flex-col gap-1">
     <span>{providerShortName(undefined, providerId)} session-reported account allowance</span>
     <span>{running ? 'Current session snapshot' : 'Last session snapshot'}</span>
@@ -49,9 +47,8 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
     {limits.planType && <span>Plan: {limits.planType}</span>}
   </div> : <span>{providerShortName(undefined, providerId)} has not reported an account allowance for this session.</span>
   return <Tooltip label={detail}>
-    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-      {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone, transition: 'width var(--dur-base) var(--ease-out-soft)' }} /></span>}
-      {label !== 'Unavailable' && <span>{label}</span>}
+    <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center">
+      <UsageGauge usedPercent={usedPercent} />
     </button>
   </Tooltip>
 }

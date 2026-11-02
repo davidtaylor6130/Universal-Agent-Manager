@@ -22,6 +22,8 @@ function render(props: Parameters<typeof ProviderAllowanceIndicator>[0]) {
   return { host, root, close: () => { act(() => root.unmount()); host.remove() } }
 }
 
+const accessibleName = (view: { host: HTMLElement }) => view.host.querySelector('button')?.getAttribute('aria-label') ?? ''
+
 describe('ProviderAllowanceIndicator', () => {
   beforeAll(() => vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }))
   afterAll(() => vi.unstubAllGlobals())
@@ -37,7 +39,7 @@ describe('ProviderAllowanceIndicator', () => {
   it('shows the limiting native window and source/reset details on keyboard focus', async () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('20% remaining')
+      expect(accessibleName(view)).toContain('20% remaining')
       await act(async () => { view.host.querySelector('button')!.focus() })
       const tooltip = document.querySelector('[role="tooltip"]')?.textContent
       expect(tooltip).toContain('Codex session-reported account allowance')
@@ -65,11 +67,11 @@ describe('ProviderAllowanceIndicator', () => {
   it('marks stale and stopped snapshots as cached and rejects invalid update times', async () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: { ...limits, updatedAt: now - 10 * 60_000 }, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('Cached 20% remaining')
+      expect(accessibleName(view)).toContain('Cached 20% remaining')
       await act(async () => { view.host.querySelector('button')!.focus() })
       expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Updated 10 min ago (stale)')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={limits} running={false} nowMs={now} />))
-      expect(view.host.textContent).toContain('Cached 20% remaining')
+      expect(accessibleName(view)).toContain('Cached 20% remaining')
       for (const updatedAt of [0, Number.NaN, now + 1000]) {
         act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, updatedAt }} running nowMs={now} />))
         expect(view.host.querySelector('button')?.getAttribute('aria-label')).toBe('Account allowance: Unavailable')
@@ -81,14 +83,14 @@ describe('ProviderAllowanceIndicator', () => {
     vi.spyOn(Date, 'now').mockReturnValue(now)
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: true })
     try {
-      expect(view.host.textContent).toContain('20% remaining')
-      expect(view.host.textContent).not.toContain('Cached')
+      expect(accessibleName(view)).toContain('20% remaining')
+      expect(accessibleName(view)).not.toContain('Cached')
       vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60_000)
       await act(async () => { view.host.querySelector('button')!.focus() })
-      expect(view.host.textContent).toContain('Cached 20% remaining')
+      expect(accessibleName(view)).toContain('Cached 20% remaining')
       expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Updated 11 min ago (stale)')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, primary: { ...limits.primary!, resetsAt: now / 1000 - 1 } }} running nowMs={now} />))
-      expect(view.host.textContent).toContain('Cached 20% remaining')
+      expect(accessibleName(view)).toContain('Cached 20% remaining')
       expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Reset time passed; awaiting a new snapshot')
     } finally { view.close(); vi.restoreAllMocks() }
   })
@@ -96,16 +98,16 @@ describe('ProviderAllowanceIndicator', () => {
   it('shows zero remaining for a native reached spend limit without inferring it from missing credits', () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: { ...limits, spendControlReached: true }, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('0% remaining')
+      expect(accessibleName(view)).toContain('0% remaining')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, credits: { hasCredits: false, unlimited: false, balance: null } }} running nowMs={now} />))
-      expect(view.host.textContent).toContain('20% remaining')
+      expect(accessibleName(view)).toContain('20% remaining')
     } finally { view.close() }
   })
 
   it('does not invent quota percentages from credits or invalid usage windows', () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: { ...limits, primary: null, secondary: null }, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('Credits available')
+      expect(accessibleName(view)).toContain('Credits available')
       expect(view.host.textContent).not.toContain('%')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, primary: { ...limits.primary!, usedPercent: Number.NaN }, secondary: null, credits: null }} running nowMs={now} />))
       expect(view.host.querySelector('button')?.getAttribute('aria-label')).toBe('Account allowance: Unavailable')
@@ -118,7 +120,7 @@ describe('ProviderAllowanceIndicator', () => {
       individualLimit: { used: 75, limit: 100, remainingPercent: 25, resetsAt: now / 1000 - 1 },
     }, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('Cached 25% remaining')
+      expect(accessibleName(view)).toContain('Cached 25% remaining')
       await act(async () => view.host.querySelector('button')!.focus())
       expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Reset time passed; awaiting a new snapshot')
     } finally { view.close() }
@@ -127,10 +129,34 @@ describe('ProviderAllowanceIndicator', () => {
   it('shows matching Claude allowance snapshots without relabelling them Codex', async () => {
     const view = render({ providerId: 'claude-cli', sourceProviderId: 'claude-cli', rateLimits: limits, running: true, nowMs: now })
     try {
-      expect(view.host.textContent).toContain('20% remaining')
+      expect(accessibleName(view)).toContain('20% remaining')
       await act(async () => view.host.querySelector('button')!.focus())
       expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Claude session-reported account allowance')
       expect(document.querySelector('[role="tooltip"]')?.textContent).not.toContain('Codex session-reported')
+    } finally { view.close() }
+  })
+
+  it('renders the usage gauge as the only readout, with the needle at the most-used window', () => {
+    const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: true, nowMs: now })
+    try {
+      expect(view.host.textContent).toBe('')
+      expect(accessibleName(view)).toBe('Account allowance: 20% remaining')
+      expect(view.host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('80')
+      expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(54deg)')
+      act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, spendControlReached: true }} running nowMs={now} />))
+      expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(90deg)')
+    } finally { view.close() }
+  })
+
+  it.each([
+    ['unavailable', null],
+    ['unlimited credits only', { ...limits, primary: null, secondary: null, credits: { hasCredits: true, unlimited: true, balance: null } }],
+  ])('shows a neutral gauge without a needle or meter value when allowance is %s', (_name, rateLimits) => {
+    const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits, running: true, nowMs: now })
+    try {
+      expect(view.host.querySelector('[data-usage-gauge]')?.getAttribute('aria-hidden')).toBe('true')
+      expect(view.host.querySelector('[data-needle]')).toBeNull()
+      expect(view.host.querySelector('[role="meter"]')).toBeNull()
     } finally { view.close() }
   })
 })
