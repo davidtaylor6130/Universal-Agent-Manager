@@ -1276,13 +1276,27 @@ it('retains passive collapsed recorded launches without borrowing an enclosing p
   } finally { act(() => root.unmount()); host.remove(); window.cefQuery = oldCef; useAppStore.setState(previous, true); vi.unstubAllGlobals() }
 })
 
-it('animates the running step side to side by transform only, with no idle, Motion Off or reduced-motion sweep', () => {
+it('sweeps one accent band across the whole running row behind primary-colour text, still for Motion Off and reduced motion', () => {
   const css = readFileSync(resolve(process.cwd(), 'src/components/chat/conversation.css'), 'utf8')
-  const sweep = '[data-processing-step="true"] .conversation-work__tool-title::after'
+  const row = '[data-processing-step="true"] :is(.conversation-work__tool, .conversation-work__thought > summary)'
+  const sweep = `${row}::after`
+  expect(css).toContain(sweep)
   const rule = css.slice(css.indexOf(sweep), css.indexOf('}', css.indexOf(sweep)))
+  // One band per active row (tool button or thought summary), carrying the accent behind the text.
   expect(rule).toContain('animation: conversation-processing-sweep')
-  // The title shrinks to its text while running so the band crosses the label rather than the empty row.
-  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title { flex: 0 1 auto; margin-right: auto; }')
+  expect(rule).toContain('var(--accent)')
+  expect(rule).toContain('z-index: -1')
+  expect(css).toContain(`${row} { position: relative; overflow: hidden; isolation: isolate; }`)
+  // No per-label sweep and no running-only title resizing (which shifted the row).
+  expect(css).not.toMatch(/(tool-title|thought-label)::after/)
+  expect(css).not.toContain('[data-processing-step="true"] .conversation-work__tool-title { flex')
+  // Running text uses the primary colour; the accent lives only in the sweep.
+  expect(css).toContain('[data-processing-step="true"] .conversation-work__tool-title,\n[data-processing-step="true"] .conversation-work__thought-label { color: var(--text); }')
+  expect(css).not.toMatch(/\[data-processing-step="true"\] \.conversation-work__(tool-title|thought-label)[^{]*\{[^}]*var\(--accent\)/)
+  // Motion Off and reduced motion keep a still accent wash instead of a sweep, so the active row stays identifiable.
+  const still = 'animation: none; transform: none; width: 100%;'
+  const off = css.slice(css.indexOf(`[data-motion="off"] ${sweep}`))
+  expect(off.slice(0, off.indexOf('}'))).toContain(still)
   const keyframes = css.slice(css.indexOf('@keyframes conversation-processing-sweep'))
   expect(keyframes.slice(0, keyframes.indexOf('\n'))).toMatch(/transform: translateX\(-100%\).*transform: translateX\(250%\)/)
   // Only the active step selector animates; a background-position text sweep repaints every frame.
@@ -1292,4 +1306,5 @@ it('animates the running step side to side by transform only, with no idle, Moti
   expect(css).toContain('[data-motion="off"] .conversation-work__live { animation: none; }')
   const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)', css.indexOf(sweep)))
   expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(sweep)
+  expect(reduced.slice(0, reduced.indexOf('}\n}'))).toContain(still)
 })
