@@ -286,3 +286,51 @@ describe('resource collection state', () => {
     expect(memberships).toHaveLength(1)
   })
 })
+
+describe('nested resource collections', () => {
+  const tree = () => [
+    { id: 'root', name: 'Root', collapsed: false, references: [] },
+    { id: 'middle', name: 'Middle', parentId: 'root', collapsed: false, references: [{ id: 'ref', type: 'workspace-folder' as const, target: 'project', label: 'Project' }] },
+    { id: 'leaf', name: 'Leaf', parentId: 'middle', collapsed: false, references: [] },
+  ]
+  beforeEach(() => {
+    delete (window as Window & { cefQuery?: Window['cefQuery'] }).cefQuery
+    useAppStore.setState({ resourceCollections: tree(), folders: [], sessions: [] })
+  })
+
+  it('keeps parentId through state sanitizing and leaves legacy collections top-level', () => {
+    const state = sanitizeCppAppState({ resourceCollections: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B', parentId: 'a' }, { id: 'c', name: 'C', parentId: 4 }] })
+    expect(state?.resourceCollections.map((collection) => collection.parentId)).toEqual([undefined, 'a', undefined])
+  })
+
+  it('sends the native nesting contract and refuses cycles without a request', async () => {
+    const received: { action: string; payload: unknown }[] = []
+    window.cefQuery = (request) => { received.push(JSON.parse(request.request)); request.onSuccess('{}') }
+    expect(await useAppStore.getState().moveResourceCollection('root', 'leaf')).toBe(false)
+    expect(await useAppStore.getState().moveResourceCollection('root', 'root')).toBe(false)
+    expect(received).toEqual([])
+    expect(await useAppStore.getState().moveResourceCollection('leaf', null)).toBe(true)
+    expect(received[0]).toMatchObject({ action: 'moveResourceCollection', payload: { collectionId: 'leaf', parentId: '' } })
+    expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'leaf')?.parentId).toBeUndefined()
+    window.cefQuery = (request) => { received.push(JSON.parse(request.request)); request.onSuccess(JSON.stringify({ id: 'inside', name: 'Inside', parentId: 'root', collapsed: false, references: [] })) }
+    expect((await useAppStore.getState().createResourceCollection('Inside', 'root'))?.parentId).toBe('root')
+    expect(received[1]).toMatchObject({ action: 'createResourceCollection', payload: { name: 'Inside', parentId: 'root' } })
+  })
+
+  it('keeps the previous organisation when native nesting fails', async () => {
+    window.cefQuery = (request) => request.onFailure(500, 'Failed to persist resource collections.')
+    expect(await useAppStore.getState().moveResourceCollection('leaf', null)).toBe(false)
+    expect(await useAppStore.getState().deleteResourceCollection('middle', true)).toBe(false)
+    expect(useAppStore.getState().resourceCollections).toEqual(tree())
+  })
+
+  it('moves children up a level or deletes them with the parent without touching references targets', async () => {
+    useAppStore.setState({ folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp', isExpanded: true, createdAt: new Date() }] })
+    expect(await useAppStore.getState().deleteResourceCollection('middle', false)).toBe(true)
+    expect(useAppStore.getState().resourceCollections.map((collection) => [collection.id, collection.parentId])).toEqual([['root', undefined], ['leaf', 'root']])
+    useAppStore.setState({ resourceCollections: tree() })
+    expect(await useAppStore.getState().deleteResourceCollection('root', true)).toBe(true)
+    expect(useAppStore.getState().resourceCollections).toEqual([])
+    expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['project'])
+  })
+})

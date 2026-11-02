@@ -183,3 +183,193 @@ UAM_TEST(ResourceCollectionLoadSanitizesMalformedJsonWithoutChangingWorkspaceFol
 	UAM_ASSERT_EQ(app.folders.size(), original_folders.size());
 	UAM_ASSERT_EQ(app.folders[0].id, original_folders[0].id);
 }
+
+namespace
+{
+	ResourceCollection CreateNested(uam::AppState& app, const std::string& name, const std::string& parent_id)
+	{
+		ResourceCollection created;
+		std::string error;
+		UAM_ASSERT(uam::ResourceCollectionService::Create(app, name, &created, &error, parent_id));
+		return created;
+	}
+
+	const ResourceCollection* FindLoaded(const std::vector<ResourceCollection>& collections, const std::string& id)
+	{
+		const auto found = std::ranges::find_if(collections, [&](const ResourceCollection& collection) { return collection.id == id; });
+		return found == collections.end() ? nullptr : &*found;
+	}
+} // namespace
+
+UAM_TEST(ResourceCollectionNestingRejectsCyclesSelfUnknownParentsAndExcessDepth)
+{
+	TempDir temp("uam-resource-nesting");
+	uam::AppState app = ResourceTestApp(temp.root);
+	std::string error;
+	const ResourceCollection level1 = CreateNested(app, "Homelab", "");
+	const ResourceCollection level2 = CreateNested(app, "Containers", level1.id);
+	const ResourceCollection level3 = CreateNested(app, "Level 3", level2.id);
+	const ResourceCollection level4 = CreateNested(app, "Level 4", level3.id);
+	const ResourceCollection level5 = CreateNested(app, "Level 5", level4.id);
+	UAM_ASSERT_EQ(level2.parent_id, level1.id);
+	const std::vector<ResourceCollection> before = app.resource_collections;
+
+	UAM_ASSERT(!uam::ResourceCollectionService::Create(app, "Level 6", nullptr, &error, level5.id));
+	UAM_ASSERT(error.find("deep") != std::string::npos);
+	UAM_ASSERT(!uam::ResourceCollectionService::Create(app, "Orphan", nullptr, &error, "resource-collection-missing"));
+	UAM_ASSERT(!uam::ResourceCollectionService::Move(app, level1.id, level1.id, &error));
+	UAM_ASSERT(!uam::ResourceCollectionService::Move(app, level1.id, level3.id, &error));
+	UAM_ASSERT(error.find("inside itself") != std::string::npos);
+	UAM_ASSERT(!uam::ResourceCollectionService::Move(app, level2.id, "resource-collection-missing", &error));
+	UAM_ASSERT_EQ(app.resource_collections.size(), before.size());
+
+	// A two-level subtree cannot move under level 4, which would make it six levels deep.
+	const ResourceCollection sibling = CreateNested(app, "Sibling", "");
+	const ResourceCollection sibling_child = CreateNested(app, "Sibling child", sibling.id);
+	UAM_ASSERT(!uam::ResourceCollectionService::Move(app, sibling.id, level4.id, &error));
+	UAM_ASSERT(uam::ResourceCollectionService::Move(app, sibling.id, level3.id, &error));
+	UAM_ASSERT_EQ(FindLoaded(app.resource_collections, sibling_child.id)->parent_id, sibling.id);
+	UAM_ASSERT(uam::ResourceCollectionService::Move(app, sibling.id, "", &error));
+	UAM_ASSERT(FindLoaded(app.resource_collections, sibling.id)->parent_id.empty());
+
+	for (const ResourceCollection& original : before)
+	{
+		UAM_ASSERT_EQ(FindLoaded(app.resource_collections, original.id)->parent_id, original.parent_id);
+	}
+
+	// Save itself refuses an invalid hierarchy so no caller can persist one.
+	std::vector<ResourceCollection> cyclic = app.resource_collections;
+	cyclic[0].parent_id = level5.id;
+	UAM_ASSERT(!uam::ResourceCollectionService::Save(temp.root, cyclic));
+	std::vector<ResourceCollection> self_parented = app.resource_collections;
+	self_parented[0].parent_id = self_parented[0].id;
+	UAM_ASSERT(!uam::ResourceCollectionService::Save(temp.root, self_parented));
+	const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
+	UAM_ASSERT(FindLoaded(loaded, level1.id)->parent_id.empty());
+	UAM_ASSERT_EQ(FindLoaded(loaded, level5.id)->parent_id, level4.id);
+}
+
+UAM_TEST(ResourceCollectionLegacyFlatFileLoadsUnchangedAsTopLevel)
+{
+	TempDir temp("uam-resource-legacy");
+	const nlohmann::json legacy = {
+	    {"version", 1},
+	    {"collections", nlohmann::json::array({
+	                        {{"id", "resource-collection-a"}, {"name", "A"}, {"collapsed", true}, {"references", nlohmann::json::array({{{"id", "resource-reference-a"}, {"type", "workspace-folder"}, {"target", "workspace-1"}, {"label", "W"}}})}},
+	                        {{"id", "resource-collection-b"}, {"name", "B"}, {"collapsed", false}},
+	                    })},
+	};
+	const fs::path primary = temp.root / "resource_collections.json";
+	const std::string legacy_text = legacy.dump(2);
+	UAM_ASSERT(uam::io::WriteTextFile(primary, legacy_text));
+	const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
+	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(loaded[0].parent_id.empty());
+	UAM_ASSERT(loaded[1].parent_id.empty());
+	UAM_ASSERT(loaded[0].collapsed);
+	UAM_ASSERT_EQ(loaded[0].references.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), legacy_text);
+
+	// Damaged hierarchy fields fall back to top level instead of dropping collections.
+	const nlohmann::json damaged = {
+	    {"version", 1},
+	    {"collections", nlohmann::json::array({
+	                        {{"id", "resource-collection-a"}, {"name", "A"}, {"parentId", "resource-collection-b"}},
+	                        {{"id", "resource-collection-b"}, {"name", "B"}, {"parentId", "resource-collection-a"}},
+	                        {{"id", "resource-collection-c"}, {"name", "C"}, {"parentId", "resource-collection-c"}},
+	                        {{"id", "resource-collection-d"}, {"name", "D"}, {"parentId", "resource-collection-missing"}},
+	                        {{"id", "resource-collection-e"}, {"name", "E"}, {"parentId", 7}},
+	                    })},
+	};
+	UAM_ASSERT(uam::io::WriteTextFile(primary, damaged.dump()));
+	const std::vector<ResourceCollection> sanitized = uam::ResourceCollectionService::Load(temp.root);
+	UAM_ASSERT_EQ(sanitized.size(), static_cast<std::size_t>(5));
+	UAM_ASSERT(sanitized[0].parent_id.empty());
+	UAM_ASSERT_EQ(sanitized[1].parent_id, std::string("resource-collection-a"));
+	UAM_ASSERT(sanitized[2].parent_id.empty());
+	UAM_ASSERT(sanitized[3].parent_id.empty());
+	UAM_ASSERT(sanitized[4].parent_id.empty());
+	UAM_ASSERT(uam::ResourceCollectionService::Save(temp.root, sanitized));
+}
+
+UAM_TEST(ResourceCollectionMoveCarriesReferencesWithoutTouchingTargets)
+{
+	TempDir temp("uam-resource-move");
+	uam::AppState app = ResourceTestApp(temp.root);
+	std::string error;
+	const ResourceCollection parent = CreateNested(app, "Homelab", "");
+	const ResourceCollection child = CreateNested(app, "Services", "");
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, child.id, "workspace-folder", "workspace-1", "Workspace", nullptr, &error));
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, child.id, "chat", "chat-1", "Chat", nullptr, &error));
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, child.id, "file", "/tmp/notes.md", "Notes", nullptr, &error));
+	const std::vector<ResourceReference> references = FindLoaded(app.resource_collections, child.id)->references;
+
+	UAM_ASSERT(uam::ResourceCollectionService::Move(app, child.id, parent.id, &error));
+	const std::vector<ResourceCollection> loaded = uam::ResourceCollectionService::Load(temp.root);
+	const ResourceCollection* moved = FindLoaded(loaded, child.id);
+	UAM_ASSERT(moved != nullptr);
+	UAM_ASSERT_EQ(moved->parent_id, parent.id);
+	UAM_ASSERT_EQ(moved->references.size(), references.size());
+	for (std::size_t index = 0; index < references.size(); ++index)
+	{
+		UAM_ASSERT_EQ(moved->references[index].id, references[index].id);
+		UAM_ASSERT_EQ(moved->references[index].target, references[index].target);
+	}
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app)["resourceCollections"][1]["parentId"].get<std::string>(), parent.id);
+}
+
+UAM_TEST(ResourceCollectionDeleteParentMovesChildrenUpOrDeletesThemWithIt)
+{
+	TempDir temp("uam-resource-delete-tree");
+	uam::AppState app = ResourceTestApp(temp.root);
+	std::string error;
+	const ResourceCollection root = CreateNested(app, "Root", "");
+	const ResourceCollection middle = CreateNested(app, "Middle", root.id);
+	const ResourceCollection leaf = CreateNested(app, "Leaf", middle.id);
+	const ResourceCollection deepest = CreateNested(app, "Deepest", leaf.id);
+	UAM_ASSERT(uam::ResourceCollectionService::AddReference(app, leaf.id, "workspace-folder", "workspace-1", "Workspace", nullptr, &error));
+
+	UAM_ASSERT(uam::ResourceCollectionService::Delete(app, middle.id, &error, false));
+	UAM_ASSERT(FindLoaded(app.resource_collections, middle.id) == nullptr);
+	UAM_ASSERT_EQ(FindLoaded(app.resource_collections, leaf.id)->parent_id, root.id);
+	UAM_ASSERT_EQ(FindLoaded(app.resource_collections, deepest.id)->parent_id, leaf.id);
+	UAM_ASSERT_EQ(FindLoaded(app.resource_collections, leaf.id)->references.size(), static_cast<std::size_t>(1));
+
+	UAM_ASSERT(uam::ResourceCollectionService::Delete(app, root.id, &error, true));
+	UAM_ASSERT(app.resource_collections.empty());
+	UAM_ASSERT(uam::ResourceCollectionService::Load(temp.root).empty());
+	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.folders[0].id, std::string("workspace-1"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(ResourceCollectionNestingMutationsKeepPreviousOrganisationWhenSaveFails)
+{
+	TempDir temp("uam-resource-nesting-rollback");
+	const fs::path data_root_file = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(data_root_file, "occupied"));
+	uam::AppState app = ResourceTestApp(data_root_file);
+	ResourceCollection parent;
+	parent.id = "resource-collection-parent";
+	parent.name = "Parent";
+	ResourceCollection child;
+	child.id = "resource-collection-child";
+	child.name = "Child";
+	child.parent_id = parent.id;
+	ResourceCollection loose;
+	loose.id = "resource-collection-loose";
+	loose.name = "Loose";
+	app.resource_collections = {parent, child, loose};
+
+	std::string error;
+	UAM_ASSERT(!uam::ResourceCollectionService::Create(app, "Inside", nullptr, &error, parent.id));
+	UAM_ASSERT(!uam::ResourceCollectionService::Move(app, loose.id, parent.id, &error));
+	UAM_ASSERT(!uam::ResourceCollectionService::Delete(app, parent.id, &error, false));
+	UAM_ASSERT(!uam::ResourceCollectionService::Delete(app, parent.id, &error, true));
+	UAM_ASSERT(error.find("persist") != std::string::npos);
+	UAM_ASSERT_EQ(app.resource_collections.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(app.resource_collections[1].parent_id, parent.id);
+	UAM_ASSERT(app.resource_collections[2].parent_id.empty());
+}

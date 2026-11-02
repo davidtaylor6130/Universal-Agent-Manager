@@ -117,7 +117,72 @@ namespace uam
 			{
 				references.push_back(ReferenceJson(reference));
 			}
-			return {{"id", collection.id}, {"name", collection.name}, {"collapsed", collection.collapsed}, {"customIcon", uam::icons::Serialize(collection.custom_icon)}, {"references", std::move(references)}};
+			nlohmann::json object = {{"id", collection.id}, {"name", collection.name}, {"collapsed", collection.collapsed}, {"customIcon", uam::icons::Serialize(collection.custom_icon)}, {"references", std::move(references)}};
+			// Top-level collections keep the legacy version 1 shape; older builds ignore parentId and show nested collections flat.
+			if (!collection.parent_id.empty())
+			{
+				object["parentId"] = collection.parent_id;
+			}
+			return object;
+		}
+
+		using CollectionIndex = std::unordered_map<std::string, const ResourceCollection*>;
+
+		CollectionIndex IndexCollections(const std::vector<ResourceCollection>& collections)
+		{
+			CollectionIndex by_id;
+			for (const ResourceCollection& collection : collections)
+			{
+				by_id.emplace(collection.id, &collection);
+			}
+			return by_id;
+		}
+
+		/// Walks one collection's ancestors; rejects unknown parents, cycles through it and chains deeper than the limit.
+		bool ValidateAncestors(const CollectionIndex& by_id, const ResourceCollection& collection, std::string* error_out)
+		{
+			std::size_t depth = 1;
+			for (std::string parent = collection.parent_id; !parent.empty();)
+			{
+				if (parent == collection.id)
+				{
+					SetError(error_out, "A collection cannot be placed inside itself.");
+					return false;
+				}
+				const auto found = by_id.find(parent);
+				if (found == by_id.end())
+				{
+					SetError(error_out, "Parent collection not found: " + parent);
+					return false;
+				}
+				// Also bounds the walk when a cycle does not include this collection.
+				if (++depth > ResourceCollectionService::kMaxCollectionDepth)
+				{
+					SetError(error_out, "Collections can be nested at most 5 levels deep.");
+					return false;
+				}
+				parent = found->second->parent_id;
+			}
+			return true;
+		}
+
+		bool ValidateHierarchy(const std::vector<ResourceCollection>& collections, std::string* error_out)
+		{
+			const CollectionIndex by_id = IndexCollections(collections);
+			return std::ranges::all_of(collections, [&](const ResourceCollection& collection) { return ValidateAncestors(by_id, collection, error_out); });
+		}
+
+		/// Loaded files never drop a collection for a bad parent; it returns to the top level instead.
+		void SanitizeHierarchy(std::vector<ResourceCollection>* collections)
+		{
+			const CollectionIndex by_id = IndexCollections(*collections);
+			for (ResourceCollection& collection : *collections)
+			{
+				if (!ValidateAncestors(by_id, collection, nullptr))
+				{
+					collection.parent_id.clear();
+				}
+			}
 		}
 
 		std::optional<std::vector<ResourceCollection>> ParseCollections(const std::string& text)
@@ -141,6 +206,11 @@ namespace uam
 				ResourceCollection collection;
 				collection.id = uam::strings::Trim(JsonString(value, "id"));
 				collection.name = uam::strings::Trim(JsonString(value, "name"));
+				collection.parent_id = uam::strings::Trim(JsonString(value, "parentId"));
+				if (!IsValidId(collection.parent_id))
+				{
+					collection.parent_id.clear();
+				}
 				collection.collapsed = JsonBool(value, "collapsed", false);
 				collection.custom_icon = uam::icons::Parse(value.value("customIcon", nlohmann::json(nullptr)));
 				if (!IsValidId(collection.id) || collection.name.empty() || collection.name.size() > kMaxNameBytes || !collection_ids.insert(collection.id).second)
@@ -173,6 +243,7 @@ namespace uam
 				}
 				collections.push_back(std::move(collection));
 			}
+			SanitizeHierarchy(&collections);
 			return collections;
 		}
 
@@ -255,7 +326,7 @@ namespace uam
 
 	bool ResourceCollectionService::Save(const std::filesystem::path& data_root, const std::vector<ResourceCollection>& collections)
 	{
-		if (collections.size() > kMaxCollections)
+		if (collections.size() > kMaxCollections || !ValidateHierarchy(collections, nullptr))
 		{
 			return false;
 		}
@@ -282,7 +353,7 @@ namespace uam
 		return uam::io::WriteTextFileWithBackup(FilePath(data_root), nlohmann::json{{"version", 1}, {"collections", std::move(values)}}.dump(2));
 	}
 
-	bool ResourceCollectionService::Create(AppState& app, const std::string& name, ResourceCollection* created, std::string* error_out)
+	bool ResourceCollectionService::Create(AppState& app, const std::string& name, ResourceCollection* created, std::string* error_out, const std::string& parent_id)
 	{
 		std::string normalized;
 		if (!NormalizeName(name, &normalized, error_out) || app.resource_collections.size() >= kMaxCollections)
@@ -296,9 +367,10 @@ namespace uam
 		ResourceCollection collection;
 		collection.id = NewId("resource-collection");
 		collection.name = normalized;
+		collection.parent_id = uam::strings::Trim(parent_id);
 		auto next = app.resource_collections;
 		next.push_back(collection);
-		if (!Persist(app, std::move(next), error_out))
+		if (!ValidateHierarchy(next, error_out) || !Persist(app, std::move(next), error_out))
 		{
 			return false;
 		}
@@ -327,7 +399,49 @@ namespace uam
 		return Persist(app, std::move(next), error_out);
 	}
 
-	bool ResourceCollectionService::Delete(AppState& app, const std::string& collection_id, std::string* error_out)
+	bool ResourceCollectionService::Delete(AppState& app, const std::string& collection_id, std::string* error_out, bool delete_children)
+	{
+		auto next = app.resource_collections;
+		const std::string id = uam::strings::Trim(collection_id);
+		const ResourceCollection* deleted = FindCollection(next, id);
+		if (deleted == nullptr)
+		{
+			SetError(error_out, "Resource collection not found: " + id);
+			return false;
+		}
+		std::unordered_set<std::string> removed{id};
+		if (delete_children)
+		{
+			// ponytail: repeated passes, O(n^2) over at most 200 collections.
+			for (std::size_t before = 0; before != removed.size();)
+			{
+				before = removed.size();
+				for (const ResourceCollection& collection : next)
+				{
+					if (removed.contains(collection.parent_id))
+					{
+						removed.insert(collection.id);
+					}
+				}
+			}
+		}
+		else
+		{
+			const std::string grandparent = deleted->parent_id;
+			for (ResourceCollection& collection : next)
+			{
+				if (collection.parent_id == id)
+				{
+					collection.parent_id = grandparent;
+				}
+			}
+		}
+		// Only organisation records are removed; workspaces, chats and files they reference stay untouched.
+		std::erase_if(next, [&](const ResourceCollection& collection) { return removed.contains(collection.id); });
+		return Persist(app, std::move(next), error_out);
+	}
+
+	bool ResourceCollectionService::Move(AppState& app, const std::string& collection_id, const std::string& parent_id, std::string* error_out)
 	{
 		auto next = app.resource_collections;
 		const std::string id = uam::strings::Trim(collection_id);
@@ -337,8 +451,17 @@ namespace uam
 			SetError(error_out, "Resource collection not found: " + id);
 			return false;
 		}
+		const std::string parent = uam::strings::Trim(parent_id);
+		if (found->parent_id == parent)
+		{
+			return true;
+		}
+		// The moved collection becomes the last of its new siblings; its references and children travel with it.
+		ResourceCollection moved = std::move(*found);
 		next.erase(found);
-		return Persist(app, std::move(next), error_out);
+		moved.parent_id = parent;
+		next.push_back(std::move(moved));
+		return ValidateHierarchy(next, error_out) && Persist(app, std::move(next), error_out);
 	}
 
 	bool ResourceCollectionService::ToggleCollapsed(AppState& app, const std::string& collection_id, std::string* error_out)

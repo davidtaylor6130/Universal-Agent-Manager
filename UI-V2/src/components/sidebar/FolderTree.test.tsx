@@ -552,6 +552,82 @@ describe('FolderTree', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows nested collections as a tree with nesting actions and a child-aware delete', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const parentChildren = host.querySelector('[data-testid="collection-children-homelab"]') as HTMLElement
+      expect(parentChildren.querySelector('[data-testid="folder-collection-services"] [data-testid="folder-row-project"]')).toBeTruthy()
+      const toggle = host.querySelector('[data-testid="collection-header-homelab"] button[aria-label="Collapse Homelab"]') as HTMLButtonElement
+      expect(toggle.getAttribute('aria-controls')).toBe(parentChildren.id)
+
+      // Nested collection menu: keyboard-reachable actions for nesting and leaving the parent.
+      const trigger = host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement
+      act(() => trigger.click())
+      let menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      expect(menu.textContent).toContain('New collection inside')
+      const top = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to top level')) as HTMLButtonElement
+      await act(async () => { top.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBeUndefined()
+
+      // Move to collection lists only valid targets with their path.
+      act(() => (host.querySelector('button[aria-label="Actions for Homelab"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Homelab actions"]') as HTMLElement
+      expect(menu.textContent).not.toContain('Move to top level')
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const submenu = document.body.querySelector('[role="menu"][aria-label="Move Homelab to collection"]') as HTMLElement
+      const labels = Array.from(submenu.querySelectorAll('button')).map((button) => button.textContent)
+      expect(labels).toEqual(['Other', 'Services'])
+      await act(async () => { (Array.from(submenu.querySelectorAll('button')).find((button) => button.textContent === 'Services') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'homelab')?.parentId).toBe('services')
+
+      // Deleting a parent offers to move children up a level.
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      const dialog = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(dialog.textContent).toContain('1 collection inside')
+      const keep = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement
+      await act(async () => { keep.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.map((collection) => [collection.id, collection.parentId])).toEqual([['other', undefined], ['homelab', undefined]])
+      expect(useAppStore.getState().folders.map((folder) => folder.id)).toContain('project')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('search still reaches workspaces referenced by nested collections', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: true, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: true, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+      expect(host.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+      expect(host.querySelector('[data-testid="folder-collection-homelab"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('opens collection actions from the collection context menu', () => {
     vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
     useAppStore.setState({

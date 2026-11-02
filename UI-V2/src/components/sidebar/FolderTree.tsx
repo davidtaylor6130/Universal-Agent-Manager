@@ -25,9 +25,11 @@ import {
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
+import { RowSubmenu } from './RowSubmenu'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
+import { canNestCollection, collectionPath, collectionSubtreeIds } from '../../utils/collectionTree'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { Overlay, usePresence } from '../ui/Overlay'
@@ -773,6 +775,31 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     }),
   }))
   const ungroupedFolderRows = searchModel.folderRows.filter(({ folder }) => !groupedFolderIds.has(folder.id))
+  const collectionIds = new Set(resourceCollections.map((collection) => collection.id))
+  // Native sanitizes parents; an unknown parent still renders at the top level rather than disappearing.
+  const parentOf = (collection: ResourceCollection) => collection.parentId && collectionIds.has(collection.parentId) ? collection.parentId : ''
+  const renderCollection = ({ collection, folderRows }: (typeof collectionGroups)[number]): ReactNode => {
+    const subtree = new Set(collectionSubtreeIds(resourceCollections, collection.id))
+    return (
+      <FolderCollection
+        key={collection.id}
+        collection={collection}
+        folderCount={folderRows.length}
+        hiddenPaneColors={paneColorsForFolders(new Set(collectionGroups.flatMap((group) => subtree.has(group.collection.id) ? group.folderRows.map(({ folder }) => folder.id) : [])))}
+        selected={!companionContext && selectedCollectionIds.has(collection.id)}
+        selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
+        onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
+        onDeleteSelected={requestCollectionDelete}
+        onFolderDrop={(folderId) => {
+          const folder = folders.find((item) => item.id === folderId)
+          if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
+        }}
+      >
+        {collectionGroups.filter((group) => parentOf(group.collection) === collection.id).map(renderCollection)}
+        {folderRows.map(renderFolderRow)}
+      </FolderCollection>
+    )
+  }
 
   const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
     if (sourceId === targetId) return
@@ -1044,27 +1071,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         hidden={!allChatsList.mounted}
         aria-hidden={!allChatsExpanded}
         {...(!allChatsExpanded ? { inert: '' } : {})}
+        onDragOver={(event) => {
+          // Dropping a nested collection outside every collection moves it to the top level.
+          if (!event.dataTransfer?.types.includes(COLLECTION_DRAG_TYPE) || !resourceCollections.find((entry) => entry.id === draggedCollectionId)?.parentId) return
+          event.preventDefault()
+        }}
+        onDrop={(event) => {
+          const id = event.dataTransfer?.getData(COLLECTION_DRAG_TYPE)
+          if (!id) return
+          event.preventDefault()
+          void moveCollection(id, null)
+        }}
       >
       <div className="uam-sb-collapse__inner">
       {allChatsList.mounted && <>
-      {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
-        <FolderCollection
-          key={collection.id}
-          collection={collection}
-          folderCount={folderRows.length}
-          hiddenPaneColors={paneColorsForFolders(new Set(folderRows.map(({ folder }) => folder.id)))}
-          selected={!companionContext && selectedCollectionIds.has(collection.id)}
-          selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
-          onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
-          onDeleteSelected={requestCollectionDelete}
-          onFolderDrop={(folderId) => {
-            const folder = folders.find((item) => item.id === folderId)
-            if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
-          }}
-        >
-          {folderRows.map(renderFolderRow)}
-        </FolderCollection>
-      ))}
+      {!searchModel.isSearching && collectionGroups.filter((group) => !parentOf(group.collection)).map(renderCollection)}
 
       {(searchModel.isSearching ? searchModel.folderRows : ungroupedFolderRows).map(renderFolderRow)}
 
@@ -1221,7 +1242,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
       >
-        <p className="mt-2">Workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
+        <p className="mt-2">Collections inside {pendingDeleteCollections?.length === 1 ? 'it move' : 'them move'} up a level, and workspaces remain, but {pendingDeleteCollections?.length === 1 ? 'this collection' : 'these collections'} cannot be restored.</p>
       </DeleteConfirmDialog>
 
       {recoveryDialogOpen && (
@@ -1405,8 +1426,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 }
 
 /** One collection's delete, from its menu or as a one-item selection. */
-async function deleteCollection({ id, label }: BulkTarget) {
-  if (!await useAppStore.getState().deleteResourceCollection(id)) reportAppFailure(`Could not delete "${label}".`, 'Could not save the change. Refresh and try again.')
+async function deleteCollection({ id, label }: BulkTarget, deleteChildren = false) {
+  if (!await useAppStore.getState().deleteResourceCollection(id, deleteChildren)) reportAppFailure(`Could not delete "${label}".`, 'Could not save the change. Refresh and try again.')
+}
+
+const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
+// dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.
+let draggedCollectionId: string | null = null
+
+async function moveCollection(collectionId: string, parentId: string | null) {
+  if (await useAppStore.getState().moveResourceCollection(collectionId, parentId)) return true
+  reportAppFailure('Could not move the collection.', 'Collections can nest at most 5 levels deep and never inside themselves. Refresh and try again.')
+  return false
 }
 
 function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
@@ -1419,6 +1450,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
+  const collections = useAppStore((state) => state.resourceCollections)
+  const childCount = collections.filter((entry) => entry.parentId === collection.id).length
+  const moveTargets = collections.filter((entry) => entry.id !== collection.parentId && canNestCollection(collections, collection.id, entry.id))
+  const canNestInside = canNestCollection(collections, null, collection.id)
+  const [addingChild, setAddingChild] = useState(false)
+  const [childName, setChildName] = useState('')
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(collection.name)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -1458,30 +1495,59 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     else setName(collection.name)
     setEditing(false)
   }
+  const cancelChild = () => { setChildName(''); setAddingChild(false) }
+  const commitChild = () => {
+    const trimmed = childName.trim()
+    if (!trimmed) return
+    void useAppStore.getState().createResourceCollection(trimmed, collection.id).then((created) => {
+      if (created) cancelChild()
+      else reportAppFailure('Could not create the collection.', 'Collections can nest at most 5 levels deep. Try again.')
+    })
+  }
+  const startChild = () => {
+    setMenuOpen(false)
+    if (collection.collapsed) void toggle(collection.id)
+    setAddingChild(true)
+  }
+  const isCollectionDrag = (event: { dataTransfer: DataTransfer }) => event.dataTransfer.types.includes(COLLECTION_DRAG_TYPE)
 
   return (
     <div
       className="mb-0"
       data-testid={`folder-collection-${collection.id}`}
       onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        const nesting = isCollectionDrag(event)
+        if (!nesting && !event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        // Only the innermost collection is a target; invalid nesting targets do not accept the drop.
+        event.stopPropagation()
+        if (nesting && (!draggedCollectionId || draggedCollectionId === collection.id || !canNestCollection(collections, draggedCollectionId, collection.id))) return
         event.preventDefault()
         setDropTarget(true)
       }}
       onDragLeave={() => setDropTarget(false)}
       onDrop={(event) => {
+        const nestedId = event.dataTransfer.getData(COLLECTION_DRAG_TYPE)
         const folderId = event.dataTransfer.getData('text/x-uam-folder-resource-id')
-        if (!folderId) return
+        if (!nestedId && !folderId) return
         event.preventDefault()
         event.stopPropagation()
         setDropTarget(false)
-        onFolderDrop(folderId)
+        if (nestedId) void moveCollection(nestedId, collection.id)
+        else onFolderDrop(folderId)
       }}
     >
       <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
       <div
         data-testid={`collection-header-${collection.id}`}
         data-collection-id={collection.id}
+        draggable={!isCompanionContext() && !editing}
+        onDragStart={(event) => {
+          event.stopPropagation()
+          draggedCollectionId = collection.id
+          event.dataTransfer.setData(COLLECTION_DRAG_TYPE, collection.id)
+          event.dataTransfer.effectAllowed = 'move'
+        }}
+        onDragEnd={() => { draggedCollectionId = null }}
         className={`group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150${selected && !dropTarget ? ' uam-selected-item' : ''}`}
         // Selected tint and line come from the shared .uam-selected-item; inline paint only for drop targets and rest.
         style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? undefined : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : undefined }}
@@ -1497,6 +1563,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             type="button"
             aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
             aria-expanded={!collection.collapsed}
+            aria-controls={`collection-children-${collection.id}`}
             onClick={() => { void toggle(collection.id) }}
             style={{ display: 'flex', background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}
           >
@@ -1520,7 +1587,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           />
         ) : (
           <Tooltip label={collection.name}>
-            <RowButton type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+            <RowButton type="button" aria-expanded={!collection.collapsed} aria-controls={`collection-children-${collection.id}`} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
               {collection.name}
             </RowButton>
           </Tooltip>
@@ -1543,6 +1610,18 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           </> : <>
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename" onClick={() => { setMenuOpen(false); setEditing(true) }} />
           <FolderMenuItem icon={<Library size={14} aria-hidden />} label="Change icon" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }} />
+          {canNestInside && <FolderMenuItem icon={<Plus size={14} aria-hidden />} label="New collection inside" onClick={startChild} />}
+          {moveTargets.length > 0 && (
+            <RowSubmenu label="Move to collection" ariaLabel={`Move ${collection.name} to collection`} icon={<Library size={14} aria-hidden />}>
+              {moveTargets.map((target) => (
+                <button key={target.id} type="button" role="menuitem" className="uam-sb-menu-item" onClick={() => { setMenuOpen(false); void moveCollection(collection.id, target.id) }}>
+                  <Library size={13} aria-hidden />
+                  <span className="truncate">{collectionPath(collections, target.id)}</span>
+                </button>
+              ))}
+            </RowSubmenu>
+          )}
+          {collection.parentId && <FolderMenuItem icon={<Library size={14} aria-hidden />} label="Move to top level" onClick={() => { setMenuOpen(false); void moveCollection(collection.id, null) }} />}
           <MenuDivider />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete" danger onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }} />
           </>}
@@ -1555,6 +1634,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
       >
         <div className="min-h-0 overflow-hidden">
           <div
+            id={`collection-children-${collection.id}`}
             data-testid={`collection-children-${collection.id}`}
             className="ml-3 mr-1 mt-0 py-0 pl-1"
             style={{
@@ -1562,23 +1642,47 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
               boxShadow: 'none',
             }}
           >
+            {addingChild && (
+              <div className="uam-inline-form uam-reveal" role="group" aria-label={`New collection inside ${collection.name}`}>
+                <div className="uam-inline-form__title">New collection</div>
+                <input
+                  autoFocus
+                  aria-label="Collection name"
+                  value={childName}
+                  onChange={(event) => setChildName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') commitChild()
+                    if (event.key === 'Escape') cancelChild()
+                  }}
+                  placeholder="Collection name"
+                  className="uam-field w-full"
+                />
+                <div className="uam-inline-form__actions">
+                  <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={cancelChild}>Cancel</Button>
+                  <Button variant="primary" size="sm" aria-label="Create collection" disabled={!childName.trim()} onClick={commitChild}>Create</Button>
+                </div>
+              </div>
+            )}
             {children}
             {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}>{/* ui: raw button kept — nested inside its own Tooltip; inline icon chip */}<button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
-            {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
+            {folderCount === 0 && childCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
       </div>
       {iconPicker.dialog}
-      <DeleteConfirmDialog
+      <ConfirmDialog
         open={confirmingDelete}
-        kind="collection"
-        count={1}
-        name={collection.name}
+        title="Delete collection?"
+        label={`Delete ${collection.name} collection`}
+        confirmLabel={childCount > 0 ? 'Delete all' : 'Delete collection'}
+        {...(childCount > 0 ? { secondaryAction: { label: 'Move contents up', onClick: () => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }) } } } : {})}
         onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }) }}
+        onConfirm={() => { setConfirmingDelete(false); void deleteCollection({ id: collection.id, label: collection.name }, childCount > 0) }}
       >
-        <p className="mt-2">Workspaces remain, but this collection cannot be restored.</p>
-      </DeleteConfirmDialog>
+        {childCount > 0
+          ? `“${collection.name}” has ${childCount} ${childCount === 1 ? 'collection' : 'collections'} inside. Move contents up keeps them one level up; Delete all removes them too. Workspaces and chats remain.`
+          : <>“{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.</>}
+      </ConfirmDialog>
     </div>
   )
 }

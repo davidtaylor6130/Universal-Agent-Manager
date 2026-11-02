@@ -62,7 +62,7 @@ void UamQueryHandler::HandleCreateResourceCollection(CefRefPtr<CefBrowser> brows
 {
 	ResourceCollection created;
 	std::string error;
-	if (!uam::ResourceCollectionService::Create(m_app, payload.value("name", ""), &created, &error))
+	if (!uam::ResourceCollectionService::Create(m_app, payload.value("name", ""), &created, &error, payload.value("parentId", "")))
 	{
 		FailResourceCollection(cb, error);
 		return;
@@ -86,7 +86,19 @@ void UamQueryHandler::HandleRenameResourceCollection(CefRefPtr<CefBrowser> brows
 void UamQueryHandler::HandleDeleteResourceCollection(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	std::string error;
-	if (!uam::ResourceCollectionService::Delete(m_app, payload.value("collectionId", ""), &error))
+	if (!uam::ResourceCollectionService::Delete(m_app, payload.value("collectionId", ""), &error, payload.value("deleteChildren", false)))
+	{
+		FailResourceCollection(cb, error);
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleMoveResourceCollection(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::string error;
+	if (!uam::ResourceCollectionService::Move(m_app, payload.value("collectionId", ""), payload.value("parentId", ""), &error))
 	{
 		FailResourceCollection(cb, error);
 		return;
