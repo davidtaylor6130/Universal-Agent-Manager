@@ -211,7 +211,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     const next = entries[index + 1]
     return <div key={`group:${entry.key}`} style={{ borderTop: index ? '1px solid var(--border)' : undefined, borderBottom: next && !('entries' in next) ? '1px solid var(--border)' : undefined }}>
       <RowButton type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
-        className="flex w-full items-center gap-1.5 py-2 text-left" style={{ minHeight: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
+        className="flex w-full items-center gap-1.5 text-left" style={{ height: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
         <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-base motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
         <span className="uam-set-section__title min-w-0 truncate">{entry.path.length ? entry.path[entry.path.length - 1] : 'Ungrouped'}</span>
         <span className="ml-auto text-xs tabular-nums">{entry.count}</span>
@@ -259,7 +259,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
           return <div key={action.id} className="uam-presence" data-state={removingActionIds.has(action.id) ? 'closed' : 'open'}><SettingRow icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
-            description={<span className="uam-prov-sub">{summary}</span>}
+            description={summary}
             status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />

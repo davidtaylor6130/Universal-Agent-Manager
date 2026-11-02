@@ -41,7 +41,7 @@
 }
 
 /* Page frame: header and content travel together, centred both ways; wide pages grow to the space available and scroll vertically. */
-.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
+.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
 .uam-settings-frame { width: 100%; max-width: 960px; margin-inline: auto; }
 .uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
 
@@ -67,6 +67,7 @@
 .uam-set-row__control { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; max-width: 55%; }
 .uam-set-row__control > select, .uam-set-row__control > .uam-menu-select, .uam-set-row__control > input:not([type="checkbox"]) { min-width: 220px; }
 .uam-set-row__extra { margin-top: var(--sp-3); }
+.uam-set-row__extra:empty { display: none; }
 .uam-set-field { display: grid; gap: 6px; align-content: start; }
 .uam-set-field__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-2); }
 .uam-set-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
@@ -138,3 +139,6 @@
 .uam-set-card:not(.uam-set-card--flush) > :where(* + *) { border-top: 1px solid var(--border); }
 .uam-set-card > :where(p, span), .uam-set-card > .uam-presence > :where(p:only-child) { display: block; padding-block: var(--sp-3); margin: 0; }
 .uam-set-section__head { min-height: 32px; align-items: center; }
+/* Rows wrapped in Reveal/AnimatedRows still get the row divider. */
+:is(.uam-set-row, .uam-presence) + .uam-presence > .uam-set-row:first-child,
+.uam-presence + .uam-set-row { border-top: 1px solid var(--border); }

@@ -10,7 +10,8 @@
 /* Add, import and edit steps: the library slides out left, the step slides in from the right. Stays mounted. */
 .uam-skills-library { transition: transform var(--dur-base) var(--ease), opacity var(--dur-base) var(--ease); }
 .uam-skills-library[data-away] { position: absolute; inset: 0; transform: translateX(-100%); opacity: 0; }
-.uam-skills-step { animation: uam-skills-step-in var(--dur-base) var(--ease) backwards; }
+/* The step fills the library pane, so it never leaves an empty gap above or below its content. */
+.uam-skills-step { position: absolute; inset: 0; display: flex; flex-direction: column; animation: uam-skills-step-in var(--dur-base) var(--ease) backwards; }
 @keyframes uam-skills-step-in { from { transform: translateX(100%); opacity: 0; } }
 .uam-skills-step[data-closing] { animation: uam-skills-step-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
 @keyframes uam-skills-step-out { to { transform: translateX(100%); opacity: 0; } }
@@ -56,6 +57,14 @@
 .uam-store-row .uam-store-command { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
 .uam-chip.uam-store-command { font-family: var(--font-mono); color: var(--text-3); border-color: var(--border); }
 
+/* Add skill choices: one 44px line each (icon, label, muted hint, chevron), divided, top-aligned under the step header. */
+.uam-skill-choice { display: flex; align-items: center; gap: var(--sp-3); height: 44px; padding: 0 var(--sp-3); border-bottom: 1px solid var(--border); color: var(--text); font-size: var(--fs-sm); text-align: left; }
+.uam-skill-choice:last-child { border-bottom: 0; }
+.uam-skill-choice > svg { flex-shrink: 0; color: var(--text-3); }
+.uam-skill-choice__icon { display: inline-grid; flex-shrink: 0; place-items: center; width: 24px; height: 24px; border-radius: var(--r-md); background: var(--surface-high); color: var(--text-2); }
+.uam-skill-choice__label { flex-shrink: 0; font-weight: var(--fw-medium); white-space: nowrap; }
+.uam-skill-choice__hint { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); }
+
 /* Detail: title, chips, body as the hero, then a collapsed Details list. */
 .uam-store-detail__title { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text); }
 .uam-store-detail__chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-2) 0 var(--sp-4); }
@@ -74,8 +83,9 @@
 
 /* Memory detail: title at the large size, body keeps the shared preview measure. */
 .uam-memory-detail__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text); }
-/* New memory: the body grows with its text, starting at four rows. */
+/* New memory: the body grows with its text, starting at four lines (12px × 1.5 leading × 4, plus padding and border). */
 .uam-memory-form textarea { field-sizing: content; }
+.uam-memory-form textarea.uam-memory-body { min-height: calc(var(--fs-sm) * 6 + 18px); }
 /* Unsaved-memory prompt: fades and rises in, and reverses on leave. */
 .uam-memory-exit { animation: uam-memory-exit-in var(--dur-base) var(--ease) backwards; }
 .uam-memory-exit[data-state="closed"] { animation: uam-memory-exit-out var(--dur-fast) var(--ease) forwards; }

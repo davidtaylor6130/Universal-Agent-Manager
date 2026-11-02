@@ -2207,22 +2207,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title="Agent cycle"
             actions={
               <>
-                <div className="w-[220px] max-w-full">
+                {selectableCustomAgents.length > 0 && <div className="w-[220px] max-w-full">
                   <MenuSelect
                     label="Favourite agent"
                     value={selectedCandidate}
-                    options={selectableCustomAgents.length > 0
-                      ? selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))
-                      : [{ value: '', label: activeSessionId ? 'No more selectable custom agents' : 'Open a chat to list workspace agents' }]}
+                    options={selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))}
                     onChange={setFavoriteAgentCandidate}
-                    disabled={selectableCustomAgents.length === 0}
                   />
-                </div>
+                </div>}
                 <Button
                   size="sm"
                   variant="secondary"
                   leadingIcon={<Plus size={14} />}
                   disabled={!selectedCandidate}
+                  disabledReason={selectedCandidate ? undefined : activeSessionId ? 'All custom agents are already favourites' : 'Open a chat to list workspace agents'}
                   onClick={() => {
                     updatePreferences([...favoriteUamAgentIds, selectedCandidate])
                     setFavoriteAgentCandidate('')
@@ -2233,8 +2231,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           >
             <SettingRow
               title="Cycle shortcut"
-              description="Moves to the next agent in the composer."
-              status={favoriteUamAgentIds.length === 0 ? 'The cycle is Build, then Plan.' : undefined}
+              description={favoriteUamAgentIds.length === 0 ? 'Moves to the next agent: Build, then Plan.' : 'Moves to the next agent in the composer.'}
               htmlFor="agent-cycle-shortcut"
               control={
                 <MenuSelect

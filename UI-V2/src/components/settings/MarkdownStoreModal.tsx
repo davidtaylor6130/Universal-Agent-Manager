@@ -365,10 +365,18 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     }
   }
 
-  const childTitle = editing ? (editing === 'new' ? 'Create skill' : 'Edit skill') : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'
-  // The add, import and editor steps replace the library list inside this dialog; they never stack a second dialog.
-  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className="uam-skills-step flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto px-4 py-4 outline-none">
-    <Swap swapKey={editing ? 'editor' : imports.length ? 'import' : 'add'}>{editing ? <>
+  const childTitle = editing ? (editing === 'new' ? 'Create skill' : 'Edit skill') : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'New skill'
+  const stepKey = editing ? 'editor' : imports.length ? 'import' : addView ?? ''
+  // Back steps out one level; from the first add step it closes the add flow.
+  const stepBack = editing ? requestEditorClose : imports.length ? closeImportReview : addView === 'provider' ? () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') } : closeAdd
+  // The add, import and editor steps render in the library pane, beside the folder nav; they never stack a second dialog.
+  const childPanel = <div ref={childDialogRef} role="group" aria-label={childTitle} tabIndex={-1} className="uam-skills-step flex min-h-0 flex-1 flex-col outline-none">
+    <Swap swapKey={stepKey} className="flex min-h-0 flex-1 flex-col"><div className="flex min-h-0 flex-1 flex-col">
+      <div className="uam-store-toolbar">
+        <IconButton size="sm" icon={<ArrowLeft size={15} aria-hidden />} label="Back" disabled={submitting || importing} onClick={stepBack} />
+        <div className="uam-store-truncate min-w-0 flex-1 text-sm font-semibold" style={{ color: 'var(--text)' }}>{childTitle}</div>
+      </div>
+      <div data-step-scroll className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">{editing ? <>
       <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="flex justify-end"><SegmentedControl aria-label="Entry view" options={[{ value: 'edit', label: 'Edit' }, { value: 'preview', label: 'Preview' }]} value={showEditorPreview ? 'preview' : 'edit'} onChange={(value) => setShowEditorPreview(value === 'preview')} /></div>
         <input aria-label="Entry title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Title" className="uam-field text-sm" />
@@ -385,9 +393,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           {lastConfirmation.current === 'overwrite' && 'This replaces the saved entry.'}
         </Notice>
       </div>}
-      {idleActionsPresence.mounted && <div className="flex justify-end gap-2 uam-presence" data-state={idleActionsPresence.closing ? 'closed' : 'open'}><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
+      {idleActionsPresence.mounted && <div className="flex items-center justify-end gap-2 uam-presence" data-state={idleActionsPresence.closing ? 'closed' : 'open'}><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><SaveButton saving={submitting} pendingLabel="Saving..." disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save</SaveButton></div>}
     </> : imports.length ? <>
-      <div className="uam-set-section__title shrink-0 px-1">Import preview</div>
       <div data-import-candidates className="grid min-h-0 gap-2">{imports.map((candidate) => <Reveal key={candidate.id} open><div title={candidate.sourcePath} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <Switch label={candidate.title || candidate.sourcePath.split(/[\\/]/).pop() || candidate.sourcePath} disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
@@ -395,27 +402,25 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </div>
         {candidate.collisionPath && <div className="w-40 shrink-0"><MenuSelect label="If a skill with this name exists" disabled={importing} value={conflicts[candidate.id] ?? 'skip'} onChange={(value) => setConflicts({ ...conflicts, [candidate.id]: value as MarkdownStoreConflictAction })} options={[{ value: 'skip', label: 'Skip' }, { value: 'replace', label: 'Replace' }, { value: 'separate', label: 'Keep both' }]} /></div>}
       </div></Reveal>)}</div>
-      <div className="shrink-0 flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
-    </> : <>
-      <div className="flex justify-end"><IconButton icon={<X size={16} />} label="Close add skill" onClick={closeAdd} /></div>
-      <Swap swapKey={addView ?? ''}>{addView === 'choose' ? <div aria-label="Add skill choices" className="grid">
-        <ProgressFill label="Reading skills" indeterminate active={previewing} className="grid gap-2">
+      <div className="shrink-0 flex items-center justify-end gap-2"><Button variant="secondary" size="sm" disabled={importing} onClick={closeImportReview}>Cancel</Button><Button variant="primary" size="sm" disabled={importing || !imports.some((candidate) => candidate.supported && selectedImports.has(candidate.id))} onClick={() => void runImport()}>{importing ? 'Importing...' : 'Import selected'}</Button></div>
+    </> : addView === 'choose' ? <div aria-label="Add skill choices" className="grid">
+        <ProgressFill label="Reading skills" indeterminate active={previewing} className="grid">
         {[
-          { label: 'Create', icon: <Plus size={14} />, action: beginNew },
-          { label: 'Import from provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
-          { label: 'Import file', icon: <FileInput size={14} />, action: () => void chooseImport('file') },
-          { label: 'Import folder', icon: <FolderInput size={14} />, action: () => void chooseImport('folder') },
-        ].map((choice) => <RowButton key={choice.label} className="uam-prov-option" aria-label={choice.label} disabled={previewing} onClick={choice.action}>
-          <span className="uam-prov-option__icon" aria-hidden>{choice.icon}</span>
-          <span className="uam-prov-option__label min-w-0 text-left">{choice.label}</span>
-          <ChevronRight size={14} aria-hidden className="uam-prov-option__chevron" />
+          { label: 'Create', hint: 'Write a new skill in the app', icon: <Plus size={14} />, action: beginNew },
+          { label: 'Import from provider', hint: 'Copy skills from a CLI provider', icon: <Download size={14} />, action: () => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('provider') } },
+          { label: 'Import file', hint: 'Add one skill file from disk', icon: <FileInput size={14} />, action: () => void chooseImport('file') },
+          { label: 'Import folder', hint: 'Add every skill in a folder', icon: <FolderInput size={14} />, action: () => void chooseImport('folder') },
+        ].map((choice) => <RowButton key={choice.label} className="uam-skill-choice" aria-label={choice.label} disabled={previewing} onClick={choice.action}>
+          <span className="uam-skill-choice__icon" aria-hidden>{choice.icon}</span>
+          <span className="uam-skill-choice__label">{choice.label}</span>
+          <span className="uam-skill-choice__hint">{choice.hint}</span>
+          <ChevronRight size={14} aria-hidden />
         </RowButton>)}
         </ProgressFill>
       </div> : <>
         <SelectionGrid label="Provider" options={PROVIDER_OPTIONS} value={importProvider} onChange={(id) => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setImportProvider(id) }} />
-        <ProgressFill label="Reading skills" indeterminate active={previewing} className="flex justify-end gap-2"><Button onClick={() => { ++importPreviewRequestRef.current; setPreviewing(false); resetError(); setAddView('choose') }}>Back</Button><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></ProgressFill>
-      </>}</Swap>
-    </>}</Swap>
+        <ProgressFill label="Reading skills" indeterminate active={previewing} className="flex items-center justify-end gap-2"><Button variant="primary" disabled={!importProvider || previewing} onClick={() => void loadImports({ includeProviders: true }, importProvider)}>Review imports</Button></ProgressFill>
+      </>}</div></div></Swap>
   </div>
 
   const listView = <>
@@ -463,21 +468,27 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     </div>
   </section>
 
-  const library = <div className="flex min-h-0 flex-1">
-    <nav aria-label="Skill folders" className="uam-store-nav flex shrink-0 flex-col">
+  if (childOpen) childSnapshot.current = childPanel
+  const exitProps: Record<string, string | true | undefined> = stepPresence.closing ? { 'data-closing': 'true', inert: '', 'aria-hidden': 'true' } : {}
+
+  // The folder nav stays visible beside every step; only the pane's content changes.
+  const library = <div ref={libraryRef} className="flex min-h-0 flex-1">
+    <nav aria-label="Skill folders" className="uam-store-nav flex shrink-0 flex-col" {...(childOpen ? { inert: '' } : {})}>
       <RowButton className="uam-store-nav__item" selected={folderKey === ''} onClick={() => setFolderKey('')}>
         <span className="uam-store-truncate flex-1">All skills</span>
         <span className="uam-store-nav__count">{entries.length}</span>
       </RowButton>
       <FolderTree nodes={folderTree} depth={0} selectedKey={folderKey} collapsed={collapsed} onSelect={setFolderKey} onToggle={toggleFolder} />
     </nav>
-    <div className="uam-store-pane flex min-w-0 flex-1 flex-col">
-      <Swap swapKey={opened ? 'detail' : 'list'} className="flex min-h-0 flex-1 flex-col">{opened ? detailView(opened) : listView}</Swap>
+    <div className="uam-store-pane relative flex min-w-0 flex-1 flex-col overflow-hidden">
+      {/* The list or detail slides out left while a step is open. */}
+      <div className="uam-skills-library flex min-h-0 flex-1 flex-col" data-away={childOpen || undefined} aria-hidden={childOpen || undefined} {...(childOpen ? { inert: '' } : {})}>
+        <Swap swapKey={opened ? 'detail' : 'list'} className="flex min-h-0 flex-1 flex-col">{opened ? detailView(opened) : listView}</Swap>
+      </div>
+      {/* Slides out, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
+      {stepPresence.mounted && childSnapshot.current && cloneElement(childSnapshot.current, exitProps)}
     </div>
   </div>
-
-  if (childOpen) childSnapshot.current = childPanel
-  const exitProps: Record<string, string | true | undefined> = stepPresence.closing ? { 'data-closing': 'true', inert: '', 'aria-hidden': 'true' } : {}
 
   // Overlay has no attribute passthrough, so the dialog role stays on the panel.
   const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
@@ -502,12 +513,10 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           </SettingRow>
           </div>
           {/* Stage: the library and the step share one area, so the step slides over the library. */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" style={{ borderTop: '1px solid var(--border)' }}>
+          <div className="flex min-h-0 flex-1 flex-col" style={{ borderTop: '1px solid var(--border)' }}>
             <Swap swapKey={markdownStoreDirectory ? 'library' : 'empty'} className="flex min-h-0 flex-1 flex-col">{!markdownStoreDirectory
               ? <StoreEmpty action={<Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button>}>Choose a skills folder to get started.</StoreEmpty>
-              : <div ref={libraryRef} className="uam-skills-library flex min-h-0 flex-1 flex-col" data-away={childOpen || undefined} aria-hidden={childOpen || undefined} {...(childOpen ? { inert: '' } : {})}>{library}</div>}</Swap>
-            {/* Slides out, not unmounted, while a step is open: the library keeps its state and focus can return to its trigger. */}
-            {stepPresence.mounted && childSnapshot.current && cloneElement(childSnapshot.current, exitProps)}
+              : library}</Swap>
           </div>
         </div>
       </div>

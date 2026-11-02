@@ -278,7 +278,7 @@ describe('MarkdownStoreModal', () => {
 
     const importTrigger = button('New skill')
     await openProviderImports()
-    expect(host.textContent).toContain('Import preview')
+    expect(host.querySelector('[data-import-candidates]')).toBeTruthy()
     expect(host.textContent).toContain('Unsupported file type')
     expect((host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement).contains(document.activeElement)).toBe(true)
 
@@ -370,7 +370,7 @@ describe('MarkdownStoreModal', () => {
     await openProviderImports()
     const preview = host.querySelector('[role="group"][aria-label="Import skills"]') as HTMLElement
     expect(preview).toBeTruthy()
-    expect(preview.className).toContain('overflow-y-auto')
+    expect(preview.querySelector('[data-step-scroll]')?.className).toContain('overflow-y-auto')
     expect(preview.querySelector('[data-import-candidates]')?.className).toContain('min-h-0')
 
     await act(async () => {
@@ -478,7 +478,7 @@ describe('MarkdownStoreModal', () => {
     click('New skill')
     const choices = host.querySelector('[aria-label="Add skill choices"]') as HTMLElement
     expect(choices.className).toContain('grid')
-    expect(Array.from(choices.querySelectorAll('button')).map((item) => item.textContent)).toEqual(['Create', 'Import from provider', 'Import file', 'Import folder'])
+    expect(Array.from(choices.querySelectorAll('button')).map((item) => item.getAttribute('aria-label'))).toEqual(['Create', 'Import from provider', 'Import file', 'Import folder'])
     for (const choice of choices.querySelectorAll('button')) {
       expect(choice.querySelector('svg')).toBeTruthy()
     }
@@ -501,6 +501,8 @@ describe('MarkdownStoreModal', () => {
     expect(host.querySelector('.uam-skills-library')).toBe(library)
     expect(host.querySelector('[aria-label="Search skills"]')).toBe(search)
     expect(host.querySelector('.uam-skills-step')).toBeTruthy()
+    // The folder nav stays visible and usable beside the step; only the list slides away.
+    expect(host.querySelector('[aria-label="Skill folders"]')).toBeTruthy()
     expect(escape().defaultPrevented).toBe(true)
     expect(library.hasAttribute('data-away')).toBe(false)
     expect(library.hasAttribute('inert')).toBe(false)
@@ -629,7 +631,7 @@ describe('MarkdownStoreModal', () => {
     const browse = vi.fn(() => new Promise<string | null>((resolve) => { resolvePicker = resolve }))
     useAppStore.setState({ browseMarkdownStoreImport: browse })
     const { host } = mountSkills()
-    click('New skill'); click('Import folder'); click('Close add skill')
+    click('New skill'); click('Import folder'); click('Back')
     await act(async () => { resolvePicker('/tmp/stale-folder'); await Promise.resolve() })
     expect(useAppStore.getState().previewMarkdownStoreImports).not.toHaveBeenCalled()
     expect(host.querySelector('[aria-label="Import skills"]')).toBeNull()

@@ -529,7 +529,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
               setDraft((current) => ({ ...current, memory: value }))
             }}
             rows={4}
-            className="uam-field uam-field--area"
+            className="uam-field uam-field--area uam-memory-body"
           />
         </SettingsField>
 
@@ -602,8 +602,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           </div>
         </Disclosure>
 
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" disabled={submitting} onClick={requestClose}>Cancel</Button>
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" disabled={submitting} onClick={requestClose}>Cancel</Button>
           <SaveButton
             saving={submitting}
             pendingLabel="Saving..."
