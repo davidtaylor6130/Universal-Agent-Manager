@@ -2574,3 +2574,27 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
 }
 :root[data-motion="off"] .uam-progress-fill::before { transition: none; }
 :root[data-motion="off"] .uam-progress-fill[data-indeterminate]::before { animation: none; }
+/* Meter variant: a standalone bar for a measured quantity with a real limit. The fill grows from the left on mount
+   (the shared motion stop settles it); the marker is a thin tick, outlined in the surface colour so it reads over the fill.
+   An unknown share keeps the same empty track; reading sweeps inside it. */
+.uam-meter { position: relative; display: block; flex: none; height: 6px; border-radius: var(--r-full); background: var(--surface-high); box-shadow: inset 0 0 0 1px var(--border); }
+.uam-meter::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: var(--text-3); transform-origin: left center; transform: scaleX(var(--progress, 0));
+  transition: transform var(--dur-base) var(--ease-out-soft);
+  animation: uam-meter-grow var(--dur-enter) var(--ease-out-soft);
+}
+.uam-meter[data-tone="warning"]::before { background: var(--warning); }
+.uam-meter[data-tone="error"]::before { background: var(--error); }
+.uam-meter:not([role])::before { content: none; }
+.uam-meter[data-indeterminate] { overflow: hidden; }
+.uam-meter[data-indeterminate]::before {
+  content: ''; width: 40%; transform: none; transition: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text-3) 45%, transparent), transparent);
+  animation: uam-progress-sweep 1.4s ease-in-out infinite;
+}
+.uam-meter__marker {
+  position: absolute; top: -3px; bottom: -3px; left: calc(var(--marker, 0) * 100%); width: 2px; margin-left: -1px;
+  border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--surface); pointer-events: none;
+}
+@keyframes uam-meter-grow { from { transform: scaleX(0); } }

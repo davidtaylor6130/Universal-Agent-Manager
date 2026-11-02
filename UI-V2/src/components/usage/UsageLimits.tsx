@@ -7,17 +7,22 @@ import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
 import { preloadProviderAllowances, type ProviderAllowance } from '../../services/providerAllowances'
 import { Button, Disclosure, Notice, ProgressFill, StatusDot, Tooltip, cx, Reveal } from '../ui'
+import { allowancePace, type AllowancePace } from './allowancePace'
 import { SettingsSection } from '../settings/SettingsPrimitives'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { formatCreditBalance } from '../../utils/providerAllowanceFormatting'
 import './usage.css'
 
-/** Allowance colour: calm under 80%, warning from 80%, error from 95%. */
-const meterTone = (percent: number) => percent >= 95 ? 'var(--error)' : percent >= 80 ? 'var(--warning)' : 'var(--success)'
-/** Percent text stays neutral until it needs attention. */
-const valueTone = (percent: number) => percent >= 80 ? meterTone(percent) : 'var(--text)'
-/** Row fill: the theme's progress tint, turning to the status tint once the window needs attention. */
-const fillTone = (percent: number) => percent >= 95 ? 'var(--error-dim)' : percent >= 80 ? 'var(--warning-dim)' : 'var(--accent-dim)'
+/**
+ * Bar tone: error once a window is nearly or fully used, warning when its pace runs out before the reset. Without a
+ * known window length there is no pace, so the documented 80% threshold stands in for it.
+ */
+function barTone(percent: number, pace: AllowancePace): 'neutral' | 'warning' | 'error' {
+  if (percent >= 95 || pace.verdict === 'out') return 'error'
+  return pace.verdict === 'ahead' || (pace.elapsedPercent === null && percent >= 80) ? 'warning' : 'neutral'
+}
+/** Percent text stays neutral until the bar needs attention. */
+const TONE_TEXT = { neutral: 'var(--text)', warning: 'var(--warning)', error: 'var(--error)' } as const
 
 const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 })
 const formatPercent = (percent: number) => percentFormat.format(percent)
@@ -36,58 +41,95 @@ export interface LimitsUsage {
 
 function resetLabel(window: AcpRateLimitWindow, now: number, awaitingUpdate: boolean) {
   if (window.resetsAt === null) return null
-  if (window.resetsAt * 1000 > now) return `Resets ${relativeIn(window.resetsAt * 1000, now)}`
-  return awaitingUpdate ? 'Reset passed, awaiting update' : 'Provider-reported reset time has passed'
+  if (window.resetsAt * 1000 > now) return `resets ${moment(window.resetsAt * 1000, now)}`
+  return awaitingUpdate ? 'reset passed, awaiting update' : 'provider-reported reset time has passed'
+}
+
+/** Joins the parts of a window line and starts it with a capital. */
+const line = (parts: (string | null | undefined)[]) => {
+  const text = parts.filter(Boolean).join(' · ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+/** The plain-words pace verdict for a window. Compact rows name the run-out time without the "ahead of pace" lead. */
+function verdictText(pace: AllowancePace, now: number, compact = false) {
+  if (pace.verdict === 'out') return 'used up'
+  if (pace.verdict === 'ahead') return `${compact ? '' : 'ahead of pace · '}runs out ${approx(pace.runsOutAt!, now)}`
+  return pace.verdict === 'on' ? 'on pace' : pace.verdict === 'under' ? 'plenty left' : null
 }
 
 /**
- * One limit per line: the row is the progress track, its background fills to the used share. An unknown share keeps the
- * same row, empty and muted, with ??% (… while reading); the screen-reader text carries the label and why.
+ * One window's text, bar and percent: the shared look of the compact provider row and each expanded window. The bar
+ * fills to the used share and carries a tick at the share of the window's time already passed; an unknown share keeps
+ * the same empty, greyed bar with ??% (… while reading) and says why in text.
  */
-function AllowanceRow({ label, meterLabel, window, now, showUnknownReset = false, awaitingUpdate = false, missingLabel = 'Not readable at this time', pending = false }: { label: string; meterLabel: string; window: AcpRateLimitWindow | null; now: number; showUnknownReset?: boolean; awaitingUpdate?: boolean; missingLabel?: string; pending?: boolean }) {
-  const percent = window ? window.usedPercent : NaN
-  const valid = isValidPercent(percent)
-  const reset = !valid ? '—' : (window && resetLabel(window, now, awaitingUpdate)) ?? (showUnknownReset ? 'Reset time unavailable' : null)
-  // Unknown windows keep the same element with no fill and no meter role, so the row structure never changes.
-  return <ProgressFill label={meterLabel} value={percent} active={valid} className={cx('uam-limit-row', !valid && 'uam-limit-row--unknown')}>
-    <span className="uam-limit-row__name">{label}</span>
-    <Reveal as="span" open={!!reset}><Tooltip label={window?.resetsAt != null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{reset}</small></Tooltip></Reveal>
-    {valid
-      ? <span className="uam-limit-row__value" style={{ color: valueTone(percent) }}>{`${formatPercent(percent)}% used`}</span>
-      : <><span className="uam-limit-row__value" aria-hidden>{pending ? '…' : '??%'}</span><span className="sr-only">{pending ? `Reading ${label}` : `${label} unknown: ${missingLabel}`}</span></>}
-  </ProgressFill>
+function WindowMeter({ row, prefix, now, awaitingUpdate = false, compact = false, unknownText = '—', unknownDetail, pending = false }: { row: WindowRow; prefix?: string; now: number; awaitingUpdate?: boolean; compact?: boolean; unknownText?: string | null; unknownDetail?: string; pending?: boolean }) {
+  const { window, pace } = row
+  if (!window || !pace) {
+    return <>
+      <Tooltip label={unknownDetail}><small className="uam-limit-row__reset" aria-hidden>{line([prefix, unknownText])}</small></Tooltip>
+      <ProgressFill variant="meter" label={row.meterLabel} active={pending} className="uam-limit-bar" />
+      <span className="uam-limit-row__value uam-usage-muted" aria-hidden>{pending ? '…' : '??%'}</span>
+      <span className="sr-only">{pending ? `Reading ${row.label}` : `${row.label} unknown: ${row.missingLabel ?? 'Not readable at this time'}`}</span>
+    </>
+  }
+  const percent = window.usedPercent
+  const tone = barTone(percent, pace)
+  const reset = resetLabel(window, now, awaitingUpdate) ?? (row.unknownReset ? 'reset time unavailable' : null)
+  const full = line([verdictText(pace, now), reset])
+  const passed = pace.elapsedPercent === null ? null : `${Math.round(pace.elapsedPercent)}% of the window has passed`
+  return <>
+    <Tooltip label={line([full, window.resetsAt !== null ? new Date(window.resetsAt * 1000).toLocaleString() : null])}>
+      {/* The compact row names only the run-out time when there is one; the reset is in the tooltip and the expanded window. */}
+      <small className="uam-limit-row__reset">{line([prefix, verdictText(pace, now, compact), compact && pace.verdict === 'ahead' ? null : reset])}</small>
+    </Tooltip>
+    {/* Inside the provider row's button a meter role is flattened, so the compact bar is decorative; its text says the same. */}
+    <Tooltip label={passed ? `Tick: ${passed}` : undefined}><span className="uam-limit-bar" aria-hidden={compact || undefined}>
+      <ProgressFill variant="meter" label={row.meterLabel} value={percent} marker={pace.elapsedPercent} tone={tone}
+        valueText={line([`${formatPercent(percent)}% used`, passed, full])} />
+    </span></Tooltip>
+    <span className="uam-limit-row__value" style={{ color: TONE_TEXT[tone] }}>{`${formatPercent(percent)}% used`}</span>
+  </>
 }
 
-/** Codex Pro reports no secondary window; the 5-hour period is shown as unlimited instead. */
-function UnlimitedRow({ label }: { label: string }) {
-  return <div className="uam-limit-row">
-    <span className="uam-limit-row__name">{label}</span>
+/** One expanded window: its name, then the shared text, bar and percent. */
+function AllowanceRow({ row, now, awaitingUpdate, pending }: { row: WindowRow; now: number; awaitingUpdate: boolean; pending: boolean }) {
+  if (row.unlimited) return <div className="uam-limit-row">
+    <span className="uam-limit-row__name">{row.label}</span>
     <span className="uam-limit-row__value uam-usage-muted">Unlimited</span>
+  </div>
+  return <div className={cx('uam-limit-row', !row.pace && 'uam-limit-row--unknown')}>
+    <span className="uam-limit-row__name">{row.label}</span>
+    <WindowMeter row={row} now={now} awaitingUpdate={awaitingUpdate} pending={pending} />
   </div>
 }
 
-type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean }
+type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; pace?: AllowancePace; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean }
 
-/** Provider windows in display order. Model allowances replace primary/secondary when the provider reports them. */
-function windowRows(provider: UsageProviderId, name: string, allowance: ProviderAllowance | undefined): WindowRow[] {
+/** Provider windows in display order, each with its pace. Model allowances replace primary/secondary when the provider reports them. */
+function windowRows(provider: UsageProviderId, name: string, allowance: ProviderAllowance | undefined, now: number): WindowRow[] {
   const limits = allowance?.limits ?? undefined
   const modelWindows = allowance?.windows ?? []
-  if (modelWindows.length) return modelWindows.map(window => ({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
+  const paced = (row: WindowRow): WindowRow => row.window && isValidPercent(row.window.usedPercent) ? { ...row, pace: allowancePace(row.window, now) } : row
+  if (modelWindows.length) return modelWindows.map(window => paced({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
   // ponytail: plan-name match is an inference; drop it once Codex reports a real secondary window for Pro.
   const noFiveHourCap = CODEX_ENABLED && provider === CODEX_CLI_PROVIDER_ID && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
   const rows: WindowRow[] = (['primary', 'secondary'] as const).map(key => {
     const window = limits?.[key] ?? null
     if (noFiveHourCap && key === 'secondary') return { id: key, label: '5-hour', meterLabel: '', window: null, unlimited: true }
     // A window the provider did not report has no period to name, so it is "Allowance" rather than an invented Primary/Secondary window.
-    return { id: key, label: (key === 'primary' ? allowance?.primaryLabel : allowance?.secondaryLabel) || (window ? windowLabel(window.windowDurationMinutes, key) : 'Allowance'), meterLabel: `${name} ${key} usage`, window, missingLabel: allowance?.status === 'ready' ? 'Not reported by provider' : undefined }
+    return paced({ id: key, label: (key === 'primary' ? allowance?.primaryLabel : allowance?.secondaryLabel) || (window ? windowLabel(window.windowDurationMinutes, key) : 'Allowance'), meterLabel: `${name} ${key} usage`, window, missingLabel: allowance?.status === 'ready' ? 'Not reported by provider' : undefined })
   })
   // With no window reported, one unknown allowance stands in for the pair rather than two identical rows.
   return rows.every(row => !row.window && !row.unlimited && row.label === 'Allowance') ? rows.slice(0, 1) : rows
 }
 
-/** The window that matters most for a provider: its most-used readable window, else an unlimited one. */
-const leadRow = (rows: WindowRow[]) => rows.filter(row => row.window && isValidPercent(row.window.usedPercent))
-  .reduce<WindowRow | undefined>((top, row) => !top || row.window!.usedPercent > top.window!.usedPercent ? row : top, undefined) ?? rows.find(row => row.unlimited)
+/** Most pressing first: used up, then the earliest projected run-out, then the most used. Readable windows only. */
+const urgency = (row: WindowRow) => row.pace!.verdict === 'out' ? 0 : row.pace!.verdict === 'ahead' ? 1 : 2
+const pressing = (a: WindowRow, b: WindowRow) => urgency(a) - urgency(b) || (a.pace!.runsOutAt ?? 0) - (b.pace!.runsOutAt ?? 0) || b.window!.usedPercent - a.window!.usedPercent
+
+/** The window that matters most for a provider: its most pressing readable window, else an unlimited one. */
+const leadRow = (rows: WindowRow[]) => rows.filter(row => row.pace).sort(pressing)[0] ?? rows.find(row => row.unlimited)
 
 /** A short reason for an unreadable allowance. The native message stays whole in the tooltip and the row details. */
 function shortReason(allowance: ProviderAllowance | undefined, name: string): string {
@@ -174,21 +216,24 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   const entries = providers.map(provider => {
     const name = providerShortName(undefined, provider)
     const allowance = account.data?.providers.find(row => row.providerId === provider)
-    const rows = windowRows(provider, name, allowance)
+    const rows = windowRows(provider, name, allowance, now)
     return { provider, name, allowance, rows, lead: leadRow(rows) }
   })
-  const top = entries.filter(entry => entry.lead?.window).reduce<(typeof entries)[number] | undefined>((best, entry) => !best || entry.lead!.window!.usedPercent > best.lead!.window!.usedPercent ? entry : best, undefined)
+  const top = entries.filter(entry => entry.lead?.pace).sort((a, b) => pressing(a.lead!, b.lead!))[0]
   const topWindow = top?.lead?.window
-  const topReset = topWindow && topWindow.resetsAt !== null && topWindow.resetsAt * 1000 > now ? `, resets ${relativeIn(topWindow.resetsAt * 1000, now)}` : ''
+  const topPace = top?.lead?.pace
+  const topReset = topWindow && topWindow.resetsAt !== null && topWindow.resetsAt * 1000 > now ? moment(topWindow.resetsAt * 1000, now) : null
   const shownUsage = usage?.providers?.filter(row => providers.includes(row.providerId))
   const periodTotal = shownUsage?.reduce((sum, row) => sum + row.totalTokens, 0)
   const phrase = usage ? PERIOD_PHRASE[usage.days] : ''
   const where = allMachines && remoteHosts ? ' across all machines' : remote ? ` on ${hostLabel || 'that computer'}` : ''
   const tokenSentence = periodTotal === undefined ? null : periodTotal > 0 ? ` ${formatUsageCount(periodTotal)} tokens used ${phrase}${where}.` : usage!.collecting ? null : ` No token use ${phrase}${where}.`
-  const headline: ReactNode = topWindow && top?.lead
-    ? topWindow.usedPercent >= 80
-      ? <><b>{top.name} is close to its limit.</b> {formatPercent(topWindow.usedPercent)}% of {top.lead.label} used{topReset}.</>
-      : <><b>Allowances have room.</b> Highest is {top.name} at {formatPercent(topWindow.usedPercent)}% of {top.lead.label}{topReset}.</>
+  const headline: ReactNode = topWindow && topPace && top?.lead
+    ? topPace.verdict === 'ahead'
+      ? <><b>{top.name} will run out {approx(topPace.runsOutAt!, now)}</b>, before its {inSentence(top.lead.label)} resets {topReset}.</>
+      : topWindow.usedPercent >= 80
+      ? <><b>{top.name} is close to its limit.</b> {formatPercent(topWindow.usedPercent)}% of its {inSentence(top.lead.label)} used{topReset ? `, resets ${topReset}` : ''}.</>
+      : <><b>Allowances have room.</b> Highest is {top.name} at {formatPercent(topWindow.usedPercent)}% of its {inSentence(top.lead.label)}{topReset ? `, resets ${topReset}` : ''}.</>
     : entries.some(entry => entry.lead?.unlimited) ? <><b>Allowances have room.</b></>
     : account.loading && !account.data ? <>Reading account allowances…</>
     : remote ? <><b>Allowances are read on this computer only.</b></>
@@ -235,28 +280,17 @@ function ProviderLimitRow({ provider, name, allowance, rows, lead, loading, refr
   const timestampValid = Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
   const stale = Boolean(hasAllowance && (refreshFailed || allowance?.status !== 'ready' || !timestampValid || (limits && now - limits.updatedAt >= 300000)))
   const contextPercent = context ? Math.min(100, Math.max(0, context.usage.usedTokens / context.usage.windowTokens * 100 || 0)) : 0
-  const leadWindow = lead?.window
-  const leadReset = leadWindow ? resetLabel(leadWindow, now, stale || loading) : null
   const reason = shortReason(allowance, name)
   // A remote computer's unsupported feed is explained once above the card, so its unknown row names no reason.
   const remoteUnsupported = remote && (!allowance || allowance.status === 'unavailable')
-  const unknownLabel = rows[0]?.label ?? 'Allowance'
-  // Unknown: the row keeps its window name and reset slot, empty and muted, with the short reason as text; the native message is in the tooltip and details.
+  const unknown: WindowRow = { ...rows[0], window: null, pace: undefined, missingLabel: remoteUnsupported ? 'read on this computer only' : reason }
+  // The compact row shows the most pressing window's bar; an unknown one is the same bar greyed, with the short reason
+  // as text and the native message in the tooltip and details.
   const side = lead?.unlimited ? <span className="uam-usage-muted">Unlimited</span>
-    : leadWindow ? <>
-      <small className="uam-limit-row__reset">{lead!.label}{leadReset ? ` · ${leadReset}` : ''}</small>
-      <span className="uam-limit-row__value" style={{ color: valueTone(leadWindow.usedPercent) }}>{formatPercent(leadWindow.usedPercent)}% used</span>
-    </>
-    : <>
-      <Tooltip label={allowance?.error || undefined}><small className="uam-limit-row__reset" aria-hidden>{unknownLabel}{remoteUnsupported ? '' : ` · ${reading ? 'Reading…' : reason}`}</small></Tooltip>
-      <span className="uam-limit-row__value uam-usage-muted" aria-hidden>{reading ? '…' : '??%'}</span>
-      <span className="sr-only">{reading ? `Reading ${unknownLabel}` : `${unknownLabel} unknown: ${remoteUnsupported ? 'read on this computer only' : reason}`}</span>
-    </>
-  const fill = leadWindow ? { '--progress': leadWindow.usedPercent / 100, '--limit-fill': fillTone(leadWindow.usedPercent) } as CSSProperties : undefined
-  const renderRow = (row: WindowRow) => row.unlimited
-    ? <UnlimitedRow key={row.id} label={row.label} />
-    : <AllowanceRow key={row.id} label={row.label} meterLabel={row.meterLabel} window={row.window} now={now} showUnknownReset={row.unknownReset} awaitingUpdate={stale || loading} missingLabel={row.missingLabel} pending={reading} />
-  return <div role="group" aria-label={name} className="uam-limit-entry" style={fill} data-reading={(reading && !leadWindow) || undefined}>
+    : lead ? <WindowMeter row={lead} prefix={lead.label} now={now} awaitingUpdate={stale || loading} compact />
+    : <WindowMeter row={unknown} prefix={unknown.label} unknownText={remoteUnsupported ? null : reading ? 'Reading…' : reason} unknownDetail={allowance?.error || undefined} now={now} pending={reading} />
+  const renderRow = (row: WindowRow) => <AllowanceRow key={row.id} row={row} now={now} awaitingUpdate={stale || loading} pending={reading} />
+  return <div role="group" aria-label={name} className="uam-limit-entry">
     <Disclosure summary={<span className="uam-limit-summary">
       <span className="uam-limit-summary__identity"><ProviderLogo providerId={provider} size={16} /><span className="truncate">{name}</span>
         <Reveal as="span" open={!!(hasAllowance && plan)}><span className="uam-limits-chip">{plan}</span></Reveal>
@@ -273,11 +307,13 @@ function ProviderLimitRow({ provider, name, allowance, rows, lead, loading, refr
           {(modelWindows.length ? rows.slice(0, 2) : rows).map(renderRow)}
           <Reveal open={modelWindows.length > 2}><Disclosure className="uam-limits-more" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}><div className="grid gap-1">{rows.slice(2).map(renderRow)}</div></Disclosure></Reveal>
         </div></Reveal>
-        <Reveal open={!!limits?.individualLimit}>{limits?.individualLimit && <ProgressFill label={`${name} spend limit usage`} value={100 - limits.individualLimit.remainingPercent} className="uam-limit-row">
+        <Reveal open={!!limits?.individualLimit}>{limits?.individualLimit && <div className="uam-limit-row">
           <span className="uam-limit-row__name">Spend limit</span>
           <small className="uam-limit-row__reset">{limits.individualLimit.used} of {limits.individualLimit.limit}</small>
+          <span className="uam-limit-bar"><ProgressFill variant="meter" label={`${name} spend limit usage`} value={100 - limits.individualLimit.remainingPercent}
+            tone={100 - limits.individualLimit.remainingPercent >= 95 ? 'error' : 100 - limits.individualLimit.remainingPercent >= 80 ? 'warning' : 'neutral'} /></span>
           <span className="uam-limit-row__value">{Math.round(100 - limits.individualLimit.remainingPercent)}% used</span>
-        </ProgressFill>}</Reveal>
+        </div>}</Reveal>
         <Reveal open={!!limits?.credits}>{limits?.credits && <p className="uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}</Reveal>
         <Reveal open={!!limits?.spendControlReached}><p className="flex items-center gap-1.5 uam-limits-notice"><StatusDot tone="error" />Spend limit reached.</p></Reveal>
         <Reveal open={!!tokens}><p className="uam-usage-muted">{tokens?.detail}</p></Reveal>
@@ -320,6 +356,13 @@ function span(ms: number) {
   if (hours < 48) return `${hours}h ${minutes % 60}m`
   return `${Math.round(hours / 24)}d`
 }
-const relativeIn = (at: number, now: number) => `in ${span(at - now)}`
+const DAY = 86400000
+const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+/** A future moment in words: relative within a day, otherwise its weekday and time. */
+const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : dayTime.format(at)
+/** A projected moment, marked as approximate. */
+const approx = (at: number, now: number) => at - now < DAY ? `in ~${span(at - now)}` : `~${dayTime.format(at)}`
+/** Generated window names read in a sentence ("its weekly window"); provider and model names keep their case. */
+const inSentence = (label: string) => / window$/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label
 const relativeAgo = (at: number, now: number) => now - at < 60000 ? 'just now' : `${span(now - at)} ago`
 const compactTokens = (value: number) => value >= 1e6 ? `${+(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(1)}k` : `${value}`

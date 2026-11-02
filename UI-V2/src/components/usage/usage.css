@@ -347,38 +347,26 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: a one-line summary above one Allowances card. Each provider is one Disclosure row whose background fills
-   to its most-used window (the ProgressFill look, drawn on the trigger because a row holding a button cannot be a progressbar). */
+/* Limits: a one-line summary above one Allowances card. Each provider is one Disclosure row ending in its most pressing
+   window's bar (the ProgressFill meter variant); expanded windows repeat that text, bar and percent. Bars and percents
+   have fixed widths at the right edge so they line up down the card. */
 .uam-limits-lede { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text-2); }
 .uam-limits-lede b { font-weight: 600; color: var(--text); }
-.uam-limit-entry > .uam-disclosure > .uam-disclosure__summary {
-  position: relative; isolation: isolate; overflow: hidden;
-  width: calc(100% + var(--sp-4)); margin-inline: calc(-1 * var(--sp-2)); padding-inline: var(--sp-2);
-}
-.uam-limit-entry > .uam-disclosure > .uam-disclosure__summary::before {
-  content: ''; position: absolute; inset: var(--sp-1) 0; z-index: -1; pointer-events: none; border-radius: var(--r-sm);
-  background: var(--limit-fill, var(--accent-dim)); transform-origin: left center; transform: scaleX(var(--progress, 0));
-  transition: transform var(--dur-base) var(--ease-out-soft);
-}
-/* Reading with no known share: the row sweeps, as an indeterminate ProgressFill does; the global motion stop settles it. */
-.uam-limit-entry[data-reading] > .uam-disclosure > .uam-disclosure__summary::before {
-  width: 40%; transform: none; transition: none;
-  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
-  animation: uam-progress-sweep 1.4s ease-in-out infinite;
-}
-.uam-limit-summary { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.5rem, max-content) minmax(0, 20rem); align-items: center; gap: var(--sp-4); }
+.uam-limit-summary { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(4.5rem, max-content) minmax(0, 34rem); align-items: center; gap: var(--sp-4); }
 .uam-limit-summary__identity { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; font-size: var(--fs-base); font-weight: 500; color: var(--text); }
 .uam-limit-summary__tokens { text-align: right; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-limit-summary__side { display: flex; justify-content: flex-end; align-items: center; gap: var(--sp-2); min-width: 0; white-space: nowrap; font-size: var(--fs-sm); }
-.uam-limit-summary__side > small { overflow: hidden; text-overflow: ellipsis; }
+.uam-limit-summary__side { display: flex; justify-content: flex-end; align-items: center; gap: var(--sp-3); min-width: 0; white-space: nowrap; font-size: var(--fs-sm); }
 /* Details reuse the row-extra slot, so card dividers stop at the provider row; the slot supplies the top gap. */
 .uam-limit-details { display: grid; gap: var(--sp-2); padding: 0 0 var(--sp-3) var(--sp-5); font-size: var(--fs-xs); }
 .uam-limit-details p { margin: 0; }
-.uam-limit-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2); border-radius: var(--r-sm); }
+.uam-limit-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0 var(--sp-2) var(--sp-2); border-radius: var(--r-sm); }
+/* The context row still fills as a ProgressFill row, so its text keeps an inset from the fill's edge. */
+.uam-limit-row.uam-progress-fill { padding-inline-end: var(--sp-2); }
 .uam-limit-row__name { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
-.uam-limit-row__value { font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.uam-limit-row__reset { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Unknown share: the same row with no fill, every piece of text in the tertiary colour. */
+.uam-limit-row__value { flex: none; min-width: 5.5rem; text-align: right; font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uam-limit-row__reset { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uam-limit-bar { flex: none; display: block; width: 8rem; }
+/* Unknown share: the same row with an empty bar, every piece of text in the tertiary colour. */
 .uam-limit-row--unknown :is(.uam-limit-row__name, .uam-limit-row__reset, .uam-limit-row__value) { color: var(--text-3); }
 .uam-limits-chip { flex: none; font-size: var(--fs-xs); font-weight: 400; padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-high); color: var(--text-2); text-transform: capitalize; }
 .uam-limits-updated { font-size: var(--fs-xs); color: var(--text-3); }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import type { AcpRateLimits } from '../../store/cpp/types'
 import { UsageLimits, type LimitsUsage } from './UsageLimits'
+import { allowancePace } from './allowancePace'
 import { EMPTY_USAGE_TOTALS, type UsageProvider, type UsageProviderId } from '../../services/usageHistory'
 import { clearProviderAllowanceCache, type ProviderAllowanceSnapshot } from '../../services/providerAllowances'
 
@@ -44,7 +45,7 @@ describe('UsageLimits allowance evidence', () => {
     vi.spyOn(Date, 'now').mockReturnValue(now)
     const view = await renderLimits(allowance(now / 1000 + 3600))
     try {
-      expect(view.host.textContent).toContain('Resets in 1h 0m')
+      expect(view.host.textContent).toContain('resets in 1h 0m')
       expect(view.host.textContent?.toLowerCase()).not.toContain('reset passed')
     } finally { view.close() }
   })
@@ -52,7 +53,7 @@ describe('UsageLimits allowance evidence', () => {
   it('exposes numeric meters only for known usage, including a reported zero', async () => {
     const unknown = await renderLimits()
     try {
-      expect(unknown.host.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
+      expect(unknown.host.querySelectorAll('[role="meter"]')).toHaveLength(0)
       expect(unknown.host.textContent).toContain('Account allowances unavailable.')
     } finally { unknown.close() }
 
@@ -60,7 +61,7 @@ describe('UsageLimits allowance evidence', () => {
     limits.primary!.usedPercent = 0
     const known = await renderLimits(limits)
     try {
-      const meters = known.host.querySelectorAll('[role="progressbar"]')
+      const meters = known.host.querySelectorAll('.uam-limit-details [role="meter"]')
       expect(meters).toHaveLength(1)
       expect(meters[0].getAttribute('aria-label')).toBe('Codex primary usage')
       expect(meters[0].getAttribute('aria-valuenow')).toBe('0')
@@ -72,7 +73,7 @@ describe('UsageLimits allowance evidence', () => {
     vi.useFakeTimers(); vi.setSystemTime(now)
     const view = await renderLimits(allowance(now / 1000 + 60))
     try {
-      expect(view.host.textContent).toContain('Resets in 1m')
+      expect(view.host.textContent).toContain('resets in 1m')
       expect(view.host.textContent).not.toContain('Cached snapshot')
       await act(async () => vi.advanceTimersByTimeAsync(6 * 60_000))
       expect(view.host.textContent).toContain('Reset passed, awaiting update')
@@ -199,7 +200,7 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       const copilot = host.querySelector('[aria-label="Copilot"]')!
       expect(copilot.textContent).toContain('0.4% used')
-      expect(copilot.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('0.4')
+      expect(copilot.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('0.4')
     } finally { act(() => root.unmount()) }
   })
 
@@ -225,7 +226,7 @@ describe('UsageLimits independent account allowances', () => {
       const extraToggle = extra.querySelector('button')!
       expect(extraToggle.getAttribute('aria-expanded')).toBe('false')
       expect(extraToggle.textContent).toBe('2 more model allowances')
-      expect(extra.querySelectorAll('[role="progressbar"]')).toHaveLength(2)
+      expect(extra.querySelectorAll('[role="meter"]')).toHaveLength(2)
       act(() => extraToggle.click())
       expect(extraToggle.getAttribute('aria-expanded')).toBe('true')
       expect(extra.textContent).toContain('Model C tokens')
@@ -297,7 +298,7 @@ describe('UsageLimits independent account allowances', () => {
       const unsupported = Array.from(opencode.querySelectorAll('p')).find(p => p.textContent === 'Account allowance is not available from this provider connection.')!
       expect(unsupported.className).toContain('uam-usage-muted')
       expect(unsupported.className).not.toContain('uam-limits-notice')
-      expect(opencode.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
+      expect(opencode.querySelectorAll('[role="meter"]')).toHaveLength(0)
       const failed = Array.from(host.querySelector('[aria-label="Antigravity"]')!.querySelectorAll('p')).find(p => p.textContent === 'Could not read account allowance.')!
       expect(failed.className).toContain('uam-limits-notice')
     } finally { act(() => root.unmount()) }
@@ -401,7 +402,8 @@ describe('UsageLimits observed native consumption', () => {
 })
 
 describe('UsageLimits overview', () => {
-  afterEach(() => { delete window.cefQuery; vi.restoreAllMocks() })
+  afterEach(() => { delete window.cefQuery; vi.useRealTimers(); vi.restoreAllMocks() })
+  const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
   const tokens = (providerId: UsageProviderId, totalTokens: number, available = true): UsageProvider => ({ ...EMPTY_USAGE_TOTALS, providerId, totalTokens, inputTokens: totalTokens, records: totalTokens ? 3 : 0, sessions: totalTokens ? 2 : 0, available, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })
   const usage = (providers: UsageProvider[]): LimitsUsage => ({ providers, loading: false, collecting: false, error: '', days: 7 })
   async function render(providers: ProviderAllowanceSnapshot['providers'], history?: LimitsUsage, host = 'local') {
@@ -448,28 +450,112 @@ describe('UsageLimits overview', () => {
       expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary__side > small')?.getAttribute('aria-hidden')).toBe('true')
       expect(view.host.querySelector('[aria-label="Codex"]')!.textContent).toContain(failed)
       expect(view.host.querySelector('[aria-label="Antigravity"]')!.textContent).toContain(keychain)
-      expect(view.host.querySelectorAll('[role="progressbar"]')).toHaveLength(0)
+      expect(view.host.querySelectorAll('[role="meter"]')).toHaveLength(0)
       expect(view.host.textContent).not.toContain('This computer')
     } finally { view.close() }
   })
 
-  it('leads with the window closest to its limit and fills each row to its most-used window', async () => {
-    vi.spyOn(Date, 'now').mockReturnValue(now)
+  it('leads with the highest use when every window has room, and keeps every window as its own meter', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
     const limits = (primary: number, secondary: number): AcpRateLimits => ({ ...allowance(now / 1000 + 7200), planType: 'plus', primary: { usedPercent: primary, resetsAt: now / 1000 + 7200, windowDurationMinutes: 300 }, secondary: { usedPercent: secondary, resetsAt: now / 1000 + 3 * 86400, windowDurationMinutes: 10080 } })
     const view = await render([
-      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', limits: limits(30, 86), error: '' },
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', limits: limits(30, 50), error: '' },
       { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', limits: limits(12, 40), error: '' },
     ], usage([tokens('codex-cli', 2_000_000), tokens('claude-cli', 10_000)]))
     try {
-      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Codex is close to its limit. 86% of Weekly window used, resets in 3d. 2M tokens used in the past 7 days.')
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe(`Allowances have room. Highest is Codex at 50% of its weekly window, resets ${dayTime.format(now + 3 * 86400000)}. 2M tokens used in the past 7 days.`)
       const codex = view.host.querySelector<HTMLElement>('[aria-label="Codex"]')!
-      expect(codex.style.getPropertyValue('--progress')).toBe('0.86')
-      expect(codex.style.getPropertyValue('--limit-fill')).toBe('var(--warning-dim)')
-      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('Weekly window · Resets in 3d86% used')
       expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('plus')
-      expect(view.host.querySelector<HTMLElement>('[aria-label="Claude"]')!.style.getPropertyValue('--limit-fill')).toBe('var(--accent-dim)')
-      // Expanding keeps every window as its own meter.
-      expect(codex.querySelectorAll('[role="progressbar"]')).toHaveLength(2)
+      expect(codex.querySelector('.uam-limit-summary')!.textContent).toContain('Weekly window · plenty left')
+      expect(codex.querySelectorAll('.uam-limit-details [role="meter"]')).toHaveLength(2)
+      // The compact bar sits inside the row's button, so it is decorative there; the expanded meters carry the values.
+      expect(codex.querySelector('.uam-limit-summary .uam-limit-bar')!.getAttribute('aria-hidden')).toBe('true')
+    } finally { view.close() }
+  })
+
+  it('shows pace on every window with mock allowances: ahead, behind, near the limit, unknown length, per model, unreadable and reading', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const sec = now / 1000, hour = 3_600_000, day = 86_400_000
+    const base = allowance(sec)
+    const view = await render([
+      // Weekly window 3 of 7 days in at 70% used: ahead, runs out in about 31 hours, four days before its reset.
+      { providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...base, planType: 'plus', primary: { usedPercent: 10, resetsAt: sec + 4 * 3600, windowDurationMinutes: 300 }, secondary: { usedPercent: 70, resetsAt: sec + 4 * 86400, windowDurationMinutes: 10080 } } },
+      // 5-hour window 90% through at 97% used: nearly out; weekly window well under pace.
+      { providerId: 'claude-cli', scope: 'local:claude', status: 'ready', error: '', limits: { ...base, primary: { usedPercent: 97, resetsAt: sec + 1800, windowDurationMinutes: 300 }, secondary: { usedPercent: 20, resetsAt: sec + 2 * 86400, windowDurationMinutes: 10080 } } },
+      // Per-model windows: one daily window on pace, one with no window length, one with neither length nor reset.
+      { providerId: 'gemini-cli', scope: 'local:gemini', status: 'ready', error: '', limits: null, windows: [
+        { id: 'pro', label: 'Pro requests', usedPercent: 50, resetsAt: sec + 12 * 3600, windowDurationMinutes: 1440 },
+        { id: 'flash', label: 'Flash requests', usedPercent: 30, resetsAt: sec + 3 * 3600, windowDurationMinutes: null },
+        { id: 'lite', label: 'Lite requests', usedPercent: 85, resetsAt: null, windowDurationMinutes: null },
+      ] },
+      // Monthly allowance with no reported length: a bar and reset, but no tick and no verdict.
+      { providerId: 'copilot-cli', scope: 'local:copilot', status: 'ready', error: '', primaryLabel: 'Chat allowance', limits: { ...base, primary: { usedPercent: 40, resetsAt: sec + 10 * 86400, windowDurationMinutes: null }, secondary: null } },
+      { providerId: 'opencode-cli', scope: 'local:opencode', status: 'unavailable', limits: null, error: 'Account allowance is not available from this provider connection.' },
+      { providerId: 'antigravity-cli', scope: 'local:antigravity', status: 'loading', limits: null, error: '' },
+    ])
+    try {
+      const row = (name: string) => view.host.querySelector<HTMLElement>(`[aria-label="${name}"]`)!
+      const summary = (name: string) => row(name).querySelector('.uam-limit-summary')!.textContent
+      const meter = (name: string, label: string) => row(name).querySelector<HTMLElement>(`.uam-limit-details [role="meter"][aria-label="${label}"]`)!
+      const tick = (element: HTMLElement) => element.querySelector<HTMLElement>('.uam-meter__marker')?.style.getPropertyValue('--marker')
+      const codexOut = now - 3 * day + 3 * day * 100 / 70
+
+      // The lede names the provider projected to run out first: Claude's 5-hour window, in about 8 minutes.
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Claude will run out in ~8m, before its 5 hour window resets in 30m.')
+
+      // Codex: the compact row prefers the weekly window that runs out before its reset over the emptier 5-hour one.
+      expect(summary('Codex')).toContain(`Weekly window · runs out ~${dayTime.format(codexOut)}70% used`)
+      const weekly = meter('Codex', 'Codex secondary usage')
+      expect(weekly.getAttribute('aria-valuenow')).toBe('70')
+      expect(weekly.dataset.tone).toBe('warning')
+      expect(Number(tick(weekly))).toBeCloseTo(3 / 7)
+      expect(weekly.getAttribute('aria-valuetext')).toBe(`70% used · 43% of the window has passed · Ahead of pace · runs out ~${dayTime.format(codexOut)} · resets ${dayTime.format(now + 4 * day)}`)
+      expect(row('Codex').querySelector('.uam-limit-details')!.textContent).toContain('Plenty left · resets in 4h 0m')
+      const fiveHour = meter('Codex', 'Codex primary usage')
+      expect(fiveHour.dataset.tone).toBeUndefined()
+      expect(Number(tick(fiveHour))).toBeCloseTo(0.2)
+
+      // Claude: at 97% the bar and percent turn to the error tone; the weekly window is calm.
+      const nearLimit = meter('Claude', 'Claude primary usage')
+      expect(nearLimit.dataset.tone).toBe('error')
+      expect(summary('Claude')).toContain('5 hour window · runs out in ~8m97% used')
+      expect(row('Claude').querySelector<HTMLElement>('.uam-limit-summary .uam-limit-row__value')!.style.color).toBe('var(--error)')
+      expect(row('Claude').querySelector('.uam-limit-details')!.textContent).toContain(`Plenty left · resets ${dayTime.format(now + 2 * day)}`)
+      expect(meter('Claude', 'Claude secondary usage').dataset.tone).toBeUndefined()
+
+      // Gemini model windows: a daily window on pace with a tick at half way; unknown lengths have no tick or verdict.
+      const pro = meter('Gemini', 'Gemini Pro requests usage')
+      expect(Number(tick(pro))).toBeCloseTo(0.5)
+      expect(row('Gemini').querySelector('.uam-limit-details')!.textContent).toContain('Pro requestsOn pace · resets in 12h 0m50% used')
+      expect(tick(meter('Gemini', 'Gemini Flash requests usage'))).toBeUndefined()
+      expect(row('Gemini').querySelector('.uam-limit-details')!.textContent).toContain('Flash requestsResets in 3h 0m30% used')
+      // With no pace to judge by, 85% still reaches the warning tone from the 80% threshold.
+      expect(summary('Gemini')).toContain('Lite requests · reset time unavailable85% used')
+      expect(meter('Gemini', 'Gemini Lite requests usage').dataset.tone).toBe('warning')
+      expect(tick(meter('Gemini', 'Gemini Lite requests usage'))).toBeUndefined()
+
+      // Copilot: a known reset but no window length, so a bar without a tick.
+      expect(tick(meter('Copilot', 'Copilot primary usage'))).toBeUndefined()
+      expect(summary('Copilot')).toContain(`Chat allowance · resets ${dayTime.format(now + 10 * day)}40% used`)
+
+      // OpenCode: the same bar greyed and empty, ??%, short reason, no meter role.
+      expect(summary('OpenCode')).toContain('Allowance · Not offered by OpenCode??%')
+      const empty = row('OpenCode').querySelector<HTMLElement>('.uam-limit-summary .uam-meter')!
+      expect(empty.hasAttribute('role')).toBe(false)
+      expect(empty.dataset.indeterminate).toBeUndefined()
+      // Antigravity is still reading: the empty bar sweeps and the percent is an ellipsis.
+      expect(summary('Antigravity')).toContain('Allowance · Reading……')
+      expect(row('Antigravity').querySelector<HTMLElement>('.uam-limit-summary .uam-meter')!.dataset.indeterminate).toBe('true')
+    } finally { view.close() }
+  })
+
+  it('names a used-up window in plain words with the error tone', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now)
+    const view = await render([{ providerId: 'codex-cli', scope: 'local:codex', status: 'ready', error: '', limits: { ...allowance(now / 1000), primary: { usedPercent: 100, resetsAt: now / 1000 + 5400, windowDurationMinutes: 300 }, secondary: null } }])
+    try {
+      expect(view.host.querySelector('.uam-limits-lede')!.textContent).toBe('Codex is close to its limit. 100% of its 5 hour window used, resets in 1h 30m.')
+      expect(view.host.querySelector('[aria-label="Codex"] .uam-limit-summary')!.textContent).toContain('5 hour window · used up · resets in 1h 30m100% used')
+      expect(view.host.querySelector<HTMLElement>('[aria-label="Codex"] .uam-limit-details [role="meter"]')!.dataset.tone).toBe('error')
     } finally { view.close() }
   })
 
@@ -508,5 +594,48 @@ describe('UsageLimits overview', () => {
       expect(gemini.querySelector('.uam-limit-summary')!.textContent).toContain('Allowance · Couldn\'t read??%')
       expect(gemini.textContent).not.toContain('Primary window')
     } finally { view.close() }
+  })
+})
+
+describe('allowancePace', () => {
+  const start = now - 2.5 * 3_600_000
+  const fiveHour = (usedPercent: number, resetsAt: number | null = (start + 5 * 3_600_000) / 1000, windowDurationMinutes: number | null = 300) => ({ usedPercent, resetsAt, windowDurationMinutes })
+
+  it('projects a straight-line burn from the window start and reports when it runs out before the reset', () => {
+    const pace = allowancePace(fiveHour(75), now)
+    expect(pace.verdict).toBe('ahead')
+    expect(pace.elapsedPercent).toBe(50)
+    expect(pace.runsOutAt).toBe(start + 2.5 * 3_600_000 * 100 / 75)
+    expect(pace.runsOutAt!).toBeLessThan(start + 5 * 3_600_000)
+  })
+
+  it('calls use within the margin on pace and well below it plenty left, with no run-out time', () => {
+    expect(allowancePace(fiveHour(52), now)).toEqual({ verdict: 'on', elapsedPercent: 50, runsOutAt: null })
+    expect(allowancePace(fiveHour(30), now)).toEqual({ verdict: 'under', elapsedPercent: 50, runsOutAt: null })
+  })
+
+  it('treats 0% used as under pace once time has passed, never as running out', () => {
+    expect(allowancePace(fiveHour(0), now)).toEqual({ verdict: 'under', elapsedPercent: 50, runsOutAt: null })
+  })
+
+  it('does not project at the very start of a window, or when the reset is further away than the window length', () => {
+    expect(allowancePace(fiveHour(10, now / 1000 + 5 * 3600), now)).toEqual({ verdict: 'unknown', elapsedPercent: 0, runsOutAt: null })
+    expect(allowancePace(fiveHour(10, now / 1000 + 9 * 3600), now)).toEqual({ verdict: 'unknown', elapsedPercent: 0, runsOutAt: null })
+  })
+
+  it('has no pace or tick when the reset has passed, or the reset or window length is unknown', () => {
+    const none = { verdict: 'unknown', elapsedPercent: null, runsOutAt: null }
+    expect(allowancePace(fiveHour(60, now / 1000 - 60), now)).toEqual(none)
+    expect(allowancePace(fiveHour(60, now / 1000), now)).toEqual(none)
+    expect(allowancePace(fiveHour(60, null), now)).toEqual(none)
+    expect(allowancePace(fiveHour(60, undefined, null), now)).toEqual(none)
+    expect(allowancePace(fiveHour(60, undefined, 0), now)).toEqual(none)
+  })
+
+  it('reports a used-up window as out whatever its timing, and ignores invalid use', () => {
+    expect(allowancePace(fiveHour(100), now).verdict).toBe('out')
+    expect(allowancePace(fiveHour(100, null, null), now).verdict).toBe('out')
+    expect(allowancePace(fiveHour(NaN), now).verdict).toBe('unknown')
+    expect(allowancePace(fiveHour(-1), now).verdict).toBe('unknown')
   })
 })

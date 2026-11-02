@@ -35,4 +35,21 @@ describe('ProgressFill', () => {
     expect(bar().style.getPropertyValue('--progress')).toBe('')
     act(() => root.unmount()); host.remove()
   })
+
+  it('meter variant: a bar with role meter, value text, tone and a marker tick; unknown keeps an empty track with no role', () => {
+    const { host, root } = render(createElement(ProgressFill, { variant: 'meter', label: 'Weekly', value: 70, marker: 40, tone: 'warning', valueText: '70% used, ahead of pace' }))
+    const meter = host.querySelector('[role="meter"]') as HTMLElement
+    expect(meter.getAttribute('aria-valuenow')).toBe('70')
+    expect(meter.getAttribute('aria-valuetext')).toBe('70% used, ahead of pace')
+    expect(meter.dataset.tone).toBe('warning')
+    expect(meter.style.getPropertyValue('--progress')).toBe('0.7')
+    expect((meter.querySelector('.uam-meter__marker') as HTMLElement).style.getPropertyValue('--marker')).toBe('0.4')
+    act(() => root.render(createElement(ProgressFill, { variant: 'meter', label: 'Weekly', active: false })))
+    expect(host.querySelector('[role]')).toBeNull()
+    expect(host.querySelector('.uam-meter')?.getAttribute('aria-hidden')).toBe('true')
+    expect((host.querySelector('.uam-meter') as HTMLElement).dataset.indeterminate).toBeUndefined()
+    act(() => root.render(createElement(ProgressFill, { variant: 'meter', label: 'Weekly', indeterminate: true })))
+    expect((host.querySelector('.uam-meter') as HTMLElement).dataset.indeterminate).toBe('true')
+    act(() => root.unmount()); host.remove()
+  })
 })
