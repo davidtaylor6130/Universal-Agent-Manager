@@ -1,5 +1,6 @@
 #include "cef_handler_fixture.h"
 #include "app/persistence_coordinator.h"
+#include "app/memory_library_service.h"
 #include <stdexcept>
 
 using namespace uam_test;
@@ -13,6 +14,8 @@ namespace
 		int failures = 0;
 		bool throw_success = false;
 		nlohmann::json body;
+		int failure_status = 0;
+		std::string failure;
 		void Success(const CefString& value) override
 		{
 			++successes;
@@ -20,7 +23,7 @@ namespace
 			if (throw_success) throw std::runtime_error("private memory response observation failure");
 		}
 		void Success(const void*, size_t) override { ++successes; }
-		void Failure(int, const CefString&) override { ++failures; }
+		void Failure(int status, const CefString& detail) override { ++failures; failure_status = status; failure = detail.ToString(); }
 	private:
 		IMPLEMENT_REFCOUNTING(MemorySettingsCallback);
 	};
@@ -60,6 +63,26 @@ namespace
 			return settings;
 		}
 	};
+}
+
+UAM_TEST(ReadMemoryEntryHandlerRejectsMissingEntryAndUnresolvableScope)
+{
+	// Validation answers synchronously. The background read needs a running CEF task queue; its full-body and
+	// unlisted-path behaviour is covered by MemoryLibraryServiceReadsFullKnownEntryMemorySection.
+	MemorySettingsHandlerFixture fixture;
+	CefRefPtr<MemorySettingsCallback> missing = new MemorySettingsCallback;
+	UAM_ASSERT(UamQueryHandlerTestAccess::MemoryLibraryAction(*fixture.handler, "readMemoryEntry",
+	    {{"scopeType", "global"}}, missing));
+	UAM_ASSERT_EQ(missing->failures, 1);
+	UAM_ASSERT_EQ(missing->failure_status, 400);
+	UAM_ASSERT_EQ(missing->failure, std::string("A memory entry ID is required."));
+
+	CefRefPtr<MemorySettingsCallback> unresolved = new MemorySettingsCallback;
+	UAM_ASSERT(UamQueryHandlerTestAccess::MemoryLibraryAction(*fixture.handler, "readMemoryEntry",
+	    {{"scopeType", "folder"}, {"folderId", "missing-folder"}, {"entryId", "any"}}, unresolved));
+	UAM_ASSERT_EQ(unresolved->failures, 1);
+	UAM_ASSERT_EQ(unresolved->failure_status, 400);
+	UAM_ASSERT(unresolved->failure.find("Folder not found") != std::string::npos);
 }
 
 UAM_TEST(MemorySettingsHandlerGetPrimaryOnlyAdvancesFenceWithoutSaving)

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import { MemoryLibraryModal } from './MemoryLibraryModal'
 import type { MemoryEntry } from '../../types/memory'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -61,10 +62,12 @@ const defaultEntries: MemoryEntry[] = [
 function renderModal({
   createMemoryEntry = vi.fn().mockResolvedValue(true),
   deleteMemoryEntries = vi.fn().mockResolvedValue(true),
+  readMemoryEntry = vi.fn().mockResolvedValue({ ok: true, data: { content: '' } }),
   entries = defaultEntries,
 }: {
   createMemoryEntry?: ReturnType<typeof vi.fn>
   deleteMemoryEntries?: ReturnType<typeof vi.fn>
+  readMemoryEntry?: ReturnType<typeof vi.fn>
   entries?: MemoryEntry[]
 } = {}) {
   useAppStore.setState({
@@ -96,6 +99,7 @@ function renderModal({
     deleteMemoryEntries,
     openMemoryRoot: vi.fn().mockResolvedValue(true),
     revealMemoryEntry: vi.fn().mockResolvedValue(true),
+    readMemoryEntry,
   })
 
   const host = document.createElement('div')
@@ -429,6 +433,43 @@ describe('MemoryLibraryModal rows and in-place view', () => {
     expect(document.body.querySelector('.uam-memory-row')).toBeNull()
     clickButton(document.body, 'Back')
     expect(document.body.querySelector('.uam-memory-row')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows the complete memory text after the detail view loads it', async () => {
+    const fullText = 'First full line.\n\nSecond full paragraph beyond the preview.'
+    const readMemoryEntry = vi.fn().mockResolvedValue({ ok: true, data: { content: fullText } })
+    const { host, root } = renderModal({ readMemoryEntry })
+
+    clickButton(document.body, 'Global lesson')
+    expect(readMemoryEntry).toHaveBeenCalledWith({ scopeType: 'all', folderId: '', entryId: defaultEntries[0].id })
+    // The preview stays on screen until the full text arrives.
+    expect(document.body.querySelector('.uam-store-markdown')?.textContent).toBe('Remember this across projects.')
+
+    await act(async () => { await Promise.resolve() })
+    expect(document.body.querySelector('.uam-store-markdown')?.textContent).toBe(fullText)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the preview and reports a failure when the full text cannot be loaded', async () => {
+    const failures: AppFailure[] = []
+    const onFailure = (event: Event) => failures.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, onFailure)
+    const readMemoryEntry = vi.fn().mockResolvedValue({ ok: false, error: 'Memory entry could not be read.' })
+    const { host, root } = renderModal({ readMemoryEntry })
+
+    clickButton(document.body, 'Global lesson')
+    await act(async () => { await Promise.resolve() })
+
+    expect(document.body.querySelector('.uam-store-markdown')?.textContent).toBe('Remember this across projects.')
+    expect(failures.map(({ message, detail }) => ({ message, detail }))).toEqual([
+      { message: 'Could not load the full memory.', detail: 'Try again.' },
+    ])
+
+    window.removeEventListener(APP_FAILURE_EVENT, onFailure)
     act(() => root.unmount())
     host.remove()
   })

@@ -261,6 +261,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const deleteMemoryEntries = useAppStore((s) => s.deleteMemoryEntries)
   const openMemoryRoot = useAppStore((s) => s.openMemoryRoot)
   const revealMemoryEntry = useAppStore((s) => s.revealMemoryEntry)
+  const readMemoryEntry = useAppStore((s) => s.readMemoryEntry)
   const folders = useAppStore(useShallow((s) => s.folders))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
@@ -293,6 +294,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   const [pendingMassDeleteEntryIds, setPendingMassDeleteEntryIds] = useState<string[] | null>(null)
   const [selectedLocationKey, setSelectedLocationKey] = useState('')
   const [viewingEntryId, setViewingEntryId] = useState<string | null>(null)
+  // Full text is tagged with its entry so a late or previous response never shows under another memory.
+  const [fullMemory, setFullMemory] = useState<{ entryId: string; content: string } | null>(null)
   const errorPresence = usePresence(Boolean(memoryLibraryError))
   // Confirmations and the error keep their last content mounted while they animate out.
   const lastDeleteEntry = useRef<MemoryEntry | null>(null)
@@ -389,6 +392,21 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
     observer.observe(nav)
     return () => observer.disconnect()
   })
+  // Opening a memory swaps the list preview for the complete text; a failure keeps the preview.
+  // Declared before the early return below so the hook order stays stable.
+  const viewedId = viewingEntryId && memoryLibraryEntries.some((entry) => entry.id === viewingEntryId) ? viewingEntryId : null
+  const viewedScopeType = memoryLibraryScope?.scopeType
+  const viewedFolderId = memoryLibraryScope?.folderId
+  useEffect(() => {
+    if (!viewedId || !viewedScopeType) return
+    let current = true
+    void readMemoryEntry({ scopeType: viewedScopeType, folderId: viewedFolderId ?? '', entryId: viewedId }).then((response) => {
+      if (!current) return
+      if (response.ok && typeof response.data?.content === 'string') setFullMemory({ entryId: viewedId, content: response.data.content })
+      else reportAppFailure('Could not load the full memory.', 'Try again.')
+    })
+    return () => { current = false }
+  }, [viewedId, viewedScopeType, viewedFolderId, readMemoryEntry])
   if (!memoryLibraryScope) {
     if (!embedded) return null
     return memoryLibraryError
@@ -626,7 +644,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         <span className="uam-chip uam-chip--sm" data-tone={viewingEntry.confidence === 'low' ? 'danger' : undefined}>{confidenceLabel(viewingEntry.confidence)} confidence</span>
         <span className="uam-chip uam-chip--sm">{memoryLocationLabel(viewingEntry, memoryLibraryScope)}</span>
       </div>
-      <p className="uam-store-markdown whitespace-pre-line">{viewingEntry.preview || 'No preview available.'}</p>
+      <p className="uam-store-markdown whitespace-pre-line">{(fullMemory?.entryId === viewingEntry.id ? fullMemory.content : viewingEntry.preview) || 'No preview available.'}</p>
       <Disclosure summary="Details">
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-4 gap-y-2 pt-3 text-xs" style={{ color: 'var(--text-3)' }}>
           <dt>Occurrences</dt><dd style={{ color: 'var(--text-2)' }}>{viewingEntry.occurrenceCount}</dd>

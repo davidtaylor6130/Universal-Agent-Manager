@@ -1110,6 +1110,29 @@ UAM_TEST(MemoryLibraryServiceListsCreatesAndDeletesEntries)
 	UAM_ASSERT_EQ(error, std::string("Folder not found: missing-folder"));
 }
 
+UAM_TEST(MemoryLibraryServiceReadsFullKnownEntryMemorySection)
+{
+	TempDir temp("uam-memory-library-read");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	MemoryLibraryService::Scope scope;
+	std::string error;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "global", "", scope, &error));
+	MemoryLibraryService::Draft draft;
+	draft.category = "Lessons/User_Lessons";
+	draft.title = "Long memory entry";
+	draft.memory = std::string(500, 'M') + "\nsecond full line";
+	draft.evidence = "Evidence must not be returned.";
+	MemoryLibraryService::Entry entry;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(scope, draft, &entry, &error));
+	std::string content;
+	UAM_ASSERT(MemoryLibraryService::ReadEntryContent(scope, entry.id, content, &error));
+	UAM_ASSERT_EQ(content, draft.memory);
+	UAM_ASSERT(!MemoryLibraryService::ReadEntryContent(scope, entry.file_path.string(), content, &error));
+	UAM_ASSERT(error.find("not available") != std::string::npos);
+	UAM_ASSERT(content.empty());
+}
+
 UAM_TEST(MemoryLibraryServiceAllScopeAggregatesKnownRootsAndDedupes)
 {
 	TempDir temp("uam-memory-library-all");

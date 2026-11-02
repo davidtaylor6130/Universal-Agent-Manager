@@ -56,6 +56,7 @@ import type {
   ComputerUseAllowedApplication,
   WindowsPowerShellPreference,
 } from './cpp/types'
+import type { CEFResponse } from '../ipc/cefBridge'
 import type { StoreApi } from 'zustand'
 
 /** Positive evidence of a guarded, immutable saved-history tail; never input authority. */
@@ -343,6 +344,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   deleteMemoryEntries: (entryIds: string[]) => Promise<boolean>
   openMemoryRoot: () => Promise<boolean>
   revealMemoryEntry: (entryId: string) => Promise<boolean>
+  readMemoryEntry: (request: Pick<MemoryScope, 'scopeType' | 'folderId'> & { entryId: string }) => Promise<CEFResponse<{ content: string }>>
   openMemoryScanModal: () => Promise<boolean>
   closeMemoryScanModal: () => void
   toggleMemoryScanChat: (chatId: string) => void
