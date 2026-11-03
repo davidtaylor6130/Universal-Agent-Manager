@@ -151,11 +151,17 @@ UAM_TEST(OpenCodeNativeWorkspaceIgnoresOnlyTrailingSeparator)
 {
 	using uam::opencode::WorkspaceDirectoriesMatch;
 	UAM_ASSERT(WorkspaceDirectoriesMatch("/opt/containers/HomeAssitent/", "/opt/containers/HomeAssitent", "linux"));
-	UAM_ASSERT(WorkspaceDirectoriesMatch("/owned", "/owned//"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/other"));
+	UAM_ASSERT(WorkspaceDirectoriesMatch("/owned", "/owned//", "linux"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/other", "linux"));
 	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned\\", "/owned", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/", ""));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/owned/x"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/", "", "linux"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/owned/x", "linux"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("C:\\Owned\\", "C:/Owned", "windows"));
+	// The SSH root and child ancestry path that #712 failed through.
+	const Json sessions = {{"ses_root", {{"id", "ses_root"}, {"directory", "/owned"}}}, {"ses_child", {{"id", "ses_child"}, {"directory", "/owned"}, {"parentID", "ses_root"}}}};
+	UAM_ASSERT(uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned/", "ses_root", sessions, "linux"));
+	UAM_ASSERT(uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned/", "ses_child", sessions, "linux"));
+	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/other/", "ses_child", sessions, "linux"));
 }
 
 UAM_TEST(OpenCodeNativeCompanionRequiresConfirmedTaskAskRule)
