@@ -178,7 +178,7 @@ jobs:
           key: macOS-arm64-uam-native
           max-size: 3G
           save: false
-      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
+      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
       # The cases find uam-runner and its metadata beside the binary and resolve source paths from the build folder (CMakeCache.txt).
       - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt
@@ -245,9 +245,11 @@ jobs:
           evict-old-files: 2d
           save: ${{ github.event_name == 'push' }}
       - run: npm --prefix UI-V2 ci
-      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
+      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
-      # The helper builds run in parallel; the core test binary compiles first, then the job waits for their artifacts.
+      # The helper builds run in parallel. Configure validates helpers only when packaging them, so the job configures
+      # with packaging off (compile flags are identical), compiles the core test binary, waits for the helper
+      # artifacts, then turns packaging on for the app build.
       - name: Wait for remote helper artifacts
         timeout-minutes: 60
         env:
@@ -270,6 +272,7 @@ jobs:
         run: |
           $version = (Get-Content UI-V2/package.json -Raw | ConvertFrom-Json).version
           ./scripts/acquire_remote_runners.ps1 -Version $version -ArtifactRoot Builds/remote-artifacts -ValidateOnly
+      - run: cmake -S . -B Builds/tests -DUAM_PACKAGE_REMOTE_RUNNERS=ON
       - run: cmake --build Builds/tests --config Release --parallel 4
       - uses: actions/cache/save@v4
         if: github.event_name == 'push'
@@ -341,9 +344,11 @@ jobs:
       - run: vcpkg install zlib:x64-windows-static
       # Ninja Multi-Config keeps the Release/ output layout and, unlike Visual Studio, supports ccache.
       # /Z7 keeps CEF wrapper debug information inside objects so ccache can store them.
-      - run: cmake -S . -B Builds/tests -G "Ninja Multi-Config" -DCEF_DEBUG_INFO_FLAG=/Z7 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
+      - run: cmake -S . -B Builds/tests -G "Ninja Multi-Config" -DCEF_DEBUG_INFO_FLAG=/Z7 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
-      # The helper builds run in parallel; the core test binary compiles first, then the job waits for their artifacts.
+      # The helper builds run in parallel. Configure validates helpers only when packaging them, so the job configures
+      # with packaging off (compile flags are identical), compiles the core test binary, waits for the helper
+      # artifacts, then turns packaging on for the app build.
       - name: Wait for remote helper artifacts
         timeout-minutes: 60
         env:
@@ -366,6 +371,7 @@ jobs:
         run: |
           $version = (Get-Content UI-V2/package.json -Raw | ConvertFrom-Json).version
           ./scripts/acquire_remote_runners.ps1 -Version $version -ArtifactRoot Builds/remote-artifacts -ValidateOnly
+      - run: cmake -S . -B Builds/tests -DUAM_PACKAGE_REMOTE_RUNNERS=ON
       - run: cmake --build Builds/tests --config Release --parallel 4
       - uses: actions/cache/save@v4
         if: github.event_name == 'push'
