@@ -1000,6 +1000,8 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		branch.id = prepared_originals->FinalBranchId();
 	branch.native_session_id.clear();
 	branch.parent_chat_id = source.id;
+	// A branch keeps chat_create provenance so it cannot bypass the depth-1 rule; the retry key stays with the original.
+	branch.created_by_chat_id = source.created_by_chat_id;
 	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
 	branch.branch_from_message_index = message_index;
 	branch.branch_message_edited = replacement_content.has_value();
