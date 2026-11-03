@@ -15,6 +15,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Pull requests run the full macOS ARM core suite. Windows runs only when a change can behave differently there,
+  # with the core cases mapped from the change; macOS Intel and the full Windows suite run after merge.
+  changes:
+    name: Select platform jobs
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.scope.outputs.native }}
+      windows: ${{ steps.scope.outputs.windows }}
+      rows: ${{ steps.scope.outputs.rows }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        env:
+          ROWS: >-
+            [{"os":"macos-latest","name":"macOS ARM","arch":"arm64","archive":"UAM-macOS-ARM-PR.zip","artifact":"UAM-macOS-ARM-Release-PR"},
+            {"os":"macos-26-intel","name":"macOS Intel","arch":"x86_64","archive":"UAM-macOS-Intel-PR.zip","artifact":"UAM-macOS-Intel-Release-PR"}]
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            # The pull-request merge commit's first parent is the base branch it merges into.
+            git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+            python3 scripts/select_native_tests.py classify --base HEAD^1 --changed "$RUNNER_TEMP/changed.txt" | tee scope.txt
+            wanted='["macOS ARM"]'
+          else
+            printf 'native=true\nwindows=true\n' | tee scope.txt
+            wanted='["macOS ARM","macOS Intel"]'
+          fi
+          cat scope.txt >> "$GITHUB_OUTPUT"
+          echo "rows=$(jq -c --argjson wanted "$wanted" '[.[] | select(.name as $n | $wanted | index($n))]' <<< "$ROWS")" >> "$GITHUB_OUTPUT"
+
   security-evidence:
     name: Dependency evidence
     runs-on: ubuntu-latest
@@ -40,6 +71,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 scripts/check_docs.py
       - run: python3 Mobile/Checks/start_desktop_cleanup.py
+      - run: python3 tests/select_native_tests_test.py
+      - run: python3 tests/native_test_runner_test.py
+      - run: python3 scripts/wait_for_remote_runners.py --self-test
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -63,6 +97,7 @@ jobs:
       - run: npm --prefix UI-V2 run test
       - run: npm --prefix UI-V2 run build
 
+  # Native jobs wait for all three rows (scripts/wait_for_remote_runners.py 3); keep that count in step with this matrix.
   remote-runner:
     name: Remote runner ${{ matrix.platform }} ${{ matrix.arch }}
     strategy:
@@ -124,32 +159,100 @@ jobs:
             ${{ matrix.manifest }}
           if-no-files-found: error
 
-  test:
-    name: Test ${{ matrix.name }}
-    needs: remote-runner
+  # The macOS ARM core binary builds on its own, without the app or the remote helpers, and four shards run it.
+  core-build:
+    name: Build macOS ARM core tests
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: Builds/tests/_deps
+          key: macOS-arm64-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: macOS-arm64-uam-ninja-deps-
+      # Same key and configuration as the macOS ARM test job, which alone saves the cache.
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: macOS-arm64-uam-native
+          max-size: 3G
+          save: false
+      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
+      - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
+      # The cases find uam-runner and its metadata beside the binary and resolve source paths from the build folder (CMakeCache.txt).
+      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uam-core-tests-macos-arm64
+          path: core-tests.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  core-shard:
+    name: macOS ARM core tests ${{ matrix.shard }}/4
+    needs: core-build
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            name: macOS ARM
-            arch: arm64
-            archive: UAM-macOS-ARM-PR.zip
-            artifact: UAM-macOS-ARM-Release-PR
-          - os: macos-26-intel
-            name: macOS Intel
-            arch: x86_64
-            archive: UAM-macOS-Intel-PR.zip
-            artifact: UAM-macOS-Intel-Release-PR
-          - os: windows-latest
-            name: Windows
-            arch: x64
-            archive: UAM-Windows-PR.zip
-            artifact: UAM-Windows-Release-PR
-    runs-on: ${{ matrix.os }}
+        shard: [1, 2, 3, 4]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: uam-core-tests-macos-arm64
+      - run: mkdir -p Builds/tests && tar -xf core-tests.tar -C Builds/tests
+      - name: Run native core tests
+        # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
+        # gets one fresh serial retry. Budgets are unchanged; together the shards run every case once.
+        run: python3 scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
 
+  test:
+    name: Test ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.rows) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI-V2/package-lock.json
+      # Only base-branch pushes save caches, so pull requests never add copies.
+      - uses: actions/cache/restore@v4
+        with:
+          path: Builds/tests/_deps
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-
+
+      # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
+      # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
+      # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-native
+          max-size: 3G
+          evict-old-files: 2d
+          save: ${{ github.event_name == 'push' }}
+      - run: npm --prefix UI-V2 ci
+      - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
+      - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
+      # The helper builds run in parallel; the core test binary compiles first, then the job waits for their artifacts.
+      - name: Wait for remote helper artifacts
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/wait_for_remote_runners.py 3
       - uses: actions/download-artifact@v4
         with:
           name: UAM-runner-linux-x86_64
@@ -162,99 +265,197 @@ jobs:
         with:
           name: UAM-runner-windows-x86_64
           path: Builds/remote-artifacts/windows-x86_64
-
       - name: Validate shared remote helper contract
         shell: pwsh
         run: |
           $version = (Get-Content UI-V2/package.json -Raw | ConvertFrom-Json).version
           ./scripts/acquire_remote_runners.ps1 -Version $version -ArtifactRoot Builds/remote-artifacts -ValidateOnly
+      - run: cmake --build Builds/tests --config Release --parallel 4
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        continue-on-error: true
+        with:
+          path: Builds/tests/_deps
+          key: ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
+      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
+      # macOS ARM core cases run in the core-shard jobs; macOS Intel runs only on pushes, with every case.
+      - name: Run native core tests
+        if: matrix.name != 'macOS ARM'
+        # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
+        # gets one fresh serial retry. Budgets are unchanged.
+        run: python3 scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt Builds/tests/uam_core_tests
+      - name: Package macOS review build
+        run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
+      - name: Smoke test packaged macOS app
+        run: bash scripts/smoke_packaged_macos.sh ${{ matrix.archive }} Builds/tests/UI-V2/dist
+      - name: Upload macOS Release review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
 
-
+  # Windows runs on pushes, and on pull requests whose change scripts/select_native_tests.py marks platform-relevant.
+  # It builds once; four shard jobs run the core cases.
+  test-windows:
+    name: Test Windows
+    needs: changes
+    if: needs.changes.outputs.native == 'true' && needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
-
-      - uses: actions/cache@v4
+      # Only base-branch pushes save caches, so pull requests never add copies.
+      - uses: actions/cache/restore@v4
         with:
           path: Builds/tests/_deps
-          # Windows now uses Ninja; dependency sub-builds from the Visual Studio generator cannot be reused.
-          key: ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
+          key: Windows-x64-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.arch }}-uam-ninja-deps-
+            Windows-x64-uam-ninja-deps-
 
-      # Pull requests reuse the compiler cache saved by the latest base-branch push.
+      # Pull requests reuse the compiler cache saved by the latest base-branch push. A 2 GB limit filled the Windows
+      # cache and evicted entries mid-build (about 70% hits on base pushes). Entries unused for two days are dropped
+      # before a push saves, so a failed build cannot empty the cache and one copy per platform stays well under 10 GB.
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ runner.os }}-${{ matrix.arch }}-uam-native
-          max-size: 2G
+          key: Windows-x64-uam-native
+          max-size: 3G
+          evict-old-files: 2d
           save: ${{ github.event_name == 'push' }}
-      - name: Exclude build and test files from Defender scanning (Windows)
-        if: runner.os == 'Windows'
+      - name: Exclude build and test files from Defender scanning
         shell: pwsh
         # Real-time scanning of compiler outputs and the thousands of fixture files the native suite
         # creates dominates hosted-runner builds and fixed test deadlines; product code and budgets are unchanged.
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
         with:
           arch: x64
-
       - run: npm --prefix UI-V2 ci
-      - name: Install static zlib (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install zlib:x64-windows-static
-      - name: Configure native Release tests (macOS)
-        if: runner.os == 'macOS'
-        run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
-      - name: Configure native Release tests (Windows x64)
-        if: runner.os == 'Windows'
-        # Ninja Multi-Config keeps the Release/ output layout and, unlike Visual Studio, supports ccache.
-        # /Z7 keeps CEF wrapper debug information inside objects so ccache can store them.
-        run: cmake -S . -B Builds/tests -G "Ninja Multi-Config" -DCEF_DEBUG_INFO_FLAG=/Z7 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
-      - run: cmake --build Builds/tests --config Release --parallel 4
-      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
-      - name: Run native core tests
-        shell: bash
-        # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
-        # gets one fresh serial retry. Budgets are unchanged.
+      - run: vcpkg install zlib:x64-windows-static
+      # Ninja Multi-Config keeps the Release/ output layout and, unlike Visual Studio, supports ccache.
+      # /Z7 keeps CEF wrapper debug information inside objects so ccache can store them.
+      - run: cmake -S . -B Builds/tests -G "Ninja Multi-Config" -DCEF_DEBUG_INFO_FLAG=/Z7 -DUAM_BUILD_TESTS=ON -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$env:GITHUB_WORKSPACE/Builds/remote-artifacts" -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
+      - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
+      # The helper builds run in parallel; the core test binary compiles first, then the job waits for their artifacts.
+      - name: Wait for remote helper artifacts
+        timeout-minutes: 60
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/wait_for_remote_runners.py 3
+      - uses: actions/download-artifact@v4
+        with:
+          name: UAM-runner-linux-x86_64
+          path: Builds/remote-artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: UAM-runner-linux-arm64
+          path: Builds/remote-artifacts/linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: UAM-runner-windows-x86_64
+          path: Builds/remote-artifacts/windows-x86_64
+      - name: Validate shared remote helper contract
+        shell: pwsh
         run: |
-          binary=Builds/tests/uam_core_tests python=python3
-          if [ "$RUNNER_OS" = Windows ]; then binary=Builds/tests/Release/uam_core_tests.exe python=python; fi
-          "$python" scripts/run_native_tests.py --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary"
-      - name: Package macOS review build
-        if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent Builds/tests/universal_agent_manager.app ${{ matrix.archive }}
-
-      - name: Smoke test packaged macOS app
-        if: runner.os == 'macOS'
-        run: bash scripts/smoke_packaged_macos.sh ${{ matrix.archive }} Builds/tests/UI-V2/dist
-
+          $version = (Get-Content UI-V2/package.json -Raw | ConvertFrom-Json).version
+          ./scripts/acquire_remote_runners.ps1 -Version $version -ArtifactRoot Builds/remote-artifacts -ValidateOnly
+      - run: cmake --build Builds/tests --config Release --parallel 4
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'push'
+        continue-on-error: true
+        with:
+          path: Builds/tests/_deps
+          key: Windows-x64-uam-ninja-deps-${{ hashFiles('CMakeLists.txt') }}
+      - run: ctest --test-dir Builds/tests -C Release --output-on-failure -E "^uam_core_tests$"
+      # The shards need the test binary beside the CEF libraries and uam-runner, and the build folder marker.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uam-core-tests-windows-x64
+          path: |
+            Builds/tests/CMakeCache.txt
+            Builds/tests/Release/
+            !Builds/tests/Release/**/*.pdb
+            !Builds/tests/Release/**/*.ilk
+            !Builds/tests/Release/**/*.lib
+            !Builds/tests/Release/**/*.exp
+          retention-days: 1
+          if-no-files-found: error
       - name: Package Windows review build
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Remove-Item Builds/tests/Release/uam_core_tests* -Force -ErrorAction SilentlyContinue
-          Compress-Archive -Path Builds/tests/Release/* -DestinationPath ${{ matrix.archive }}
-
+          Compress-Archive -Path Builds/tests/Release/* -DestinationPath UAM-Windows-PR.zip
       - name: Smoke test packaged Windows app
-        if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/smoke_packaged_windows.ps1 ${{ matrix.archive }} Builds/tests/UI-V2/dist
-
+        run: ./scripts/smoke_packaged_windows.ps1 UAM-Windows-PR.zip Builds/tests/UI-V2/dist
       - name: Upload Windows Release review artifact
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.archive }}
+          name: UAM-Windows-Release-PR
+          path: UAM-Windows-PR.zip
           if-no-files-found: error
 
-      - name: Upload macOS Release review artifact
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+  windows-shard:
+    name: Windows core tests ${{ matrix.shard }}/4
+    needs: test-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.archive }}
-          if-no-files-found: error
+          fetch-depth: 2
+      - name: Exclude test files from Defender scanning
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+      - uses: actions/download-artifact@v4
+        with:
+          name: uam-core-tests-windows-x64
+          path: Builds/tests
+      - name: Run native core tests
+        shell: bash
+        # Pull requests run the cases mapped from the change (scripts/select_native_tests.py); pushes run every case.
+        # Two processes, except cases with tight wall-clock budgets, which run alone afterwards; a failed case
+        # gets one fresh serial retry. Budgets are unchanged; together the shards run each selected case once.
+        run: |
+          binary=Builds/tests/Release/uam_core_tests.exe python=python
+          names=()
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+            "$binary" --list-tests > "$RUNNER_TEMP/inventory.txt"
+            "$python" scripts/select_native_tests.py select --changed "$RUNNER_TEMP/changed.txt" --inventory "$RUNNER_TEMP/inventory.txt" > "$RUNNER_TEMP/selected.txt"
+            if [ ! -s "$RUNNER_TEMP/selected.txt" ]; then echo 'No native core case covers this change.'; exit 0; fi
+            if [ "$(cat "$RUNNER_TEMP/selected.txt")" != '*' ]; then names=("@$RUNNER_TEMP/selected.txt"); fi
+          fi
+          "$python" scripts/run_native_tests.py --shard ${{ matrix.shard }}/4 --jobs 2 --serial tests/ci_serial.txt --retry-failed-once --quarantine tests/ci_quarantine.txt "$binary" "${names[@]}"
+
+  # Each save adds a dated cache copy; keep only the newest per key family on this branch so the
+  # repository stays under the 10 GB Actions cache limit and pull requests restore the latest one.
+  prune-caches:
+    name: Prune superseded caches
+    needs: [test, test-windows, core-build]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: |
+          for prefix in ccache-macOS-arm64-uam-native- ccache-macOS-x86_64-uam-native- ccache-Windows-x64-uam-native- \
+              macOS-arm64-uam-ninja-deps- macOS-x86_64-uam-ninja-deps- Windows-x64-uam-ninja-deps- \
+              macOS-uam-flag-deps- Windows-uam-computer-use- node-cache-Linux-x64-npm- node-cache-macOS-arm64-npm- \
+              node-cache-macOS-x64-npm- node-cache-Windows-x64-npm-; do
+            gh cache list --ref "$GITHUB_REF" --key "$prefix" --sort created_at --order desc --limit 100 --json id --jq '.[1:][].id' |
+              while read -r id; do gh cache delete "$id"; done
+          done
