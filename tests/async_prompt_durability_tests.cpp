@@ -1675,27 +1675,56 @@ done
 	for (int index = 1; index < history_count; ++index)
 		app.chats.front().messages.push_back({.role = MessageRole::Assistant,
 		    .content = std::to_string(index) + std::string(128 * 1024, 'x')});
-	// Calibrate only the completion deadline, which bounds background work rather than the UI thread.
-	// The cold launch repeats this fixture's small-file I/O while installing resources, and the longest
-	// (restart and reload) flows then take about 40 times one save and reload of this ~26 MB chat, so
-	// the deadline allows twice that on this machine with the old 10 s as its floor (#526). The 100 ms
-	// input and poll budgets below are fixed and never scaled.
+	// Calibrate against this machine (#526). The cold launch repeats this fixture's small-file I/O while
+	// installing resources, and the longest (restart and reload) flows then take about 40 times one save
+	// and reload of this ~26 MB chat, so the completion deadline allows twice that with the old 10 s as
+	// its floor. Each input and poll budget stays 100 ms unless half the cheapest guarded work on this
+	// machine is longer: the median synchronous save or reload of this chat, read and hash of the cold skill
+	// bundle, or read and hash of the agent catalogue where the case writes one. A call that does any of
+	// that work synchronously therefore still exceeds it.
 	const std::chrono::steady_clock::duration fixture_cost = std::chrono::steady_clock::now() - fixture_started;
 	ChatSession calibration = app.chats.front();
 	calibration.id = "cold-local-admission-calibration";
 	// The median of three samples resists both one cold first-use sample and one lucky fast sample.
 	std::array<std::chrono::steady_clock::duration, 3> save_cycles{};
-	for (std::chrono::steady_clock::duration& sample : save_cycles)
+	std::array<std::chrono::steady_clock::duration, 3> saves{};
+	std::array<std::chrono::steady_clock::duration, 3> loads{};
+	std::array<std::chrono::steady_clock::duration, 3> bundle_reads{};
+	std::array<std::chrono::steady_clock::duration, 3> catalogue_reads{};
+	const bool catalogue_fixture = fs::exists(app.data_root / "agents");
+	const auto time_read_and_hash = [](std::initializer_list<fs::path> directories)
+	{
+		const std::chrono::steady_clock::time_point read_started = std::chrono::steady_clock::now();
+		std::uint64_t hash = 0;
+		for (const fs::path& directory : directories)
+			for (const fs::directory_entry& entry : fs::directory_iterator(directory))
+				hash ^= uam::hashing::Fnv1a64(ReadFile(entry.path()));
+		UAM_ASSERT(hash != 0);
+		return std::chrono::steady_clock::now() - read_started;
+	};
+	for (std::size_t sample = 0; sample < save_cycles.size(); ++sample)
 	{
 		const std::chrono::steady_clock::time_point calibration_started = std::chrono::steady_clock::now();
 		UAM_ASSERT(ChatRepository::SaveChat(temp.root / "calibration-data", calibration));
+		saves[sample] = std::chrono::steady_clock::now() - calibration_started;
 		UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root / "calibration-data", calibration.id).has_value());
-		sample = std::chrono::steady_clock::now() - calibration_started;
+		save_cycles[sample] = std::chrono::steady_clock::now() - calibration_started;
+		loads[sample] = save_cycles[sample] - saves[sample];
+		bundle_reads[sample] = time_read_and_hash({assets});
+		if (catalogue_fixture) catalogue_reads[sample] = time_read_and_hash({app.data_root / "agents", temp.root / ".uam" / "agents"});
 	}
 	std::ranges::sort(save_cycles);
+	std::ranges::sort(saves);
+	std::ranges::sort(loads);
+	std::ranges::sort(bundle_reads);
+	std::ranges::sort(catalogue_reads);
+	const std::chrono::steady_clock::duration blocking_work =
+	    catalogue_fixture ? std::min({saves[1], loads[1], bundle_reads[1], catalogue_reads[1]}) : std::min({saves[1], loads[1], bundle_reads[1]});
 	const std::chrono::steady_clock::duration save_cycle = save_cycles[1];
 	const std::chrono::steady_clock::duration completion_limit =
 	    std::max<std::chrono::steady_clock::duration>(std::chrono::seconds(10), 2 * (fixture_cost + 40 * save_cycle));
+	const std::chrono::steady_clock::duration input_budget =
+	    std::max<std::chrono::steady_clock::duration>(std::chrono::milliseconds(100), blocking_work / 2);
 	std::string expected_hash = "opencode-cli:builtin-build-v2";
 	if (app.chats.front().uam_agent_id == "workspace-47")
 		expected_hash = "opencode-cli:fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(ReadFile(temp.root / ".uam/agents/workspace-47.md")));
@@ -1712,7 +1741,7 @@ done
 	const bool accepted = uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error);
 	const std::chrono::steady_clock::duration feedback = std::chrono::steady_clock::now() - started;
 	UAM_ASSERT(accepted);
-	UAM_ASSERT(feedback <= std::chrono::milliseconds(100));
+	UAM_ASSERT(feedback <= input_budget);
 	UAM_ASSERT(!app.acp_sessions.empty() && (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch));
 	// A staged cold launch also uses pending_local_launch; only a non-cold task is the configuration worker.
 	const auto configuration_worker_pending = [&app]
@@ -1735,7 +1764,7 @@ done
 	{
 		const std::chrono::steady_clock::time_point second_started = std::chrono::steady_clock::now();
 		UAM_ASSERT(!uam::SendAcpPrompt(app, app.chats.front().id, "Hold additional input during definition preparation", &error));
-		UAM_ASSERT(std::chrono::steady_clock::now() - second_started <= std::chrono::milliseconds(100));
+		UAM_ASSERT(std::chrono::steady_clock::now() - second_started <= input_budget);
 		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{201});
 		const std::shared_ptr<std::optional<bool>> receipt = std::make_shared<std::optional<bool>>();
 		UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [receipt](bool saved) { *receipt = saved; }));
@@ -1744,7 +1773,7 @@ done
 		{
 			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 			(void)uam::FlushPendingChatSaves(app);
-			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(receipt->has_value() && **receipt);
@@ -1793,7 +1822,7 @@ done
 		{
 			const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
 			(void)uam::PollAllAcpSessions(app);
-			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= input_budget);
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(app.local_acp_launch_tasks.empty() && app.agent_input_preparation_tasks.empty());
@@ -1813,7 +1842,7 @@ done
 			{
 				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 				(void)uam::FlushPendingChatSaves(app);
-				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			}
 			const std::optional<ChatSession> unsent = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
@@ -1832,10 +1861,10 @@ done
 	{
 		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
 		(void)uam::PollAllAcpSessions(app);
-		if (std::chrono::steady_clock::now() - poll_started > std::chrono::milliseconds(100))
+		if (std::chrono::steady_clock::now() - poll_started > input_budget)
 		{
 			const uam::AcpSessionState& current = *app.acp_sessions.front();
-			throw std::runtime_error("Cold configuration poll exceeded 100ms: " + nlohmann::json{
+			throw std::runtime_error("Cold configuration poll exceeded " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(input_budget).count()) + "ms: " + nlohmann::json{
 			    {"globalSetup", app.settings.central_provider_configuration.enabled}, {"processHost", current.process_execution_host_id},
 			    {"smallModel", app.chats.front().small_model_mode}, {"discovery", current.model_discovery_only},
 			    {"internal", current.goal_internal_session}, {"turnKind", current.goal_turn_kind}, {"review", current.goal_review_turn},
@@ -1871,7 +1900,7 @@ done
 			{
 				const std::chrono::steady_clock::time_point queued_started = std::chrono::steady_clock::now();
 				UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
-				UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= input_budget);
 				UAM_ASSERT(!fs::exists(prompt_log));
 			}
 			else if (variation == "receiptstop")
@@ -1899,7 +1928,7 @@ done
 					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 					(void)uam::PollAllAcpSessions(app);
 					(void)uam::FlushPendingChatSaves(app);
-					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 					std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				}
 				UAM_ASSERT(app.acp_sessions.front()->last_error.find("ownership changed") != std::string::npos);
@@ -1921,15 +1950,15 @@ done
 			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
 			const std::chrono::steady_clock::time_point input_started = std::chrono::steady_clock::now();
 			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
-			UAM_ASSERT(std::chrono::steady_clock::now() - input_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - input_started <= input_budget);
 			const std::string before_receipt = ReadFile(prompt_log);
 			UAM_ASSERT_EQ(std::count(before_receipt.begin(), before_receipt.end(), '\n'), 1);
 		}
 		const std::chrono::steady_clock::time_point flush_started = std::chrono::steady_clock::now();
 		(void)uam::FlushPendingChatSaves(app);
-		UAM_ASSERT(std::chrono::steady_clock::now() - flush_started <= std::chrono::milliseconds(100));
+		UAM_ASSERT(std::chrono::steady_clock::now() - flush_started <= input_budget);
 		if (variation != "receiptstop" && variation != "receiptfailure" && variation != "completionnext")
-			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= input_budget);
 		if (variation == "receiptfailure" && receipt_guard_exercised && fs::is_regular_file(blocked_chats) &&
 		    !app.acp_sessions.front()->processing)
 		{
@@ -1941,7 +1970,7 @@ done
 			fs::rename(saved_chats, blocked_chats);
 			const std::chrono::steady_clock::time_point retry_started = std::chrono::steady_clock::now();
 			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
-			UAM_ASSERT(std::chrono::steady_clock::now() - retry_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - retry_started <= input_budget);
 		}
 		if (variation.starts_with("busy") && app.acp_sessions.front()->session_ready &&
 		    app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 202 &&
@@ -1957,7 +1986,7 @@ done
 			if (variation == "busyfailure") app.chats.front().uam_agent_id = "missing-agent";
 			const std::chrono::steady_clock::time_point queued_started = std::chrono::steady_clock::now();
 			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Queue input against the current selected catalogue", &error));
-			UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= input_budget);
 			UAM_ASSERT(app.acp_sessions.front()->pending_agent_input);
 			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_serial, first_turn);
 			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_user_message_index, first_user);
@@ -1984,7 +2013,7 @@ done
 					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 					(void)uam::PollAllAcpSessions(app);
 					(void)uam::FlushPendingChatSaves(app);
-					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 					std::this_thread::sleep_for(std::chrono::milliseconds(2));
 				}
 				UAM_ASSERT(ReadFile(provider_input).find("session/cancel") != std::string::npos);
@@ -2020,13 +2049,16 @@ done
 			const std::string chunk = "{\"method\":\"fixture/chunk\"}\n";
 			UAM_ASSERT(service.WriteToStdioProcess(*app.acp_sessions.front(), chunk.data(), chunk.size(), &error));
 			const std::chrono::steady_clock::time_point chunk_started = std::chrono::steady_clock::now();
+			// Off the 100 ms floor the delivery window is twice the per-tick budget, so one scaled tick cannot use it up.
+			const std::chrono::steady_clock::duration delivery_window =
+			    input_budget > std::chrono::milliseconds(100) ? 2 * input_budget : input_budget;
 			while (app.chats.front().messages[201].content.find("stream-during-agent-preparation") == std::string::npos &&
-			    std::chrono::steady_clock::now() - chunk_started <= std::chrono::milliseconds(100))
+			    std::chrono::steady_clock::now() - chunk_started <= delivery_window)
 			{
 				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 				(void)uam::PollAllAcpSessions(app);
 				(void)uam::FlushPendingChatSaves(app);
-				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 				std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			}
 			UAM_ASSERT(app.chats.front().messages[201].content.find("stream-during-agent-preparation") != std::string::npos);
@@ -2036,7 +2068,7 @@ done
 				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 				(void)uam::PollAllAcpSessions(app);
 				(void)uam::FlushPendingChatSaves(app);
-				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			}
 			UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && app.pending_chat_save_at_by_chat_id.empty());
@@ -2092,7 +2124,7 @@ done
 					restarted.settings.central_provider_configuration.instruction_files = {(temp.root / "missing-restart-instructions.md").string()};
 				const std::chrono::steady_clock::time_point resume_started = std::chrono::steady_clock::now();
 				UAM_ASSERT(uam::ResumeQueuedAcpPrompts(restarted, restarted.chats.front().id, {{restored.id, restored.revision}}, &error));
-				UAM_ASSERT(std::chrono::steady_clock::now() - resume_started <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - resume_started <= input_budget);
 				if (variation.starts_with("busysummary"))
 				{
 					UAM_ASSERT(!restarted.chats.front().messages_loaded && restarted.chats.front().messages.empty());
@@ -2124,7 +2156,7 @@ done
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 						(void)uam::PollAllAcpSessions(restarted);
 						(void)uam::FlushPendingChatSaves(restarted);
-						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 						std::this_thread::sleep_for(std::chrono::milliseconds(2));
 					}
 					UAM_ASSERT(!resumed.pending_queued_history);
@@ -2148,7 +2180,7 @@ done
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 						(void)uam::PollAllAcpSessions(restarted);
 						(void)uam::FlushPendingChatSaves(restarted);
-						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 						std::this_thread::sleep_for(std::chrono::milliseconds(2));
 					}
 					UAM_ASSERT(!resumed.pending_referenced_queue_launch_fingerprint.empty());
@@ -2168,7 +2200,7 @@ done
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 						(void)uam::PollAllAcpSessions(restarted);
 						(void)uam::FlushPendingChatSaves(restarted);
-						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 						std::this_thread::sleep_for(std::chrono::milliseconds(2));
 					}
 					UAM_ASSERT(resumed.pending_referenced_queue_launch_fingerprint.empty());
@@ -2188,7 +2220,7 @@ done
 					(void)uam::PollAllAcpSessions(restarted);
 					(void)uam::FlushPendingChatSaves(restarted);
 
-					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 					if (!resumed.processing && resumed.queued_user_prompts.empty() && restarted.pending_chat_save_at_by_chat_id.empty() &&
 					    restarted.chats.front().messages.size() == 204) break;
 					std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2228,7 +2260,7 @@ done
 				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 				(void)uam::PollAllAcpSessions(app);
 				(void)uam::FlushPendingChatSaves(app);
-				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 				if (variation == "busyrow" && !app.acp_sessions.front()->last_error.empty()) break;
 				if (variation != "busyrow" && !app.acp_sessions.front()->processing && app.acp_sessions.front()->queued_user_prompts.empty() &&
 				    app.pending_chat_save_at_by_chat_id.empty() && app.chats.front().messages.size() >= 204) break;
@@ -2315,7 +2347,7 @@ done
 		UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && !app.acp_sessions.front()->pending_local_launch);
 		const std::chrono::steady_clock::time_point warm_started = std::chrono::steady_clock::now();
 		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Warm input against the current selected catalogue", &error));
-		UAM_ASSERT(std::chrono::steady_clock::now() - warm_started <= std::chrono::milliseconds(100));
+		UAM_ASSERT(std::chrono::steady_clock::now() - warm_started <= input_budget);
 		UAM_ASSERT_EQ(ReadFile(prompt_log), prompts);
 		const std::chrono::steady_clock::time_point warm_deadline = warm_started + completion_limit;
 		while ((app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->processing || !app.pending_chat_save_at_by_chat_id.empty()) &&
@@ -2324,7 +2356,7 @@ done
 			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
 			(void)uam::PollAllAcpSessions(app);
 			(void)uam::FlushPendingChatSaves(app);
-			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && !app.acp_sessions.front()->processing && app.pending_chat_save_at_by_chat_id.empty());
