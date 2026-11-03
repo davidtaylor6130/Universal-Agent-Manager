@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/opencode_native_activity_service.h"
+#include "common/provider/opencode/opencode_native_identity.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include <algorithm>
 
@@ -144,6 +145,17 @@ UAM_TEST(OpenCodeNativeCompanionRequiresExactWorkspaceAndAcyclicAncestry)
 	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned", "ses_child", sessions));
 	sessions["ses_child"]["parentID"] = "ses_missing";
 	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned", "ses_child", sessions));
+}
+
+UAM_TEST(OpenCodeNativeWorkspaceIgnoresOnlyTrailingSeparator)
+{
+	using uam::opencode::WorkspaceDirectoriesMatch;
+	UAM_ASSERT(WorkspaceDirectoriesMatch("/opt/containers/HomeAssitent/", "/opt/containers/HomeAssitent", "linux"));
+	UAM_ASSERT(WorkspaceDirectoriesMatch("/owned", "/owned//"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/other"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned\\", "/owned", "linux"));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/", ""));
+	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/owned/x"));
 }
 
 UAM_TEST(OpenCodeNativeCompanionRequiresConfirmedTaskAskRule)
