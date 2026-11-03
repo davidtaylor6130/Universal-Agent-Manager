@@ -490,8 +490,10 @@ namespace uam
 			task->saved.reset();
 			PreparedLaunchWorktree prepared = *task->prepared;
 			if (!task->merged) task->prepared.reset();
-			std::packaged_task<PreparedLaunchWorktree()> validation([root = task->data_root, receipt = task->receipt_file, prepared = std::move(prepared), cancellation = task->cancellation, update_only = task->update_only, svn_update = task->svn_enabled && task->svn_update_before_chat && task->original.svn_update_pending, lease, host = task->remote_host]() mutable
+			std::packaged_task<PreparedLaunchWorktree()> validation([root = task->data_root, receipt = task->receipt_file, prepared = std::move(prepared), cancellation = task->cancellation, update_only = task->update_only, svn_update = task->svn_enabled && task->svn_update_before_chat && task->original.svn_update_pending, lease = lease, host = task->remote_host]() mutable
 			{
+				// The packaged_task keeps its captures until thread exit, after the future is ready; release the lease when the body returns (#647).
+				const std::shared_ptr<WorkspaceLeaseGate::Lease> held_lease = std::move(lease);
 				prepared.operation.ok = host
 				    ? GitWorktreeService().ValidateRemotePreparedWorkspace(*host, root, receipt, prepared.metadata, prepared.operation.message, cancellation->get_token())
 				    : update_only
@@ -795,8 +797,10 @@ namespace uam
 		std::vector<ChatSession> live_chats;
 		live_chats.reserve(app.chats.size());
 		for (const ChatSession& other : app.chats) live_chats.push_back(CaptureVcsChatContext(other));
-		std::packaged_task<PreparedLaunchWorktree()> worker([task, live_chats = std::move(live_chats), root = task->data_root, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease]() mutable
+		std::packaged_task<PreparedLaunchWorktree()> worker([task, live_chats = std::move(live_chats), root = task->data_root, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease = lease]() mutable
 		{
+			// The packaged_task keeps its captures until thread exit, after the future is ready; release the lease when the body returns (#647).
+			const std::shared_ptr<WorkspaceLeaseGate::Lease> held_lease = std::move(lease);
 			AppState snapshot;
 			snapshot.data_root = root;
 			snapshot.settings = std::move(settings);
