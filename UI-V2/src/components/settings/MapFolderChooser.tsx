@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import type { RoutingFolderGroup } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
-import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { Button, IconButton, MenuSelect, Overlay, SegmentedControl } from '../ui'
 import '../shared/review.css'
 
@@ -39,7 +39,7 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
     panel.current?.focus()
     if (inline) return
     const key = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== panel.current) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== panel.current) return
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeRef.current() }
       else trapModalTab(event)
     }
@@ -59,6 +59,8 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
   const allShown = shownKeys.length > 0 && shownKeys.every((key) => selected.includes(key))
   const hereCount = selected.filter((key) => key.startsWith(`${hostId}\n`)).length
   const missing = selected.filter((key) => !choices[key]).length
+  // Switching computers drops ticks there without a remote folder: they can't be seen from here, so they must not block Map N.
+  const switchHost = (next: string) => { setSelected((current) => current.filter((key) => key.startsWith(`${next}\n`) || choices[key])); setHostId(next) }
   const toggle = (keys: string[], on: boolean) => setSelected((current) => on ? [...new Set([...current, ...keys])] : current.filter((key) => !keys.includes(key)))
   const apply = () => onApply(selected.map((key) => { const [host, folderId] = key.split('\n'); return { hostId: host, folderId, destinationFolderId: choices[key] } }))
   const names = hidden.map((group) => group.folder.name)
@@ -77,8 +79,8 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
     <div className="uam-rv-dialog__body">
       <div className="uam-rv-selectbar uam-rt-chooser__bar">
         {hosts.length <= 4
-          ? <SegmentedControl aria-label="Computer" value={hostId} onChange={setHostId} options={hosts.map((item) => ({ value: item.id, label: item.label }))} />
-          : <MenuSelect label="Computer" value={hostId} onChange={setHostId} options={hosts.map((item) => ({ value: item.id, label: item.label }))} />}
+          ? <SegmentedControl aria-label="Computer" value={hostId} onChange={switchHost} options={hosts.map((item) => ({ value: item.id, label: item.label }))} />
+          : <MenuSelect label="Computer" value={hostId} onChange={switchHost} options={hosts.map((item) => ({ value: item.id, label: item.label }))} />}
         <label className="uam-rt-chooser__filter">
           <Search size={12} aria-hidden />
           <input type="search" className="uam-field" aria-label="Filter workspaces" placeholder="Filter workspaces" value={filter} onChange={(event) => setFilter(event.target.value)} />

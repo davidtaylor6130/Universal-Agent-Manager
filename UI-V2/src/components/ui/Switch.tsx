@@ -13,7 +13,7 @@ export function Switch({ label, hideLabel = false, description, className, ...pr
   return (
     <label className={cx('uam-switch', className)}>
       <input type="checkbox" aria-label={label} {...props} />
-      {/* Both icons ride in the thumb; CSS shows the tick when checked and the X when not, so uncontrolled switches swap too. */}
+      {/* Both icons ride in the thumb; inside Settings CSS shows the tick when checked and the X when not (so uncontrolled switches swap too); elsewhere they stay hidden. */}
       <span className="uam-switch__track" aria-hidden>
         <span className="uam-switch__thumb">
           <Check className="uam-switch__icon uam-switch__icon--on" size={9} strokeWidth={3} />

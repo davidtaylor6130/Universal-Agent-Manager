@@ -6,7 +6,7 @@ import type { Session } from '../../types/session'
 import { Button, ConfirmDialog, IconButton, Notice, Overlay } from '../ui'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from '../settings/ExecutionRoutingSettings'
 import './ExecutionRoutingDialog.css'
-import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 /** Explicit opt-in and workspace mappings use registered folders; native settings own persisted confirmations. */
 export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
@@ -20,7 +20,7 @@ export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
     const dialog = panel.current
     dialog?.focus()
     const key = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== panel.current) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== panel.current) return
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!settings.current?.closeStep?.() && !busyRef.current) closeRef.current() }
       else trapModalTab(event)
     }

@@ -27,7 +27,7 @@ Use shared theme tokens for colour, type, radius and spacing, and keep density c
 ## Status
 
 - Success/failure use the same colour and tick/cross icon everywhere, drawn by `StatusDot`; never colour alone. Only Settings boxes the mark in a rounded square (tinted fill and border); chat, sidebar, tool calls and other views keep the bare tick or cross.
-- On/off is always the `Switch` control, with one look everywhere: a neutral track (surface when off, ink when on) and a thumb carrying a green tick (`--success`) when on or a red X (`--error`) when off. Never a coloured track, an accent or gradient variant, or a checkbox or segmented On/Off standing in for it.
+- On/off is always the `Switch` control, with a neutral track (surface when off, ink when on). Inside Settings its thumb carries a green tick (`--success`) when on or a red X (`--error`) when off; outside Settings the thumb stays plain black and white with no icons. Never a coloured track, an accent or gradient variant, or a checkbox or segmented On/Off standing in for it.
 - On/off states must stay visibly distinct, not only by switch position.
 - Use `StatusDot` only where state matters. Custom themes let users choose semantic status colours (error/stop/cancel, success, warning) so colour-blind users can adjust them.
 

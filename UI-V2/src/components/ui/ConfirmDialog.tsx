@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { TriangleAlert, X } from 'lucide-react'
 import { Button } from './Button'
 import { Overlay } from './Overlay'
-import { getTopmostModal } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal } from '../../utils/modalFocus'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -49,7 +49,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
       else cancelRef.current?.focus()
     }
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== dialog) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== dialog) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()

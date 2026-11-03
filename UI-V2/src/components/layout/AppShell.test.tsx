@@ -1631,6 +1631,74 @@ describe('AppShell', () => {
     }
   })
 
+  it('keeps a hovered notice held when an identical repeat remounts it', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+    try {
+      act(() => reportAppFailure('Repeated failure.', 'one'))
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      act(() => reportAppFailure('Repeated failure.', 'two'))
+      expect(alertSurface()!.querySelector('[data-testid="transient-alert-count"]')?.textContent).toBe('×2')
+      expect(item().dataset.held).toBe('true')
+      settle(20000)
+      expect(alertSurface()).toBeTruthy()
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(5200)
+      expect(alertSurface()).toBeNull()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('never holds a collapsed notice, even while it keeps focus', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    const messages = () => [...alertSurface()?.querySelectorAll('.uam-transient-alert-slot:not([hidden]) [aria-label="Notification message"]') ?? []].map((node) => node.firstChild?.textContent)
+    try {
+      act(() => reportAppFailure('Focused failure.', 'one'))
+      act(() => alertSurface()!.querySelector<HTMLElement>('[aria-label="Notification message"]')!.focus())
+      settle(1000)
+      for (const n of [1, 2, 3, 4]) act(() => reportAppNotice(`Notice ${n}`))
+      // 30% of 768px holds 4 rows; the focused oldest notice collapses and its countdown resumes.
+      expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      expect(alertSurface()!.querySelector<HTMLElement>('.uam-transient-alert-slot[hidden] [data-testid="transient-alert-item"]')!.dataset.held).toBeUndefined()
+      // Focus paused it with its full 5 seconds left; once collapsed it counts down again and expires on its own.
+      settle(4800)
+      expect(alertSurface()!.querySelector('.uam-transient-alert-slot[hidden]')).not.toBeNull()
+      settle(400); settle(200)
+      expect([...alertSurface()?.querySelectorAll('[aria-label="Notification message"]') ?? []].map((node) => node.firstChild?.textContent)).not.toContain('Focused failure.')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('counts a measured multi-line notice at its height when deciding how many fit', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('uam-transient-alert-slot') && this.textContent?.includes('Tall') ? 120 : 0
+    })
+    const { alertSurface, cleanup } = await mountShell()
+    const toggle = () => [...alertSurface()!.querySelectorAll('button')].find((button) => /^Show/.test(button.textContent ?? ''))
+    try {
+      act(() => reportAppNotice('Tall notice\nsecond line\nthird line'))
+      for (const n of [1, 2, 3]) act(() => reportAppNotice(`Notice ${n}`))
+      // Four single-line rows would fit; the tall one takes the room of three, so it collapses behind the toggle.
+      expect(toggle()?.textContent).toBe('Show 1 more')
+    } finally {
+      cleanup()
+      offsetHeight.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('copies the full notice text from the toast and the bell panel', async () => {
     vi.useFakeTimers()
     useAppStore.setState({ updateChecksEnabled: false })

@@ -143,11 +143,10 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         return { ...item, workspaceMappings }
       })
     }
-    /** Clears a chosen folder: with repository matching a saved override needs `useAutomaticMatch`; otherwise the mapping is removed. */
-    function clearMapping(hostId: string, source: Folder) {
-      const savedOverride = saved.hosts.find((host) => host.hostId === hostId)?.workspaceMappings.some((mapping) => mapping.sourceFolderId === source.id)
-      setWorkspaceMapping(hostId, source, matching && savedOverride ? { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: '', useAutomaticMatch: true } : null)
-    }
+    /** Clears a chosen folder. Save replaces the whole list, so plain removal also returns the workspace to repository matching. */
+    const clearMapping = (hostId: string, source: Folder) => setWorkspaceMapping(hostId, source, null)
+    // A policy for a computer that is no longer a registered SSH computer blocks Save; it gets a row with Remove.
+    const removedHosts = draft.hosts.filter((policy) => !sshHosts.some((host) => host.id === policy.hostId))
     function openChooser(next: { hostId: string; folderId: string } | 'all') {
       chooserOpener.current = document.activeElement as HTMLElement | null
       setChooser(next)
@@ -159,6 +158,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       }
       setChooser(null)
     }
+    const stepOpen = variant === 'dialog' && chooser !== null
     const hostLabel = (hostId: string) => sshHosts.find((host) => host.id === hostId)?.label ?? hostId
     const checking = matching && localFolders.length > 0 && repositories === null && !repositoryError
     const errorText = <Reveal open={!!validationError}><p role="alert" className="uam-rt-dialog__error">{validationError}</p></Reveal>
@@ -176,13 +176,13 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
 
     const providerRows = providers.filter((provider) => provider.supportsStructured !== false || provider.supportsCli !== false)
     const chooserView = chooser && <MapFolderChooser key={chooser === 'all' ? 'all' : `${chooser.hostId}:${chooser.folderId}`} inline={variant === 'dialog'}
-      hosts={sshHosts} workspaces={[...groups, ...unmapped]} folders={folders} preselect={chooser === 'all' ? undefined : chooser}
+      hosts={sshHosts} workspaces={[...groups.filter((group) => !group.orphan), ...unmapped]} folders={folders} preselect={chooser === 'all' ? undefined : chooser}
       onApply={applyChoices} onClose={() => setChooser(null)} />
     const mapRow = (group: RoutingFolderGroup) => group.entries.map((entry) => {
       const source = group.folder
       const label = hostLabel(entry.hostId)
       const choose = () => openChooser({ hostId: entry.hostId, folderId: source.id })
-      const canUseMatch = matching && entry.kind === 'chosen' && !entry.error && repositories?.some((item) => item.folderId === source.id && item.matches.some((match) => match.executionHostId === entry.hostId && match.source === 'automatic' && match.remoteDirectory))
+      const canUseMatch = matching && !group.orphan && entry.kind === 'chosen' && repositories?.some((item) => item.folderId === source.id && item.matches.some((match) => match.executionHostId === entry.hostId && match.source === 'automatic' && match.remoteDirectory))
       return <div key={entry.hostId} className="uam-rt-map-row" data-problem={entry.error ? 'true' : undefined}>
         <StatusMark tone={entry.error ? 'error' : 'success'} label={entry.error ? 'Problem' : 'Mapped'} size={7} />
         <span className="uam-rt-map-row__host">{label}</span>
@@ -192,7 +192,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
           ? <span className="uam-rt-map-row__error">{entry.error}</span>
           : <span className="uam-rt-tag">{entry.kind === 'chosen' ? 'Chosen' : 'Same repository'}</span>}
         <span className="uam-rt-map-row__actions">
-          {entry.error
+          {group.orphan ? null : entry.error
             ? <Button variant="ghost" size="sm" aria-label={`Choose folder for ${source.name} on ${label}`} onClick={choose}>Choose…</Button>
             : <IconButton size="sm" icon={<Pencil size={14} />} label={`Choose a different folder for ${source.name} on ${label}`} tooltip="Choose a different folder" onClick={choose} />}
           {(entry.kind === 'chosen' || entry.error) && (canUseMatch
@@ -203,7 +203,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     })
 
     return <>
-      <Reveal open={!(variant === 'dialog' && (exit || chooser))} className="grid min-w-0 gap-0"><fieldset ref={root} disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-0 m-0 p-0 border-0'}>
+      {/* The dialog's chooser step hides the list without unmounting it, so disclosures keep their open state and focus returns to the opener. */}
+      <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-0"><div className={stepOpen ? 'hidden' : 'contents'} {...(stepOpen ? { inert: '' } : {})}><fieldset ref={root} disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-0 m-0 p-0 border-0'}>
         <SettingsSection title="Automatic routing" actions={variant === 'page' ? footer : undefined}>
           <SettingRow htmlFor="routing-enabled" title="Route new chats automatically" description="Only computers you allow below, with folders mapped, are used."
             control={<Switch id="routing-enabled" hideLabel label="Enable automatic routing" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />} />
@@ -211,6 +212,11 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
 
         <SettingsSection title="Computers" actions={onAddComputer && <Button size="sm" leadingIcon={<Plus size={13} />} onClick={onAddComputer}>Add computer</Button>}>
           <Reveal open={sshHosts.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">No SSH computers yet.</span>} /></Reveal>
+          {removedHosts.map((policy) => <SettingRow key={policy.hostId}
+            title={<span className="inline-flex items-center gap-2"><StatusMark tone="error" label="Problem" size={7} /><span className="uam-rt-alias">{hosts.find((host) => host.id === policy.hostId)?.label ?? policy.hostId}</span></span>}
+            description={<span className="uam-rt-map-row__error">Computer removed</span>}
+            control={<Button variant="ghost" size="sm" leadingIcon={<Unlink size={13} />} aria-label={`Remove routing for removed computer ${policy.hostId}`}
+              onClick={() => setDraft((current) => ({ ...current, hosts: current.hosts.filter((host) => host.hostId !== policy.hostId) }))}>Remove</Button>} />)}
           {sshHosts.map((host) => {
             const policy = draft.hosts.find((item) => item.hostId === host.id)
             const look = RUNNER_STATUS[host.runnerStatus]
@@ -239,7 +245,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         <Reveal open={sshHosts.length > 0 && checking}><SettingsLoading label="Checking repositories" rows={2} /></Reveal>
         <Reveal open={sshHosts.length > 0 && !checking}>
           <SettingsSection title="Folders" className="uam-rt-folders" actions={<>
-            <Reveal open={localFolders.length > 0} as="span" className="uam-rt-summary">{groups.length} of {plural(localFolders.length, 'workspace')} mapped</Reveal>
+            <Reveal open={localFolders.length > 0} as="span" className="uam-rt-summary">{groups.filter((group) => group.entries.some((entry) => !entry.error)).length} of {plural(localFolders.length, 'workspace')} mapped</Reveal>
             <Button size="sm" leadingIcon={<Plus size={13} />} data-routing-map-folder disabled={localFolders.length === 0} onClick={() => openChooser('all')}>Map folder…</Button>
           </>}>
             <Reveal open={localFolders.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">Give a local folder a path first, then it can be mapped here.</span>} /></Reveal>
@@ -267,7 +273,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
           </SettingsSection>
         </Reveal>
       </fieldset>
-      {variant === 'dialog' && footer}</Reveal>
+      {variant === 'dialog' && footer}</div></Reveal>
       {/* The dialog never opens a second dialog: the Map folder chooser is an in-place step in the same panel. */}
       <Reveal open={variant === 'dialog' && chooser !== null && !exit} className="uam-rt-dialog__step">{variant === 'dialog' && chooserView}</Reveal>
       {variant === 'page' && <Presence open={chooser !== null}>{chooserView}</Presence>}

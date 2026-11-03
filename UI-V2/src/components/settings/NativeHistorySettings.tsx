@@ -174,7 +174,7 @@ export function NativeHistorySettings({ onFiltersDirtyChange }: { onFiltersDirty
     </SettingRow>
     </ProgressFill>
     <Reveal open={issueCount > 0}><Disclosure
-      summary={<><TriangleAlert size={14} aria-hidden />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
+      summary={<><TriangleAlert size={14} aria-hidden style={{ color: 'var(--warning)' }} />{issueCount === 1 ? '1 discovery issue' : `${issueCount} discovery issues`}</>}>
       <ul className="uam-native-issues">{issues.map((group) => {
         const providerId = idForName(group.provider)
         return <li key={`${group.provider}:${group.reason}`} className="uam-native-issue-row">

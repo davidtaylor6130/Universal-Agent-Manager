@@ -62,7 +62,7 @@ import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerC
 import { draftFileMentions } from '../../utils/fileContextReferences'
 import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
-import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 // Confirmed pre-send refusals only; a replaced chat's in-flight outcome is unknown and keeps its own notice.
 const UNSENT_PROMPT_NOTICE = /this prompt wasn't sent/i
@@ -2533,7 +2533,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // Edit mode has already focused the objective field.
     if (!dialog?.contains(document.activeElement)) dialog?.focus()
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== dialog) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== dialog) return
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation()
         // Escape cancels an in-place edit first (never while it saves, so a failed save keeps its draft), then closes the window.

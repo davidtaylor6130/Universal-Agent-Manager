@@ -108,4 +108,18 @@ describe('routing folder rows', () => {
     const cleared = { ...fixed, hosts: [{ ...fixed.hosts[0], workspaceMappings: [{ sourceFolderId: 'mapped', sourceDirectory: '/mapped', destinationFolderId: '', useAutomaticMatch: true as const }] }] }
     expect(routingFolderRows(sources, two, cleared, repositories, all).groups[0].entries).toEqual([{ hostId: 'ssh-a', kind: 'repository', target: '/checkout' }])
   })
+
+  it('gives every mapping that blocks Save a row, including a deleted workspace and a stale duplicate', () => {
+    const orphaned = { ...routing, hosts: [{ ...routing.hosts[1], workspaceMappings: [
+      { sourceFolderId: 'mapped', sourceDirectory: '/mapped', destinationFolderId: 'remote-b' },
+      { sourceFolderId: 'mapped', sourceDirectory: '/old-mapped', destinationFolderId: 'remote-b' },
+      { sourceFolderId: 'deleted', sourceDirectory: '/projects/deleted', destinationFolderId: 'remote-b' },
+    ] }] }
+    expect(routingConfigurationError(orphaned, two, all)).not.toBe('')
+    const { groups } = routingFolderRows(sources, two, orphaned, null, all)
+    expect(groups.map((group) => [group.folder.id, group.folder.name, group.orphan ?? false, group.entries.map((entry) => entry.error)])).toEqual([
+      ['deleted', 'deleted', true, ['Workspace no longer exists']],
+      ['mapped', 'mapped', false, ['Workspace folder moved']],
+    ])
+  })
 })

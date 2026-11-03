@@ -102,6 +102,8 @@ describe('Chat Data native discovery', () => {
     const rows = Array.from(host.querySelectorAll('.uam-native-issues > li')).map((row) => row.firstElementChild?.textContent + '|' + row.children[1]?.textContent)
     expect(rows).toEqual(['Antigravity|2 conversations skipped. Nested context.', 'OpenCode|History discovery failed: invalid session list.', 'Discovery|One provider store could not be read.'])
     expect(host.textContent).toContain('5 discovery issues')
+    // The issues disclosure keeps its warning tone, unlike the neutral How discovery works.
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('5 discovery issues'))!.querySelector<SVGElement>('svg[style]')!.style.color).toBe('var(--warning)')
   })
   const mount = () => act(() => root.render(<NativeHistorySettings />))
 

@@ -7,6 +7,7 @@ import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { fromViewportMenu } from '../../utils/modalFocus'
 import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate } from '../../types/markdownStore'
@@ -156,7 +157,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || (embedded && !childOpen)) return
+      if (event.defaultPrevented || fromViewportMenu(event) || (embedded && !childOpen)) return
       const dialog = confirmation ? confirmationRef.current : childOpen ? childDialogRef.current : libraryRef.current
       if (event.key === 'Tab') {
         // Closed disclosure panels are inert, so their controls are skipped.

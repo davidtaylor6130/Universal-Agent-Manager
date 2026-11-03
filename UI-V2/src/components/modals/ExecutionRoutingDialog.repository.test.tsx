@@ -68,7 +68,7 @@ describe('SSH routing repository matching', () => {
     expect(save.mock.calls[0][0]).not.toHaveProperty('repositoryMatching')
   })
 
-  it('clears a saved override with useAutomaticMatch so the repository match applies again', async () => {
+  it('clears a saved override by removing it, since Save replaces the list, so the repository match applies again', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({
       setExecutionRoutingSettings: save,
@@ -80,6 +80,20 @@ describe('SSH routing repository matching', () => {
     act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Use repository match for Source on Server A"]')!.click())
     expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Same repository')
     await act(async () => buttonsNamed('Save routing')[0].click())
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: '', useAutomaticMatch: true }] })] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [] })] }))
+  })
+
+  it('offers the repository match, not Remove mapping, for a broken chosen override that has one', async () => {
+    useAppStore.setState({
+      executionRouting: { enabled: true, repositoryMatching: true, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'gone' }] }] },
+    })
+    mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+    await flush()
+    expect(document.body.querySelector('[data-problem]')?.textContent).toContain('Folder no longer exists')
+    expect(document.body.querySelector('[aria-label="Remove mapping for Source on Server A"]')).toBeNull()
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Use repository match for Source on Server A"]')!.click())
+    expect(document.body.querySelector('[data-problem]')).toBeNull()
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Same repository')
+    expect(buttonsNamed('Save routing')[0].disabled).toBe(false)
   })
 })

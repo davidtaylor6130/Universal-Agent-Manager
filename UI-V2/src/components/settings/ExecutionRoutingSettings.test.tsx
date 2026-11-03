@@ -236,7 +236,8 @@ describe('SSH Routing settings page', () => {
       expect(mapped.textContent).toContain('1 computer')
       expect(rest.textContent).toBe('Not mapped3 workspaces without a remote folder')
       expect(rest.getAttribute('aria-expanded')).toBe('false')
-      expect(document.body.querySelector('section[aria-label="Folders"]')!.textContent).toContain('2 of 5 workspaces mapped')
+      // A workspace whose only mapping is broken does not count as mapped.
+      expect(document.body.querySelector('section[aria-label="Folders"]')!.textContent).toContain('1 of 5 workspaces mapped')
       expect(document.body.querySelector('[data-problem] .uam-rt-map-row__host')?.textContent).toBe('Server A')
       expect(buttonNamed('Save routing').disabled).toBe(true)
       act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove mapping for broken on Server A"]')!.click())
@@ -279,6 +280,84 @@ describe('SSH Routing settings page', () => {
         { sourceFolderId: 'plain-1', sourceDirectory: '/plain-1', destinationFolderId: 'target-a' },
         { sourceFolderId: 'plain-2', sourceDirectory: '/plain-2', destinationFolderId: 'target-a' },
       ])
+    })
+
+    it('shows mappings for a deleted workspace and a removed computer as problem rows whose Remove unblocks Save', async () => {
+      const save = vi.fn(async (settings: RoutingSettings) => { useAppStore.setState({ executionRouting: settings }) })
+      useAppStore.setState({ setExecutionRoutingSettings: save, executionRouting: { enabled: false, hosts: [
+        { hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'deleted', sourceDirectory: '/projects/deleted', destinationFolderId: 'target-a' }] },
+        { hostId: 'ssh-gone', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' }] },
+      ] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      act(() => document.body.querySelector<HTMLInputElement>('#routing-enabled')!.click())
+      expect(buttonNamed('Save routing').disabled).toBe(true)
+      const [orphan] = summaries()
+      expect(orphan.textContent).toContain('deleted')
+      expect(orphan.textContent).toContain('Workspace no longer exists')
+      expect(orphan.getAttribute('aria-expanded')).toBe('true')
+      // The workspace is gone, so the row can only be removed, and the chooser never offers it.
+      expect(document.body.querySelector('[aria-label="Choose folder for deleted on Server A"]')).toBeNull()
+      expect(document.body.querySelector('section[aria-label="Computers"]')!.textContent).toContain('Computer removed')
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove mapping for deleted on Server A"]')!.click())
+      expect(buttonNamed('Save routing').disabled).toBe(true)
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove routing for removed computer ssh-gone"]')!.click())
+      expect(document.body.querySelector('section[aria-label="Computers"]')!.textContent).not.toContain('Computer removed')
+      expect(buttonNamed('Save routing').disabled).toBe(false)
+      await act(async () => buttonNamed('Save routing').click())
+      expect(save.mock.calls[0][0].hosts).toEqual([{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [] }])
+    })
+
+    it('replaces a broken mapping in place from Choose…, leaving one mapping per workspace and computer', async () => {
+      const save = vi.fn(async (settings: RoutingSettings) => { useAppStore.setState({ executionRouting: settings }) })
+      useAppStore.setState({ setExecutionRoutingSettings: save, executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [
+        { sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' },
+        { sourceFolderId: 'plain-1', sourceDirectory: '/plain-1', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'broken', sourceDirectory: '/old-broken', destinationFolderId: 'target-a' },
+      ] }] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose folder for broken on Server A"]')!.click())
+      expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select broken"]')!.checked).toBe(true)
+      pick('Remote folder for broken on Server A', 'target-a')
+      act(() => buttonNamed('Map 1').click())
+      expect(document.body.querySelector('[data-problem]')).toBeNull()
+      await act(async () => buttonNamed('Save routing').click())
+      expect(save.mock.calls[0][0].hosts[0].workspaceMappings).toEqual([
+        { sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'plain-1', sourceDirectory: '/plain-1', destinationFolderId: 'target-a' },
+      ])
+    })
+
+    it('closes only an open remote-folder menu on Escape and traps Tab inside the chooser', () => {
+      mount(<ExecutionRoutingSettings variant="page" />)
+      act(() => buttonNamed('Map folder…').click())
+      const chooser = () => document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Map folders to a computer"]')
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for plain-1 on Server A"]')!.click())
+      act(() => { document.body.querySelector('[data-viewport-menu] [role="option"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+      expect(chooser()).not.toBeNull()
+      expect(document.body.querySelector('[data-viewport-menu]:not([data-state="closed"])')).toBeNull()
+      const tab = (shiftKey = false) => act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true })) })
+      const cancel = buttonNamed('Cancel')
+      act(() => cancel.focus())
+      tab()
+      expect(document.activeElement).toBe(chooser()!.querySelector('[aria-label="Close map folders"]'))
+      tab(true)
+      expect(document.activeElement).toBe(cancel)
+      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+      expect(chooser()).toBeNull()
+    })
+
+    it('drops ticks without a remote folder on the computer being left, so they cannot block Map N', () => {
+      useAppStore.setState({ folders: [...useAppStore.getState().folders, folder('target-b', '/remote/b', 'ssh-b')],
+        executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' }] }] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose folder for broken on Server A"]')!.click())
+      act(() => buttonNamed('Server B').click())
+      pick('Remote folder for plain-1 on Server B', 'target-b')
+      expect(buttonNamed('Map 1').disabled).toBe(false)
+      act(() => buttonNamed('Server A').click())
+      expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select broken"]')!.checked).toBe(false)
     })
 
     it('says when a computer has no folders to map to', () => {

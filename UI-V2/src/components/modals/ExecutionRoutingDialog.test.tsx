@@ -99,15 +99,29 @@ describe('SSH routing controls', () => {
   it('maps folders as an in-place step of the routing dialog instead of a second dialog', () => {
     const close = vi.fn()
     mount(<ExecutionRoutingDialog onClose={close} />)
-    const escape = () => act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    const escape = (target: EventTarget = window) => act(() => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    const computer = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('.uam-rt-host .uam-disclosure__summary'))[0]
+    act(() => computer().click())
+    expect(computer().getAttribute('aria-expanded')).toBe('true')
     act(() => { buttonNamed('Map folder…').focus(); buttonNamed('Map folder…').click() })
     expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1)
     expect(document.body.querySelector('[role="dialog"] [role="group"][aria-label="Map folders to a computer"]')).not.toBeNull()
-    expect(Array.from(document.body.querySelectorAll('button')).some((button) => button.textContent === 'Save routing')).toBe(false)
+    // The routing list stays mounted but hidden and inert while the step is open.
+    expect(buttonNamed('Save routing').closest('.hidden[inert]')).not.toBeNull()
+    // Escape inside an open remote-folder menu closes only the menu, keeping the step and its picks.
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select Source"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for Source on Server A"]')!.click())
+    escape(document.body.querySelector('[data-viewport-menu] [role="option"]')!)
+    expect(close).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-viewport-menu]:not([data-state="closed"])')).toBeNull()
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select Source"]')!.checked).toBe(true)
     escape()
     expect(close).not.toHaveBeenCalled()
     expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).toBeNull()
     expect(document.activeElement).toBe(buttonNamed('Map folder…'))
+    // The list was not remounted, so the expanded computer is still open.
+    expect(computer().getAttribute('aria-expanded')).toBe('true')
     escape()
     expect(close).toHaveBeenCalledOnce()
   })

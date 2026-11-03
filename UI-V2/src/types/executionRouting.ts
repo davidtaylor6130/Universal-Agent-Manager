@@ -92,7 +92,7 @@ export function routingConfigurationError(settings: ExecutionRoutingSettings, ho
   return ''
 }
 
-/** Why one mapping cannot be used, or '' when it is valid. Page validation and the folder rows share it so they never disagree. */
+/** Why one mapping cannot be used, or '' when it is valid. Page validation and the folder rows (including orphaned ones) share it so they never disagree. */
 export function routingMappingProblem(mapping: RoutingWorkspaceMapping, hostId: string, folders: Folder[]): string {
   const source = folders.find((folder) => folder.id === mapping.sourceFolderId)
   if (!source || !source.directory) return 'Workspace no longer exists'
@@ -106,12 +106,13 @@ export function routingMappingProblem(mapping: RoutingWorkspaceMapping, hostId: 
 
 /** One computer a workspace runs on: the repository match, or a chosen folder (which wins). `error` is the mapping's problem. */
 export interface RoutingFolderEntry { hostId: string; kind: 'repository' | 'chosen'; target: string; destinationFolderId?: string; error?: string }
-export interface RoutingFolderGroup { folder: Folder; repository: WorkspaceRepositoryMatches['repository']; entries: RoutingFolderEntry[] }
+/** `orphan`: the mappings' workspace is gone (deleted, or no longer a local workspace with a path), so the group only offers Remove. */
+export interface RoutingFolderGroup { folder: Folder; repository: WorkspaceRepositoryMatches['repository']; entries: RoutingFolderEntry[]; orphan?: true }
 
 /**
  * The Folders list: one group per local workspace with one entry per computer it is mapped to.
- * Groups with a problem come first, then the other mapped groups (local order kept); workspaces with no entries are `unmapped`.
- * Pass `repositories` only while repository matching is on.
+ * Groups with a problem come first (orphaned mappings, whose workspace is gone, first of all), then the other mapped groups
+ * (local order kept); workspaces with no entries are `unmapped`. Pass `repositories` only while repository matching is on.
  */
 export function routingFolderRows(localFolders: Folder[], sshHosts: ExecutionHost[], settings: ExecutionRoutingSettings, repositories: WorkspaceRepositoryMatches[] | null, folders: Folder[]): { groups: RoutingFolderGroup[]; unmapped: RoutingFolderGroup[] } {
   const all = localFolders.map((folder): RoutingFolderGroup => {
@@ -120,7 +121,8 @@ export function routingFolderRows(localFolders: Folder[], sshHosts: ExecutionHos
     for (const host of sshHosts) {
       const mappings = settings.hosts.find((policy) => policy.hostId === host.id)?.workspaceMappings.filter((mapping) => mapping.sourceFolderId === folder.id) ?? []
       const mapping = mappings.find((item) => item.sourceDirectory === folder.directory) ?? mappings[0]
-      const error = mapping ? routingMappingProblem(mapping, host.id, folders) : ''
+      // A stale duplicate (left behind when the folder moved) blocks Save too, so its problem shows on this row.
+      const error = mapping ? routingMappingProblem(mapping, host.id, folders) || mappings.map((item) => routingMappingProblem(item, host.id, folders)).find(Boolean) || '' : ''
       const chosen = mapping && !mapping.useAutomaticMatch
       const destination = chosen ? folders.find((item) => item.id === mapping.destinationFolderId) : undefined
       const target = chosen ? destination?.directory ?? '' : workspace?.matches.find((match) => match.executionHostId === host.id && match.source === 'automatic' && match.remoteDirectory)?.remoteDirectory ?? ''
@@ -129,9 +131,19 @@ export function routingFolderRows(localFolders: Folder[], sshHosts: ExecutionHos
     }
     return { folder, repository: workspace?.repository ?? null, entries }
   })
+  // A mapping whose workspace has no row above would still block Save, so it gets its own problem group with Remove.
+  const orphans = new Map<string, RoutingFolderGroup>()
+  for (const host of sshHosts) for (const mapping of settings.hosts.find((policy) => policy.hostId === host.id)?.workspaceMappings ?? []) {
+    const error = localFolders.some((folder) => folder.id === mapping.sourceFolderId) ? '' : routingMappingProblem(mapping, host.id, folders)
+    if (!error) continue
+    const source = folders.find((folder) => folder.id === mapping.sourceFolderId)
+    const group: RoutingFolderGroup = orphans.get(mapping.sourceFolderId) ?? { orphan: true, repository: null, entries: [], folder: { id: mapping.sourceFolderId, name: source?.name || mapping.sourceDirectory.split(/[\\/]/).filter(Boolean).pop() || mapping.sourceDirectory, directory: mapping.sourceDirectory, parentId: null, isExpanded: false, createdAt: new Date(0) } }
+    if (!group.entries.some((entry) => entry.hostId === host.id)) group.entries.push({ hostId: host.id, kind: 'chosen', target: folders.find((folder) => folder.id === mapping.destinationFolderId)?.directory ?? '', error })
+    orphans.set(mapping.sourceFolderId, group)
+  }
   const problem = (group: RoutingFolderGroup) => group.entries.some((entry) => entry.error)
   return {
-    groups: [...all.filter((group) => group.entries.length && problem(group)), ...all.filter((group) => group.entries.length && !problem(group))],
+    groups: [...orphans.values(), ...all.filter((group) => group.entries.length && problem(group)), ...all.filter((group) => group.entries.length && !problem(group))],
     unmapped: all.filter((group) => !group.entries.length),
   }
 }

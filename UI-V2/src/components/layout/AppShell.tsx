@@ -76,7 +76,7 @@ const ALERT_EXPIRY_MS = 5000
 const ALERT_GAP_PX = 16
 /** The stack never takes more than this share of the window height. */
 const ALERT_STACK_HEIGHT_RATIO = 0.3
-// ponytail: collapsed capacity assumes single-line rows; taller rows scroll inside the 30% cap instead of being measured.
+/** One single-line notice (or the Show N more toggle) plus its gap; measured rows that are taller count at their height. */
 const ALERT_ROW_PX = 44
 
 /** Adds a notice at the bottom of the stack; an identical visible notice gains a count and restarts its countdown instead. */
@@ -91,12 +91,12 @@ export function pushStackedAlert(stack: StackedAlert[], alert: TransientAlert): 
 }
 let reraisedAlertSerial = 0
 
-function TransientAlertItem({ alert, visible, collapsed, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; visible: boolean; collapsed: boolean; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
+function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAction, onDismiss, messageMaxHeight }: { alert: StackedAlert; visible: boolean; collapsed: boolean; hovered: boolean; onHover: (id: string, on: boolean) => void; onAction: (action: TransientAlert['action']) => void; onDismiss: (id: string) => void; messageMaxHeight: number }) {
   const ref = useRef<HTMLDivElement>(null)
-  // Hover or focus holds only this notice's countdown; a hidden (no-fit) surface never holds, since it cannot be left.
-  const [hovered, setHovered] = useState(false)
+  // Hover or focus holds only this notice's countdown. A hidden (no-fit) surface or a collapsed notice never holds, since it
+  // cannot be left (a hidden notice may never get its blur). Hover lives in the stack by id so a repeat's remount keeps it.
   const [focused, setFocused] = useState(false)
-  const held = visible && (hovered || focused)
+  const held = visible && !collapsed && (hovered || focused)
   const copyText = [alert.message, alert.detail].filter(Boolean).join('\n')
   // Expiry pauses while this notice is held and resumes with the time left; a repeat (count change) restarts it visibly.
   const remaining = useRef(ALERT_EXPIRY_MS)
@@ -117,9 +117,9 @@ function TransientAlertItem({ alert, visible, collapsed, onAction, onDismiss, me
     if (hadFocus) document.querySelector<HTMLElement>('[data-notification-bell]')?.focus()
   }
   // Collapsed overflow stays mounted (hidden) so its own countdown keeps running.
-  return <div className="uam-transient-alert-slot" data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
+  return <div className="uam-transient-alert-slot" data-alert-id={alert.id} data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
     <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'} data-held={held || undefined}
-      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onMouseEnter={() => onHover(alert.id, true)} onMouseLeave={() => onHover(alert.id, false)}
       onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
       onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(() => onDismiss(alert.id)) } }}
       className="uam-transient-alert relative flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
@@ -141,6 +141,25 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
   const mounted = alerts.length > 0
   const surfaceRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const onHover = useCallback((id: string, on: boolean) => setHoveredId((current) => on ? id : current === id ? null : current), [])
+  // A notice dismissed under the pointer gets no mouseleave; forget it so a later notice reusing its id does not start held.
+  useEffect(() => {
+    if (hoveredId && !alerts.some((alert) => alert.id === hoveredId && !alert.leaving)) setHoveredId(null)
+  }, [alerts, hoveredId])
+  // Measured row heights (by id) for the collapse capacity; multi-line notices such as several updates are taller than one row.
+  const rowHeights = useRef(new Map<string, number>())
+  const [, setMeasured] = useState(0)
+  useLayoutEffect(() => {
+    let changed = false
+    surfaceRef.current?.querySelectorAll<HTMLElement>('.uam-transient-alert-slot[data-alert-id]').forEach((slot) => {
+      const id = slot.dataset.alertId!
+      if (slot.hidden || slot.dataset.state === 'closed' || !slot.offsetHeight || Math.abs((rowHeights.current.get(id) ?? 0) - slot.offsetHeight) < 1) return
+      rowHeights.current.set(id, slot.offsetHeight)
+      changed = true
+    })
+    if (changed) setMeasured((count) => count + 1)
+  })
   const [placement, setPlacement] = useState<{ right: number; width: number; height: number; fits: boolean } | null>(null)
   const [announcement, setAnnouncement] = useState<{ id: string; message: string } | null>(null)
   // Anchored bottom-right of the chat area, left of the right rail, with the same gap on both edges.
@@ -231,8 +250,15 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
   const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications.</span>}</span>
   if (!mounted) return liveRegion
   const budget = Math.min(placement?.height ?? window.innerHeight, Math.floor(window.innerHeight * ALERT_STACK_HEIGHT_RATIO))
-  // Newest at the bottom; when the cap is reached the oldest collapse behind "Show N more" at the top.
-  const capacity = Math.max(1, Math.floor(budget / ALERT_ROW_PX) - 1)
+  // Newest at the bottom; when the cap is reached the oldest collapse behind "Show N more" at the top (one row kept for it).
+  // Unmeasured rows count as one ALERT_ROW_PX row each.
+  let capacity = 0
+  for (let room = budget - ALERT_ROW_PX, index = alerts.length - 1; index >= 0; index--) {
+    room -= Math.max(ALERT_ROW_PX, (rowHeights.current.get(alerts[index].id) ?? 0) + 6)
+    if (room < 0) break
+    capacity++
+  }
+  capacity = Math.max(1, capacity)
   const hidden = expanded ? 0 : Math.max(0, alerts.length - capacity)
   const overflowing = alerts.length > capacity
   return <>
@@ -245,7 +271,7 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
         {expanded ? 'Show fewer' : `Show ${hidden} more`}
       </Button>}
       <div className="uam-transient-alert-list flex min-h-0 flex-col" style={{ overflowY: expanded ? 'auto' : 'visible' }}>
-        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} visible={Boolean(placement?.fits)} collapsed={index < hidden} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
+        {alerts.map((alert, index) => <TransientAlertItem key={`${alert.id}:${alert.count}`} alert={alert} visible={Boolean(placement?.fits)} collapsed={index < hidden} hovered={hoveredId === alert.id} onHover={onHover} onAction={onAction} onDismiss={onDismiss} messageMaxHeight={Math.max(0, budget - 10)} />)}
       </div>
     </div>
   </>

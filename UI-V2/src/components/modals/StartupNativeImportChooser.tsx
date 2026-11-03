@@ -3,7 +3,7 @@ import { Check, Download, EyeOff, FolderPlus, Loader2, RefreshCw, X, XCircle } f
 import { useAppStore } from '../../store/useAppStore'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
-import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
 import { Button, IconButton, Notice, Overlay, ProgressFill, Tooltip, cx } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -69,7 +69,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     const dialog = panel.current
     dialog?.focus()
     const key = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || getTopmostModal() !== panel.current) return
+      if (event.defaultPrevented || fromViewportMenu(event) || getTopmostModal() !== panel.current) return
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation()
         if (!busyRef.current) {
