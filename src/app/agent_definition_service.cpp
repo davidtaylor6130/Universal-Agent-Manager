@@ -1025,6 +1025,8 @@ namespace uam
 		    uam::hashing::Fnv1a64(chat_id + "\n" + provider));
 		const std::string native_id = "uam-" + key;
 		adapter.directory = data_root / "runtime" / "agent-adapters" / key;
+		// Rewritten from the captured snapshot on every launch, so these are reconstructible launch files:
+		// a durable sync here would block prompt admission on the UI thread (#526).
 		if (uam::paths::IsLinkOrReparsePointNoThrow(adapter.directory) ||
 		    !uam::paths::CreateDirectoriesNoThrow(adapter.directory))
 		{
@@ -1051,8 +1053,8 @@ namespace uam
 			                                    {"experimental", {{"mcp_timeout", 120000}}}, {"permission", permission}};
 			const std::string config_text = captured_permission.empty() ? nlohmann::json(config).dump(2) : config.dump(2);
 			if (uam::paths::IsLinkOrReparsePointNoThrow(agents) || !uam::paths::CreateDirectoriesNoThrow(agents) ||
-			    !uam::io::WriteTextFile(adapter.directory / "opencode.json", config_text + "\n") ||
-			    !uam::io::WriteTextFile(agents / (native_id + ".md"),
+			    !uam::io::WriteCacheFile(adapter.directory / "opencode.json", config_text + "\n") ||
+			    !uam::io::WriteCacheFile(agents / (native_id + ".md"),
 			                            (captured_permission.empty()
 			                                ? "---\ndescription: UAM-managed agent\nmode: primary\npermission:\n  \"*\": ask\n  task: deny\n  uam-computer_computer_observe: allow\n  uam-computer_computer_action: allow\n---\n"
 			                                : "---\ndescription: UAM-managed agent\nmode: primary\npermission: " + permission.dump() + "\n---\n") + instructions + "\n"))
@@ -1067,11 +1069,11 @@ namespace uam
 		{
 			const std::filesystem::path agents = adapter.directory / "agents";
 			if (uam::paths::IsLinkOrReparsePointNoThrow(agents) || !uam::paths::CreateDirectoriesNoThrow(agents) ||
-			    !uam::io::WriteTextFile(adapter.directory / "plugin.json",
+			    !uam::io::WriteCacheFile(adapter.directory / "plugin.json",
 			                            nlohmann::json{{"name", "uam-agent-" + key},
 			                                           {"description", "UAM-managed runtime agent"},
 			                                           {"version", "1.0.0"}, {"agents", "agents/"}}.dump(2) + "\n") ||
-			    !uam::io::WriteTextFile(agents / (native_id + ".agent.md"),
+			    !uam::io::WriteCacheFile(agents / (native_id + ".agent.md"),
 			                            "---\nname: " + native_id + "\ndescription: UAM-managed agent\ninfer: false\n---\n" + instructions + "\n"))
 			{
 				if (error_out != nullptr) *error_out = "Could not write the isolated Copilot agent plugin.";
