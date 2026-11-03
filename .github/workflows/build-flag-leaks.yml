@@ -6,6 +6,24 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '41 5 * * 2'
+  # The weekly schedule runs only on the default branch, so the V5 integration branch
+  # would otherwise never run the native rows. Relevant pushes to it always do.
+  push:
+    branches:
+      - uam/v5-improvements
+    paths:
+      - '.github/workflows/build-flag-leaks.yml'
+      - 'scripts/check_build_flag_leaks.py'
+      - 'scripts/build_flag_leak_allowlist.json'
+      - 'scripts/build_flag_native_residue.json'
+      - 'tests/build_flag_leak_gate_test.py'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      # Native sources and everything the bundle packages (resources, skills, UI) can add an excluded name.
+      - 'src/**'
+      - 'assets/**'
+      - 'markdown-store/**'
+      - 'UI-V2/**'
   pull_request:
     # 'labeled' lets adding the build-flags label start the native rows.
     types: [opened, synchronize, reopened, labeled]
@@ -22,6 +40,12 @@ on:
       - 'assets/**'
       - 'markdown-store/**'
       - 'UI-V2/**'
+
+concurrency:
+  # Event name keeps a manual run on the default branch from cancelling the weekly schedule.
+  # An unrelated label event gets its own group, so it neither cancels nor replaces the real run.
+  group: build-flag-leaks-${{ github.event_name }}-${{ github.ref }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'build-flags') && github.run_id || 'run' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -77,29 +101,29 @@ jobs:
   # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
   native-skipped:
     name: Native flag builds not requested (add the build-flags label to run 19 full builds)
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'build-flags')
+    if: github.event_name == 'pull_request' && github.base_ref != 'uam/v5-improvements' && !contains(github.event.pull_request.labels.*.name, 'build-flags') && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: ubuntu-latest
     steps:
       - run: |
           echo "### Native build-flag rows skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "Each native row is a full application build with one feature or provider set turned off. Pull requests run them only with the \`build-flags\` label; pushes, schedules and manual runs always do. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
+          echo "Each native row is a full application build with one feature or provider set turned off. Pull requests into the V5 integration branch always run them; other pull requests need the \`build-flags\` label; pushes, schedules and manual runs always do. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
 
   native:
     name: Native ${{ matrix.name }}
     needs: ui
-    # Full application builds are expensive: pull requests run them only with the build-flags label; schedules and
-    # manual runs always do. Rows whose native residue is not yet reviewed in build_flag_native_residue.json report
-    # but do not fail the workflow; their failure uploads the candidate strings for review.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')
+    # Full application builds are expensive: pull requests run them when they target uam/v5-improvements or carry the
+    # build-flags label; pushes, schedules and manual runs always do. Every row's native residue is reviewed in build_flag_native_residue.json,
+    # so a new excluded name fails the row; the failure uploads the candidate strings for review.
+    # Adding an unrelated label must not restart the 19 builds.
+    if: (github.event_name != 'pull_request' || github.base_ref == 'uam/v5-improvements' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: macos-latest
-    continue-on-error: ${{ !matrix.measured }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { name: 'no Gemini', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF' }
           - { name: 'no Codex', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF' }
-          - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF', measured: true }
+          - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF' }
           - { name: 'no OpenCode', cmake: '-DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF' }
           - { name: 'no Copilot', cmake: '-DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF' }
           - { name: 'no Antigravity', cmake: '-DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
@@ -107,8 +131,8 @@ jobs:
           - { name: 'no computer use', cmake: '-DUAM_ENABLE_COMPUTER_USE=OFF' }
           - { name: 'no phone access', cmake: '-DUAM_ENABLE_MOBILE_COMPANION=OFF' }
           # Packaging-only profiles: nothing is excluded, but the helper folders and expected executable are checked.
-          - { name: 'all on, no packaged remote helpers', cmake: '', measured: true }
-          - { name: 'runner only, all providers', cmake: '-DUAM_RUNNER_ONLY=ON', target: uam_runner, measured: true }
+          - { name: 'all on, no packaged remote helpers', cmake: '' }
+          - { name: 'runner only, all providers', cmake: '-DUAM_RUNNER_ONLY=ON', target: uam_runner }
           - { name: 'runner only, no OpenCode or Antigravity', cmake: '-DUAM_RUNNER_ONLY=ON -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF', target: uam_runner }
           - { name: 'only Gemini', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
           - { name: 'only Codex', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF' }
