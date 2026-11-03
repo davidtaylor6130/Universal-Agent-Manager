@@ -16,7 +16,7 @@ Remote memory publication and context policy are separate from local memory stor
 
 - Routing and host configuration: `src/app/execution_routing_service.*`, `src/app/execution_routing_integration.*`, `src/common/config/execution_host_config.h`.
 - Remote protocol/client/runner: `src/remote/runner_protocol.*`, `src/remote/runner_client.*`, `src/remote/runner_state.*`, `src/remote/runner_main.cpp`.
-- Frontend routing: `UI-V2/src/store/slices/executionRoutingSlice.ts`, `UI-V2/src/components/modals/ExecutionRoutingDialog.tsx`.
+- Frontend routing: `UI-V2/src/store/slices/executionRoutingSlice.ts`, `UI-V2/src/components/modals/ExecutionRoutingDialog.tsx`, `UI-V2/src/components/settings/ExecutionRoutingSettings.tsx` (folder rows from `routingFolderRows` in `UI-V2/src/types/executionRouting.ts`), `UI-V2/src/components/settings/MapFolderChooser.tsx`.
 - Focused checks: `tests/execution_routing_tests.cpp`, `tests/remote_runner_tests.cpp`, `tests/remote_delivery_exit_tests.cpp`, `tests/remote_context_policy_tests.cpp`, `tests/multi_host_history_tests.cpp`.
 
 Spool caps and process timeouts are defined by the runner and operation; this page sets no additional budget. Preserve bounded buffering and report the actual remote exit result.

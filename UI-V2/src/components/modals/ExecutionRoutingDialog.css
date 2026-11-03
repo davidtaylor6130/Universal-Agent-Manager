@@ -22,41 +22,38 @@
 .uam-rt-alias { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); overflow-wrap: anywhere; }
 .uam-rt-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); }
 
-/* Repository matching: one row per local workspace, identity line + match line with overrides. */
-.uam-rt-workspace { display: grid; gap: 4px; padding: var(--sp-2) 0; border-top: 1px solid var(--border); }
-.uam-rt-workspace:first-child { border-top: 0; }
-.uam-rt-workspace__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
-.uam-rt-workspace__name { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); overflow-wrap: anywhere; }
-.uam-rt-workspace__none { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
-.uam-rt-match { display: flex; align-items: center; gap: var(--sp-2); min-height: 32px; font-size: var(--fs-sm); color: var(--text-2); }
-.uam-rt-match__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.uam-rt-match__text--muted { color: var(--text-3); }
-.uam-rt-match__actions { display: inline-flex; gap: 2px; flex-shrink: 0; }
-.uam-rt-pick { display: flex; align-items: center; gap: var(--sp-2); animation: uam-rt-pick-in var(--dur-fast) var(--ease-out-soft); }
-@keyframes uam-rt-pick-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .uam-rt-pick { animation: none; } }
+/* Computers: one disclosure per computer. Its Use this computer switch overlays the trigger row's right edge (it cannot sit in the button). */
+.uam-rt-host { position: relative; }
+.uam-rt-host > .uam-disclosure > .uam-disclosure__summary { padding-right: 46px; }
+.uam-rt-host__switch { position: absolute; top: calc(var(--sp-3) + 16px); right: 0; display: inline-flex; transform: translateY(-50%); }
+/* Disclosure content lines up with the trigger label (chevron 14px, -5px offset, sp-2 gap). */
+:is(.uam-rt-host, .uam-rt-folders) .uam-disclosure__inner { padding-left: 17px; }
+.uam-rt-summary { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+.uam-set-section__actions > .uam-rt-summary { margin-right: var(--sp-2); }
+.uam-rt-summary--error { color: var(--error); }
+.uam-rt-muted-title.uam-set-row__title { color: var(--text-2); }
+.uam-disclosure__label > .uam-rt-alias { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
 
-/* Progressive disclosure: height animates via grid rows; closed content is inert. */
-.uam-rt-disclosure__toggle {
-  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px;
-  padding: 0; background: none; border: 0; border-radius: var(--r-sm);
-  color: var(--text-2); font-size: var(--fs-sm); font-weight: var(--fw-medium); text-align: left; cursor: pointer;
-  transition: color var(--dur-fast) var(--ease);
-}
-.uam-rt-disclosure__toggle:hover { color: var(--text); }
-.uam-rt-disclosure__toggle:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
-.uam-rt-disclosure__toggle svg { flex-shrink: 0; transition: transform var(--dur-base) var(--ease-out-soft); }
-.uam-rt-disclosure[data-open="true"] .uam-rt-disclosure__toggle svg { transform: rotate(90deg); }
-.uam-rt-disclosure__summary { margin-left: auto; font-weight: 400; color: var(--text-3); }
-.uam-rt-disclosure__body {
-  display: grid; grid-template-rows: 0fr; opacity: 0;
-  transition: grid-template-rows var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
-}
-.uam-rt-disclosure[data-open="true"] .uam-rt-disclosure__body {
-  grid-template-rows: 1fr; opacity: 1;
-  transition: grid-template-rows var(--dur-base) var(--ease-out-soft), opacity var(--dur-base) var(--ease-out-soft);
-}
-.uam-rt-disclosure__inner { min-height: 0; overflow: hidden; padding: 2px 2px var(--sp-2); }
-@media (prefers-reduced-motion: reduce) {
-  .uam-rt-disclosure__body, .uam-rt-disclosure__toggle svg { transition: none; }
-}
+/* Folders: one row per computer a workspace is mapped to. Columns: status | computer | arrow | remote path | tag or problem | actions. */
+.uam-rt-map-row { display: grid; grid-template-columns: 16px minmax(0, 160px) 14px minmax(0, 1fr) auto auto; align-items: center; column-gap: var(--sp-3); min-height: 44px; padding-block: var(--sp-1); font-size: var(--fs-sm); }
+.uam-rt-map-row + .uam-rt-map-row { border-top: 1px solid var(--border); }
+.uam-rt-map-row--unmapped { grid-template-columns: minmax(0, 180px) minmax(0, 1fr) auto; }
+.uam-rt-map-row__host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.uam-rt-map-row__arrow { color: var(--text-3); }
+.uam-rt-map-row__path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.uam-rt-map-row[data-problem] .uam-rt-map-row__path { text-decoration: line-through; }
+.uam-rt-map-row__error { font-size: var(--fs-xs); color: var(--error); white-space: nowrap; }
+.uam-rt-map-row__actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 56px; }
+.uam-rt-tag { padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-up); font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+
+/* Map folder chooser (Import chats look): computer + filter bar, one-line rows with a remote folder picker each. */
+.uam-rt-chooser { width: min(672px, 100%); }
+.uam-rt-chooser--inline { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--border); outline: none; }
+.uam-rt-chooser__bar { justify-content: space-between; padding-block: var(--sp-2); }
+.uam-rt-chooser__filter { display: inline-flex; align-items: center; gap: 6px; position: relative; color: var(--text-3); }
+.uam-rt-chooser__filter > svg { position: absolute; left: 9px; pointer-events: none; }
+.uam-rt-chooser__filter > .uam-field { width: 200px; padding-left: 26px; }
+.uam-rt-chooser__dir { max-width: 140px; color: var(--text-3); }
+.uam-rt-chooser__pick { flex: 0 0 280px; min-width: 0; }
+.uam-rt-chooser__note { margin: 0; padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-3); }
+.uam-rt-dialog__step { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }

@@ -140,8 +140,10 @@ describe('SSH Routing settings page', () => {
       ] }] } })
     mount(<ExecutionRoutingSettings variant="page" />)
     const choose = (label: string) => {
-      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Destination for source-a on Server A"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose a different folder for source-a on Server A"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for source-a on Server A"]')!.click())
       act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((item) => item.textContent?.includes(label))!.click())
+      act(() => buttonNamed('Map 1').click())
     }
     choose('target-b')
     expect(buttonNamed('Save routing').disabled).toBe(false)
@@ -205,5 +207,86 @@ describe('SSH Routing settings page', () => {
     act(() => capacity.blur())
     expect(capacity.value).toBe('1024')
     expect(buttonNamed('Save routing').disabled).toBe(false)
+  })
+
+  describe('folders', () => {
+    const folder = (id: string, directory: string, executionHostId?: string) => ({ id, name: id, directory, executionHostId, parentId: null, isExpanded: true, createdAt: new Date() })
+    const host = (id: string, label: string) => ({ id, label, transport: 'ssh' as const, sshAlias: id, runnerStatus: 'ready' as const, runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' })
+    const summaries = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('section[aria-label="Folders"] .uam-disclosure__summary'))
+    const pick = (label: string, option: string) => {
+      act(() => document.body.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((item) => item.textContent?.includes(option))!.click())
+    }
+    beforeEach(() => useAppStore.setState({
+      executionHosts: [host('ssh-a', 'Server A'), host('ssh-b', 'Server B')],
+      folders: [folder('ok', '/ok'), folder('broken', '/broken'), folder('plain-1', '/plain-1'), folder('plain-2', '/plain-2'), folder('target-a', '/remote/a', 'ssh-a')],
+    }))
+
+    it('sorts problem workspaces first and open, then mapped ones, and gathers the rest in one Not mapped group', () => {
+      useAppStore.setState({ executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [
+        { sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' },
+      ] }] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      const [problem, mapped, rest] = summaries()
+      expect(summaries()).toHaveLength(3)
+      expect(problem.textContent).toContain('broken')
+      expect(problem.textContent).toContain('Folder no longer exists')
+      expect(problem.getAttribute('aria-expanded')).toBe('true')
+      expect(mapped.textContent).toContain('1 computer')
+      expect(rest.textContent).toBe('Not mapped3 workspaces without a remote folder')
+      expect(rest.getAttribute('aria-expanded')).toBe('false')
+      expect(document.body.querySelector('section[aria-label="Folders"]')!.textContent).toContain('2 of 5 workspaces mapped')
+      expect(document.body.querySelector('[data-problem] .uam-rt-map-row__host')?.textContent).toBe('Server A')
+      expect(buttonNamed('Save routing').disabled).toBe(true)
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove mapping for broken on Server A"]')!.click())
+      expect(summaries()).toHaveLength(2)
+      expect(buttonNamed('Save routing').disabled).toBe(false)
+    })
+
+    it('stages chooser mappings in the unsaved draft without saving, and Escape closes the chooser', async () => {
+      const save = vi.fn(async (settings: RoutingSettings) => { useAppStore.setState({ executionRouting: settings }) })
+      useAppStore.setState({ setExecutionRoutingSettings: save, executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' }] }] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      const opener = buttonNamed('Map folder…')
+      act(() => { opener.focus(); opener.click() })
+      const chooser = document.body.querySelector<HTMLElement>('[role="dialog"][aria-label="Map folders to a computer"]')!
+      expect(chooser.textContent).toContain('ok already has a folder on Server A.')
+      const filter = chooser.querySelector<HTMLInputElement>('[aria-label="Filter workspaces"]')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(filter, 'plain'); filter.dispatchEvent(new Event('input', { bubbles: true })) })
+      expect(Array.from(chooser.querySelectorAll('.uam-rv-row__title')).map((item) => item.textContent)).toEqual(['plain-1', 'plain-2'])
+      act(() => chooser.querySelector<HTMLInputElement>('[aria-label="Select all workspaces"]')!.click())
+      expect(chooser.textContent).toContain('2 selected')
+      expect(buttonNamed('Map 2').disabled).toBe(true)
+      expect(chooser.textContent).toContain('Choose a remote folder for all 2 selected workspaces.')
+      pick('Remote folder for plain-1 on Server A', 'target-a')
+      pick('Remote folder for plain-2 on Server A', 'target-a')
+      act(() => buttonNamed('Map 2').click())
+      expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).toBeNull()
+      expect(document.activeElement).toBe(opener)
+      expect(save).not.toHaveBeenCalled()
+      expect(summaries().map((item) => item.textContent)).toEqual(['ok1 computer', 'plain-11 computer', 'plain-21 computer', 'Not mapped2 workspaces without a remote folder'])
+      expect(buttonNamed('Save routing').disabled).toBe(false)
+
+      act(() => buttonNamed('Map…').click())
+      expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select broken"]')!.checked).toBe(true)
+      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+      expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).toBeNull()
+
+      await act(async () => buttonNamed('Save routing').click())
+      expect(save.mock.calls[0][0].hosts[0].workspaceMappings).toEqual([
+        { sourceFolderId: 'ok', sourceDirectory: '/ok', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'plain-1', sourceDirectory: '/plain-1', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'plain-2', sourceDirectory: '/plain-2', destinationFolderId: 'target-a' },
+      ])
+    })
+
+    it('says when a computer has no folders to map to', () => {
+      mount(<ExecutionRoutingSettings variant="page" />)
+      act(() => buttonNamed('Map folder…').click())
+      act(() => buttonNamed('Server B').click())
+      expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain('No folders on Server B yet. Add a folder on Server B first.')
+      expect(buttonNamed('Map').disabled).toBe(true)
+    })
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canRouteAutomatically, routingConfigurationError, sanitizeExecutionRouting, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings } from './executionRouting'
+import { canRouteAutomatically, routingConfigurationError, routingFolderRows, sanitizeExecutionRouting, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings } from './executionRouting'
 import type { ExecutionHost, Folder } from './session'
 import { sanitizeCppChat } from '../store/cpp/sanitizers'
 import { sessionFromCppChat } from '../store/cpp/reconcile'
@@ -63,5 +63,49 @@ describe('repository matching contracts', () => {
     const cleared = { ...settings, hosts: [{ ...settings.hosts[0], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: '', useAutomaticMatch: true as const }] }] }
     expect(routingConfigurationError(cleared, hosts, folders)).toBe('')
     expect(canRouteAutomatically(cleared, folders[0], 'codex-cli')).toBe(false)
+  })
+})
+
+describe('routing folder rows', () => {
+  const two: ExecutionHost[] = [hosts[0], { ...hosts[0], id: 'ssh-b', label: 'Other' }]
+  const local = (id: string) => ({ id, name: id, directory: `/${id}`, parentId: null, isExpanded: true, createdAt: new Date() })
+  const sources = [local('plain'), local('mapped'), local('broken'), local('moved')]
+  const all: Folder[] = [...sources, { ...folders[1], id: 'remote-a' }, { ...folders[1], id: 'remote-b', directory: '/remote-b', executionHostId: 'ssh-b' }]
+  const routing: ExecutionRoutingSettings = { enabled: true, hosts: [
+    { hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [
+      { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' },
+      { sourceFolderId: 'moved', sourceDirectory: '/old', destinationFolderId: 'remote-a' },
+    ] },
+    { hostId: 'ssh-b', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [
+      { sourceFolderId: 'mapped', sourceDirectory: '/mapped', destinationFolderId: 'remote-b' },
+      { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'remote-a' },
+    ] },
+  ] }
+  const repositories = [{ folderId: 'mapped', repository: { kind: 'git' as const, identity: 'git@github.com:o/r.git' }, matches: [{ executionHostId: 'ssh-a', remoteDirectory: '/checkout', source: 'automatic' as const }] }]
+
+  it('puts problem workspaces first, then mapped ones, and collects the rest as not mapped', () => {
+    const { groups, unmapped } = routingFolderRows(sources, two, routing, repositories, all)
+    expect(groups.map((group) => group.folder.id)).toEqual(['broken', 'moved', 'mapped'])
+    expect(unmapped.map((group) => group.folder.id)).toEqual(['plain'])
+    expect(groups[0].entries).toEqual([
+      { hostId: 'ssh-a', kind: 'chosen', target: '', error: 'Folder no longer exists' },
+      { hostId: 'ssh-b', kind: 'chosen', target: '/remote', destinationFolderId: 'remote-a', error: 'Folder is on another computer' },
+    ])
+    expect(groups[1].entries[0].error).toBe('Workspace folder moved')
+    expect(groups[2]).toMatchObject({ repository: { identity: 'git@github.com:o/r.git' }, entries: [
+      { hostId: 'ssh-a', kind: 'repository', target: '/checkout' },
+      { hostId: 'ssh-b', kind: 'chosen', target: '/remote-b', destinationFolderId: 'remote-b' },
+    ] })
+  })
+
+  it('ignores repository matches when matching is off and agrees with page validation', () => {
+    const { groups } = routingFolderRows(sources, two, routing, null, all)
+    expect(groups.find((group) => group.folder.id === 'mapped')!.entries.map((entry) => entry.kind)).toEqual(['chosen'])
+    expect(routingConfigurationError(routing, two, all)).not.toBe('')
+    const fixed = { ...routing, hosts: routing.hosts.map((host) => ({ ...host, workspaceMappings: host.workspaceMappings.filter((mapping) => mapping.sourceFolderId === 'mapped') })) }
+    expect(routingFolderRows(sources, two, fixed, null, all).groups.flatMap((group) => group.entries).some((entry) => entry.error)).toBe(false)
+    expect(routingConfigurationError(fixed, two, all)).toBe('')
+    const cleared = { ...fixed, hosts: [{ ...fixed.hosts[0], workspaceMappings: [{ sourceFolderId: 'mapped', sourceDirectory: '/mapped', destinationFolderId: '', useAutomaticMatch: true as const }] }] }
+    expect(routingFolderRows(sources, two, cleared, repositories, all).groups[0].entries).toEqual([{ hostId: 'ssh-a', kind: 'repository', target: '/checkout' }])
   })
 })

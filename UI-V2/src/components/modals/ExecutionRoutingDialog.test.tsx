@@ -13,6 +13,7 @@ const originalSave = useAppStore.getState().setExecutionRoutingSettings
 const originalRelease = useAppStore.getState().releaseExecutionRoutingReservation
 const mounted: { host: HTMLElement; root: ReturnType<typeof createRoot> }[] = []
 function mount(component: React.ReactNode) { const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host); mounted.push({ host, root }); act(() => root.render(component)); return host }
+function buttonNamed(text: string) { return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === text)! }
 function input(selector: string, value: string) { const element = document.body.querySelector<HTMLInputElement>(selector)!; act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })) }) }
 
 describe('SSH routing controls', () => {
@@ -45,16 +46,17 @@ describe('SSH routing controls', () => {
     act(() => capacity.blur())
     const submit = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save routing')!
     expect(save).not.toHaveBeenCalled()
-    const destinationTrigger = '[aria-label="Destination for Source on Server A"]'
-    act(() => document.body.querySelector<HTMLButtonElement>(destinationTrigger)!.click())
-    expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map((option) => option.textContent)).toEqual(["Don't route this folder", 'Destination · /remote'])
+    act(() => buttonNamed('Map folder…').click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remote folder for Source on Server A"]')!.click())
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).map((option) => option.textContent)).toEqual(['Destination · /remote'])
     act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((option) => option.textContent?.includes('Destination · /remote'))!.click())
+    act(() => buttonNamed('Map 1').click())
     act(() => (document.body.querySelector('[aria-label="Codex signed in on Server A"]') as HTMLInputElement).click())
     await act(async () => submit().click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ maxActiveTurns: 2, providers: [{ providerId: 'codex-cli', connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))
     expect(close).not.toHaveBeenCalled()
     expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Routing settings could not be saved.', 'Disk full')
-    expect(document.body.querySelector(destinationTrigger)?.textContent).toContain('Destination')
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('/remote')
   })
 
   it('shows an actionable wait and rejects release when the assignment changes during confirmation', async () => {
@@ -94,4 +96,19 @@ describe('SSH routing controls', () => {
     newer.remove()
   })
 
+  it('maps folders as an in-place step of the routing dialog instead of a second dialog', () => {
+    const close = vi.fn()
+    mount(<ExecutionRoutingDialog onClose={close} />)
+    const escape = () => act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+    act(() => { buttonNamed('Map folder…').focus(); buttonNamed('Map folder…').click() })
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1)
+    expect(document.body.querySelector('[role="dialog"] [role="group"][aria-label="Map folders to a computer"]')).not.toBeNull()
+    expect(Array.from(document.body.querySelectorAll('button')).some((button) => button.textContent === 'Save routing')).toBe(false)
+    escape()
+    expect(close).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[aria-label="Map folders to a computer"]')).toBeNull()
+    expect(document.activeElement).toBe(buttonNamed('Map folder…'))
+    escape()
+    expect(close).toHaveBeenCalledOnce()
+  })
 })

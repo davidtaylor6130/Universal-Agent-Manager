@@ -4,7 +4,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { routingReservation, type RoutingReservation } from '../../types/executionRouting'
 import type { Session } from '../../types/session'
 import { Button, ConfirmDialog, IconButton, Notice, Overlay } from '../ui'
-import { ExecutionRoutingSettings } from '../settings/ExecutionRoutingSettings'
+import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from '../settings/ExecutionRoutingSettings'
 import './ExecutionRoutingDialog.css'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
@@ -13,6 +13,7 @@ export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const panel = useRef<HTMLDivElement>(null)
+  const settings = useRef<ExecutionRoutingSettingsHandle>(null)
   const closeRef = useRef(onClose); closeRef.current = onClose
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
@@ -20,7 +21,7 @@ export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
     dialog?.focus()
     const key = (event: KeyboardEvent) => {
       if (event.defaultPrevented || getTopmostModal() !== panel.current) return
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!busyRef.current) closeRef.current() }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!settings.current?.closeStep?.() && !busyRef.current) closeRef.current() }
       else trapModalTab(event)
     }
     window.addEventListener('keydown', key, true)
@@ -38,7 +39,7 @@ export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
         </div>
         <IconButton icon={<X size={15} />} label="Close SSH routing" size="sm" disabled={busy} onClick={onClose} />
       </div>
-      <ExecutionRoutingSettings variant="dialog" onClose={onClose} onBusyChange={(next) => { busyRef.current = next; setBusy(next) }} />
+      <ExecutionRoutingSettings ref={settings} variant="dialog" onClose={onClose} onBusyChange={(next) => { busyRef.current = next; setBusy(next) }} />
     </div>
   </Overlay>
 }

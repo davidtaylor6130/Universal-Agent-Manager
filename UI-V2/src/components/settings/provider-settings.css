@@ -215,12 +215,6 @@
 @keyframes uam-prov-pop-out { to { opacity: 0; transform: scale(.98) translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) { .uam-prov-pop, .uam-prov-pop[data-state='closed'] { animation: none; } }
 
-/* Remote folder: one row per folder (name, repository, match, actions); the picker takes a full-width line below it. */
-.uam-rt-folder-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) 0; border-top: 1px solid var(--border); }
-.uam-rt-folder-row:first-child { border-top: 0; }
-.uam-rt-folder-row > .uam-rt-match { flex: 1 1 200px; min-width: 0; min-height: 0; }
-.uam-rt-folder-row > .uam-rt-pick { flex-basis: 100%; }
-
 /* Discovery issue: provider and reason share one line; the Show IDs disclosure follows on that line. */
 .uam-native-issues > li.uam-native-issue-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-3); }
 .uam-native-issue-row > .uam-native-issues__ids { margin-top: 0; }
