@@ -7,15 +7,15 @@ import { Switch } from './Switch'
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 // Only the switch rules: jsdom's CSS parser does not need the rest of the sheet.
-const switchCss = readFileSync('src/index.css', 'utf8').split('\n').filter((line) => /^(\.uam-settings-motion )?\.uam-switch/.test(line)).join('\n')
+const switchCss = readFileSync('src/index.css', 'utf8').split('\n').filter((line) => /^(\.uam-settings-scope )?\.uam-switch/.test(line)).join('\n')
 
 // Fresh render per state: jsdom does not recompute styles when only the checked property changes.
-function renderSwitch(checked: boolean, inSettings = true) {
+function renderSwitch(checked: boolean, scope: string | null = 'uam-settings-scope') {
   const style = document.createElement('style')
   style.textContent = switchCss
   document.head.appendChild(style)
   const host = document.createElement('div')
-  if (inSettings) host.className = 'uam-settings-motion'
+  if (scope) host.className = scope
   document.body.appendChild(host)
   const root = createRoot(host)
   act(() => root.render(createElement(Switch, { label: 'Enable Git', defaultChecked: checked })))
@@ -44,13 +44,20 @@ describe('Switch', () => {
     on.cleanup()
   })
 
+  it('shows the tick/X in a portaled settings popover that carries the settings scope', () => {
+    const on = renderSwitch(true, 'uam-prov-pop uam-settings-scope')
+    expect(on.displayed).toEqual(['block', 'block'])
+    expect(on.shown).toEqual(['1', '0'])
+    on.cleanup()
+  })
+
   // Settings rules never change the composer or other non-settings switches (David, 2026-11-02).
   it('keeps the plain black-and-white thumb with no icons outside Settings', () => {
-    const off = renderSwitch(false, false)
+    const off = renderSwitch(false, null)
     expect(off.displayed).toEqual(['none', 'none'])
     expect(off.thumb).toBe('var(--text-3)')
     off.cleanup()
-    const on = renderSwitch(true, false)
+    const on = renderSwitch(true, null)
     expect(on.displayed).toEqual(['none', 'none'])
     expect(on.thumb).toBe('var(--bg)')
     on.cleanup()

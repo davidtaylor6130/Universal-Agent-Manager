@@ -1666,6 +1666,8 @@ describe('AppShell', () => {
       for (const n of [1, 2, 3, 4]) act(() => reportAppNotice(`Notice ${n}`))
       // 30% of 768px holds 4 rows; the focused oldest notice collapses and its countdown resumes.
       expect(messages()).toEqual(['Notice 1', 'Notice 2', 'Notice 3', 'Notice 4'])
+      // Focus leaves the now-hidden notice for the toggle that reveals it.
+      expect(document.activeElement?.textContent).toBe('Show 1 more')
       expect(alertSurface()!.querySelector<HTMLElement>('.uam-transient-alert-slot[hidden] [data-testid="transient-alert-item"]')!.dataset.held).toBeUndefined()
       // Focus paused it with its full 5 seconds left; once collapsed it counts down again and expires on its own.
       settle(4800)
@@ -1678,12 +1680,14 @@ describe('AppShell', () => {
     }
   })
 
-  it('counts a measured multi-line notice at its height when deciding how many fit', async () => {
+  it('counts a multi-line notice at its content height, even while its slot is still sliding in, when deciding how many fit', async () => {
     vi.useFakeTimers()
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
     useAppStore.setState({ updateChecksEnabled: false })
-    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.classList.contains('uam-transient-alert-slot') && this.textContent?.includes('Tall') ? 120 : 0
+    // The slot stays 0 tall, as during its 0fr slide-in; only the notice's content height is known.
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(0)
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'transient-alert-item' ? (this.textContent?.includes('Tall') ? 118 : 30) : 0
     })
     const { alertSurface, cleanup } = await mountShell()
     const toggle = () => [...alertSurface()!.querySelectorAll('button')].find((button) => /^Show/.test(button.textContent ?? ''))
@@ -1695,6 +1699,7 @@ describe('AppShell', () => {
     } finally {
       cleanup()
       offsetHeight.mockRestore()
+      scrollHeight.mockRestore()
       vi.useRealTimers()
     }
   })

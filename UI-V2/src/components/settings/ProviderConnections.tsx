@@ -251,7 +251,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       const terminalOnly = runtime?.supportsStructured === undefined ? metadata.structuredProtocol === 'none' : !runtime.supportsStructured
       const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
       return <ViewportMenu ref={menuRef} anchorRef={menuAnchor} align="end" role="dialog" aria-label={`${metadata.shortName} MCP servers`} data-state={menuPresence.closing ? 'closed' : 'open'}
-        className="uam-prov-pop" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuId(null); menuAnchor.current?.focus() } }}>
+        className="uam-prov-pop uam-settings-scope" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setMenuId(null); menuAnchor.current?.focus() } }}>
         {servers.map(server => {
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">

@@ -369,6 +369,8 @@ it('collapses many server columns into one count chip whose popover holds each s
   expect(document.body.querySelector('[aria-label="Codex Docs"]')?.checked).toBe(true)
   expect(document.body.querySelector('[aria-label="Codex Git (unknown)"]')).not.toBeNull()
   const popover = document.body.querySelector('[aria-label="Codex MCP servers"]')!
+  // Portaled out of the settings root, so it carries the settings scope itself for the tick/X switch thumb.
+  expect(popover.closest('.uam-settings-scope')).toBe(popover)
   expect(popover.textContent).not.toContain(server.workspaceDirectory)
   expect(popover.textContent).not.toContain(server.url)
 })

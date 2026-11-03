@@ -298,6 +298,9 @@ describe('SSH Routing settings page', () => {
       // The workspace is gone, so the row can only be removed, and the chooser never offers it.
       expect(document.body.querySelector('[aria-label="Choose folder for deleted on Server A"]')).toBeNull()
       expect(document.body.querySelector('section[aria-label="Computers"]')!.textContent).toContain('Computer removed')
+      // A removed host has no label left, so the row is titled in words with the internal ID as a muted alias.
+      expect(document.body.querySelector('section[aria-label="Computers"] .uam-rt-alias')!.textContent).toBe('ssh-gone')
+      expect(document.body.querySelector('section[aria-label="Computers"]')!.textContent).toContain('Removed computer')
       act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove mapping for deleted on Server A"]')!.click())
       expect(buttonNamed('Save routing').disabled).toBe(true)
       act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Remove routing for removed computer ssh-gone"]')!.click())
@@ -348,16 +351,41 @@ describe('SSH Routing settings page', () => {
       expect(chooser()).toBeNull()
     })
 
-    it('drops ticks without a remote folder on the computer being left, so they cannot block Map N', () => {
+    it('carries ticks without a remote folder to the next computer, dropping only those it would hide', () => {
       useAppStore.setState({ folders: [...useAppStore.getState().folders, folder('target-b', '/remote/b', 'ssh-b')],
-        executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' }] }] } })
+        executionRouting: { enabled: false, hosts: [
+          { hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'gone' }] },
+          { hostId: 'ssh-b', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'plain-1', sourceDirectory: '/plain-1', destinationFolderId: 'target-b' }] },
+        ] } })
       mount(<ExecutionRoutingSettings variant="page" />)
       act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose folder for broken on Server A"]')!.click())
+      act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select plain-1"]')!.click())
+      expect(buttonNamed('Map 2').disabled).toBe(true)
       act(() => buttonNamed('Server B').click())
-      pick('Remote folder for plain-1 on Server B', 'target-b')
+      // broken follows to Server B; plain-1 is already mapped there, so its hidden tick is dropped and cannot block Map N.
+      expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select broken"]')!.checked).toBe(true)
+      expect(document.body.querySelector('[aria-label="Select plain-1"]')).toBeNull()
+      expect(buttonNamed('Map 1').disabled).toBe(true)
+      pick('Remote folder for broken on Server B', 'target-b')
       expect(buttonNamed('Map 1').disabled).toBe(false)
       act(() => buttonNamed('Server A').click())
       expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select broken"]')!.checked).toBe(false)
+      expect(document.body.querySelector('[role="dialog"]')!.textContent).toContain('0 selected, +1 on other computers')
+    })
+
+    it('keeps a still-valid chosen folder preselected when Choose… opens on a stale-duplicate row', async () => {
+      const save = vi.fn(async (settings: RoutingSettings) => { useAppStore.setState({ executionRouting: settings }) })
+      useAppStore.setState({ setExecutionRoutingSettings: save, executionRouting: { enabled: false, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [
+        { sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'target-a' },
+        { sourceFolderId: 'broken', sourceDirectory: '/old-broken', destinationFolderId: 'target-a' },
+      ] }] } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      expect(document.body.querySelector('[data-problem]')!.textContent).toContain('Workspace folder moved')
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose folder for broken on Server A"]')!.click())
+      expect(buttonNamed('Map 1').disabled).toBe(false)
+      act(() => buttonNamed('Map 1').click())
+      await act(async () => buttonNamed('Save routing').click())
+      expect(save.mock.calls[0][0].hosts[0].workspaceMappings).toEqual([{ sourceFolderId: 'broken', sourceDirectory: '/broken', destinationFolderId: 'target-a' }])
     })
 
     it('says when a computer has no folders to map to', () => {

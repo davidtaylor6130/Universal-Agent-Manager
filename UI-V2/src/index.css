@@ -1666,13 +1666,13 @@ summary,
 .uam-switch__icon { display: none; }
 /* Settings only (David, 2026-11-02; never the composer or other non-settings UI): same neutral track, but the thumb carries
    the state as a green tick (on) or red X (off), which slides with it. --surface keeps both icons at 3:1 or more in every theme. */
-.uam-settings-motion .uam-switch__thumb { display: grid; place-items: center; background: var(--surface); box-shadow: 0 0 0 1px var(--border-bright), 0 1px 3px rgba(0,0,0,.25); transition: transform var(--dur-base) var(--ease); }
-.uam-settings-motion .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: var(--surface); }
-.uam-settings-motion .uam-switch__icon { display: block; grid-area: 1 / 1; transition: opacity var(--dur-fast) var(--ease); }
-.uam-settings-motion .uam-switch__icon--on { color: var(--success); opacity: 0; }
-.uam-settings-motion .uam-switch__icon--off { color: var(--error); }
-.uam-settings-motion .uam-switch input:checked + .uam-switch__track .uam-switch__icon--on { opacity: 1; }
-.uam-settings-motion .uam-switch input:checked + .uam-switch__track .uam-switch__icon--off { opacity: 0; }
+.uam-settings-scope .uam-switch__thumb { display: grid; place-items: center; background: var(--surface); box-shadow: 0 0 0 1px var(--border-bright), 0 1px 3px rgba(0,0,0,.25); transition: transform var(--dur-base) var(--ease); }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: var(--surface); }
+.uam-settings-scope .uam-switch__icon { display: block; grid-area: 1 / 1; transition: opacity var(--dur-fast) var(--ease); }
+.uam-settings-scope .uam-switch__icon--on { color: var(--success); opacity: 0; }
+.uam-settings-scope .uam-switch__icon--off { color: var(--error); }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__icon--on { opacity: 1; }
+.uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__icon--off { opacity: 0; }
 .uam-switch input:focus-visible + .uam-switch__track { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
@@ -1950,9 +1950,9 @@ summary,
 .uam-status-box { display: inline-grid; place-items: center; flex-shrink: 0; box-sizing: border-box; vertical-align: middle; }
 .uam-status-box--success { color: var(--success); }
 .uam-status-box--error { color: var(--error); }
-.uam-settings-motion .uam-status-box { width: var(--status-box-size); height: var(--status-box-size); border: 1px solid transparent; border-radius: var(--r-sm); }
-.uam-settings-motion .uam-status-box--success { background: var(--success-dim); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
-.uam-settings-motion .uam-status-box--error { background: var(--error-dim); border-color: color-mix(in srgb, var(--error) 35%, transparent); }
+.uam-settings-scope .uam-status-box { width: var(--status-box-size); height: var(--status-box-size); border: 1px solid transparent; border-radius: var(--r-sm); }
+.uam-settings-scope .uam-status-box--success { background: var(--success-dim); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+.uam-settings-scope .uam-status-box--error { background: var(--error-dim); border-color: color-mix(in srgb, var(--error) 35%, transparent); }
 @keyframes uam-dot-pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50%      { box-shadow: 0 0 0 3px transparent; opacity: 0.75; }

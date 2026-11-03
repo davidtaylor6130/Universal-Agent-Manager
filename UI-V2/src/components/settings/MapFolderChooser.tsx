@@ -30,8 +30,10 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<string[]>(preselect ? [keyOf(preselect.hostId, preselect.folderId)] : [])
   const [choices, setChoices] = useState<Record<string, string>>(() => {
-    const current = preselect && workspaces.find((group) => group.folder.id === preselect.folderId)?.entries.find((entry) => entry.hostId === preselect.hostId && !entry.error)?.destinationFolderId
-    return preselect && current ? { [keyOf(preselect.hostId, preselect.folderId)]: current } : {}
+    // Keep a still-valid chosen folder even when the row shows a problem (a stale duplicate), so Map 1 only replaces the duplicate.
+    const current = preselect && workspaces.find((group) => group.folder.id === preselect.folderId)?.entries.find((entry) => entry.hostId === preselect.hostId)?.destinationFolderId
+    const registered = current && folders.some((folder) => folder.id === current && folder.executionHostId === preselect.hostId && folder.directory)
+    return preselect && registered ? { [keyOf(preselect.hostId, preselect.folderId)]: current } : {}
   })
   const panel = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose); closeRef.current = onClose
@@ -49,18 +51,28 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
 
   const host = hosts.find((item) => item.id === hostId)
   const remote = folders.filter((folder) => folder.executionHostId === hostId && folder.directory)
-  const mappedHere = (group: RoutingFolderGroup) => group.entries.some((entry) => entry.hostId === hostId && !entry.error)
   // Already-mapped workspaces are hidden, except the one a row's Choose… opened.
-  const candidates = workspaces.filter((group) => !mappedHere(group) || (preselect?.hostId === hostId && preselect.folderId === group.folder.id))
+  const listedOn = (on: string, group: RoutingFolderGroup) => !group.entries.some((entry) => entry.hostId === on && !entry.error) || (preselect?.hostId === on && preselect.folderId === group.folder.id)
+  const candidates = workspaces.filter((group) => listedOn(hostId, group))
   const hidden = workspaces.filter((group) => !candidates.includes(group))
   const needle = filter.trim().toLowerCase()
   const shown = candidates.filter((group) => !needle || group.folder.name.toLowerCase().includes(needle) || group.folder.directory!.toLowerCase().includes(needle))
   const shownKeys = shown.map((group) => keyOf(hostId, group.folder.id))
   const allShown = shownKeys.length > 0 && shownKeys.every((key) => selected.includes(key))
   const hereCount = selected.filter((key) => key.startsWith(`${hostId}\n`)).length
+  const elsewhere = selected.length - hereCount
   const missing = selected.filter((key) => !choices[key]).length
-  // Switching computers drops ticks there without a remote folder: they can't be seen from here, so they must not block Map N.
-  const switchHost = (next: string) => { setSelected((current) => current.filter((key) => key.startsWith(`${next}\n`) || choices[key])); setHostId(next) }
+  // Switching computers carries ticks without a remote folder over to the new computer (the user is still choosing where they
+  // go); one that would be hidden there is dropped, since an invisible tick must not block Map N. Ticks with a folder stay put.
+  const switchHost = (next: string) => {
+    setSelected((current) => [...new Set(current.flatMap((key) => {
+      if (key.startsWith(`${next}\n`) || choices[key]) return [key]
+      const folderId = key.slice(key.indexOf('\n') + 1)
+      const group = workspaces.find((item) => item.folder.id === folderId)
+      return group && listedOn(next, group) ? [keyOf(next, folderId)] : []
+    }))])
+    setHostId(next)
+  }
   const toggle = (keys: string[], on: boolean) => setSelected((current) => on ? [...new Set([...current, ...keys])] : current.filter((key) => !keys.includes(key)))
   const apply = () => onApply(selected.map((key) => { const [host, folderId] = key.split('\n'); return { hostId: host, folderId, destinationFolderId: choices[key] } }))
   const names = hidden.map((group) => group.folder.name)
@@ -94,7 +106,7 @@ export function MapFolderChooser({ hosts, workspaces, folders, preselect, inline
               <input type="checkbox" className="uam-rv-check" aria-label="Select all workspaces" checked={allShown} onChange={(event) => toggle(shownKeys, event.target.checked)} />
               <span>Select all</span>
             </label>
-            <span className="uam-rv-muted">{hereCount} selected</span>
+            <span className="uam-rv-muted">{hereCount} selected{elsewhere ? `, +${elsewhere} on other computers` : ''}</span>
           </div>}
           <div className="uam-rv-list" aria-label={`Workspaces to map to ${host?.label}`}>
             {shown.map((group) => {

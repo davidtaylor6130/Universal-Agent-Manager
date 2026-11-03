@@ -2475,7 +2475,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       catch { reportAppFailure('Version check could not start.', 'Try again.') }
                     }}/>
                     <Reveal open={manager.canInstall !== false}><IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/></Reveal>
-                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--r-md)'}}>
+                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="uam-settings-scope grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'var(--r-md)'}}>
                       <MenuItem label={`Download recommended${manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}`} disabled={!manager.preferredVersion} onSelect={() => requestInstall(manager.preferredVersion)} />
                       <MenuItem label="Download latest" onSelect={() => requestInstall('latest')} />
                     </ViewportMenu>}
@@ -2912,7 +2912,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   return (
-    <div className="uam-settings-motion flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
+    <div className="uam-settings-motion uam-settings-scope flex h-full min-h-0 min-w-0" style={{background:'var(--bg)',color:'var(--text)'}}>
       <div ref={dialogRef} role="region" aria-label="Settings" tabIndex={-1} className="w-full h-full min-h-0 flex flex-col overflow-hidden">
         <div className="grid flex-1 min-h-0" style={{gridTemplateColumns:'200px minmax(0,1fr)'}}>
           <aside className="min-h-0 flex flex-col px-3 py-3" style={{borderRight:'1px solid var(--border)',background:'var(--sidebar-bg)'}}>

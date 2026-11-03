@@ -116,6 +116,12 @@ function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAct
     run()
     if (hadFocus) document.querySelector<HTMLElement>('[data-notification-bell]')?.focus()
   }
+  // Collapsing hides a focused notice; hand focus to the "Show N more" toggle (else the bell) before the browser drops it to body.
+  useLayoutEffect(() => {
+    if (!collapsed || !ref.current?.contains(document.activeElement)) return
+    const toggle = ref.current.closest('[data-testid="transient-alert"]')?.querySelector<HTMLElement>(':scope > button[aria-expanded]')
+    ;(toggle ?? document.querySelector<HTMLElement>('[data-notification-bell]'))?.focus()
+  }, [collapsed])
   // Collapsed overflow stays mounted (hidden) so its own countdown keeps running.
   return <div className="uam-transient-alert-slot" data-alert-id={alert.id} data-state={alert.leaving ? 'closed' : 'open'} hidden={collapsed}>
     <div ref={ref} data-testid="transient-alert-item" data-state={alert.leaving ? 'closed' : 'open'} data-held={held || undefined}
@@ -154,8 +160,12 @@ function TransientAlertSurface({ alerts, notice, onAction, onDismiss, fallbackId
     let changed = false
     surfaceRef.current?.querySelectorAll<HTMLElement>('.uam-transient-alert-slot[data-alert-id]').forEach((slot) => {
       const id = slot.dataset.alertId!
-      if (slot.hidden || slot.dataset.state === 'closed' || !slot.offsetHeight || Math.abs((rowHeights.current.get(id) ?? 0) - slot.offsetHeight) < 1) return
-      rowHeights.current.set(id, slot.offsetHeight)
+      // The notice's content height (+2 for its border): the slot itself reads 0 while its 0fr slide-in clips it, and
+      // nothing re-renders once that animation ends.
+      const content = slot.firstElementChild as HTMLElement | null
+      const height = content?.scrollHeight ? content.scrollHeight + 2 : 0
+      if (slot.hidden || slot.dataset.state === 'closed' || !height || Math.abs((rowHeights.current.get(id) ?? 0) - height) < 1) return
+      rowHeights.current.set(id, height)
       changed = true
     })
     if (changed) setMeasured((count) => count + 1)

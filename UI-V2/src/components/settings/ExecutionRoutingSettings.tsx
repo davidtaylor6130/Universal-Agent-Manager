@@ -213,7 +213,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         <SettingsSection title="Computers" actions={onAddComputer && <Button size="sm" leadingIcon={<Plus size={13} />} onClick={onAddComputer}>Add computer</Button>}>
           <Reveal open={sshHosts.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">No SSH computers yet.</span>} /></Reveal>
           {removedHosts.map((policy) => <SettingRow key={policy.hostId}
-            title={<span className="inline-flex items-center gap-2"><StatusMark tone="error" label="Problem" size={7} /><span className="uam-rt-alias">{hosts.find((host) => host.id === policy.hostId)?.label ?? policy.hostId}</span></span>}
+            title={<span className="inline-flex items-center gap-2"><StatusMark tone="error" label="Problem" size={7} /><span>Removed computer</span><span className="uam-rt-alias">{hosts.find((host) => host.id === policy.hostId)?.label ?? policy.hostId}</span></span>}
             description={<span className="uam-rt-map-row__error">Computer removed</span>}
             control={<Button variant="ghost" size="sm" leadingIcon={<Unlink size={13} />} aria-label={`Remove routing for removed computer ${policy.hostId}`}
               onClick={() => setDraft((current) => ({ ...current, hosts: current.hosts.filter((host) => host.hostId !== policy.hostId) }))}>Remove</Button>} />)}
