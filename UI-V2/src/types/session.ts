@@ -130,6 +130,8 @@ export interface Session {
   /** Display-only native lineage; never provider resume or control authority. */
   subagentParentChatId?: string
   subagentParentCreatedAt?: string
+  /** Display-only chat_create provenance; never lineage, resume or control authority. */
+  createdByChatId?: string
   managedSubagentCount?: number
   managedSubagentRevision?: number
   messagesDigest?: string

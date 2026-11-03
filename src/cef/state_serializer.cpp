@@ -309,6 +309,7 @@ namespace uam
 			session_json["parentChatId"] = session.parent_chat_id;
 			session_json["subagentParentChatId"] = session.subagent_parent_chat_id;
 			session_json["subagentParentCreatedAt"] = session.subagent_parent_created_at;
+			if (!session.created_by_chat_id.empty()) session_json["createdByChatId"] = session.created_by_chat_id;
 			session_json["branchRootChatId"] = uam::strings::NonEmptyOrFallback(session.branch_root_chat_id, session.id);
 			session_json["branchFromMessageIndex"] = session.branch_from_message_index;
 			session_json["branchMessageEdited"] = session.branch_message_edited;
