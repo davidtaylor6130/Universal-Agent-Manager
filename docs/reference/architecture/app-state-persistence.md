@@ -25,6 +25,11 @@ prepared saves and metadata-only summary updates remain durable; those summaries
 attention and snooze values absent from the primary. The cold 1,000-chat catalogue has a one-second
 service budget in `tests/interaction_performance_tests.cpp`, separate from whole-app startup.
 
+Turn completion and provider exit keep durable chat writes out of the provider poll for a local chat:
+the turn-end attention mark leaves its new values to the background transcript save that turn end has
+just queued (which writes them to the primary and summary), and a local provider exit during a turn
+queues its transcript save. Remote chats still save recovery metadata before the poll continues.
+
 ## Computer-scoped defaults
 
 `host_scoped_settings` persists optional provider defaults, the default new-chat provider and MCP server lists for configured SSH computers. Missing overrides inherit global values; an explicitly empty MCP list disables inherited servers for that computer. `scopeExecutionHostId` selects a configured SSH host, while an omitted, empty or `*` scope selects global settings. Invalid or removed hosts cannot become save targets, and loading settings removes obsolete host overrides.

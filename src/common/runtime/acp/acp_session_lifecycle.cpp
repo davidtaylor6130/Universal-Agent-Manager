@@ -82,7 +82,22 @@ namespace uam
 		bool version_only = false;
 		bool success = false;
 		std::atomic<bool> finished{false};
+		// Staged provider process creation: non-null marks a process-start task. The worker creates the
+		// process here; the poll adopts it into the session or, once no session references the task,
+		// reaping hands it to the asynchronous stop path. Declared before the worker, which must stop first.
+		std::shared_ptr<platform::StdioProcessPlatformFields> process;
+		bool process_created = false;
+		std::string chat_id;
+		std::function<bool(AppState&, AcpSessionState&, ChatSession&, bool, std::string, std::string*)> process_started;
 		std::unique_ptr<std::jthread> worker;
+		PendingLocalAcpLaunch() = default;
+		PendingLocalAcpLaunch(const PendingLocalAcpLaunch&) = delete;
+		PendingLocalAcpLaunch& operator=(const PendingLocalAcpLaunch&) = delete;
+		~PendingLocalAcpLaunch()
+		{
+			worker.reset(); // Joins an unfinished worker before its result is released (application exit).
+			if (process_created && process) PlatformServicesFactory::Instance().process_service.StopStdioProcess(*process, true);
+		}
 		// Non-callable UAM capability reservation while this exact local launch is prepared.
 		const AcpSessionState* control_session = nullptr;
 		std::string control_capability_id, control_manager_id, control_root_chat_id;
@@ -293,6 +308,15 @@ bool ShouldRetainPendingLocalAcpControlCapability(const AppState& app,
 		    pending->control_capability_id != capability.id ||
 		    pending->control_retention_deadline_s <= now_seconds) return false;
 	}
+	else if (pending && pending->process)
+	{
+		// Process creation for an already authorized launch: keep the reservation it captured.
+		if (pending->control_session != session || pending->control_capability_id != capability.id ||
+		    pending->control_manager_id != app.uam_control_manager_id || pending->control_root_chat_id != root->id ||
+		    pending->control_capability_expiry_epoch_ms != capability.expires_at_epoch_ms ||
+		    pending->control_retention_deadline_s <= now_seconds || pending->root != app.data_root ||
+		    pending->incarnation != chat->metadata_incarnation) return false;
+	}
 	else if (!pending || !pending->worker || pending->version_only || pending->control_session != session ||
 	    pending->control_capability_id != capability.id || pending->control_manager_id != app.uam_control_manager_id ||
 	    pending->control_root_chat_id != root->id || !pending->control_root_incarnation ||
@@ -472,6 +496,74 @@ namespace
 	}
 }
 
+namespace
+{
+	// Keeps the session's UAM control capability reserved (not callable) while this launch is staged.
+	void CaptureLaunchControlReservation(const AppState& app, const AcpSessionState& session, PendingLocalAcpLaunch& task)
+	{
+		const auto control = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id, &UamControlCapability::id);
+		if (control == app.uam_control_capabilities.end()) return;
+		const auto* root = ChatDomainService().FindChatById(app, control->chat_id);
+		if (!root) return;
+		task.control_capability_id = control->id;
+		task.control_manager_id = app.uam_control_manager_id;
+		task.control_root_chat_id = root->id;
+		task.control_root_incarnation = root->metadata_incarnation;
+		task.control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
+		const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
+		    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
+		    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
+		        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
+		task.control_retention_deadline_s = GetAppTimeSeconds() + timeout;
+	}
+
+	// Creates the provider process on the launch worker. The session keeps this task as its pending
+	// launch, so every existing revocation (stop, cancel, ownership change, shutdown) drops it; the
+	// poll adopts a still-owned result in StartAcpProcessForChat and reaping stops an abandoned one.
+	bool StartAcpProcessOffPoll(AppState& app, AcpSessionState& session, ChatSession& chat,
+	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
+	    const std::vector<std::pair<std::string, std::string>>& environment,
+	    std::function<bool(AppState&, AcpSessionState&, ChatSession&, bool, std::string, std::string*)> started,
+	    std::string* error_out)
+	{
+		const auto task = std::make_shared<PendingLocalAcpLaunch>();
+		task->incarnation = chat.metadata_incarnation;
+		task->root = app.data_root;
+		task->chat_id = chat.id;
+		task->control_session = &session;
+		task->ownership = LocalLaunchOwnership(app, session, chat, false);
+		task->process = std::make_shared<platform::StdioProcessPlatformFields>();
+		CaptureLaunchControlReservation(app, session, *task);
+		app.local_acp_launch_tasks.push_back(task);
+		PendingLocalAcpLaunch* result = task.get();
+		try
+		{
+			task->worker = std::make_unique<std::jthread>([result, working_directory, argv, environment](std::stop_token)
+			{
+				if (const int delay = g_acp_process_start_delay_ms_for_tests.load(std::memory_order_relaxed); delay > 0)
+					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+				try
+				{
+					result->process_created = PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+					    *result->process, working_directory, argv, &result->error, environment);
+				}
+				catch (const std::exception& exception) { result->error = std::string("Provider process creation failed: ") + exception.what(); }
+				catch (...) { result->error = "Provider process creation failed."; }
+				result->finished.store(true, std::memory_order_release);
+			});
+		}
+		catch (const std::exception& exception)
+		{
+			app.local_acp_launch_tasks.pop_back();
+			return started(app, session, chat, false, std::string("Could not start provider process creation: ") + exception.what(), error_out);
+		}
+		task->process_started = std::move(started);
+		session.pending_local_launch = task;
+		session.lifecycle_state = kAcpLifecycleStarting;
+		return true;
+	}
+}
+
 bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat,
     std::function<bool(AppState&, AcpSessionState&, ChatSession&)> start)
 {
@@ -490,21 +582,7 @@ bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& ch
 	    session.claude_quota_delivery_id == chat.claude_quota_continuation.id)) task->cold_quota = chat.claude_quota_continuation;
 	task->ownership = ColdLaunchConfiguration(app, session, chat, *task);
 	task->cold_authority = ColdLaunchAuthority(chat);
-	const auto control = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id, &UamControlCapability::id);
-	if (control != app.uam_control_capabilities.end())
-		if (const auto* root = ChatDomainService().FindChatById(app, control->chat_id))
-		{
-			task->control_capability_id = control->id;
-			task->control_manager_id = app.uam_control_manager_id;
-			task->control_root_chat_id = root->id;
-			task->control_root_incarnation = root->metadata_incarnation;
-			task->control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
-			const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
-			    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
-			    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
-			        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
-			task->control_retention_deadline_s = GetAppTimeSeconds() + timeout;
-		}
+	CaptureLaunchControlReservation(app, session, *task);
 	session.pending_local_launch = task;
 	session.lifecycle_state = kAcpLifecycleStarting;
 	if (task->cold_recovery || (session.processing && !session.queued_prompt.empty())) BindPendingAcpColdLaunch(app, session, chat);
@@ -559,7 +637,7 @@ void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSessi
 bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	const auto task = session.pending_local_launch;
-	if (!task || task->cold_start) return true;
+	if (!task || task->cold_start || task->process) return true; // Process creation was already authorized.
 	if (task->cold_quota.id.empty()) return false;
 	auto expected = task->cold_quota;
 	expected.state = "continued";
@@ -576,7 +654,7 @@ bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session,
 
 bool AcpLaunchConfigurationFinished(const AcpSessionState& session)
 {
-	return session.pending_local_launch && !session.pending_local_launch->cold_start &&
+	return session.pending_local_launch && !session.pending_local_launch->cold_start && !session.pending_local_launch->process &&
 	    session.pending_local_launch->finished.load(std::memory_order_acquire);
 }
 
@@ -629,15 +707,40 @@ std::string SavedImageRetryExecutionOwnership(const AppState& app, const AcpSess
 	        session.active_uam_agent_execution_capability, session.active_uam_agent_workspace_access}) : nlohmann::json(nullptr)}).dump();
 }
 
+bool AcpProcessCreationPending(const AcpSessionState& session)
+{
+	// True from staging until the poll adopts (or rejects) the created process.
+	return session.pending_local_launch && session.pending_local_launch->process;
+}
+
+bool AbandonedAcpProcessCreationPending(const AppState& app, std::string_view chat_id)
+{
+	// The owning session holds a second reference while the launch is still its own.
+	return std::ranges::any_of(app.local_acp_launch_tasks, [chat_id](const std::shared_ptr<PendingLocalAcpLaunch>& task)
+	{
+		return task->process && task->chat_id == chat_id && task.use_count() == 1 &&
+		    (!task->finished.load(std::memory_order_acquire) || task->process_created);
+	});
+}
+
 void ReapLocalAcpLaunchTasks(AppState& app)
 {
-	std::erase_if(app.local_acp_launch_tasks, [](const std::shared_ptr<PendingLocalAcpLaunch>& task)
+	std::vector<std::shared_ptr<PendingLocalAcpLaunch>> abandoned;
+	std::erase_if(app.local_acp_launch_tasks, [&abandoned](const std::shared_ptr<PendingLocalAcpLaunch>& task)
 	{
 		if (!task->finished.load(std::memory_order_acquire) || task.use_count() != 1) return false;
 		// All work is finished; releasing the thread handle must not wait for scheduling.
 		if (task->worker && task->worker->joinable()) task->worker->detach();
+		if (task->process_created) abandoned.push_back(task);
 		return true;
 	});
+	// A launch revoked while its process was being created never published that process: stop it
+	// through the asynchronous stop path, which also holds a relaunch of the chat until it exits.
+	for (const auto& task : abandoned)
+	{
+		QueueAcpProcessStop(app, *task->process, task->chat_id);
+		task->process_created = false;
+	}
 }
 
 namespace
@@ -1928,6 +2031,29 @@ static bool SavedImageRetryLaunchAllowed(const AppState& app, const AcpSessionSt
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out, const SavedImageRetryPermission* starting_saved_retry, std::shared_ptr<ColdRetryBinding> cold_binding,
     bool defer_until_saved)
 {
+	if (const auto creation = session.pending_local_launch; creation && creation->process)
+	{
+		if (!creation->finished.load(std::memory_order_acquire)) return true;
+		session.pending_local_launch.reset();
+		if (creation->root != app.data_root || creation->incarnation != chat.metadata_incarnation ||
+		    creation->chat_id != chat.id || creation->control_session != &session || session.running ||
+		    session.local_stop_pending || session.cancel_requested || AcpSessionHasPendingCancel(session) ||
+		    creation->ownership != LocalLaunchOwnership(app, session, chat, false))
+		{
+			// The created process stays with its unreferenced task; reaping stops it asynchronously.
+			session.last_error = "Local launch ownership changed during provider process creation.";
+			session.lifecycle_state = kAcpLifecycleError;
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+		const bool created = creation->process_created;
+		if (created)
+		{
+			TransferStdioProcessFields(*creation->process, session);
+			creation->process_created = false;
+		}
+		return creation->process_started(app, session, chat, created, creation->error, error_out);
+	}
 	if (session.cold_retry_binding || (cold_binding && (cold_binding->app != &app || cold_binding->runtime != &session ||
 	    cold_binding->sequence->State() != cold_retry::Sequence::Phase::Prepared || !cold_binding->OwnerCurrent())))
 	{
@@ -2812,24 +2938,17 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			return false; // Keep the own publication; generic launch rollback is not a cold save receipt.
 		}
 	}
-	auto start_process = [remote, recovering_remote_turn, recovering_remote_process, defer_cold_launch, cold_binding,
+	// Process creation (and the macOS parent-death watchdog) can take tens of milliseconds to seconds on a
+	// slow or contended machine. A staged cold launch or a finished configuration preparation finishes it on
+	// the launch worker, whichever caller resumes it; launches without either keep synchronous creation and errors.
+	const bool start_off_poll = (defer_cold_launch || prepared) && !cold_binding;
+	auto process_started = [remote, recovering_remote_turn, recovering_remote_process, defer_cold_launch, cold_binding,
 	    migrate_copilot_wire, host = *execution_host, process_working_directory, process_argv, process_environment,
-	    launch_detail, launch_model_id = launch_chat.model_id, start_control_relay, startup_error]
-	    (AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out) mutable -> bool
+	    launch_detail, launch_model_id = launch_chat.model_id, start_control_relay]
+	    (AppState& app, AcpSessionState& session, ChatSession& chat, bool created, std::string startup_error, std::string* error_out) mutable -> bool
 	{
 		const ExecutionHost* execution_host = &host;
-		if (startup_error.empty() && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
-		if (startup_error.empty()) session.permission_review_incarnation = std::make_shared<const char>(0);
-		if (cold_binding && !cold_binding->sequence->BeginProcessAttempt(
-		    {paths::Utf8PathString(process_working_directory), process_argv, process_environment}))
-		{
-			RevokeColdRetryBinding(session);
-			return false;
-		}
-		if (!startup_error.empty() ||
-		    !PlatformServicesFactory::Instance().process_service.StartStdioProcess(
-		        session, process_working_directory, process_argv, &startup_error,
-		        process_environment))
+		if (!created)
 		{
 			if (cold_binding) RevokeColdRetryBinding(session);
 			if (!cold_binding && remote && !recovering_remote_turn && !recovering_remote_process)
@@ -2968,6 +3087,26 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 
 		return true;
+	};
+	auto start_process = [cold_binding, start_off_poll, process_working_directory, process_argv, process_environment,
+	    startup_error, process_started = std::move(process_started)]
+	    (AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out) mutable -> bool
+	{
+		if (startup_error.empty() && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
+		if (startup_error.empty()) session.permission_review_incarnation = std::make_shared<const char>(0);
+		if (cold_binding && !cold_binding->sequence->BeginProcessAttempt(
+		    {paths::Utf8PathString(process_working_directory), process_argv, process_environment}))
+		{
+			RevokeColdRetryBinding(session);
+			return false;
+		}
+		if (!startup_error.empty()) return process_started(app, session, chat, false, startup_error, error_out);
+		if (start_off_poll)
+			return StartAcpProcessOffPoll(app, session, chat, process_working_directory, process_argv, process_environment, process_started, error_out);
+		std::string error;
+		const bool created = PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+		    session, process_working_directory, process_argv, &error, process_environment);
+		return process_started(app, session, chat, created, std::move(error), error_out);
 	};
 	if (defer_cold_launch && startup_error.empty())
 	{
@@ -4973,9 +5112,12 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	session.lifecycle_state = kAcpLifecycleError;
 }
 
-void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat)
+void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued)
 {
-	ChatDomainService().MarkChatNeedsAttention(app, chat.id);
+	// ordinary_save_queued: the caller has just queued an ordinary background save of this chat, which
+	// publishes the attention fields, so the poll skips the durable summary write that would wait on the
+	// atomic writer lock behind that transcript save.
+	ChatDomainService().MarkChatNeedsAttention(app, chat.id, ordinary_save_queued);
 }
 
 } // namespace uam::acp_detail
