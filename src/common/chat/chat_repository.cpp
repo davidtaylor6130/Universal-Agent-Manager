@@ -190,6 +190,8 @@ namespace
 	constexpr std::string_view kChatAgentRunIdField = "agent_run_id";
 	constexpr std::string_view kChatManagedFollowupBirthField = "managed_followup_incarnation";
 	constexpr std::string_view kChatGoalOwnerChatIdField = "goal_owner_chat_id";
+	constexpr std::string_view kChatCreatedByChatIdField = "created_by_chat_id";
+	constexpr std::string_view kChatCreatedByRequestKeyField = "created_by_request_key";
 	constexpr std::string_view kChatGoalIterationGoalIdField = "goal_iteration_goal_id";
 	constexpr std::string_view kChatGoalIterationTurnKindField = "goal_iteration_turn_kind";
 	constexpr std::string_view kChatGoalIterationRepairAttemptsField = "goal_iteration_repair_attempts";
@@ -1592,6 +1594,7 @@ namespace
 		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
+		    lhs.created_by_chat_id != rhs.created_by_chat_id || lhs.created_by_request_key != rhs.created_by_request_key ||
 		    lhs.goal_iteration_goal_id != rhs.goal_iteration_goal_id ||
 		    lhs.goal_iteration_turn_kind != rhs.goal_iteration_turn_kind ||
 		    lhs.goal_iteration_repair_attempts != rhs.goal_iteration_repair_attempts ||
@@ -2307,6 +2310,8 @@ namespace
 		}
 		chat.goal_owner_chat_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalOwnerChatIdField)));
+		chat.created_by_chat_id = uam::strings::Trim(JsonStringOrEmpty(root.Find(kChatCreatedByChatIdField)));
+		chat.created_by_request_key = JsonStringOrEmpty(root.Find(kChatCreatedByRequestKeyField));
 		chat.goal_iteration_goal_id = uam::strings::Trim(
 		    JsonStringOrEmpty(root.Find(kChatGoalIterationGoalIdField)));
 		chat.goal_iteration_turn_kind = JsonStringOrEmpty(root.Find(kChatGoalIterationTurnKindField));
@@ -4195,6 +4200,11 @@ try
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
 	if (!chat.managed_followup_incarnation.empty()) uam::json::SetString(root, kChatManagedFollowupBirthField, chat.managed_followup_incarnation);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
+	if (!chat.created_by_chat_id.empty())
+	{
+		uam::json::SetString(root, kChatCreatedByChatIdField, chat.created_by_chat_id);
+		uam::json::SetString(root, kChatCreatedByRequestKeyField, chat.created_by_request_key);
+	}
 	uam::json::SetString(root, kChatGoalIterationGoalIdField, chat.goal_iteration_goal_id);
 	uam::json::SetString(root, kChatGoalIterationTurnKindField, chat.goal_iteration_turn_kind);
 	uam::json::SetNumber(root, kChatGoalIterationRepairAttemptsField, static_cast<double>(chat.goal_iteration_repair_attempts));
@@ -5436,6 +5446,8 @@ namespace
 		hydrated.side_cleanup_requested = summary.side_cleanup_requested;
 		hydrated.side_cleanup_retry_time_s = summary.side_cleanup_retry_time_s;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;
+		hydrated.created_by_chat_id = summary.created_by_chat_id;
+		hydrated.created_by_request_key = summary.created_by_request_key;
 		hydrated.goal_iteration_goal_id = summary.goal_iteration_goal_id;
 		hydrated.goal_iteration_turn_kind = summary.goal_iteration_turn_kind;
 		hydrated.goal_iteration_repair_attempts = summary.goal_iteration_repair_attempts;

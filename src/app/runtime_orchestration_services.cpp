@@ -1,4 +1,5 @@
 #include "common/chat/managed_parent_input_history.h"
+#include "common/platform/background_thread_priority.h"
 #include "runtime_orchestration_services.h"
 #include "runtime_orchestration_internal.h"
 #include "common/provider/native_agent_history.h"
@@ -4333,6 +4334,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			discovery.publication_sync = std::async(std::launch::async,
 			                                        [root = app.data_root, prepared_owner]()
 			                                        {
+			                                        	uam::platform::LowerCurrentThreadToBackgroundPriority();
 				                                        const bool originals_acknowledged = !prepared_owner || AcknowledgeDiscoveredNativeMedia(*prepared_owner);
 #if defined(__APPLE__)
 				                                        uam::io::AtomicWriteResult synced;
