@@ -1,11 +1,21 @@
 #include "test_harness.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/platform/background_thread_priority.h"
 
 using namespace uam_test;
 
 namespace
 {
+	// Holds each finished worker's captures alive past result publication, so a lease released only at thread exit fails deterministically (#647).
+	struct DelayedWorkerThreadExit
+	{
+		DelayedWorkerThreadExit() { uam::platform::g_background_thread_exit_delay_ms_for_tests.store(1000); }
+		~DelayedWorkerThreadExit() { uam::platform::g_background_thread_exit_delay_ms_for_tests.store(0); }
+		DelayedWorkerThreadExit(const DelayedWorkerThreadExit&) = delete;
+		DelayedWorkerThreadExit& operator=(const DelayedWorkerThreadExit&) = delete;
+	};
+
 	struct LaunchFixture
 	{
 		TempDir temporary{"uam-async-worktree-launch"};
@@ -64,6 +74,7 @@ namespace
 UAM_TEST(WorktreeLaunchPreparationAsyncOrderingPreservesLiveMetadata)
 {
 	if (!GitAvailableForTests()) return;
+	const DelayedWorkerThreadExit delayed_exit;
 	LaunchFixture fixture;
 	ChatSession& chat = fixture.app.chats.front();
 	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -140,6 +151,7 @@ UAM_TEST(WorktreeLaunchPreparationSaveFailureKeepsArtifactsForRetry)
 UAM_TEST(WorktreeLaunchPreparationStaleAndCanceledOwnersCannotPublish)
 {
 	if (!GitAvailableForTests()) return;
+	const DelayedWorkerThreadExit delayed_exit;
 	for (const std::string_view change : {"stop", "delete", "recreate", "same-stamp", "root", "provider", "workspace", "base", "native"})
 	{
 		LaunchFixture fixture;
@@ -198,6 +210,7 @@ UAM_TEST(WorktreeLaunchPreparationBlockedOwnershipStorageIsSafe)
 UAM_TEST(WorktreeLaunchPreparationCanceledManagedRetryValidatesOwnership)
 {
 	if (!GitAvailableForTests()) return;
+	const DelayedWorkerThreadExit delayed_exit;
 	for (bool tamper : {false, true})
 	{
 		LaunchFixture fixture;
@@ -229,6 +242,7 @@ UAM_TEST(WorktreeLaunchPreparationCanceledManagedRetryValidatesOwnership)
 			UAM_ASSERT_EQ(chat.workspace_worktree_directory, artifact);
 		}
 		UAM_ASSERT(fs::exists(uam::paths::PathFromUtf8(artifact)));
+		UAM_ASSERT(fixture.app.worktree_retention_gate.TryAcquireCleanup());
 		fixture.AssertForeignSurvivors();
 	}
 }

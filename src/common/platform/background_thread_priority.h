@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <thread>
 #include <utility>
 
@@ -13,6 +15,13 @@ namespace uam::platform
 	/// </summary>
 	void LowerCurrentThreadToBackgroundPriority() noexcept;
 
+	/// <summary>
+	/// Test hook: keeps a finished worker's callable, and so its captures, alive this many
+	/// milliseconds before thread exit, proving results never depend on thread teardown (#647).
+	/// Must stay 0 outside tests; never set it around code that joins these threads.
+	/// </summary>
+	inline std::atomic<int> g_background_thread_exit_delay_ms_for_tests{0};
+
 	/// <summary>Starts a detached-style worker thread that runs below UI priority.</summary>
 	template <typename Work> std::thread StartBackgroundThread(Work&& work)
 	{
@@ -20,6 +29,8 @@ namespace uam::platform
 		{
 			LowerCurrentThreadToBackgroundPriority();
 			work();
+			if (const int delay = g_background_thread_exit_delay_ms_for_tests.load(std::memory_order_relaxed); delay > 0)
+				std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 		});
 	}
 } // namespace uam::platform

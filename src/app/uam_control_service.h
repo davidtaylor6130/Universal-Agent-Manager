@@ -51,5 +51,8 @@ namespace uam
 		                                            int64_t now_epoch_ms);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
 		static nlohmann::json ToolDefinitionsForTests();
+		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>
+		using ChatCreateSender = std::function<bool(AppState&, const std::string&, const std::string&, std::string*)>;
+		static void FlushChatCreateLaunchesForTests(AppState& app, const ChatCreateSender& send);
 	};
 } // namespace uam
