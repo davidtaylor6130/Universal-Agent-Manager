@@ -20,6 +20,7 @@
 #include "common/chat/message_attachment_sources.h"
 #include "common/constants/app_constants.h"
 #include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -1897,6 +1898,9 @@ namespace uam
 			{
 				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));
 				if (configured != nullptr) uam::icons::AddFrontendAsset(host, app.data_root, configured->custom_icon);
+				// The UI compares this with the host's installed runnerSha256 to offer rebuilt helpers.
+				if (configured != nullptr && configured->transport == "ssh")
+					host["bundledRunnerSha256"] = uam::remote::PackagedRunnerSha256(configured->platform, configured->architecture);
 			}
 		}
 

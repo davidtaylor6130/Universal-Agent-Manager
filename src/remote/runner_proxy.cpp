@@ -6,6 +6,8 @@
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/io_utils.h"
+#include "common/utils/string_utils.h"
 #include "common/provider/provider_native_context.h"
 #include "common/provider/opencode_native_http.h"
 #include "remote/runner_client.h"
@@ -329,6 +331,38 @@ namespace uam::remote
 #else
 		return {};
 #endif
+	}
+
+	PackagedRunnerChecksums ReadPackagedRunnerChecksums(const std::filesystem::path& root)
+	{
+		PackagedRunnerChecksums values;
+		if (root.empty()) return values;
+		for (const char* target : {"linux-arm64", "linux-x86_64", "windows-x86_64"})
+			if (const auto checksum = uam::io::ReadFirstTextFileLine(root / target / "uam-runner.sha256"))
+				values[target] = uam::strings::Trim(*checksum);
+		return values;
+	}
+
+	namespace
+	{
+		PackagedRunnerChecksums& PackagedRunnerChecksumCache()
+		{
+			// ponytail: packaged resources are immutable while the app runs, so read the checksums once; only tests replace them.
+			static PackagedRunnerChecksums checksums = ReadPackagedRunnerChecksums(PackagedRunnerPath().parent_path());
+			return checksums;
+		}
+	}
+
+	std::string PackagedRunnerSha256(std::string_view platform, std::string_view architecture)
+	{
+		const PackagedRunnerChecksums& checksums = PackagedRunnerChecksumCache();
+		const auto found = checksums.find(std::string(platform) + "-" + std::string(architecture));
+		return found == checksums.end() ? std::string{} : found->second;
+	}
+
+	PackagedRunnerChecksums SetPackagedRunnerChecksumsForTesting(PackagedRunnerChecksums checksums)
+	{
+		return std::exchange(PackagedRunnerChecksumCache(), std::move(checksums));
 	}
 
 	std::string BuildProcessProxySpec(

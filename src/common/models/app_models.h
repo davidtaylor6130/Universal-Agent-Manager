@@ -966,6 +966,8 @@ struct ExecutionHost
 	bool runner_install_unresolved = false;
 	std::string runner_install_nonce;
 	std::string runner_install_identity;
+	/// SHA-256 of the helper this computer verified and published at installation; empty is unknown.
+	std::string runner_sha256;
 	bool operator==(const ExecutionHost&) const = default;
 };
 

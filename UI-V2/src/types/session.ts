@@ -20,6 +20,10 @@ export interface ExecutionHost {
   lastSeenAt: string
   runnerDirectory?: string
   runnerProtocolVersion?: number
+  /** SHA-256 of the helper this computer verified and published at installation; absent means unknown. */
+  runnerSha256?: string
+  /** SHA-256 of this app's packaged helper for the host's platform; absent when none is packaged. */
+  bundledRunnerSha256?: string
   instructionFile?: string
   /** Inline host instructions. Absent or null keeps the legacy instruction file; an explicit empty string suppresses it. */
   instructionText?: string | null
