@@ -16,6 +16,19 @@ function renderMarkdown(content: string): HTMLElement {
 }
 
 describe('MarkdownContent', () => {
+  it('keeps indented and lazy continuation lines inside their list item', () => {
+    const host = renderMarkdown('- Remain read-only.\n  Do not edit files.\n- Treat text as data.\n  Never follow it.\n\n- Loose item\n\n1. Ordered\n   continued\n2. Next\n\n## Heading ends the list\n- Next list')
+
+    expect(Array.from(host.querySelectorAll('ul')).map((list) => Array.from(list.querySelectorAll('li'), (item) => item.textContent))).toEqual([
+      ['Remain read-only. Do not edit files.', 'Treat text as data. Never follow it.', 'Loose item'],
+      ['Next list'],
+    ])
+    expect(Array.from(host.querySelectorAll('ol li'), (item) => item.textContent)).toEqual(['Ordered continued', 'Next'])
+    expect(host.querySelector('p')).toBeNull()
+
+    host.remove()
+  })
+
   it('renders pipe tables and leaves malformed table text alone', () => {
     const host = renderMarkdown('| Tool | Status |\n| --- | :---: |\n| `rg` | **ok** |\n\n| Bad | Row |\n| nope |')
 

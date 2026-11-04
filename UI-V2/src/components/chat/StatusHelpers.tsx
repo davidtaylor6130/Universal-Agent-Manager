@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { Tooltip } from '../ui'
+import { IconButton, Tooltip } from '../ui'
 
 /** Bar for a token quantity; callers pick the tone and keep exact numbers in text. */
 export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
@@ -99,7 +99,7 @@ export function statusLabel(runtime?: AcpBinding | CliBinding) {
 
 export function statusColor(runtime?: AcpBinding | CliBinding) {
   if (!runtime || runtime.lifecycleState === 'unknown') return 'var(--text-3)'
-  if (runtime.lifecycleState === 'error') return 'var(--red)'
+  if (runtime.lifecycleState === 'error') return 'var(--error)'
   if (runtime.lifecycleState === 'waitingPermission') return 'var(--yellow)'
   if (runtime.lifecycleState === 'waitingUserInput') return 'var(--yellow)'
   if (runtime.processing) return 'var(--blue)'
@@ -116,10 +116,10 @@ export function ToolStatusIcon({ status }: { status: string }) {
   if (normalized === 'completed' || normalized === 'complete' || normalized === 'success' || normalized === 'succeeded') {
     Icon = CircleCheck
     label = 'completed'
-    color = 'var(--green)'
+    color = 'var(--success)'
   } else if (normalized === 'failed' || normalized === 'error' || normalized === 'cancelled' || normalized === 'canceled') {
     Icon = CircleX
-    color = 'var(--red)'
+    color = 'var(--error)'
   } else if (normalized === 'running' || normalized === 'in_progress' || normalized === 'inprogress') {
     Icon = LoaderCircle
     label = 'running'
@@ -231,23 +231,19 @@ export function CopyTextButton({
   }
 
   return (
-    <Tooltip label={status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : title}>
-      <button
-        type="button"
-        aria-label={label}
-        onClick={onCopy}
-        className="inline-flex h-6 w-6 items-center justify-center"
-        style={{
-          borderRadius: 5,
-          border: 0,
-          background: 'transparent',
-          color: status === 'copied' ? 'var(--green)' : status === 'failed' ? 'var(--red)' : 'var(--text-2)',
-          transition: 'color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)',
-        }}
-      >
-        {status === 'copied' ? <Check size={13} aria-hidden /> : status === 'failed' ? <CircleX size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
-        <span className="sr-only">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}</span>
-      </button>
-    </Tooltip>
+    <IconButton
+      label={label}
+      tooltip={status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : title}
+      onClick={onCopy}
+      className="inline-flex h-6 w-6 items-center justify-center"
+      style={{
+        borderRadius: 5,
+        border: 0,
+        background: 'transparent',
+        color: status === 'copied' ? 'var(--success)' : status === 'failed' ? 'var(--error)' : 'var(--text-2)',
+        transition: 'color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)',
+      }}
+      icon={<>{status === 'copied' ? <Check size={13} aria-hidden /> : status === 'failed' ? <CircleX size={13} aria-hidden /> : <Copy size={13} aria-hidden />}<span className="sr-only">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}</span></>}
+    />
   )
 }

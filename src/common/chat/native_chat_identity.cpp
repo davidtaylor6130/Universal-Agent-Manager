@@ -6,8 +6,10 @@
 #include "common/utils/hash_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string_view>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -86,6 +88,31 @@ namespace uam::chat_identity
 		}
 
 		return uam::paths::NormalizeExistingPortablePathString(workspace_path);
+	}
+
+	bool NativeProjectCheckoutsMatch(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		const std::string workspace = NativeWorkspaceForHistoryImport(lhs);
+		if (!workspace.empty() && workspace == NativeWorkspaceForHistoryImport(rhs)) return true;
+		const auto local = [](const ChatSession& chat)
+		{
+			const std::string_view host = uam::strings::TrimAsciiView(chat.execution_host_id);
+			return host.empty() || host == uam::execution_hosts::kLocalHostId;
+		};
+		if (!local(lhs) || !local(rhs)) return false;
+		const auto checkouts = [](const ChatSession& chat)
+		{
+			std::vector<std::string> paths;
+			for (const std::string* raw : {&chat.workspace_worktree_directory, &chat.workspace_directory, &chat.workspace_source_directory})
+			{
+				const std::string_view trimmed = uam::strings::TrimAsciiView(*raw);
+				if (!trimmed.empty()) paths.push_back(uam::paths::NormalizeExistingPortablePathString(fs::path(std::string(trimmed))));
+			}
+			return paths;
+		};
+		const std::vector<std::string> left = checkouts(lhs);
+		const std::vector<std::string> right = checkouts(rhs);
+		return std::ranges::any_of(left, [&](const std::string& path) { return std::ranges::find(right, path) != right.end(); });
 	}
 
 	std::string NativeIdentityKeyForLocalDeduplication(const ChatSession& chat)

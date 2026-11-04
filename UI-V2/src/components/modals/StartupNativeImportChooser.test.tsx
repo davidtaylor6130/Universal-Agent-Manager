@@ -10,7 +10,8 @@ const page = (generation = 'scan-1', ids = ['one', 'two']): StartupNativeImportP
 let host: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 let requests: { action: string; payload: Record<string, unknown>; success: (value: string) => void; failure: (code: number, message: string) => void }[]
-const button = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label || item.getAttribute('aria-label') === label)!
+// The import button reads "Import" or "Import N"; its visible text is its accessible name.
+const button = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label || item.getAttribute('aria-label') === label || (label === 'Import selected' && /^Import( \d+)?$/.test(item.textContent ?? '')))!
 const answer = async (index: number, data: StartupNativeImportPage) => { await act(async () => requests[index].success(JSON.stringify(data))) }
 const click = async (label: string) => { await act(async () => button(label).click()) }
 function mount() { act(() => root.render(<StartupNativeImportChooser />)) }
@@ -24,7 +25,7 @@ describe('startup native history chooser', () => {
     act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select last"]')!.click())
     await click('Assign workspace for last')
     expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Workspace name for last"]'))
-    await click('Stage workspace')
+    await click('Save workspace')
     expect(requests[2].payload).toMatchObject({ offset: 100, limit: 100, folderId: null })
     await answer(2, { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'staged', newWorkspace: true }] })
     expect(document.body.textContent).toContain('Page 2 of 2')
@@ -73,14 +74,14 @@ describe('startup native history chooser', () => {
     expect(button('Ignore selected').disabled).toBe(false)
     await click('Assign workspace for one')
     expect(document.body.textContent).toContain('/unregistered/project')
-    expect(document.body.textContent).toContain('only when a selected chat is imported')
+    expect(document.body.textContent).toContain('Saved when the chat is imported.')
     button('Cancel assignment').focus()
     await click('Cancel assignment')
     expect(document.activeElement).toBe(document.body.querySelector('[aria-label="Select one"]'))
     expect(requests).toHaveLength(1)
     await click('Assign workspace for one')
-    button('Stage workspace').focus()
-    await click('Stage workspace')
+    button('Save workspace').focus()
+    await click('Save workspace')
     expect(requests[1]).toMatchObject({ action: 'assignSystemNativeImportWorkspace', payload: { generation: 'scan-1', candidateId: 'one', title: 'project' } })
     const assigned = { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'proposed', workspaceTitle: 'project', newWorkspace: true }] }
     await answer(1, assigned)
@@ -96,7 +97,7 @@ describe('startup native history chooser', () => {
   it('retains the assignment draft after refusal without enabling import', async () => {
     const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
     mount(); await answer(0, unassigned)
-    await click('Assign workspace for one'); await click('Stage workspace')
+    await click('Assign workspace for one'); await click('Save workspace')
     vi.spyOn(console, 'error').mockImplementation(() => {})
     await act(async () => requests[1].failure(409, 'The workspace changed. Review again.'))
     expect(document.body.querySelector<HTMLInputElement>('[aria-label="Workspace name for one"]')?.value).toBe('workspace')
@@ -108,7 +109,7 @@ describe('startup native history chooser', () => {
   it('drops a stale workspace assignment reply after the scan generation changes', async () => {
     const unassigned = page('scan-1', ['one']); unassigned.candidates[0].folderId = ''
     mount(); await answer(0, unassigned)
-    await click('Assign workspace for one'); await click('Stage workspace')
+    await click('Assign workspace for one'); await click('Save workspace')
     act(() => useAppStore.setState({ startupNativeImports: page('scan-2', ['new']) }))
     await answer(2, page('scan-2', ['new']))
     await answer(1, { ...unassigned, candidates: [{ ...unassigned.candidates[0], folderId: 'stale', newWorkspace: true, workspaceTitle: 'stale assignment' }] })
@@ -156,8 +157,8 @@ describe('startup native history chooser', () => {
     await click('Import selected')
     expect(requests[2].payload.folderId).toBe('folder-a')
     await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 148, importedCount: 1 })
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("1 chat couldn't be imported. They stay in the list so you can retry.")
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('1 failed')
+    expect(document.body.querySelector('.uam-notice')?.textContent).toContain("1 chat couldn't be imported. They stay in the list so you can retry.")
+    expect(document.body.querySelector('.uam-notice')?.textContent).toContain('1 failed')
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
   })
 
@@ -243,7 +244,7 @@ describe('startup native history chooser', () => {
     expect(requests[1].payload).toEqual({ generation: 'scan-1', selectedIds: ['one'], declinedIds: [], folderId: null })
     expect(requests).toHaveLength(2)
     await act(async () => requests[1].failure(409, 'Disk full'))
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Disk full')
     expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--error)')
     expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
     act(() => useAppStore.setState({ startupNativeImports: { ...page(), phase: 'importing' } }))

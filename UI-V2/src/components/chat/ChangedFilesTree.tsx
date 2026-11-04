@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react'
+import { Tooltip } from '../ui'
 import type { VcsChangedFile } from '../../store/useAppStore'
 import { buildChangedFilesTree, defaultExpandedFolderKeys, type ChangedTreeNode } from './changedFilesTreeModel'
 import './ChangedFilesTree.css'
@@ -103,8 +104,8 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
           <span className="uam-tree-counts"><span style={{ color: 'var(--success)' }}>+{node.file.additions}</span><span style={{ color: 'var(--error)' }}>-{node.file.deletions}</span></span>
         )
         return (
+          <Tooltip key={row.rowKey} label={node.path}>
           <div
-            key={row.rowKey}
             role="treeitem"
             ref={(element) => {
               if (element) rowRefs.current.set(row.rowKey, element)
@@ -115,7 +116,6 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
             aria-expanded={node.kind === 'folder' ? row.expanded : undefined}
             aria-selected={node.kind === 'file' ? selected : undefined}
             aria-label={node.kind === 'file' ? `Review changes to ${node.path}` : undefined}
-            title={node.path}
             className="uam-tree-row uam-choice-button"
             style={{ paddingLeft: node.depth * 12 + 8 }}
             onFocus={() => setActiveKey(row.rowKey)}
@@ -135,6 +135,7 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
             )}
             {counts}
           </div>
+          </Tooltip>
         )
       })}
     </div>

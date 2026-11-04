@@ -5,7 +5,7 @@ import { isCefContext } from '../../ipc/cefBridge'
 import { SubagentCard } from './SubagentCard'
 import { cancelManagedSubagent, listManagedSubagents, retryManagedRead, managedTaskTitle, managedRunActive, managedRunLabel, managedElapsed, type ManagedSubagentRun } from './managedSubagents'
 import { useAppStore, type AcpToolCall } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { Button, motionAllowed } from '../ui'
 import { managedLaunchRunId } from './inlineSubagents'
 import './InlineSubagentGroup.css'
 
@@ -132,8 +132,8 @@ export function InlineSubagentGroup({ tools, sourceChatId, onSelectTool, renderN
   })
   if (!ids.length) return <section className="uam-inline-subagents" aria-label={tools.length > 1 ? 'Consecutive subagent launches' : 'Subagent launch'} data-source-chat={sourceChatId}>{renderNative(tools)}</section>
   return <section className="uam-inline-subagents" aria-label={tools.length > 1 ? 'Consecutive subagent launches' : 'Subagent launch'} data-source-chat={sourceChatId}>
-    {tools.length > 1 ? <details open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><Users size={15} aria-hidden />{tools.length} launches<ChevronRight size={14} aria-hidden /></summary>{open && <ul>{rows}</ul>}</details> : <ul>{rows}</ul>}
-    {ids.length > 0 && feed?.readError && <p className="uam-inline-subagents__meta" role="status">Could not read the latest subagent status. Previously read statuses remain visible.</p>}
+    {tools.length > 1 ? <details open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><Users size={15} aria-hidden />{tools.length} launches<ChevronRight size={14} aria-hidden /></summary>{open && <ul className={motionAllowed() ? 'uam-reveal' : undefined}>{rows}</ul>}</details> : <ul>{rows}</ul>}
+    {ids.length > 0 && feed?.readError && <p className="uam-inline-subagents__meta" role="status">Status not refreshed. Showing last read.</p>}
     {ids.length > 0 && feed?.feedback && <p role="status">{feed.feedback}</p>}
   </section>
 }
@@ -159,7 +159,7 @@ export function InitialManagedSubagentGroup({ runId, sourceChatId }: { runId: st
       {run.canCancel && !run.lastReported && <Button size="sm" variant="ghost" leadingIcon={<Square size={12} aria-hidden />}
         disabled={Boolean(feed.stopping) || feed.error} onClick={event => { event.currentTarget.closest('li')?.querySelector<HTMLButtonElement>('[data-managed-open]')?.focus(); void feed.stop(id) }} aria-label={`Stop managed subagent ${title}`}>Stop</Button>}
     </div></li></ul>
-    {feed.readError && <p role="status">Could not read the latest subagent status. Previously read statuses remain visible.</p>}
+    {feed.readError && <p role="status">Status not refreshed. Showing last read.</p>}
     {feed.feedback && <p role="status">{feed.feedback}</p>}
   </section>
 }

@@ -2,6 +2,14 @@
   animation: uam-notice-enter 140ms ease-out backwards;
 }
 
+.uam-notice[data-state="closed"] {
+  animation: uam-notice-exit var(--dur-exit) ease-in forwards;
+}
+
+@keyframes uam-notice-exit {
+  to { opacity: 0; transform: translateY(4px); }
+}
+
 @keyframes uam-notice-enter {
   from { transform: translateY(4px); }
   to { transform: translateY(0); }

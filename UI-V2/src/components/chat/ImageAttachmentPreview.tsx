@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import type { Attachment } from '../../types/message'
-import { Button } from '../ui'
+import { Button, motionAllowed } from '../ui'
 
 const MAX_PREVIEW_BYTES = 512 * 1024
 const MAX_BASE64_LENGTH = 4 * Math.ceil(MAX_PREVIEW_BYTES / 3)
@@ -94,9 +94,9 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
   const current = preview?.identity === identity ? preview : null
   return <span ref={host} className="inline-flex max-w-full flex-wrap items-center gap-2">
     {current ? <img src={current.url} alt={attachment.name} width={current.width} height={current.height}
-      className="conversation-image-preview h-20 w-20 object-contain" onError={() => { URL.revokeObjectURL(current.url); setPreview(null); setUnavailableIdentity(identity) }} /> : unavailableIdentity === identity && loadingIdentity !== identity ? unavailableFallback : fallback}
+      className={`conversation-image-preview h-20 w-20 object-contain${motionAllowed() ? ' uam-reveal' : ''}`} onError={() => { URL.revokeObjectURL(current.url); setPreview(null); setUnavailableIdentity(identity) }} /> : unavailableIdentity === identity && loadingIdentity !== identity ? unavailableFallback : fallback}
     {!current && attachment.historyDigest && unavailableIdentity === identity && <Button type="button"
-      variant="secondary" size="sm" aria-label={`Retry image preview for ${attachment.name}`}
+      variant="secondary" size="sm" aria-label={`Retry preview for ${attachment.name}`}
       loading={loadingIdentity === identity}
       onClick={(event) => {
         event.stopPropagation()

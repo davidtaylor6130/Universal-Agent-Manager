@@ -70,7 +70,7 @@ describe('ManagedSubagentConversation', () => {
       expect(host.textContent!.indexOf('Build checks')).toBeLessThan(host.textContent!.indexOf('After'))
       expect(host.textContent).toContain('Inspect carefully')
       expect(host.textContent).toContain('brief.png')
-      expect(host.textContent).toContain('Preview unavailable in this read-only view')
+      expect(host.textContent).toContain('Preview unavailable (read-only)')
       expect(host.querySelector('.uam-chat-transcript .uam-chat-content .uam-message-list article.conversation-turn--assistant')).not.toBeNull()
       expect(host.querySelector('time.conversation-turn-start')?.getAttribute('dateTime')).toBe('2026-10-16T16:00:00.000Z')
       // Tool details open embedded content only: no deferred fetch, managed transcript or resume IPC.
@@ -268,18 +268,18 @@ describe('ManagedSubagentConversation', () => {
     expect(region.querySelector('[data-message-index="1"]')).not.toBeNull()
     expect(region.scrollTop).toBe(100) // revealed rows are anchored, not jumped to
     await act(async () => button('Refresh conversation').click())
-    expect(host.textContent).not.toContain('New activity · Show latest')
+    expect(host.textContent).not.toContain('Show latest')
     expect(region.querySelector('[data-message-index="1"]')).not.toBeNull()
     await act(async () => button('Refresh conversation').click())
-    expect(host.textContent).toContain('New activity · Show latest')
+    expect(host.textContent).toContain('Show latest')
     expect(region.scrollTop).toBe(100) // the appended row renders below the reader without moving it
     expect(region.querySelector('[data-message-index="1"]')).not.toBeNull()
-    await act(async () => button('New activity · Show latest').click())
+    await act(async () => button('Show latest').click())
     expect(region.querySelector('[data-message-index="41"]')?.textContent).toContain('Stored message 42')
     expect(region.scrollTop).toBe(1700)
     await act(async () => button('Refresh conversation').click())
     expect(region.querySelector('[data-message-index="60"]')?.textContent).toContain('Stored message 61')
-    expect(host.textContent).not.toContain('New activity · Show latest')
+    expect(host.textContent).not.toContain('Show latest')
   })
 
   it('does not inherit parent file inspection or load file-linked images from stored child Markdown', async () => {
@@ -314,8 +314,8 @@ describe('ManagedSubagentConversation', () => {
     version = 'changed'; height = 1400
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
     expect(region.scrollTop).toBe(200)
-    expect(host.textContent).toContain('New activity · Show latest')
-    await act(async () => button('New activity · Show latest').click())
+    expect(host.textContent).toContain('Show latest')
+    await act(async () => button('Show latest').click())
     expect(region.scrollTop).toBe(1100)
     version = 'changed again'; height = 1600
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
@@ -353,12 +353,12 @@ describe('ManagedSubagentConversation', () => {
     // Continuous scroll renders the appended row below the reader; the reader's rows and offset stay put.
     if (!followTail) expect.soft(region.textContent).toContain('Mounted stored message 61')
     expect.soft(region.scrollTop).toBe(followTail ? 1100 : 230)
-    expect.soft(Boolean(button('New activity · Show latest'))).toBe(!followTail)
+    expect.soft(Boolean(button('Show latest'))).toBe(!followTail)
     if (!followTail) {
-      await act(async () => button('New activity · Show latest').click())
+      await act(async () => button('Show latest').click())
       expect(region.textContent).toContain('Mounted stored message 81')
       expect(region.scrollTop).toBe(1100)
-      expect(button('New activity · Show latest')).toBeUndefined()
+      expect(button('Show latest')).toBeUndefined()
     }
   })
 
@@ -1334,7 +1334,7 @@ describe('ManagedSubagentConversation scoped route discovery', () => {
         if (!open) {
           expect(index).toBeGreaterThan(2)
           expect(host.querySelector('textarea,form')).toBeNull()
-          expect(host.querySelector('[role="alert"]')?.textContent).toContain('reached its limit')
+          expect(host.querySelector('[role="alert"]')?.textContent).toContain('Follow-up limit reached')
           reachedBound = true
         } else if (index === 0) {
           await typeRoute(authored)
@@ -1508,7 +1508,7 @@ describe('ManagedSubagentConversation scoped route discovery', () => {
       const open = [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Subagent lineage"] button')].find(control => control.textContent === 'Follow up')
       if (open) await act(async () => open.click())
       if (!host.querySelector('textarea')) {
-        expect(host.querySelector('[role="alert"]')?.textContent).toContain('unresolved')
+        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Follow-up limit reached')
         expect(routeSend()).toBeUndefined()
         expect(f.writes).toHaveLength(0)
         reachedBound = true

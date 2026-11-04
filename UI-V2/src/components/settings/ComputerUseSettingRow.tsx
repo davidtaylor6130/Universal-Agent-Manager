@@ -1,8 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { useId, useLayoutEffect, useRef } from 'react'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, Switch } from '../ui'
+import { Button, Switch, Reveal } from '../ui'
+import { reportAppFailure } from '../../utils/appFailure'
 import { SettingRow } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
@@ -22,23 +23,12 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   const enabled = useAppStore(state => state.computerUseEnabled)
   const pending = useAppStore(state => state.computerUseRevocationPending)
   const busy = useAppStore(state => state.computerUseSettingsOperation)
-  const retainedError = useAppStore(state => state.computerUseSettingsError ?? '')
-  const errorRevision = useAppStore(state => state.computerUseSettingsErrorStateRevision)
-  const revision = useAppStore(state => state.computerUseSettingsStateRevision)
-  const error = busy || revision === errorRevision ? retainedError : ''
-  const setError = (message: string) => useAppStore.setState({ computerUseSettingsError: message, computerUseSettingsErrorStateRevision: useAppStore.getState().computerUseSettingsStateRevision })
   const controls = useRef<HTMLDivElement>(null)
   const focusAfterRecovery = useRef<HTMLInputElement | HTMLButtonElement | null>(null)
   const statusId = useId()
-  const errorId = useId()
   const known = typeof enabled === 'boolean' && typeof pending === 'boolean'
-  const describedBy = `${statusId}${error ? ` ${errorId}` : ''}`
+  const describedBy = statusId
 
-  useEffect(() => {
-    if (!busy && retainedError && revision !== errorRevision) {
-      useAppStore.setState({ computerUseSettingsError: '', computerUseSettingsErrorStateRevision: undefined })
-    }
-  }, [busy, retainedError, revision, errorRevision])
   useLayoutEffect(() => {
     if (busy || !focusAfterRecovery.current) return
     const trigger = focusAfterRecovery.current
@@ -69,7 +59,6 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
     if (trigger && document.activeElement === trigger) focusAfterRecovery.current = trigger
     operationInFlight = true
     useAppStore.setState({ computerUseSettingsOperation: next === undefined ? 'check' : next ? 'enable' : 'disable' })
-    setError('')
     try {
       if (next === undefined) await check()
       else {
@@ -88,7 +77,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       if (!confirmed) {
         useAppStore.setState({ computerUseEnabled: undefined, computerUseRevocationPending: undefined })
       }
-      setError(confirmed ? message : `${message} Status is not confirmed; check before trying again.`)
+      reportAppFailure(message, confirmed ? '' : 'Status is not confirmed; check before trying again.')
     } finally {
       operationInFlight = false
       useAppStore.setState({ computerUseSettingsOperation: undefined })
@@ -96,23 +85,22 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   }
 
   const status = !COMPUTER_USE_ENABLED ? 'Unavailable in this build'
-    : busy === 'disable' ? 'Turning off and clearing UAM grants…'
+    : busy === 'disable' ? 'Turning off and clearing chat access…'
     : busy === 'enable' ? 'Turning on…'
     : busy === 'check' ? 'Checking status…'
-    : pending && enabled === true ? "On. A chat's controls are still stopping. Turn off for all chats to retry cleanup."
-    : pending ? known ? 'Off. Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Global status not confirmed.'
+    : pending && enabled === true ? "A chat's controls are still stopping. Turn off for all chats to retry cleanup."
+    : pending ? known ? 'Cleanup pending. Retry disabling before enabling.' : 'Cleanup pending. Status not confirmed.'
     : !known ? 'Status not confirmed.'
-    : enabled ? 'On. Each chat still needs an approved target.' : 'Off. UAM grants cleared.'
+    : enabled ? 'Each chat still needs you to choose the window it can control.' : 'Chat access cleared.'
 
-  return <SettingRow title="UAM Computer Use" description={COMPUTER_USE_ENABLED ? 'Allow target requests on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'}
-    status={<span id={statusId} role="status" aria-live="polite">{status}</span>}
+  // One description line: the consent copy and the live state share it, so the row stays one line tall plus its description.
+  return <SettingRow title="UAM Computer Use" description={<>{COMPUTER_USE_ENABLED ? 'Allow Computer Use on this computer. Saves immediately.' : 'Computer Use is unavailable in this build.'} <span id={statusId} role="status" aria-live="polite">{status}</span></>}
     control={COMPUTER_USE_ENABLED && <div ref={controls} className="flex flex-wrap items-center justify-end gap-2">
-      {known && <Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={enabled}
+      <Reveal open={known} as="span"><Switch hideLabel label="UAM Computer Use" checked={enabled}
         aria-describedby={describedBy} disabled={disabled || Boolean(busy) || (pending && !enabled)}
-        onChange={event => void change(event.currentTarget.checked, event.currentTarget)} />}
-      {(pending || !known) && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button>}
-      {!known && <Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button>}
+        onChange={event => void change(event.currentTarget.checked, event.currentTarget)} /></Reveal>
+      <Reveal open={(pending || !known)}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(false, event.currentTarget)}>{pending && enabled === false ? 'Retry disabling' : 'Turn off'}</Button></Reveal>
+      <Reveal open={!known}><Button size="sm" aria-describedby={describedBy} disabled={disabled || Boolean(busy)} onClick={event => void change(undefined, event.currentTarget)}>Check status</Button></Reveal>
     </div>}>
-    {error && <p id={errorId} role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
   </SettingRow>
 }

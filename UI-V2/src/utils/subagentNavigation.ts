@@ -11,17 +11,28 @@ let revision = 0
 const provider = (session: Session) => session.providerId || DEFAULT_PROVIDER_ID
 const host = (session: Session) => session.executionHostId || 'local'
 
-const workspace = (session: Session) => {
-  const path = (session.workspaceWorktreeDirectory?.trim() || session.workspaceDirectory?.trim() || '').replace(/\\/g, '/').replace(/\/+$/, '')
-  return path ? /^[a-z]:/i.test(path) ? path.toLowerCase() : path : `folder:${session.folderId || ''}`
+const normalPath = (raw?: string) => {
+  const path = (raw?.trim() || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-z]:/i.test(path) ? path.toLowerCase() : path
 }
+/** Every checkout a chat answers to: its worktree, its workspace and the checkout that worktree came from. */
+const workspaces = (session: Session) => {
+  const paths = [session.workspaceWorktreeDirectory, session.workspaceDirectory, session.workspaceSourceDirectory].map(normalPath).filter(Boolean)
+  return paths.length ? paths : [`folder:${session.folderId || ''}`]
+}
+const workspace = (session: Session) => workspaces(session)[0]
+// Same project, not same directory, so a local worktree child of a main-checkout parent still groups (#675).
+// Remote chats stay exact, matching the native open rule.
+const sameWorkspace = (a: Session, b: Session) => workspace(a) === workspace(b) ||
+  (host(a) === 'local' && host(b) === 'local' && workspaces(a).some(path => workspaces(b).includes(path)))
+const parentWorkspaceMatches = (parent: Session, stored?: string) => stored === undefined || workspaces(parent).includes(stored)
 
 function parentVisit(child: Session): ParentVisit | undefined {
   loadVisits()
   // Any explicit lineage takes precedence, including an incomplete/invalid orphan link.
   if (child.subagentParentChatId || child.subagentParentCreatedAt) return {
     parentId: child.subagentParentChatId || '', parentCreatedAt: new Date(child.subagentParentCreatedAt || '').getTime(),
-    providerId: provider(child), hostId: host(child), parentWorkspace: workspace(child),
+    providerId: provider(child), hostId: host(child),
   }
   return visits.get(child.id)
 }
@@ -34,8 +45,21 @@ export const canExecuteNativeSubagent = (child: Session) => !child.importedReadO
 function parentMatches(child: Session, parent: Session, visit: ParentVisit) {
   return parent.id !== child.id && parent.createdAt.getTime() === visit.parentCreatedAt &&
     provider(parent) === visit.providerId && provider(child) === visit.providerId &&
-    host(parent) === visit.hostId && host(child) === visit.hostId && workspace(parent) === workspace(child) &&
-    (visit.parentWorkspace === undefined || workspace(parent) === visit.parentWorkspace)
+    host(parent) === visit.hostId && host(child) === visit.hostId && sameWorkspace(parent, child) && parentWorkspaceMatches(parent, visit.parentWorkspace)
+}
+
+const indexes = new WeakMap<Session[], Map<string, Session>>()
+const indexed = (sessions: Session[]) => {
+  let byId = indexes.get(sessions)
+  if (!byId) indexes.set(sessions, byId = new Map(sessions.map(session => [session.id, session])))
+  return byId
+}
+
+/** The single lineage predicate: hiding a child and rendering it under its parent both use this. */
+function linkedParent(child: Session, byId: Map<string, Session>) {
+  const visit = parentVisit(child)
+  const parent = visit && byId.get(visit.parentId)
+  return parent && parentMatches(child, parent, visit) && lineageIsAcyclic(child, byId) ? parent : undefined
 }
 
 function lineageIsAcyclic(child: Session, byId: Map<string, Session>) {
@@ -79,21 +103,7 @@ export function rememberSubagentParent(parent: Session, childChatId: string) {
   listeners.forEach(listener => listener())
 }
 
-export function subagentParentFor(child: Session, sessions: Session[]) {
-  const visit = parentVisit(child)
-  if (!visit) return undefined
-  const parent = sessions.find(candidate => candidate.id === visit.parentId)
-  if (!parent || !parentMatches(child, parent, visit)) return undefined
-  const seen = new Set([child.id])
-  let ancestor: Session | undefined = parent
-  while (ancestor) {
-    if (seen.has(ancestor.id)) return undefined
-    seen.add(ancestor.id)
-    const next = parentVisit(ancestor)
-    ancestor = next ? sessions.find(candidate => candidate.id === next.parentId) : undefined
-  }
-  return parent
-}
+export const subagentParentFor = (child: Session, sessions: Session[]) => linkedParent(child, indexed(sessions))
 
 export type SubagentRoute = ParentVisit & ({ kind: 'managed'; runId: string; transcriptChatId?: string; title?: string; status?: string } | { kind: 'native'; chatId: string })
 const routes = new Map<string, SubagentRoute>()
@@ -118,7 +128,7 @@ export function openSubagentView(parent: Session, child: { kind: 'managed'; runI
 
 export function subagentRouteFor(leafId: string, parent: Session): SubagentRoute | undefined {
   const route = routes.get(leafId)
-  return route && route.parentId === parent.id && route.parentCreatedAt === parent.createdAt.getTime() && route.providerId === provider(parent) && route.hostId === host(parent) && (route.parentWorkspace === undefined || route.parentWorkspace === workspace(parent)) ? route : undefined
+  return route && route.parentId === parent.id && route.parentCreatedAt === parent.createdAt.getTime() && route.providerId === provider(parent) && route.hostId === host(parent) && parentWorkspaceMatches(parent, route.parentWorkspace) ? route : undefined
 }
 
 export function clearSubagentView(leafId: string) {
@@ -150,11 +160,10 @@ export function nativeSubagentChildren(parentId: string, sessions: Session[]): S
     cachedSessions = sessions
     cachedRevision = revision
     childGroups = new Map()
-    const byId = new Map(sessions.map(session => [session.id, session]))
+    const byId = indexed(sessions)
     for (const child of sessions) {
-      const visit = parentVisit(child)
-      const parent = visit ? byId.get(visit.parentId) : undefined
-      if (!parent || !parentMatches(child, parent, visit!) || !lineageIsAcyclic(child, byId)) continue
+      const parent = linkedParent(child, byId)
+      if (!parent) continue
       const children = childGroups.get(parent.id) || []
       children.push(child)
       childGroups.set(parent.id, children)

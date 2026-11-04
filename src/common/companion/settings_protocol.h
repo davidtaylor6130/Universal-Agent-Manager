@@ -136,7 +136,7 @@ namespace uam::companion
 	inline nlohmann::json SettingsProjection(const nlohmann::json& settings)
 	{
 		using settings_protocol::Pick;
-		nlohmann::json result = Pick(settings, {"theme", "showProviderIconsInSidebar", "showWorktreePathInSidebar", "activeProviderId", "defaultNewChatProviderId", "memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "permissionReviewerProviderId", "permissionReviewerModelId", "favoriteUamAgentIds", "uamAgentCycleShortcut", "hostScopedSettings", "worktreeCleanupEnabled", "worktreeRetentionDays", "backupLogRetentionDays", "httpCacheClearIntervalDays"});
+		nlohmann::json result = Pick(settings, {"theme", "showProviderIconsInSidebar", "showWorktreePathInSidebar", "activeProviderId", "defaultNewChatProviderId", "memoryEnabledDefault", "memoryLevelDefault", "memoryIdleDelaySeconds", "memoryRecallBudgetBytes", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "permissionReviewerProviderId", "permissionReviewerModelId", "favoriteUamAgentIds", "uamAgentCycleShortcut", "hostScopedSettings", "worktreeCleanupEnabled", "worktreeRetentionDays", "backupLogRetentionDays", "httpCacheClearIntervalDays"});
 		result["providerChatDefaults"] = settings_protocol::DefaultsProjection(settings.value("providerChatDefaults", nlohmann::json::object()));
 		result["memoryWorkerBindings"] = settings_protocol::WorkerProjection(settings.value("memoryWorkerBindings", nlohmann::json::object()));
 		result["providerAvailability"] = nlohmann::json::array();
@@ -196,7 +196,7 @@ namespace uam::companion
 		}
 		else if (action == "setMemorySettings")
 		{
-			if (!Keys(payload, {"enabledDefault", "levelDefault", "idleDelaySeconds", "recallBudgetBytes", "workerBindings", "permissionReviewerProviderId", "permissionReviewerModelId", "goalMaxLoopIterations", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "expectedSettingsScope", "expectedSettingsRevision", "memoryRequestId"})) return {403, "Only memory, reviewer and runtime defaults can be changed here."};
+			if (!Keys(payload, {"enabledDefault", "levelDefault", "idleDelaySeconds", "recallBudgetBytes", "workerBindings", "permissionReviewerProviderId", "permissionReviewerModelId", "goalMaxLoopIterations", "goalTokenBudget", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds", "expectedSettingsScope", "expectedSettingsRevision", "memoryRequestId"})) return {403, "Only memory, reviewer and runtime defaults can be changed here."};
 			const bool fenced = payload.contains("expectedSettingsScope") || payload.contains("expectedSettingsRevision") || payload.contains("memoryRequestId");
 			if (fenced && (!payload.contains("expectedSettingsScope") || !Text(payload["expectedSettingsScope"], 128) ||
 			    !payload.contains("expectedSettingsRevision") || !payload["expectedSettingsRevision"].is_number_integer() || payload["expectedSettingsRevision"] < 0 || payload["expectedSettingsRevision"] > 9007199254740991ULL ||

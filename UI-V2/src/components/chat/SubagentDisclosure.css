@@ -1,0 +1,7 @@
+/* Shared subagent disclosure motion: content stays mounted and animates by data-state. Reduced motion zeroes --dur-* via --motion-scale. */
+.uam-subagent-disclosure[data-state="open"] { animation: uam-subagent-disclosure-in var(--dur-enter) var(--ease); }
+.uam-subagent-disclosure[data-state="closed"] { animation: uam-subagent-disclosure-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-subagent-disclosure-in { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes uam-subagent-disclosure-out { to { opacity: 0; transform: translateY(-4px); } }
+/* New-activity signal on the Show latest button. */
+.uam-subagent-transcript__dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: var(--r-full); background: var(--accent); vertical-align: middle; }

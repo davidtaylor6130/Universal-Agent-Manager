@@ -10,8 +10,9 @@ Terminology (use these words exactly, in docs, reviews and conversation):
 Patterns:
 - Desktop window controls share an app-level strip with split-layout actions, while chat search stays in the sidebar and every split pane retains its own header. Empty strip space drags the window; interactive controls and modal overlays exclude dragging. macOS uses native traffic lights, and Windows caption buttons invoke native window actions.
 - Settings pages follow [settings.md](settings.md): page title only, short section labels, one concise consequence per row, actions right-aligned and no nested decorative cards.
-- Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
+- Lists/rows: rows are one line; identity text first, mono detail (`--text-3`) only for ids or paths that need it, second line only when content truly needs it; StatusDot plus semantic colour only when state matters; icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
+- Composer: keep the compact floating connected layout; reduce busyness; icon-only when the icon is self-explanatory; remove anything unneeded; key information lives here, never in a top-right status area.
 - Sidebar: keep separate Active Chats and Pinned Chats sections above the workspace tree, including Active Chats collapse, status counts, Clear all, Done and Snooze controls; do not replace these sections with a filter.
 - Changed-file review (end of an assistant turn): a directory browser, not a flat list. Single-child folder chains collapse, folders show aggregated +/- counts, files show a coloured status letter (M/A/D/R) and +/- counts, and the card scrolls inside a 280px max height. Folders beyond the first two levels start collapsed when there are more than 8 files. Keyboard: Up/Down move, Left/Right collapse/expand, Enter opens. Paths are mono. Split text diffs omit patch framing but retain rename and permission metadata; metadata-only changes keep their headers, and unified/copy views retain the original patch.
 - Empty new chat: a short heading and the composer centre in the pane; the first send moves the composer down to its normal position (FLIP, transform only; reduced motion jumps).
@@ -22,6 +23,8 @@ Patterns:
 - Explicit file, branch and worktree snapshot chips use the same pill with a type/snapshot or partial-snapshot label. Activation opens the captured text, source chat/birth, workspace, host and time in a keyboard-accessible modal; it does not reread the source. Reads start only after the user picks an `@` option (`@branch`, `@worktree` or a typed `@path`) from the composer's context palette, with reading/error feedback beside the chips, and Send waits for capture to settle. Branch/worktree references capture context without changing the workspace/branch tabs. Snapshot metadata fields are labelled, partial status stays legible across themes, and captured text has a named keyboard-scrollable region. Dismissal restores the inspecting chip; removal moves focus to an adjacent chip, or to the composer input when none remain. See [composer context](../chat/composer/attachments.md) for delivery boundaries and limits.
 
 - Custom icons (chats, workspaces, hosts, collections): pick from the searchable Lucide library first (stored as text `lucide:<name>`), with Emoji and PNG upload as secondary tabs; render through `components/shared/CustomIcon.tsx`.
+
+Menu items that cannot run explain why through `MenuItem` `disabledReason`, exposed as the accessible description and tooltip. Disabled model rows still use a native `title` for their reason; moving them to `disabledReason` remains a target. Shared `SegmentedControl`, `MenuItem` and `RowButton` primitives replace hand-styled equivalents where they fit; the remaining raw buttons are a target only where primitives lack a required feature.
 
 Provider questions show each option’s consequence beside its label for sighted and screen-reader users; approval choices must not hide essential decision text in accessibility-only content.
 
@@ -34,6 +37,9 @@ UX rules (enforce):
 6. Technical detail (paths, PIDs, IDs, raw errors) collapsed or secondary mono — never the headline.
 7. Density: no oversized cards/padding; align to a grid; consistent heights (controls 26/32px).
 8. Don't invent features or data the code does not provide.
+9. Key information lives in the composer/primary surface, never a top-right status area; StatusDot plus semantic colour only when state matters.
+10. Success and failure each keep one consistent colour and tick/cross icon everywhere; on/off states are visibly distinct, not just by switch position.
+11. Dialogs: one task per dialog; never duplicate or stack; a modal takes focus only when its chat is the one currently open and activity in another chat never interrupts. `ConfirmDialog` keeps its confirm action disabled through `confirmDisabled` while a blocking condition holds, and multi-step flows show their steps inline inside the same dialog. The composer branch picker takes focus only for the open chat.
 
 The sidebar and composer patterns above link to their owning [sidebar](../sidebar/sidebar.md), [composer](../chat/composer/composer.md) and [message](../chat/messages.md) agreements. [Settings](settings.md) is authoritative over older general settings examples.
 
