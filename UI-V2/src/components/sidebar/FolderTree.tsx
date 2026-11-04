@@ -14,7 +14,7 @@ import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
-import { Button, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
   type ChatSearchFilterContext,
@@ -1615,10 +1615,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           {moveTargets.length > 0 && (
             <RowSubmenu label="Move to collection" ariaLabel={`Move ${collection.name} to collection`} icon={<Library size={14} aria-hidden />}>
               {moveTargets.map((target) => (
-                <button key={target.id} type="button" role="menuitem" className="uam-sb-menu-item" onClick={() => { setMenuOpen(false); void moveCollection(collection.id, target.id) }}>
-                  <Library size={13} aria-hidden />
-                  <span className="truncate">{collectionPath(collections, target.id)}</span>
-                </button>
+                <MenuItem key={target.id} className="uam-sb-menu-item" icon={<Library size={13} aria-hidden />} label={collectionPath(collections, target.id)} onSelect={() => { setMenuOpen(false); void moveCollection(collection.id, target.id) }} />
               ))}
             </RowSubmenu>
           )}
