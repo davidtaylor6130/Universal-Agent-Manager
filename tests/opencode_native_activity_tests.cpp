@@ -1,6 +1,5 @@
 #include "test_harness.h"
 #include "app/opencode_native_activity_service.h"
-#include "common/provider/opencode/opencode_native_identity.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include <algorithm>
 
@@ -149,17 +148,20 @@ UAM_TEST(OpenCodeNativeCompanionRequiresExactWorkspaceAndAcyclicAncestry)
 
 UAM_TEST(OpenCodeNativeWorkspaceIgnoresOnlyTrailingSeparator)
 {
-	using uam::opencode::WorkspaceDirectoriesMatch;
-	UAM_ASSERT(WorkspaceDirectoriesMatch("/opt/containers/HomeAssitent/", "/opt/containers/HomeAssitent", "linux"));
-	UAM_ASSERT(WorkspaceDirectoriesMatch("/owned", "/owned//", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/other", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned\\", "/owned", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/", "", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("/owned/", "/owned/x", "linux"));
-	UAM_ASSERT(!WorkspaceDirectoriesMatch("C:\\Owned\\", "C:/Owned", "windows"));
-	// The SSH root and child ancestry path that #712 failed through.
+	const auto owns = [](const std::string& workspace, const std::string& directory, std::string_view platform)
+	{
+		const Json sessions = {{"ses_root", {{"id", "ses_root"}, {"directory", directory}}}};
+		return uam::OpenCodeNativeActivityService::OwnsSession("ses_root", workspace, "ses_root", sessions, platform);
+	};
+	UAM_ASSERT(owns("/opt/containers/HomeAssitent/", "/opt/containers/HomeAssitent", "linux"));
+	UAM_ASSERT(owns("/owned", "/owned//", "linux"));
+	UAM_ASSERT(!owns("/owned/", "/other", "linux"));
+	UAM_ASSERT(!owns("/owned\\", "/owned", "linux"));
+	UAM_ASSERT(!owns("/", "", "linux"));
+	UAM_ASSERT(!owns("/owned/", "/owned/x", "linux"));
+	UAM_ASSERT(!owns("C:\\Owned\\", "C:/Owned", "windows"));
+	// The SSH child ancestry path that #712 failed through.
 	const Json sessions = {{"ses_root", {{"id", "ses_root"}, {"directory", "/owned"}}}, {"ses_child", {{"id", "ses_child"}, {"directory", "/owned"}, {"parentID", "ses_root"}}}};
-	UAM_ASSERT(uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned/", "ses_root", sessions, "linux"));
 	UAM_ASSERT(uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned/", "ses_child", sessions, "linux"));
 	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/other/", "ses_child", sessions, "linux"));
 }
