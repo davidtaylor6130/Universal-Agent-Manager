@@ -1,7 +1,9 @@
 #include "test_harness.h"
 #include "app/opencode_native_activity_service.h"
+#include "common/provider/opencode_native_http.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include <algorithm>
+#include <thread>
 
 using namespace uam_test;
 
@@ -21,6 +23,7 @@ namespace
 		std::shared_ptr<std::atomic_bool> foreign_permission = std::make_shared<std::atomic_bool>(false);
 		std::shared_ptr<std::atomic_int> failures_left = std::make_shared<std::atomic_int>(0);
 		std::shared_ptr<std::atomic_bool> fail_replies = std::make_shared<std::atomic_bool>(false);
+		std::shared_ptr<std::atomic_bool> late_failures = std::make_shared<std::atomic_bool>(false);
 		std::shared_ptr<std::atomic_bool> wrong_root = std::make_shared<std::atomic_bool>(false);
 		std::shared_ptr<std::atomic_bool> many_permissions = std::make_shared<std::atomic_bool>(false);
 		std::shared_ptr<uam::OpenCodeNativeActivityService> service;
@@ -42,15 +45,15 @@ namespace
 			const auto queries_copy = queries; const auto has_permission_copy = has_permission;
 			const auto policy_updates_copy = policy_updates;
 			const auto foreign_permission_copy = foreign_permission;
-			const auto failures_copy = failures_left; const auto fail_replies_copy = fail_replies;
+			const auto failures_copy = failures_left; const auto fail_replies_copy = fail_replies; const auto late_copy = late_failures;
 			const auto wrong_root_copy = wrong_root; const auto many_permissions_copy = many_permissions;
 			const std::string workspace = native_workspace.empty() ? chat.workspace_directory : native_workspace;
-			service = std::make_shared<uam::OpenCodeNativeActivityService>([enabled_copy, replies_copy, rejected_copy, queries_copy, policy_updates_copy, has_permission_copy, foreign_permission_copy, failures_copy, fail_replies_copy, wrong_root_copy, many_permissions_copy, workspace, permission_kind, mcp_doom_loop](const uam::OpenCodeNativeActivityService::Query& query, Json& result, std::string& error, std::stop_token)
+			service = std::make_shared<uam::OpenCodeNativeActivityService>([enabled_copy, replies_copy, rejected_copy, queries_copy, policy_updates_copy, has_permission_copy, foreign_permission_copy, failures_copy, fail_replies_copy, late_copy, wrong_root_copy, many_permissions_copy, workspace, permission_kind, mcp_doom_loop](const uam::OpenCodeNativeActivityService::Query& query, Json& result, std::string& error, std::stop_token)
 			{
 				++*queries_copy;
 				const std::string operation = query.operation.value("operation", "");
 				if (operation == (fail_replies_copy->load() ? "reply" : "permissions") && failures_copy->load() > 0)
-				{ --*failures_copy; error = "Simulated transient native HTTP failure."; return false; }
+				{ --*failures_copy; error = late_copy->load() ? uam::opencode_native::kQueryTimedOutError : "Simulated transient native HTTP failure."; return false; }
 				if (operation == "enableTask") { ++*policy_updates_copy; enabled_copy->store(true); result = Json::object(); return true; }
 				if (operation == "disableTask") { ++*policy_updates_copy; enabled_copy->store(false); result = Json::object(); return true; }
 				if (operation == "status") { result = Json::object(); return true; }
@@ -144,6 +147,26 @@ UAM_TEST(OpenCodeNativeCompanionRequiresExactWorkspaceAndAcyclicAncestry)
 	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned", "ses_child", sessions));
 	sessions["ses_child"]["parentID"] = "ses_missing";
 	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned", "ses_child", sessions));
+}
+
+UAM_TEST(OpenCodeNativeWorkspaceIgnoresOnlyTrailingSeparator)
+{
+	const auto owns = [](const std::string& workspace, const std::string& directory, std::string_view platform)
+	{
+		const Json sessions = {{"ses_root", {{"id", "ses_root"}, {"directory", directory}}}};
+		return uam::OpenCodeNativeActivityService::OwnsSession("ses_root", workspace, "ses_root", sessions, platform);
+	};
+	UAM_ASSERT(owns("/opt/containers/HomeAssitent/", "/opt/containers/HomeAssitent", "linux"));
+	UAM_ASSERT(owns("/owned", "/owned//", "linux"));
+	UAM_ASSERT(!owns("/owned/", "/other", "linux"));
+	UAM_ASSERT(!owns("/owned\\", "/owned", "linux"));
+	UAM_ASSERT(!owns("/", "", "linux"));
+	UAM_ASSERT(!owns("/owned/", "/owned/x", "linux"));
+	UAM_ASSERT(!owns("C:\\Owned\\", "C:/Owned", "windows"));
+	// The SSH child ancestry path that #712 failed through.
+	const Json sessions = {{"ses_root", {{"id", "ses_root"}, {"directory", "/owned"}}}, {"ses_child", {{"id", "ses_child"}, {"directory", "/owned"}, {"parentID", "ses_root"}}}};
+	UAM_ASSERT(uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/owned/", "ses_child", sessions, "linux"));
+	UAM_ASSERT(!uam::OpenCodeNativeActivityService::OwnsSession("ses_root", "/other/", "ses_child", sessions, "linux"));
 }
 
 UAM_TEST(OpenCodeNativeCompanionRequiresConfirmedTaskAskRule)
@@ -275,6 +298,124 @@ UAM_TEST(OpenCodeNativeCompanionStopsAfterConsecutiveObservationFailures)
 	UAM_ASSERT(fixture.Session().last_error.find("Simulated transient native HTTP failure") != std::string::npos);
 	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures" && entry.detail == "failures=3"; }));
 	UAM_ASSERT_EQ(fixture.replies->load(), 0);
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersDuringActiveTurnDoNotStopProvider)
+{
+	// A busy OpenCode server streaming from a slow model answers probes late; that alone is not a failure.
+	NativeCompanionFixture fixture;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(4);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return fixture.failures_left->load() == 0 || !fixture.Session().running; });
+	const int after_late = fixture.queries->load();
+	fixture.Until([&] { return fixture.queries->load() > after_late + 1 || !fixture.Session().running; });
+	UAM_ASSERT(fixture.Session().running);
+	UAM_ASSERT(fixture.Session().timeout_stop_error.empty());
+	UAM_ASSERT(std::ranges::none_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion"; }));
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersStopAsTurnTimeout)
+{
+	NativeCompanionFixture fixture;
+	fixture.app.settings.active_turn_inactivity_timeout_seconds = 1;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return !fixture.Session().running; });
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "turn_timeout"; }));
+	UAM_ASSERT_EQ(fixture.Session().timeout_stop_label, std::string("Provider turn timeout"));
+	UAM_ASSERT_EQ(fixture.Session().timeout_stop_seconds, 1);
+	UAM_ASSERT_EQ(fixture.Session().timeout_stop_error, fixture.Session().last_error);
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionIdleLateAnswersDoNotCarryIntoTheNextTurn)
+{
+	// A late answer during one turn must not start a timer that the next turn's first late answer completes.
+	NativeCompanionFixture fixture;
+	fixture.app.settings.active_turn_inactivity_timeout_seconds = 1;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true; fixture.Session().turn_serial = 1;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	fixture.Session().processing = false;
+	// Idle for longer than the turn timeout while the server keeps answering late.
+	const auto idle_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1600);
+	while (std::chrono::steady_clock::now() < idle_until && fixture.Session().running)
+	{ fixture.service->Poll(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+	UAM_ASSERT(fixture.Session().running);
+	fixture.failures_left->store(1);
+	fixture.Session().processing = true; fixture.Session().turn_serial = 2;
+	fixture.Until([&] { return fixture.failures_left->load() == 0 || !fixture.Session().running; });
+	const int after_late = fixture.queries->load();
+	fixture.Until([&] { return fixture.queries->load() > after_late + 1 || !fixture.Session().running; });
+	UAM_ASSERT(fixture.Session().running);
+	UAM_ASSERT(std::ranges::none_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion"; }));
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersHoldNewPromptsVisibly)
+{
+	NativeCompanionFixture fixture;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	UAM_ASSERT(error.find("answering slowly") != std::string::npos);
+	UAM_ASSERT(fixture.Session().running);
+	// Observation continues after the turn ends, so recovery is seen without another prompt.
+	fixture.Session().processing = false;
+	fixture.failures_left->store(0);
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionIdleLateAnswersAreBoundedBySetupTimeout)
+{
+	// A server that accepts but never answers in time must not hold the next prompt indefinitely while idle.
+	NativeCompanionFixture fixture;
+	fixture.app.settings.acp_setup_inactivity_timeout_seconds = 1;
+	fixture.has_permission->store(false);
+	std::string error;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Ready; });
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	fixture.Until([&] { return fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error) == uam::OpenCodeNativeGateState::Pending; });
+	fixture.Session().processing = false;
+	fixture.Until([&] { return !fixture.Session().running; });
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures"; }));
+	UAM_ASSERT(fixture.Session().timeout_stop_error.empty());
+	fixture.service->Stop();
+}
+
+UAM_TEST(OpenCodeNativeCompanionLateAnswersBeforeFirstSnapshotKeepFailureLimit)
+{
+	// A server that never answers in time before readiness fails within three tries, not the whole turn timeout.
+	NativeCompanionFixture fixture;
+	fixture.has_permission->store(false);
+	fixture.late_failures->store(true);
+	fixture.failures_left->store(1000);
+	fixture.Session().processing = true;
+	std::string error;
+	fixture.Until([&] { (void)fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.app.chats.front(), error); return !fixture.Session().running; });
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const auto& entry) { return entry.event == "native_companion" && entry.reason == "observation_failures" && entry.detail == "failures=3"; }));
+	UAM_ASSERT(fixture.Session().timeout_stop_error.empty());
 	fixture.service->Stop();
 }
 

@@ -29,11 +29,13 @@ struct SettingsMemoryCanonicalValues
 	int memory_idle_delay_seconds = 0;
 	int memory_recall_budget_bytes = 0;
 	int goal_max_loop_iterations = 0;
+	int goal_token_budget = 0;
 	int acp_setup_inactivity_timeout_seconds = 0;
 	int acp_turn_output_limit_mib = 0;
 	std::map<std::string, MemoryWorkerBinding> memory_worker_bindings;
 	std::string permission_reviewer_provider_id;
 	std::string permission_reviewer_model_id;
+	int active_turn_inactivity_timeout_seconds = 0;
 };
 
 // canonical is authoritative only when outcome is Committed and canonical_values_ready.

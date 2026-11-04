@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { AlertTriangle, X } from 'lucide-react'
+import { Button, Notice } from '../ui'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
@@ -105,7 +105,7 @@ export function CLIView({ session }: CLIViewProps) {
     cliBinding?.lastError && cliBinding.lastError !== dismissedTerminalError
       ? cliBinding.lastError
       : ''
-  const unsupportedProviderMessage = `Provider '${currentProviderId}' is not supported in this build. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to use terminal mode.`
+  const unsupportedProviderMessage = `Terminal mode isn't available for ${providerMetadataForId(currentProviderId).name}. Switch this chat to ${providerMetadataForId(DEFAULT_PROVIDER_ID).name} to use it.`
 
   useEffect(() => {
     const node = terminalRef.current
@@ -475,16 +475,8 @@ export function CLIView({ session }: CLIViewProps) {
   if (!providerSupported) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        <div
-          className="mx-4 mt-4 flex items-start gap-3 rounded-md border px-3 py-2 text-xs"
-          style={{
-            borderColor: 'color-mix(in srgb, var(--yellow) 45%, var(--border))',
-            background: 'color-mix(in srgb, var(--yellow) 10%, var(--surface))',
-            color: 'var(--text)',
-          }}
-        >
-          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2, color: 'var(--yellow)' }} aria-hidden />
-          <span>{unsupportedProviderMessage}</span>
+        <div className="mx-4 mt-4">
+          <Notice tone="warning" title="Provider not supported" dismissible={false} dismissLabel="Dismiss provider notice">{unsupportedProviderMessage}</Notice>
         </div>
       </div>
     )
@@ -493,70 +485,49 @@ export function CLIView({ session }: CLIViewProps) {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {!!visibleTerminalError && (
-        <div
-          className="flex-shrink-0 px-3 py-2 text-xs"
-          style={{
-            borderBottom: '1px solid var(--border)',
-            background: 'rgba(239, 68, 68, 0.10)',
-            color: 'var(--red)',
-          }}
-        >
-          <div className="flex items-start gap-2">
-            <span className="min-w-0 flex-1">{visibleTerminalError}</span>
-            {(!cliBinding?.running || companion) && (
-              <button
-                type="button"
-                aria-label={companion ? "Retry terminal attachment" : "Retry terminal start"}
-                onClick={() => {
-                  setDismissedTerminalError('')
-                  setCliBinding(session.id, { lastError: '' })
-                  setTerminalStartAttempt((attempt) => attempt + 1)
-                }}
-                className="rounded px-2 py-0.5 font-medium"
-                style={{ color: 'inherit', border: '1px solid currentColor' }}
-              >
-                {companion ? 'Retry attach' : 'Retry'}
-              </button>
-            )}
-            {!companion && <button
-              type="button"
-              aria-label="Check provider CLI"
-              onClick={() => void refreshCliProviderVersion(currentProviderId)}
-              className="rounded px-2 py-0.5 font-medium"
-              style={{ color: 'inherit', border: '1px solid currentColor' }}
-            >
-              Check CLI
-            </button>}
-            {!companion && <button
-              type="button"
-              aria-label="Open CLI settings"
-              onClick={() => setSettingsOpen(true)}
-              className="rounded px-2 py-0.5 font-medium"
-              style={{ color: 'inherit', border: '1px solid currentColor' }}
-            >
-              Settings
-            </button>}
-            <button
-              type="button"
-              aria-label="Dismiss terminal error"
-              title="Dismiss"
-              onClick={() => setDismissedTerminalError(visibleTerminalError)}
-              className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded"
-              style={{ color: 'inherit' }}
-            >
-              <X size={13} aria-hidden />
-            </button>
-          </div>
+        <div className="flex-shrink-0 px-3 pt-2">
+          <Notice
+            tone="error"
+            dismissLabel="Dismiss terminal error"
+            onDismiss={() => setDismissedTerminalError(visibleTerminalError)}
+            actions={<>
+              {(!cliBinding?.running || companion) && (
+                <Button
+                  size="sm"
+                  aria-label={companion ? "Retry terminal attachment" : "Retry terminal start"}
+                  onClick={() => {
+                    setDismissedTerminalError('')
+                    setCliBinding(session.id, { lastError: '' })
+                    setTerminalStartAttempt((attempt) => attempt + 1)
+                  }}
+                >
+                  {companion ? 'Retry attach' : 'Retry'}
+                </Button>
+              )}
+              {!companion && (
+                <Button size="sm" aria-label="Check provider CLI" onClick={() => void refreshCliProviderVersion(currentProviderId)}>
+                  Check CLI
+                </Button>
+              )}
+              {!companion && (
+                <Button size="sm" aria-label="Open CLI settings" onClick={() => setSettingsOpen(true)}>
+                  Settings
+                </Button>
+              )}
+            </>}
+          >
+            {visibleTerminalError}
+          </Notice>
         </div>
       )}
 
       {companion && <div data-cli-controls className="flex flex-wrap gap-2 border-b p-2" style={{ borderColor: 'var(--border)' }}>
-        <button type="button" onClick={() => termInstanceRef.current?.focus()}>Keyboard</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b', true)}>Esc</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\t', true)}>Tab</button>
-        <button type="button" aria-label="Interrupt terminal" onClick={() => termInstanceRef.current?.input('\x03', true)}>Ctrl C</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</button>
-        <button type="button" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.focus()}>Keyboard</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b', true)}>Esc</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\t', true)}>Tab</Button>
+        <Button size="sm" variant="ghost" aria-label="Interrupt terminal" onClick={() => termInstanceRef.current?.input('\x03', true)}>Ctrl C</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b[A', true)} aria-label="Up arrow">↑</Button>
+        <Button size="sm" variant="ghost" onClick={() => termInstanceRef.current?.input('\x1b[B', true)} aria-label="Down arrow">↓</Button>
       </div>}
       {pendingUserInput?.requestId.startsWith('uam-control:') && <UserInputInlineCard
         input={pendingUserInput}

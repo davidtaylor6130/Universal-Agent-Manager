@@ -1,11 +1,12 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Bot, FileText, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -63,9 +64,10 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [editing, setEditing] = useState<{ draft: Agent; isNew: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
   const [saving, setSaving] = useState<'defaults' | 'agent' | null>(null)
-  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
-  const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
+  const [pendingExit, setPendingExit] = useState<{ next: () => void } | null>(null)
+  const [agentExitPrompt, setAgentExitPrompt] = useState(false)
+  const [removingKeys, setRemovingKeys] = useState<Set<string>>(() => new Set())
   const editingOriginal = useRef<Agent | null>(null)
   const [instructionEditor, setInstructionEditor] = useState<InstructionEditor | null>(null)
   const instructionRequest = useRef(0)
@@ -74,6 +76,10 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const instructionTextarea = useRef<HTMLTextAreaElement | null>(null)
   const instructionRetry = useRef<HTMLButtonElement | null>(null)
   const [instructionFocusRequest, setInstructionFocusRequest] = useState(0)
+  const instructionPresence = usePresence(instructionEditor !== null)
+  const lastInstructionEditor = useRef<InstructionEditor | null>(null)
+  if (instructionEditor) lastInstructionEditor.current = instructionEditor
+  const shownEditor = instructionEditor ?? lastInstructionEditor.current
   useEffect(() => () => { ++instructionRequest.current }, [])
   useEffect(() => {
     if (!instructionEditor) instructionTrigger.current?.focus()
@@ -91,20 +97,18 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   }, [])
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
-  // Success notes fade after a few seconds; errors stay until the next action.
-  useEffect(() => {
-    if (message?.tone !== 'ok') return
-    const timer = window.setTimeout(() => setMessage(null), 4000)
-    return () => window.clearTimeout(timer)
-  }, [message])
-
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
-    setBusy(true); setSaving(save); setMessage(null)
-    try { const result = await action(); setMessage(result.ok ? { tone: 'ok', text: success } : { tone: 'error', text: result.error || 'Could not save.' }); return result.ok }
-    catch { setMessage({ tone: 'error', text: 'Could not save. Try again.' }); return false }
+    setBusy(true); setSaving(save)
+    try {
+      const result = await action()
+      if (result.ok) reportAppNotice(success, 'success')
+      else reportAppFailure(result.error || 'Could not save.', 'Your changes are kept. Try again.')
+      return result.ok
+    }
+    catch { reportAppFailure('Could not save.', 'Your changes are kept. Try again.'); return false }
     finally { setBusy(false); setSaving(null) }
   }
-  const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setEditing(next); setMessage(null) }
+  const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setAgentExitPrompt(false); setEditing(next) }
   const draftId = editing ? editing.draft.id.trim().toLowerCase() : ''
   const nameError = !editing?.isNew ? '' : !draftId ? 'Enter a name.' : !AGENT_NAME.test(draftId) ? 'Use lowercase letters, numbers, - or _.' : agents.some(agent => agent.id === draftId) ? `An agent named ${draftId} already exists.` : ''
   const agentDirty = Boolean(editing && !same(editing.draft, editingOriginal.current))
@@ -112,11 +116,20 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     if (!editing || nameError) return false
     const draft = { ...editing.draft, id: draftId, description: editing.draft.description.trim() }
     if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`, 'agent')) return false
-    startEditing(null); setMessage({ tone: 'ok', text: `Agent ${draft.id} saved.` }); await loadAgents()
+    startEditing(null); await loadAgents()
     return true
   }
+  // Keeps a removed row mounted through its exit (Reveal), then runs the removal; the row returns if the removal fails.
+  const exitRow = async (key: string, remove: () => Promise<boolean> | boolean) => {
+    if (!motionAllowed()) return remove()
+    setRemovingKeys(current => new Set([...current, key]))
+    await new Promise(resolve => window.setTimeout(resolve, scaledMs(EXIT_MS)))
+    try { return await remove() }
+    finally { setRemovingKeys(current => { const next = new Set(current); next.delete(key); return next }) }
+  }
   const deleteAgent = async (id: string) => {
-    if (await run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`)) {
+    const removed = await exitRow(`agent:${id}`, () => run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`))
+    if (removed) {
       if (editing?.draft.id === id) startEditing(null)
       setPendingDelete(null)
       await loadAgents()
@@ -127,11 +140,11 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     const store = useAppStore.getState()
     return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, enabled: true, instructionFiles, defaultSkills, defaultAgents, defaultAgentId })
   }, 'Saved. New and restarted chats get this setup.', 'defaults')
-  const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId); setMessage(null) }
+  const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId) }
   const dirty = defaultsDirty || agentDirty || instructionDirty
   useImperativeHandle(ref, () => ({ requestLeave(next) {
     if (busy || instructionOperation.current) return
-    if (dirty) setPendingExit({ next, scope: 'all' })
+    if (dirty) setPendingExit({ next })
     else next()
   } }))
   useEffect(() => {
@@ -174,7 +187,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     if (busy || instructionOperation.current || !instructionEditor || !instructionDirty) return false
     const draft = instructionEditor
     if (!useAppStore.getState().centralProviderConfiguration.instructionFiles.includes(draft.path)) {
-      setInstructionEditor({ ...draft, error: 'This file is no longer in Central Setup. Your changes are retained.' })
+      setInstructionEditor({ ...draft, error: 'This file is no longer in central setup. Your changes are retained.' })
       return false
     }
     const request = ++instructionRequest.current
@@ -197,85 +210,81 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       if (request === instructionRequest.current) { instructionOperation.current = false; setBusy(false); setInstructionFocusRequest(current => current + 1) }
     }
   }
-  const closeEditor = () => { if (busy) return; if (agentDirty) setPendingExit({ next: () => startEditing(null), scope: 'agent' }); else startEditing(null) }
+  // Unsaved agent edits ask inside the editor footer; a dialog must not open on top of the editor overlay.
+  const closeEditor = () => { if (busy) return; if (agentExitPrompt) setAgentExitPrompt(false); else if (agentDirty) setAgentExitPrompt(true); else startEditing(null) }
 
   if (!agentsLoaded) return <SettingsLoading label="Loading agents" rows={3} />
 
-  const leaveDialog = pendingExit && <UnsavedChangesDialog
-    title={pendingExit.scope === 'agent' ? 'Save agent changes?' : 'Save central setup changes?'}
-    busy={busy} error={pendingExit.scope === 'all' && instructionDirty && instructionEditor?.error ? instructionEditor.error : message?.tone === 'error' ? message.text : undefined}
+  const leaveDialog = <Presence open={pendingExit !== null}>{pendingExit && <UnsavedChangesDialog
+    title="Save central setup changes?"
+    busy={busy} error={instructionDirty && instructionEditor?.error ? instructionEditor.error : undefined}
     onStay={() => setPendingExit(null)}
-    onDiscard={() => { if (pendingExit.scope === 'all') { undoDefaults(); setInstructionEditor(null) }; startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
+    onDiscard={() => { undoDefaults(); setInstructionEditor(null); startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
     onSave={!nameError ? async () => {
-      if (pendingExit.scope === 'all' && instructionDirty && !await saveInstructionFile()) return
-      if (pendingExit.scope === 'all' && defaultsDirty && !await saveDefaults()) return
+      if (instructionDirty && !await saveInstructionFile()) return
+      if (defaultsDirty && !await saveDefaults()) return
       if (agentDirty && !await saveAgent()) return
       const next = pendingExit.next; setPendingExit(null); next()
     } : undefined}
-  />
-  return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
+  />}</Presence>
+  return <div className="grid gap-0" style={{ color: 'var(--text)' }}>
     {leaveDialog}
-    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} error={message?.tone === 'error' ? message.text : undefined} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
-    <SettingsSection title="Shared instructions" description="Sent to every agent, not into your messages."
+    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
+    <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
-      {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." />}
-      {instructionFiles.map(path => <SettingRow key={path} icon={<FileText size={15} aria-hidden />} title={fileName(path)}
+      <Reveal open={instructionFiles.length === 0}><p className="uam-prov-sub">No instruction files. Choose an AGENTS.md file to share.</p></Reveal>
+      {instructionFiles.map(path => <Reveal key={path} open={!removingKeys.has(`instruction:${path}`)}><SettingRow icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
         control={<>
           <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${fileName(path)}`} disabled={busy || instructionDirty || !saved.instructionFiles.includes(path)} onClick={event => { instructionTrigger.current = event.currentTarget; void openInstructionFile(path) }} />
-          <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />
+          <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => void exitRow(`instruction:${path}`, () => { setInstructionFiles(instructionFiles.filter(item => item !== path)); return true })} />
         </>}>
-        {instructionEditor?.path === path && <div className="uam-central-editor grid gap-3">
-          {instructionEditor.loading ? <SettingsLoading label="Opening instruction file" rows={3} /> : <>
-            {instructionEditor.error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{instructionEditor.error}</p>}
-            {!instructionEditor.readFailed && <SettingsField label={fileName(path)}>
-              <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={instructionEditor.content} onChange={event => setInstructionEditor({ ...instructionEditor, content: event.currentTarget.value })} />
-            </SettingsField>}
+        {instructionPresence.mounted && shownEditor?.path === path && <div className="uam-central-editor uam-presence grid gap-3" data-state={instructionPresence.closing ? 'closed' : 'open'}>
+          <Reveal open={shownEditor.loading}><SettingsLoading label="Opening instruction file" rows={3} /></Reveal>
+          <Reveal open={!shownEditor.loading} className="grid gap-3"><>
+            <Reveal open={!!(shownEditor.error)}><Notice key={shownEditor.error} tone="error" dismissLabel="Dismiss">{shownEditor.error}</Notice></Reveal>
+            <Reveal open={!shownEditor.readFailed}><SettingsField label={fileName(path)}>
+              <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={shownEditor.content} onChange={event => setInstructionEditor({ ...shownEditor, content: event.currentTarget.value })} />
+            </SettingsField></Reveal>
             <div className="flex justify-end gap-2">
               <Button size="sm" disabled={busy} onClick={() => setInstructionEditor(null)}>{instructionDirty ? 'Discard file changes' : 'Close file'}</Button>
-              {instructionEditor.readFailed && <Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button>}
-              <Button size="sm" variant="primary" aria-label="Save instruction file" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
+              <Reveal open={shownEditor.readFailed}><Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button></Reveal>
+              <Button size="sm" variant="primary" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
             </div>
-          </>}
+          </></Reveal>
         </div>}
-      </SettingRow>)}
-      {saved.instructions && <SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." />}
+      </SettingRow></Reveal>)}
+      <Reveal open={!!(saved.instructions)}><SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." /></Reveal>
     </SettingsSection>
 
-    <SettingsSection title="Defaults">
+    <SettingsSection title="Defaults"
+      actions={<SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>}>
       <SettingRow title="Default agent for new chats"
         control={<MenuSelect label="Default agent for new chats" value={defaultAgentId} disabled={busy} options={defaultAgentChoices} onChange={setDefaultAgentId} />} />
-      {skills.length === 0
-        ? <SettingRow title="No skills yet" description="Add skills in the Skills page first." />
-        : <SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen.'}
+      <Reveal open={skills.length === 0}><p className="uam-prov-sub">No skills yet. Add skills in the Skills page first.</p></Reveal>
+      <Reveal open={skills.length > 0}><SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen.'}
           control={<ChipAdd label="skill" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}>
-          {defaultSkills.length > 0 && <ChipList label="default skills" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}
-        </SettingRow>}
+          <Reveal open={defaultSkills.length > 0}><ChipList label="default skills" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} /></Reveal>
+        </SettingRow></Reveal>
       <SettingRow title="Agents on every provider" description={defaultAgents.length ? undefined : 'None chosen.'}
         control={<ChipAdd label="agent" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />}>
-        {defaultAgents.length > 0 && <ChipList label="default agents" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />}
+        <Reveal open={defaultAgents.length > 0}><ChipList label="default agents" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} /></Reveal>
       </SettingRow>
     </SettingsSection>
 
-    <div className="flex items-center justify-end gap-3">
-      {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
-      <SaveButton saving={saving === 'defaults'} loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</SaveButton>
-    </div>
-
-    <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
+    <SettingsSection title="Agent store"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
-      {agentErrors.map(error => <SettingRow key={error} title="Some agents could not be read" description={<span style={{ color: 'var(--error)' }}>{error}</span>} />)}
-      {agents.length === 0 && <SettingRow title="No agents yet" description="Add one to give every provider a helper." />}
+      <Reveal open={agentErrors.length > 0}>{agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}</Reveal>
+      <Reveal open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></Reveal>
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)
-        return <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />}
+        return <Reveal key={agent.id} open={!removingKeys.has(`agent:${agent.id}`)}><SettingRow icon={<Bot size={15} aria-hidden />}
           title={agent.id}
-          description={agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'}
-          status={usedAs?.label}
+          description={[usedAs?.label, agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'].filter(Boolean).join(' · ')}
           control={<>
             <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
-            {!agent.builtIn && <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
-          </>} />
+            {!agent.builtIn && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
+          </>} /></Reveal>
       })}
     </SettingsSection>
 
@@ -289,8 +298,8 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
             onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor() } }}>
             <header className="uam-central-dialog__head">
               <div className="min-w-0">
-                <strong className="text-sm">{isNew ? 'New agent' : builtIn ? draft.id : `Edit ${draft.id}`}</strong>
-                <p className="uam-prov-sub">{builtIn ? 'Built in, read only.' : 'Changes apply to new chats.'}</p>
+                <span className="text-sm font-semibold">{isNew ? 'New agent' : builtIn ? draft.id : `Edit ${draft.id}`}</span>
+                {!builtIn && <p className="uam-prov-sub">Changes apply to new chats.</p>}
               </div>
               <IconButton size="sm" icon={<X size={14} />} label="Close agent editor" disabled={busy} onClick={closeEditor} />
             </header>
@@ -311,7 +320,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
               </div>
               <SettingsField label="Skills for this agent">
                 <div className="grid gap-2">
-                  {draft.skills.length > 0 && <ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} />}
+                  <Reveal open={draft.skills.length > 0}><ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} /></Reveal>
                   <ChipAdd label="skill" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} />
                 </div>
               </SettingsField>
@@ -320,13 +329,19 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
               </SettingsField>
             </div>
             <footer className="uam-central-dialog__foot">
-              {message && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
-              {builtIn
-                ? <Button size="sm" onClick={closeEditor}>Close</Button>
-                : <>
-                  <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
-                  <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
-                </>}
+              <Reveal open={builtIn} className="flex items-center justify-end gap-2">
+                <Button size="sm" onClick={closeEditor}>Close</Button>
+              </Reveal>
+              <Reveal open={!builtIn && agentExitPrompt} className="flex min-w-0 flex-1 items-center justify-end gap-2">
+                <p className="mr-auto text-sm" role="status">Save agent changes? Your changes have not been saved.</p>
+                <Button size="sm" onClick={() => setAgentExitPrompt(false)}>Keep editing</Button>
+                <Button size="sm" variant="secondary" onClick={() => startEditing(null)}>Discard</Button>
+                <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
+              </Reveal>
+              <Reveal open={!builtIn && !agentExitPrompt} className="flex items-center justify-end gap-2">
+                <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
+                <SaveButton saving={saving === 'agent'} loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</SaveButton>
+              </Reveal>
             </footer>
           </div>
         })()}

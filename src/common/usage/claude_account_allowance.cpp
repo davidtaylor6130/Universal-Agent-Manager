@@ -1,5 +1,5 @@
 #include "common/usage/claude_account_allowance.h"
-#include "common/usage/account_credentials_macos.h"
+#include "common/usage/account_credentials.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/usage/transcript_usage.h"
@@ -78,13 +78,13 @@ namespace uam::usage
 			return service;
 		}
 
-		MacAccountCredentialResult ReadKeychainCredentials(const std::string& configured_directory, std::stop_token stop, bool allow_prompt)
+		AccountCredentialResult ReadKeychainCredentials(const std::string& configured_directory, std::stop_token stop, bool allow_prompt)
 		{
 			const std::string service = KeychainService(configured_directory); if (service.empty()) return {};
 			std::string account = Environment("USER");
 			if (account.empty()) { const passwd* user = getpwuid(getuid()); if (user && user->pw_name) account = user->pw_name; }
 			if (account.empty()) return {};
-			return ReadMacAccountCredential(service, account, allow_prompt, stop);
+			return ReadAccountCredential(service, account, allow_prompt, stop);
 		}
 #endif
 
@@ -94,7 +94,7 @@ namespace uam::usage
 			const std::string configured_directory = Environment("CLAUDE_CONFIG_DIR");
 			if (configured_directory.size() > 4096) { error = "Claude Code configuration location is invalid."; account_unavailable = true; return {}; }
 			std::string encoded;
-			MacAccountCredentialResult keychain; keychain.account_unavailable = true;
+			AccountCredentialResult keychain; keychain.account_unavailable = true;
 #if defined(__APPLE__)
 			keychain = ReadKeychainCredentials(configured_directory, stop, allow_prompt); encoded = std::move(keychain.credential);
 #else

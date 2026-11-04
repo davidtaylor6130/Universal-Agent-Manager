@@ -16,7 +16,7 @@ const workspaces = { workspaces: [
 
 function mount(component: React.ReactNode) { const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host); mounted.push({ host, root }); act(() => root.render(component)); return host }
 function buttonsNamed(text: string) { return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).filter((button) => button.textContent === text) }
-function choose(selector: string, value: string) { const select = document.body.querySelector<HTMLSelectElement>(selector)!; act(() => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) }) }
+function choose(selector: string, optionText: string) { act(() => document.body.querySelector<HTMLButtonElement>(selector)!.click()); act(() => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find((item) => item.textContent?.includes(optionText))!.click()) }
 async function flush() { await act(async () => { await Promise.resolve() }) }
 
 describe('SSH routing repository matching', () => {
@@ -39,8 +39,9 @@ describe('SSH routing repository matching', () => {
     useAppStore.setState((state) => ({ executionRouting: { ...state.executionRouting, repositoryMatching: undefined } }))
     mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
     expect(sendToCEF).not.toHaveBeenCalled()
-    expect(document.body.querySelector('[aria-label="Destination for Source on Server A"]')).not.toBeNull()
-    expect(buttonsNamed('Choose folder…')).toHaveLength(0)
+    expect(buttonsNamed('Map folder…')).toHaveLength(1)
+    expect(document.body.textContent).not.toContain('Same repository')
+    expect(document.body.textContent).toContain('Not mapped')
   })
 
   it('shows the repository identity and automatic match, and saves a manual override without the capability flag', async () => {
@@ -51,21 +52,23 @@ describe('SSH routing repository matching', () => {
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'listRepositoryMatches', payload: {} })
     const body = document.body.textContent ?? ''
     expect(body).toContain('github.com/owner/repo')
-    expect(body).toContain('Matched by repository')
+    expect(body).toContain('Same repository')
     expect(body).toContain('/remote')
-    expect(body).toContain('No matching checkout')
-    expect(body).toContain('No repository detected')
-    expect(document.body.querySelector('[aria-label="Destination for Source on Server A"]')).toBeNull()
+    expect(body).toContain('1 workspace without a remote folder')
+    expect(body).toContain('/other · No repository')
 
-    act(() => buttonsNamed('Choose folder…')[0].click())
-    choose('[aria-label="Choose folder for Source on Server A"]', 'target')
-    expect(document.body.textContent).toContain('Chosen folder')
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Choose a different folder for Source on Server A"]')!.click())
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select Source"]')!.checked).toBe(true)
+    choose('[aria-label="Remote folder for Source on Server A"]', 'Remote checkout')
+    act(() => buttonsNamed('Map 1')[0].click())
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Chosen')
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('/picked')
     await act(async () => buttonsNamed('Save routing')[0].click())
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'target' }] })] }))
     expect(save.mock.calls[0][0]).not.toHaveProperty('repositoryMatching')
   })
 
-  it('clears a saved override with useAutomaticMatch so the repository match applies again', async () => {
+  it('clears a saved override by removing it, since Save replaces the list, so the repository match applies again', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({
       setExecutionRoutingSettings: save,
@@ -73,10 +76,24 @@ describe('SSH routing repository matching', () => {
     })
     mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
     await flush()
-    expect(document.body.textContent).toContain('Chosen folder')
-    act(() => buttonsNamed('Use automatic match')[0].click())
-    expect(document.body.textContent).toContain('Matched by repository')
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Chosen')
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Use repository match for Source on Server A"]')!.click())
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Same repository')
     await act(async () => buttonsNamed('Save routing')[0].click())
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: '', useAutomaticMatch: true }] })] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ hosts: [expect.objectContaining({ workspaceMappings: [] })] }))
+  })
+
+  it('offers the repository match, not Remove mapping, for a broken chosen override that has one', async () => {
+    useAppStore.setState({
+      executionRouting: { enabled: true, repositoryMatching: true, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 1, providers: [], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: 'gone' }] }] },
+    })
+    mount(<ExecutionRoutingDialog onClose={vi.fn()} />)
+    await flush()
+    expect(document.body.querySelector('[data-problem]')?.textContent).toContain('Folder no longer exists')
+    expect(document.body.querySelector('[aria-label="Remove mapping for Source on Server A"]')).toBeNull()
+    act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="Use repository match for Source on Server A"]')!.click())
+    expect(document.body.querySelector('[data-problem]')).toBeNull()
+    expect(document.body.querySelector('.uam-rt-map-row')?.textContent).toContain('Same repository')
+    expect(buttonsNamed('Save routing')[0].disabled).toBe(false)
   })
 })

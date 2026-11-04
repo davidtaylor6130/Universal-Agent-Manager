@@ -190,7 +190,7 @@ describe('David subagent catalogue and pane navigation', () => {
     await act(async () => root.render(<MainPanel />))
     await act(async () => useAppStore.getState().setActiveSession(child.id))
     const pane = host.querySelector('[data-testid="subagent-pane-navigation-root"]')!
-    expect(pane.textContent).toContain('provider has not supplied a readable transcript')
+    expect(pane.textContent).toContain('No readable transcript from the provider.')
     expect(pane.querySelector('textarea,input,form')).toBeNull()
     expect(useAppStore.getState().activeSessionId).toBe(parent.id)
     await act(async () => useAppStore.setState(state => ({ messages: { ...state.messages, [child.id]: [{ id: 'native-message', sessionId: child.id, role: 'assistant', content: 'Available child history', createdAt: new Date() }] } })))

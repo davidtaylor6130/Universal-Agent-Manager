@@ -1184,7 +1184,7 @@ void ChatDomainService::AddMessageWithAnalytics(ChatSession& chat, const Message
 	AppendMessage(chat, role, text, &analytics);
 }
 
-void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const
+void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id, bool background_save_queued) const
 {
 	ChatSession* chat = FindChatById(app, chat_id);
 	if (chat == nullptr) return;
@@ -1203,7 +1203,10 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 	chat->snoozed_until_ms = 0;
 	chat->attention_revision = uam::chat_ids::NewChatId();
 	app.chats_with_unseen_updates.insert(chat_id);
-	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+	// Runs from provider output on the poll thread: never fall back to a synchronous full transcript save.
+	// A caller that has just queued an ordinary background save of this chat leaves these fields to that save.
+	if (app.data_root.empty() || background_save_queued) return;
+	if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false))
 		app.pending_chat_save_at_by_chat_id[chat_id] = 0.0;
 }
 
@@ -1215,7 +1218,7 @@ bool ChatDomainService::AcknowledgeChatAttention(uam::AppState& app, const std::
 	const std::string previous_revision = chat->attention_revision;
 	const std::string previous_opened = chat->last_opened_at;
 	chat->attention_revision.clear();
-	chat->last_opened_at = std::max(uam::time::TimestampNow(), chat->updated_at);
+	chat->last_opened_at = uam::time::LaterHistoryTimestamp(uam::time::TimestampNow(), chat->updated_at);
 	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
 	{
 		chat->attention_revision = previous_revision;
@@ -1295,7 +1298,9 @@ bool ChatDomainService::SetChatSettled(uam::AppState& app, const std::string& ch
 std::string ChatDomainService::AttentionRevision(const uam::AppState& app, const ChatSession& chat) const
 {
 	if (!chat.attention_revision.empty()) return chat.attention_revision;
-	if (app.chats_with_unseen_updates.contains(chat.id) || (!chat.last_opened_at.empty() && chat.updated_at > chat.last_opened_at))
+	// Selection stamps local time while native imports carry ISO UTC; compare instants, not strings (#629).
+	if (app.chats_with_unseen_updates.contains(chat.id) ||
+	    (!chat.last_opened_at.empty() && uam::time::HistoryTimestampIsAfter(chat.updated_at, chat.last_opened_at)))
 		return "legacy:" + chat.updated_at;
 	return "";
 }

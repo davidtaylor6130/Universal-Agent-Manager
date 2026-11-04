@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PhonePairingPanel } from './PhonePairingPanel'
 
 const send = vi.hoisted(() => vi.fn())
+const report = vi.hoisted(() => vi.fn())
+vi.mock('../../utils/appFailure', () => ({ reportAppFailure: report }))
 vi.mock('../../ipc/cefBridge', () => ({ isCompanionContext: () => false, sendToCEF: send }))
 vi.mock('qrcode.react', () => ({ QRCodeSVG: ({ value }: { value: string }) => <svg aria-label="Pairing fixture" data-pairing={value} /> }))
 
@@ -28,7 +30,7 @@ describe('desktop native-phone pairing', () => {
     const host = render()
     await act(async () => host.querySelector('button')!.click())
     expect(host.querySelector('svg[data-pairing]')).toBeNull()
-    expect(host.textContent).toContain('changed')
+    expect(report).toHaveBeenCalledWith('The phone address changed.', expect.any(String))
   })
 
   it('carries only the public certificate supplied with the active route', async () => {
@@ -97,7 +99,7 @@ describe('desktop native-phone pairing', () => {
     const host = render()
     await act(async () => host.querySelector('button')!.click())
     expect(host.querySelector('svg[data-pairing]')).not.toBeNull()
-    expect(host.textContent).toContain('does not revoke')
+    expect(host.textContent).toContain('hiding does not revoke existing connections')
     act(() => vi.advanceTimersByTime(120000))
     expect(host.querySelector('svg[data-pairing]')).toBeNull()
   })
@@ -106,7 +108,7 @@ describe('desktop native-phone pairing', () => {
     send.mockResolvedValue({ ok: true, data: { token: 'invalid-secret' } })
     const host = render()
     await act(async () => host.querySelector('button')!.click())
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Pairing code unavailable')
+    expect(report).toHaveBeenCalledWith('Pairing code unavailable.', expect.any(String))
     expect(host.textContent).not.toContain('invalid-secret')
     expect(host.querySelector('svg[data-pairing]')).toBeNull()
   })

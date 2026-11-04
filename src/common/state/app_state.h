@@ -813,6 +813,11 @@ namespace uam
 		std::filesystem::path provider_configuration_directory;
 		std::string launch_model_options_id;
 		bool launch_model_options_captured = false; // Runtime-only: empty captured Default differs from an unknown reattached launch.
+		int launch_turn_timeout_seconds = 0; // Runtime-only: request timeout OpenCode actually received at launch; 0 is none or unknown.
+		int launch_turn_timeout_setting_seconds = 0; // Runtime-only: turn timeout setting an eligible OpenCode launch used; 0 is not eligible.
+		// Runtime-only: a timeout stop the UI presents as its own notice while last_error still equals timeout_stop_error.
+		std::string timeout_stop_error, timeout_stop_label;
+		int timeout_stop_seconds = 0;
 		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;

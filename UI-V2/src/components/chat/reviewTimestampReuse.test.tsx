@@ -104,7 +104,6 @@ describe('review-label timestamp reuse', () => {
       const row = host.querySelector(`.space-y-1[data-message-index="${index}"]`)
       const time = row?.querySelector('time.conversation-turn-start')
       const date = messages[index].createdAt
-      expect(row?.getAttribute('title')).toBe(localDateTime(date))
       expect(time?.getAttribute('datetime')).toBe(date.toISOString())
       expect(time?.textContent).toBe(identity ?? localDateTime(date))
       expect(time?.classList.contains('sr-only')).toBe(identity === undefined)

@@ -1,0 +1,38 @@
+/* ViewportMenu open/close: the menu grows out of its trigger side and shrinks back toward it.
+   Timing from --dur-* / --ease* tokens; reduced motion and Motion Off stop it (data-motion="off" also sets --motion-scale 0). */
+.uam-viewport-menu[data-viewport-menu] {
+  --vmenu-x: 0px;
+  --vmenu-y: calc(var(--sp-1) * -1);
+  animation: uam-vmenu-in var(--dur-fast) var(--ease-out-soft) backwards;
+}
+.uam-viewport-menu[data-viewport-menu][data-state="closed"] {
+  animation: uam-vmenu-out var(--dur-exit) var(--ease) forwards;
+  pointer-events: none;
+}
+.uam-viewport-menu[data-viewport-menu][data-menu-side="top"] { --vmenu-y: var(--sp-1); }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="left"] { --vmenu-x: var(--sp-1); --vmenu-y: 0px; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="right"] { --vmenu-x: calc(var(--sp-1) * -1); --vmenu-y: 0px; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="point"] { --vmenu-y: 0px; }
+
+/* Origin sits on the anchor edge: the side facing the trigger, aligned to its start or end. */
+.uam-viewport-menu[data-viewport-menu][data-menu-side="bottom"] { transform-origin: top left; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="bottom"][data-menu-align="end"] { transform-origin: top right; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="top"] { transform-origin: bottom left; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="top"][data-menu-align="end"] { transform-origin: bottom right; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="right"] { transform-origin: top left; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="right"][data-menu-align="end"] { transform-origin: bottom left; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="left"] { transform-origin: top right; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="left"][data-menu-align="end"] { transform-origin: bottom right; }
+.uam-viewport-menu[data-viewport-menu][data-menu-side="point"] { transform-origin: top left; }
+
+@keyframes uam-vmenu-in {
+  from { opacity: 0; transform: translate(var(--vmenu-x), var(--vmenu-y)) scale(0.96); }
+}
+@keyframes uam-vmenu-out {
+  to { opacity: 0; transform: translate(var(--vmenu-x), var(--vmenu-y)) scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-viewport-menu[data-viewport-menu], .uam-viewport-menu[data-viewport-menu][data-state="closed"] { animation: none; }
+}
+[data-motion="off"] .uam-viewport-menu[data-viewport-menu],
+[data-motion="off"] .uam-viewport-menu[data-viewport-menu][data-state="closed"] { animation: none; }

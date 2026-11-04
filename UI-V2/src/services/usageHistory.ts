@@ -106,7 +106,7 @@ export interface UsagePricing {
 }
 export interface UsageWindow { startMs: number; endMs: number; days?: UsageWindowDays }
 export const USAGE_WINDOWS: { days: UsageWindowDays; label: string }[] = [
-  { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 0, label: 'All Time' },
+  { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 0, label: 'All time' },
 ]
 export function usageWindow(days: UsageWindowDays, now = Date.now()): UsageWindow {
   return { startMs: Math.max(0, days === 0 ? 0 : days === 1 ? now - 86400000 : Math.floor(now / 86400000) * 86400000 - (days - 1) * 86400000), endMs: now, days }

@@ -54,7 +54,7 @@ describe('T3-style model picker', () => {
     const search = host.querySelector<HTMLInputElement>('input')!
     expect(document.activeElement).toBe(search)
     expect(host.querySelectorAll('[role="menuitemradio"]').length).toBeLessThan(25)
-    expect(host.querySelector<HTMLButtonElement>('[aria-label="Claude"]')!.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Claude"]')!.getAttribute('aria-disabled')).toBe('true')
     act(() => search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 2')

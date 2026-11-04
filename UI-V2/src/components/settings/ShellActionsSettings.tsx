@@ -1,12 +1,12 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
-import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
+import { reportAppFailure } from '../../utils/appFailure'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
+import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Presence, RowButton, StatusDot, Switch, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SaveButton, SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -24,6 +24,26 @@ function newAction(): ShellAction {
     enabled: true,
     openWorkspace: true,
   }
+}
+
+/** Per-row editor: stays mounted for the exit length so it animates out instead of popping away. */
+function ActionEditor({ open, children }: { open: boolean; children: ReactNode }) {
+  const presence = usePresence(open)
+  if (!presence.mounted) return null
+  return <div className="uam-central-editor uam-presence grid gap-3 sm:grid-cols-2" data-state={presence.closing ? 'closed' : 'open'}>{children}</div>
+}
+
+/** Name field that slides open under the Group control, so creating a group never stacks a second dialog. */
+function NewGroupForm({ open, value, onChange, onSubmit, onCancel }: { open: boolean; value: string; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void }) {
+  const presence = usePresence(open)
+  if (!presence.mounted) return null
+  return <form aria-label="New group" className="uam-presence flex items-center gap-2" data-state={presence.closing ? 'closed' : 'open'}
+    onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel() } }}
+    onSubmit={event => { event.preventDefault(); if (parseGroupPath(value).length) onSubmit() }}>
+    <input autoFocus aria-label="Group name" placeholder="Group name" value={value} onChange={event => onChange(event.target.value)} className="uam-field min-w-0 flex-1" />
+    <Button type="submit" size="sm" disabled={!parseGroupPath(value).length}>Add group</Button>
+    <IconButton size="sm" icon={<X size={14} />} label="Cancel new group" onClick={onCancel} />
+  </form>
 }
 
 function groupPathText(action: ShellAction) {
@@ -66,7 +86,6 @@ export interface ShellActionsHandle { requestLeave(next: () => void): void }
 
 export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function ShellActionsSettings(_props, ref) {
   const savedActions = useAppStore((s) => s.shellActions)
-  const notification = useAppStore((s) => s.shellActionNotification)
   const markdownEntries = useAppStore((s) => s.markdownStoreEntries)
   const providers = useAppStore((s) => s.providers)
   const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
@@ -76,7 +95,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [actions, setActions] = useState(savedActions)
   const [applying, setApplying] = useState(false)
   const applyingRef = useRef(false)
-  const [error, setError] = useState('')
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({})
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const groupIdBase = useId()
@@ -92,7 +110,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [pendingExit, setPendingExit] = useState<(() => void) | null>(null)
   const [newGroupActionId, setNewGroupActionId] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
-  const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null)
   const dirty = JSON.stringify(actions) !== JSON.stringify(appliedActions)
   const invalidAction = actions.find(action => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
   const validationError = invalidAction ? 'Each action needs a label and input type; enabled skill actions also need a skill.' : ''
@@ -103,7 +120,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     if (dirty) setPendingExit(() => next)
     else next()
   } }), [dirty])
-  useEffect(() => { setToolbarTarget(document.getElementById('settings-page-actions')) }, [])
   useEffect(() => {
     if (!dirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -111,12 +127,24 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   const [pendingDeleteActionId, setPendingDeleteActionId] = useState('')
+  const [removingActionIds, setRemovingActionIds] = useState<Set<string>>(() => new Set())
   const pendingDeleteAction = actions.find((action) => action.id === pendingDeleteActionId)
 
   useEffect(() => {
     if (!dirtyRef.current && !applyingRef.current) { setActions(savedActions); setAppliedActions(savedActions) }
   }, [savedActions])
   useEffect(() => { void refreshMarkdownStore() }, [refreshMarkdownStore])
+
+  // Row slides out through its exit length before it is removed from state.
+  const removeAction = (id: string) => {
+    const drop = () => {
+      setActions((current) => current.filter((item) => item.id !== id))
+      setRemovingActionIds((current) => { const next = new Set(current); next.delete(id); return next })
+    }
+    if (!motionAllowed()) return drop()
+    setRemovingActionIds((current) => new Set(current).add(id))
+    window.setTimeout(drop, scaledMs(EXIT_MS))
+  }
 
   const update = (id: string, patch: Partial<ShellAction>) => {
     setActions((current) => current.map((action) => action.id === id ? { ...action, ...patch } : action))
@@ -145,24 +173,23 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     if (applyingRef.current) return false
     const prepared = actions.map(action => ({ ...action, label: action.label.trim() }))
     if (invalidAction) {
-      setError(validationError)
       setPendingExit(null)
       revealInvalidAction()
       return false
     }
-    setError('')
     applyingRef.current = true
     setApplying(true)
     try {
       const saved = await setShellActions(prepared)
-      if (!saved) { setError(useAppStore.getState().shellActionNotification || 'Could not save shell actions.'); return false }
+      // The store's shell action notification already reaches the notifications panel on a failed save or apply.
+      if (!saved) return false
       const applied = await applyShellActions()
-      if (!applied) { setError(useAppStore.getState().shellActionNotification || 'Could not apply shell actions. Save again to retry.'); return false }
+      if (!applied) return false
       setActions(prepared)
       setAppliedActions(prepared)
       return true
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not save shell actions. Try again.')
+      reportAppFailure('Could not save shell actions.', reason instanceof Error ? reason.message : 'Try again.')
       return false
     } finally {
       applyingRef.current = false
@@ -174,11 +201,8 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     ...actions.map(groupPathText),
     ...markdownEntries.map(entry => entry.group || ''),
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
-  const toolbar = <div className="flex items-center gap-2">
-    {dirty && <StatusIndicator issues={['Unsaved shell action changes']} />}
-    <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
-  </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
+  // ui: hand-rolled group header kept — the aria-label carries the full group path and collapse animates grid rows with visibility, which the Disclosure summary cannot express.
   const renderEntries = (entries: ActionEntry[], renderAction: (action: ShellAction) => ReactNode): ReactNode[] => entries.map((entry, index) => {
     if (!('entries' in entry)) return renderAction(entry)
     const collapsed = collapsedGroups[entry.key] ?? false
@@ -186,59 +210,44 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     const id = `${groupIdBase}${encodeURIComponent(entry.key)}`
     const next = entries[index + 1]
     return <div key={`group:${entry.key}`} style={{ borderTop: index ? '1px solid var(--border)' : undefined, borderBottom: next && !('entries' in next) ? '1px solid var(--border)' : undefined }}>
-      <button type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
-        className="flex w-full items-center gap-1.5 py-2 text-left" style={{ minHeight: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
-        <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-150 motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
+      <RowButton type="button" aria-label={label} aria-expanded={!collapsed} aria-controls={id} onClick={() => setCollapsedGroups((current) => ({ ...current, [entry.key]: !collapsed }))}
+        className="flex w-full items-center gap-1.5 text-left" style={{ height: 32, background: 'transparent', border: 0, color: 'var(--text-3)', cursor: 'pointer' }}>
+        <ChevronRight size={12} aria-hidden className="shrink-0 transition-transform duration-base motion-reduce:transition-none" style={{ transform: collapsed ? 'none' : 'rotate(90deg)' }} />
         <span className="uam-set-section__title min-w-0 truncate">{entry.path.length ? entry.path[entry.path.length - 1] : 'Ungrouped'}</span>
         <span className="ml-auto text-xs tabular-nums">{entry.count}</span>
-      </button>
-      <div id={id} role="group" aria-label={label} hidden={collapsed} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>
-        {renderEntries(entry.entries, renderAction)}
+      </RowButton>
+      <div className="grid transition-[grid-template-rows,visibility] duration-base motion-reduce:transition-none" style={{ gridTemplateRows: collapsed ? '0fr' : '1fr', visibility: collapsed ? 'hidden' : 'visible' }}>
+        <div style={{ minHeight: 0, overflow: 'hidden' }}>
+          <div id={id} role="group" aria-label={label} style={{ paddingInlineStart: 'var(--sp-4)', borderTop: '1px solid var(--border)' }}>
+            {renderEntries(entry.entries, renderAction)}
+          </div>
+        </div>
       </div>
     </div>
   })
 
   return (
-    <div className="grid gap-6">
-      {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      <Presence open={Boolean(pendingExit)}>
-        <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
-          <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
-            <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-            {(validationError || error) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError || error}</p>}
-            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => { setPendingExit(null); revealInvalidAction() }}>Go back</Button><Button variant="primary" disabled={applying || Boolean(invalidAction)} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
-          </div>
-        </Overlay>
-      </Presence>
-      <Presence open={Boolean(newGroupActionId)}>
-        <Overlay open zIndex={80}>
-          <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; moveToGroup(newGroupActionId, parseGroupPath(newGroupName)); setNewGroupActionId('') }}>
-            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16} />} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
-            <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="uam-field w-full" />
-            <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
-          </form>
-        </Overlay>
-      </Presence>
-      <Presence open={Boolean(pendingDeleteAction)}>
-        <Overlay open zIndex={80} onBackdropMouseDown={() => setPendingDeleteActionId('')}>
-          <div role="alertdialog" aria-modal="true" aria-label="Delete shell action" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setPendingDeleteActionId('') } }}>
-            <h3 className="text-sm font-semibold">Delete shell action?</h3>
-            <p className="text-xs" style={{ color: 'var(--text-2)' }}>Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.</p>
-            <div className="flex justify-end gap-2">
-              <Button autoFocus onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
-              <Button variant="danger" onClick={() => {
-                const id = pendingDeleteActionId
-                setActions((current) => current.filter((item) => item.id !== id))
-                setPendingDeleteActionId('')
-              }}>Delete action</Button>
-            </div>
-          </div>
-        </Overlay>
-      </Presence>
+    <div className="grid gap-0">
+      <Presence open={Boolean(pendingExit)}>{pendingExit && <UnsavedChangesDialog title="Save shell action changes?" label="Unsaved shell actions" busy={applying} saveDisabled={Boolean(invalidAction)} error={validationError || undefined}
+        onStay={() => { setPendingExit(null); revealInvalidAction() }}
+        onDiscard={() => { const next = pendingExit; setActions(appliedActions); setPendingExit(null); next() }}
+        onSave={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }} />}</Presence>
+      <ConfirmDialog open={Boolean(pendingDeleteAction)} title="Delete shell action?" label="Delete shell action" confirmLabel="Delete action"
+        onCancel={() => setPendingDeleteActionId('')}
+        onConfirm={() => {
+          removeAction(pendingDeleteActionId)
+          setPendingDeleteActionId('')
+        }}>
+        Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.
+      </ConfirmDialog>
 
       <SettingsSection title="Actions"
-        actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>}>
-        {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add one to start chats from Finder or Explorer." />}
+        actions={<>
+          <Reveal open={dirty}><StatusIndicator issues={['Unsaved shell action changes']} /></Reveal>
+          <Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); revealGroup(action.groupPath); setActions(current => [action, ...current]) }}>Add action</Button>
+          <SaveButton saving={applying} leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</SaveButton>
+        </>}>
+        <Reveal open={actions.length === 0}><p className="uam-prov-sub">No shell actions yet. Add one to start chats from Finder or Explorer.</p></Reveal>
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
         {renderEntries(groupActions(actions), (action) => {
@@ -248,16 +257,16 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const expanded = expandedActions[action.id] ?? false
           const changed = JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id))
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
-          return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
+          return <div key={action.id} className="uam-presence" data-state={removingActionIds.has(action.id) ? 'closed' : 'open'}><SettingRow icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
-            description={<span className="uam-prov-detail">{summary}</span>}
+            description={summary}
             status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
-              <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
+              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-base motion-reduce:transition-none" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
+              <IconButton size="sm" icon={<X size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
-            {expanded && <div className="uam-central-editor grid gap-3 sm:grid-cols-2">
+            <ActionEditor open={expanded}>
               <SettingsField label="Name">
                 <input id={actionFieldId(action.id, 'name')} aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />
               </SettingsField>
@@ -266,6 +275,9 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   if (value === '__new__') { setNewGroupActionId(action.id); setNewGroupName('') }
                   else moveToGroup(action.id, parseGroupPath(value))
                 }} options={[{ value: '', label: 'No group', icon: <FolderTree size={15} /> }, ...groupOptions.map(group => ({ value: group, label: group, icon: <FolderTree size={15} /> })), { value: '__new__', label: 'New group…', icon: <Plus size={15} /> }]} />
+                <NewGroupForm open={newGroupActionId === action.id} value={newGroupName} onChange={setNewGroupName}
+                  onSubmit={() => { moveToGroup(action.id, parseGroupPath(newGroupName)); setNewGroupActionId('') }}
+                  onCancel={() => { setNewGroupActionId(''); document.getElementById(actionFieldId(action.id, 'group'))?.focus() }} />
               </SettingsField>
               <SettingsField label="Provider">
                 <MenuSelect
@@ -304,7 +316,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   label={`Action for ${action.label}`}
                   onChange={(value) => update(action.id, { openWorkspace: value === 'workspace' })}
                   options={[
-                    { value: 'workspace', label: 'Open as Workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
+                    { value: 'workspace', label: 'Open as workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
                     { value: 'skill', label: 'Run skill', description: 'Apply a skill to the selection.', icon: <Sparkles size={15} /> },
                   ]}
                 />
@@ -324,7 +336,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                   ]}
                 />
               </SettingsField>
-              {!action.openWorkspace && <div className="sm:col-span-2"><SettingsField label="Skill">
+              <Reveal open={!action.openWorkspace} className="sm:col-span-2"><SettingsField label="Skill">
                 <MenuSelect
                   label={`Skill for ${action.label}`}
                   value={action.skillPath}
@@ -334,15 +346,14 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
                     ...markdownEntries.map((entry) => ({ value: entry.filePath, label: entry.title, icon: <BookOpen size={15} /> })),
                   ]}
                 />
-              </SettingsField></div>}
-            </div>}
-          </SettingRow>
+              </SettingsField></Reveal>
+            </ActionEditor>
+          </SettingRow></div>
         })}
         </fieldset>
       </SettingsSection>
 
-      {validationError && validationError !== (error || notification) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
-      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--error)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14} />} label="Dismiss shell action message" onClick={() => { setError(''); void useAppStore.getState().dismissShellActionNotification() }} /></div>}
+      <Reveal open={!!(validationError)}><p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p></Reveal>
     </div>
   )
 })

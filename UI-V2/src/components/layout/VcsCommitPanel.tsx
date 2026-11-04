@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Presence } from '../ui'
+import { Button, IconButton, MenuSelect, Presence, RowButton, Tab, Tabs } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
@@ -209,9 +209,11 @@ export function VcsCommitPanel() {
       </div>
 
       {/* Recorded chat edits are Codex receipts; builds without Codex keep only the workspace scope. */}
-      {CODEX_ENABLED && <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'workspace'} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
-        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'recorded'} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
+      {CODEX_ENABLED && <div className="shrink-0 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <Tabs aria-label="Change review scope" variant="underline" value={reviewScope} onChange={(scope) => { setReviewScope(scope); setDiffSelection(null) }}>
+          <Tab value="workspace">Workspace</Tab>
+          <Tab value="recorded">Recorded chat edits</Tab>
+        </Tabs>
       </div>}
       {CODEX_ENABLED && reviewScope === 'recorded' ? (
         activeSessionId && session ? (
@@ -226,8 +228,11 @@ export function VcsCommitPanel() {
       ) : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="shrink-0 px-3 pt-3">
           {(status.warning || status.error || notice) && (
-            <div role="status" className="uam-rv-alert mb-3" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-              {notice || status.error || status.warning}
+            <div role="status" className="uam-rv-alert mb-3 flex items-start gap-2" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+              {notice === 'Commit created.'
+                ? <CheckCircle2 size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--success)' }} />
+                : <TriangleAlert size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: status.error || notice ? 'var(--error)' : 'var(--warning)' }} />}
+              <span>{notice || status.error || status.warning}</span>
             </div>
           )}
           {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer" style={{ color: 'var(--text-3)' }}>Command output</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" style={{ color: 'var(--text-2)' }}>{commitOutput}</pre></details>}
@@ -248,6 +253,7 @@ export function VcsCommitPanel() {
         </div>
 
         <div className="mx-3 flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
+          {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
           <button
             type="button"
             role="checkbox"
@@ -260,7 +266,7 @@ export function VcsCommitPanel() {
             {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
           </button>
           <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
-          {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" />}
+          {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} role="img" aria-label="Loading VCS status" />}
           <span style={{ color: 'var(--text-3)' }}>{selectedFiles.length} selected</span>
         </div>
         <div className="mx-3 min-h-0 flex-1 overflow-y-auto">
@@ -270,6 +276,7 @@ export function VcsCommitPanel() {
             const selected = selectedFileSet.has(file.path)
             return (
               <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
+                {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
                 <button
                   type="button"
                   role="checkbox"
@@ -280,7 +287,7 @@ export function VcsCommitPanel() {
                 >
                   {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
                 </button>
-                <button
+                <RowButton
                   type="button"
                   aria-label={`Review changes to ${file.path}`}
                   onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
@@ -306,7 +313,7 @@ export function VcsCommitPanel() {
                     )}
                   </span>
                   <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
-                </button>
+                </RowButton>
               </div>
             )
           })}

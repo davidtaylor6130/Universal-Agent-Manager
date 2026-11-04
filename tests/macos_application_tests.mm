@@ -137,12 +137,14 @@ int main(int argc, char* argv[])
 			const bool delayed_cancel = std::string_view(argv[1]).find("delayed") != std::string_view::npos;
 			__block BOOL saw_picker = NO;
 			__block BOOL request_fired = NO;
+			__block CFAbsoluteTime quit_requested_at = 0;
 			__block BOOL timed_out = NO;
 			__block BOOL closed_inside_modal = NO;
 			__block NSTimer* watchdog = nil;
 			NSTimer* request = [NSTimer timerWithTimeInterval:0.1 repeats:NO block:^(NSTimer*)
 			{
 				request_fired = YES;
+				quit_requested_at = CFAbsoluteTimeGetCurrent();
 				// Time the 2 s close budget from the request; a loaded host can first service the panel loop after 2 s.
 				watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
 				{
@@ -198,8 +200,15 @@ int main(int argc, char* argv[])
 				[application terminate:nil];
 				closed_inside_modal = closed_inside_modal || window.closeRequested;
 			}
-			[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
 			const BOOL expected_close = cancel ? NO : YES;
+			// The deferred close runs from the default-mode loop after the modal unwinds, which a loaded host can
+			// service later than a fixed settle. Always run the full settle (at least one pass), then keep running
+			// until the close is requested; the close is bounded by the existing 2 s budget from the Quit request.
+			NSDate* settle = [NSDate dateWithTimeIntervalSinceNow:0.1];
+			NSDate* close_deadline = [NSDate dateWithTimeIntervalSinceReferenceDate:quit_requested_at + 2.0];
+			do
+				[[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+			while ([settle timeIntervalSinceNow] > 0 || (expected_close && !window.closeRequested && [close_deadline timeIntervalSinceNow] > 0));
 			if (!saw_picker || timed_out || closed_inside_modal || accepted || !selected.empty() || !error.empty() || window.closeRequested != expected_close)
 			{
 				std::fprintf(stderr, "picker=%d timeout=%d inside=%d accepted=%d close=%d count=%lu\n", saw_picker, timed_out, closed_inside_modal, accepted, window.closeRequested, static_cast<unsigned long>(window.closeRequestCount));

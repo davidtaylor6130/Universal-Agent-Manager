@@ -33,7 +33,7 @@ import {
   providerCapabilities,
   providerMetadataForId,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -193,7 +193,6 @@ export function deleteSessionsFromState(state: AppState, deletedIds: Set<string>
     goalsByChatId: withoutDeletedKeys(state.goalsByChatId, deletedIds),
     activeGoalIdByChatId: withoutDeletedKeys(state.activeGoalIdByChatId, deletedIds),
     goalModeByChatId: withoutDeletedKeys(state.goalModeByChatId, deletedIds),
-    defaultGoalTokenBudgetByChatId: withoutDeletedKeys(state.defaultGoalTokenBudgetByChatId, deletedIds),
     cliBindingBySessionId: withoutDeletedKeys(state.cliBindingBySessionId, deletedIds),
     acpBindingBySessionId: withoutDeletedKeys(state.acpBindingBySessionId, deletedIds),
     cliTranscriptBySessionId: withoutDeletedKeys(state.cliTranscriptBySessionId, deletedIds),
@@ -500,7 +499,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     memoryIdleDelaySeconds: DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
     memoryRecallBudgetBytes: DEFAULT_MEMORY_RECALL_BUDGET_BYTES,
     goalMaxLoopIterations: DEFAULT_GOAL_MAX_LOOP_ITERATIONS,
+    goalTokenBudget: 0,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
+    activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
     appVersion: `V${packageVersion}`,
     runnerProtocolVersion: 0,
@@ -690,6 +691,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           data.startIndex < 0 || !Number.isSafeInteger(data.totalCount) || data.totalCount === undefined ||
           data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
           hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
+        // ponytail: rail jumps report through the shared notice; the rail itself is the retry.
+        if (queryRequestId.startsWith('message-rail:')) {
+          set({ chatSearchNavigation: null })
+          reportAppFailure("Couldn't jump to that message", 'The chat changed while loading. Try the jump again.')
+          return false
+        }
         set((state) => ({ chatSearchNavigation: null, ...historyReadFailure(state, hit.chatId, response.error || 'Chat history changed. Try opening the message again.') }))
         return false
       }

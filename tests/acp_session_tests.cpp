@@ -2915,6 +2915,67 @@ UAM_TEST(IterationTurnInactivityBlocksItsOwnerGoal)
 	UAM_ASSERT_EQ(saved_owner->goals.front().status, GoalStatus::Blocked);
 }
 
+UAM_TEST(AcpTurnInactivityTimeoutIsPresentedAsATimeoutStop)
+{
+	TempDir temp("uam-inactivity-timeout-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	ChatSession chat;
+	chat.id = "timeout-chat";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->processing = true;
+	session->prompt_request_id = 1;
+	session->turn_started_time_s = 1.0;
+	session->last_runtime_activity_time_s = 1.0;
+	session->lifecycle_state = uam::acp_detail::kAcpLifecycleProcessing;
+	uam::AcpSessionState* raw = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, *raw, app.chats.back(), 61.0));
+	UAM_ASSERT_EQ(raw->timeout_stop_label, std::string("Provider turn timeout"));
+	UAM_ASSERT_EQ(raw->timeout_stop_seconds, 60);
+	UAM_ASSERT(!raw->last_error.empty());
+	UAM_ASSERT_EQ(raw->timeout_stop_error, raw->last_error);
+}
+
+UAM_TEST(AcpOpenCodeRequestTimeoutIsLabelledOnlyAfterItsLaunchLimit)
+{
+	for (const bool past_limit : {true, false})
+	{
+		TempDir temp("uam-opencode-request-timeout-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "chat-1";
+		chat.provider_id = "opencode-cli";
+		app.chats.push_back(std::move(chat));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = "chat-1";
+		session->provider_id = "opencode-cli";
+		session->running = session->processing = session->session_ready = true;
+		session->prompt_request_id = 42;
+		session->queued_prompt = "hello";
+		session->pending_request_methods[42] = "session/prompt";
+		session->launch_turn_timeout_seconds = 1800;
+		session->turn_started_time_s = uam::GetAppTimeSeconds() - (past_limit ? 1801.0 : 10.0);
+		uam::AcpSessionState* raw = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw, app.chats.front(), R"({"jsonrpc":"2.0","id":42,"error":{"code":-32603,"message":"Internal error: The operation timed out."}})"));
+		UAM_ASSERT_EQ(raw->timeout_stop_error, raw->last_error);
+		UAM_ASSERT_EQ(raw->timeout_stop_label, std::string(past_limit ? "OpenCode request timeout" : "An OpenCode provider timeout"));
+		UAM_ASSERT_EQ(raw->timeout_stop_seconds, past_limit ? 1800 : 0);
+		nlohmann::json acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT_EQ(acp["timeoutStop"], (nlohmann::json{{"label", raw->timeout_stop_label}, {"seconds", raw->timeout_stop_seconds}}));
+		// Any later error retires the timeout presentation.
+		raw->last_error = "A different later failure.";
+		acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(acp["timeoutStop"].is_null());
+	}
+}
+
 UAM_TEST(RemoteReconnectFailureKeepsRetryingAHelperOwnedTurn)
 {
 	TempDir temp("uam-remote-reconnect-exhaustion");
@@ -16727,6 +16788,50 @@ UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
 	}
 }
 
+UAM_TEST(AcpOpenCodeChangedTurnTimeoutRestartsBeforeTheNextTurnOnly)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("opencode-cli").IsEnabled()) return;
+	for (const std::string_view scenario : {"unchanged", "changed", "changed_mid_turn", "changed_below_default"})
+	{
+		RestartQueuedSettingsFixture fixture("opencode-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		session.current_model_id = chat.model_id;
+		// Below OpenCode's 5-minute default nothing was sent, so changing between such values needs no relaunch.
+		session.launch_turn_timeout_seconds = scenario == "changed_below_default" ? 0 : 1800;
+		session.launch_turn_timeout_setting_seconds = scenario == "changed_below_default" ? 240 : 1800;
+		fixture.app.settings.active_turn_inactivity_timeout_seconds = scenario == "unchanged" ? 1800 : scenario == "changed_below_default" ? 120 : 2700;
+		if (scenario == "changed_mid_turn") { session.processing = true; session.prompt_request_id = 9; }
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const bool drained = uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat);
+		if (scenario == "unchanged" || scenario == "changed_below_default")
+		{
+			UAM_ASSERT(drained);
+			UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+		}
+		else if (scenario == "changed")
+		{
+			UAM_ASSERT(!fixture.app.acp_process_stop_tasks.empty());
+			// The owned input relaunches with the new limit; later input stays queued behind it.
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(session.queued_user_prompts.front().id, std::string("restart-future-input"));
+			UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+		}
+		else
+		{
+			// The running turn is never interrupted for a changed limit.
+			(void)drained;
+			UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+			UAM_ASSERT(session.running && session.processing && !session.local_stop_pending && !session.remote_stop_pending);
+		}
+	}
+}
+
 UAM_TEST(AcpNongenericQueuedSettingsPreserveClaimedClaudeQuotaControl)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
@@ -20471,6 +20576,73 @@ namespace
 			return lines;
 		}
 	};
+
+	UAM_TEST(SettledRemoteTurnMarkerClearsWithRawInputQueued)
+	{
+		// Issue #682 follow-up: input queued behind a remote turn must not keep its marker forever,
+		// because queue drain waits for the marker to clear.
+		TempDir temp("uam-remote-marker-queued");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat({}, "claude-cli", false);
+		chat.id = "remote-marker-queued";
+		chat.execution_host_id = "ssh-fixture";
+		chat.remote_turn_reconnect_pending = true;
+		app.chats.push_back(chat);
+		auto& session = uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front());
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "queued-after-turn";
+		prompt.revision = 1;
+		prompt.text = "Next input.";
+		session.queued_user_prompts.push_back(prompt);
+
+		session.processing = true; // An undelivered raw prompt must not matter while the turn runs.
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+
+		session.processing = false;
+		app.chats.front().remote_prompt_delivery_id = "unacknowledged"; // Possibly delivered input keeps it.
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+
+		app.chats.front().remote_prompt_delivery_id.clear();
+		(void)uam::acp_detail::SaveChatQuietly(app, app.chats.front());
+		UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+	}
+
+	UAM_TEST(HeldDirectAdmissionReceiptsProjectAsResumableQueue)
+	{
+		// Issue #682 follow-up: a restored held queue of direct receipts needs the Resume control.
+		uam::AppState app;
+		ChatSession chat = ChatDomainService().CreateNewChat({}, "claude-cli", false);
+		chat.id = "held-direct-receipts";
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "held-direct";
+		prompt.revision = 1;
+		prompt.text = "Queued while the remote restart was pending.";
+		prompt.direct_admission = true;
+		prompt.append_user_message = true;
+		chat.acp_queued_prompts = {prompt};
+		chat.acp_queue_held = true;
+		app.chats.push_back(chat);
+		auto projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(projection.at("queueHeld").get<bool>());
+		UAM_ASSERT_EQ(projection.at("queuedPrompts").size(), std::size_t{1});
+		UAM_ASSERT_EQ(projection.at("queuedPrompts")[0].at("id"), nlohmann::json("held-direct"));
+		UAM_ASSERT(projection.at("pendingDirectPrompts").empty() && projection.at("unsentDirectPrompts").empty());
+
+		// Possibly delivered input must never gain Resume, which could replay it.
+		app.chats.front().remote_prompt_delivery_id = "maybe-delivered";
+		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
+		UAM_ASSERT_EQ(projection.at("pendingDirectPrompts").size(), std::size_t{1});
+		app.chats.front().remote_prompt_delivery_id.clear();
+
+		// Unheld direct receipts keep their existing receipt presentation.
+		app.chats.front().acp_queue_held = false;
+		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
+	}
 
 	struct WorkspacePendingDirectFixture
 	{

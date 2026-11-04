@@ -58,7 +58,9 @@ class ChatDomainService
 	};
 
 	std::string AttentionRevision(const uam::AppState& app, const ChatSession& chat) const;
-	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const;
+	/// <summary>background_save_queued: the caller has just queued an ordinary background save of this chat,
+	/// which publishes the attention fields, so the durable summary write is skipped.</summary>
+	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id, bool background_save_queued = false) const;
 	bool AcknowledgeChatAttention(uam::AppState& app, const std::string& chat_id, const std::string& revision) const;
 	/// Snoozes attention until a future epoch timestamp; zero wakes without stopping the run.
 	bool ValidateChatSnooze(const uam::AppState& app, const std::string& chat_id, std::int64_t until_ms, std::string* error_out = nullptr) const;

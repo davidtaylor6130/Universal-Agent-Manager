@@ -20,6 +20,7 @@
 #include "common/chat/message_attachment_sources.h"
 #include "common/constants/app_constants.h"
 #include "remote/runner_protocol.h"
+#include "remote/runner_proxy.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -668,9 +669,19 @@ namespace uam
 			     session->reconnect_pending || session->recovering_remote_turn || session->recovering_remote_process ||
 			     session->worktree_launch_pending || ((session->remote_stop_pending || session->restart_marker_save_pending) &&
 			     session->restart_after_remote_stop_cleanup)));
+			const bool held = session ? session->queue_held : chat.acp_queue_held;
+			const bool baseline_hold = std::ranges::any_of(prompts, [](const AcpQueuedUserPromptState* prompt) { return prompt->repository_baseline_hold; });
 			for (const AcpQueuedUserPromptState* prompt : prompts)
 			{
 				if (prompt->prepared_for_delivery || !prompt->claude_quota_continuation_id.empty()) continue;
+				// A held row-less direct receipt only advances through Resume (#682): presenting it as Sending
+				// left no control while Send refused the held queue. Uncertain delivery, referenced rows and baseline holds keep
+				// their receipts so Resume never replays input that may have reached the provider.
+				if (prompt->direct_admission && held && !uncertain && !baseline_hold && prompt->existing_user_message_index < 0)
+				{
+					result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					continue;
+				}
 				if (prompt->direct_admission)
 				{
 					if (pending)
@@ -700,7 +711,7 @@ namespace uam
 				if (IsVisibleAcpQueuedPrompt(*prompt))
 					result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
 			}
-			result["queueHeld"] = (session ? session->queue_held : chat.acp_queue_held) && !result["queuedPrompts"].empty();
+			result["queueHeld"] = held && !result["queuedPrompts"].empty();
 		}
 
 		nlohmann::json SerializeMessageForFrontend(const Message& message,
@@ -1284,6 +1295,7 @@ namespace uam
 			acp_json["attentionKind"] = nullptr;
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : "stopped";
 			acp_json["lastError"] = "";
+			acp_json["timeoutStop"] = nullptr;
 			acp_json["recentStderr"] = "";
 			acp_json["lastExitCode"] = nullptr;
 			acp_json["diagnostics"] = nlohmann::json::array();
@@ -1356,6 +1368,8 @@ namespace uam
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
 			acp_json["lastError"] = session->last_error;
+			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
+			    ? nlohmann::json{{"label", session->timeout_stop_label}, {"seconds", session->timeout_stop_seconds}} : nlohmann::json(nullptr);
 			acp_json["recentStderr"] = session->recent_stderr;
 			acp_json["lastExitCode"] = uam::nlohmann_json::IntOrNull(session->has_last_exit_code, session->last_exit_code);
 			acp_json["agentInfo"] = {
@@ -1884,6 +1898,9 @@ namespace uam
 			{
 				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));
 				if (configured != nullptr) uam::icons::AddFrontendAsset(host, app.data_root, configured->custom_icon);
+				// The UI compares this with the host's installed runnerSha256 to offer rebuilt helpers.
+				if (configured != nullptr && configured->transport == "ssh")
+					host["bundledRunnerSha256"] = uam::remote::PackagedRunnerSha256(configured->platform, configured->architecture);
 			}
 		}
 
