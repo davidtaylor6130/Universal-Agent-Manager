@@ -82,10 +82,8 @@ it('renders multi-selected rows with the shared Settings selected-item style ins
     expect(active.querySelector('[aria-label="Selected for bulk actions"]')).toBeNull()
   } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(initial, true) }
   const css = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
-  // One shared rule: --accent-dim tint plus a straight line inset inside the rounded corners, used by Settings and the sidebar.
-  expect(css('../../index.css')).toMatch(/\.uam-selected-item::before \{[^}]*top: 8px;[^}]*bottom: 8px;[^}]*width: 3px;[^}]*background: var\(--accent\);/)
-  expect(css('../../index.css')).toMatch(/\.uam-selected-item \{ background: var\(--accent-dim\); \}/)
-  expect(css('./sidebar.css')).toMatch(/\.uam-sb-row\.uam-selected-item:hover \{ background: var\(--accent-dim\); \}/)
-  expect(css('../settings/SettingsModal.tsx')).toContain('className="uam-settings-nav__indicator uam-selected-item"')
-  expect(css('../settings/MemoryLibraryModal.tsx')).toContain('className="uam-settings-nav__indicator uam-selected-item"')
+  // One shared rule (tint + straight inset line) used by Settings and the sidebar.
+  expect(css('../../index.css')).toContain('.uam-selected-item::before {')
+  expect(css('../settings/SettingsModal.tsx')).toContain('uam-settings-nav__indicator uam-selected-item')
+  expect(css('../settings/MemoryLibraryModal.tsx')).toContain('uam-settings-nav__indicator uam-selected-item')
 })

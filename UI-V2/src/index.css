@@ -2341,12 +2341,16 @@ button.uam-commit-check { cursor: pointer; }
 .uam-selected-item::before {
   content: '';
   position: absolute;
-  left: 3px;
+  inset-inline-start: 3px;
   top: 8px;
   bottom: 8px;
   width: 3px;
   background: var(--accent);
   pointer-events: none;
+}
+@media (forced-colors: active) {
+  .uam-selected-item { outline: 1px solid Highlight; }
+  .uam-selected-item::before { background: Highlight; forced-color-adjust: none; }
 }
 .uam-settings-nav-item {
   position: relative;

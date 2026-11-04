@@ -263,6 +263,8 @@ describe('collection multi-selection actions', () => {
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-label="Archive"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     expect(host.textContent).toContain('2 collections selected')
+    // Selected collection headers share the Settings selected-item style with selected chats.
+    expect(['col', 'col2'].every((id) => host.querySelector<HTMLElement>(`[data-collection-id="${id}"]`)!.classList.contains('uam-selected-item'))).toBe(true)
     act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
     const rename = item('Rename')
     expect(rename.getAttribute('aria-disabled')).toBe('true')
