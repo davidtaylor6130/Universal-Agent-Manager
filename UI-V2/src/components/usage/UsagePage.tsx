@@ -71,7 +71,7 @@ function CostBasis({ totals, focusable = false, pending = false }: { totals: Usa
 
 const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2 }).format(value)
 /** Axis amounts: whole dollars compact ($0, $2, $1.5K); fractional ticks keep their cents ($2.50, $0.05). */
-const axisMoney = (value: number) => Number.isInteger(value) ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 2 }).format(value) : money(value)
+const axisMoney = (value: number) => Number.isInteger(value) ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', notation: 'compact', minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value) : money(value)
 const percentOf = (part: number, whole: number) => whole > 0 ? `${Math.round(part / whole * 100)}%` : '0%'
 /** Token segments are disjoint: input + cache read + cache write + output (reasoning is a part of output). */
 const TOKEN_SEGMENTS = [
