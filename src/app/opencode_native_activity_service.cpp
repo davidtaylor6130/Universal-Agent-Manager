@@ -801,7 +801,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 			if (!OwnsSession(root, verified_workspace, root, snapshot.sessions, platform))
 			{
 				snapshot.authority_conflict = (!String(native_root, "id").empty() && String(native_root, "id") != root) ||
-				    (!String(native_root, "directory").empty() && String(native_root, "directory") != verified_workspace);
+				    (!String(native_root, "directory").empty() && !opencode::WorkspaceDirectoriesMatch(verified_workspace, String(native_root, "directory"), platform));
 				snapshot.error = "The native OpenCode root session did not match its owned workspace.";
 				return snapshot;
 			}
@@ -824,7 +824,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				if (!OwnsSession(root, verified_workspace, root, snapshot.sessions, platform))
 				{
 					snapshot.authority_conflict = (!String(native_root, "id").empty() && String(native_root, "id") != root) ||
-					    (!String(native_root, "directory").empty() && String(native_root, "directory") != verified_workspace);
+					    (!String(native_root, "directory").empty() && !opencode::WorkspaceDirectoriesMatch(verified_workspace, String(native_root, "directory"), platform));
 					snapshot.error = "The native OpenCode root changed during its delegation policy readback.";
 					return snapshot;
 				}
