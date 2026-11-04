@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -41,6 +42,15 @@ namespace uam::io
 {
 	inline constexpr const char* kTempWritePathSuffix = ".tmp.";
 	inline constexpr const char* kBackupPathSuffix = ".bak";
+
+	// Test-only delay before each durable temporary-file write on the calling thread only, so a case can
+	// prove its own thread (for example the UI poll) performs no synchronous durable write.
+	inline thread_local int t_durable_write_delay_ms_for_tests = 0;
+	inline void DelayDurableWriteForTests()
+	{
+		if (t_durable_write_delay_ms_for_tests > 0)
+			std::this_thread::sleep_for(std::chrono::milliseconds(t_durable_write_delay_ms_for_tests));
+	}
 
 #if defined(_WIN32)
 	inline std::string AtomicWriteSystemError(unsigned long code)
@@ -339,6 +349,7 @@ namespace uam::io
 	    const AtomicWriteStageHook& hook,
 	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
+		if (sync_to_disk) DelayDurableWriteForTests();
 		std::filesystem::path native_temp_path;
 		if (!NativeFilePath(temp_path, native_temp_path, result.error)) return false;
 		HANDLE file = CreateFileW(native_temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | (sync_to_disk ? FILE_FLAG_WRITE_THROUGH : 0), nullptr);
@@ -457,6 +468,7 @@ namespace uam::io
 	    const AtomicWriteStageHook& hook,
 	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
+		if (sync_to_disk) DelayDurableWriteForTests();
 		const int fd = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
 		if (fd < 0)
 		{
@@ -553,6 +565,7 @@ namespace uam::io
 	inline bool WriteAndSyncAtomicTemp(const std::filesystem::path& temp_path,
 	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result)
 	{
+		DelayDurableWriteForTests();
 		bool file_closed = false;
 #if defined(_WIN32)
 		std::filesystem::path native_path;
@@ -635,6 +648,7 @@ namespace uam::io
 	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result,
 	    std::shared_ptr<const uam::platform::AtomicTempWriterOrigin>& origin_out)
 	{
+		DelayDurableWriteForTests();
 		origin_out.reset();
 		bool file_closed = false;
 #if defined(_WIN32)

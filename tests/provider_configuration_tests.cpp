@@ -2821,7 +2821,8 @@ UAM_TEST(LocalCodexDeferredConfigurationSurvivesForeignVersionHealthPublication)
 		error.clear();
 		accepted = uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error);
 		if (!accepted || session.running) break;
-		UAM_ASSERT(session.pending_local_launch == packet);
+		// After configuration the provider process is created on the launch worker, in its own task.
+		UAM_ASSERT(session.pending_local_launch == packet || uam::acp_detail::AcpProcessCreationPending(session));
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(accepted && error.empty());

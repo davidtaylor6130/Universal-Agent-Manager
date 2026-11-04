@@ -6234,7 +6234,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		        (session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)) ||
 		       std::ranges::any_of(
 		    app.pending_acp_remote_stops,
-		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; });
+		    [&](const auto& pending) { return pending != nullptr && pending->chat_id == chat_id; }) ||
+		       acp_detail::AbandonedAcpProcessCreationPending(app, chat_id);
 	}
 
 	/// <summary>Transfers an idle Codex writer between chat aliases only after its process has exited.</summary>
@@ -7842,7 +7843,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (remote_startup_rejected && !turn_was_active) FailAcpTurnOrSession(session, &chat, session.last_error);
 				if ((turn_was_active && !remote_turn_recovery) || remote_source_exit || remote_startup_rejected ||
 				    (child_tasks_were_live && session.claude_live_background_task_ids.empty() && session.codex_live_background_thread_ids.empty()))
-					SaveChatQuietly(app, chat);
+				{
+					// A local transcript save is the background save's work; only remote recovery metadata is
+					// saved before this poll continues.
+					if (chat.execution_host_id.empty() || chat.execution_host_id == execution_hosts::kLocalHostId) ScheduleChatSave(app, chat, 0.0);
+					else SaveChatQuietly(app, chat);
+				}
 				if (remote_stop_cleanup_missing)
 				{
 					(void)CompleteConfirmedRemoteStop(

@@ -1075,6 +1075,13 @@ UAM_TEST(ClaudeIdleLocalChildExitPersistsSettlementThroughProductionPolling)
 		UAM_ASSERT(!session.running);
 		UAM_ASSERT(session.claude_live_background_task_ids.empty());
 		UAM_ASSERT_EQ(session.last_exit_code, code);
+		// The exit settlement is saved by the background chat save the poll queues, as in production.
+		for (int attempt = 0; attempt < 500 && (!app.pending_chat_save_at_by_chat_id.empty() || !app.pending_chat_save_tasks.empty()); ++attempt)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty() && app.pending_chat_save_tasks.empty());
 		const std::optional<ChatSession> after = ChatRepository::LoadLocalChat(temp.root, chat.id);
 		UAM_ASSERT(after.has_value());
 		UAM_ASSERT_EQ(after->messages.front().tool_calls[0].status, std::string("failed"));
