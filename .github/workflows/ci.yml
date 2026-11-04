@@ -180,8 +180,9 @@ jobs:
           save: false
       - run: cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_REMOTE_RUNNER_ARTIFACT_DIR="$GITHUB_WORKSPACE/Builds/remote-artifacts"
       - run: cmake --build Builds/tests --config Release --target uam_core_tests --parallel 4
-      # The cases find uam-runner and its metadata beside the binary and resolve source paths from the build folder (CMakeCache.txt).
-      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt
+      # The cases find uam-runner and its metadata beside the binary, read the runner's generated build header, and
+      # resolve source paths from the build folder (CMakeCache.txt).
+      - run: tar -cf core-tests.tar -C Builds/tests uam_core_tests uam-runner uam-runner.sha256 uam-runner.version uam-runner.manifest.json CMakeCache.txt generated
       - uses: actions/upload-artifact@v4
         with:
           name: uam-core-tests-macos-arm64
@@ -386,6 +387,7 @@ jobs:
           name: uam-core-tests-windows-x64
           path: |
             Builds/tests/CMakeCache.txt
+            Builds/tests/generated/
             Builds/tests/Release/
             !Builds/tests/Release/**/*.pdb
             !Builds/tests/Release/**/*.ilk
