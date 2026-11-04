@@ -350,6 +350,21 @@ describe('collection multi-selection actions', () => {
     expect(useAppStore.getState().resourceCollections).toEqual([])
   })
 
+  it('never range-selects collections hidden inside a collapsed parent and nests contents as groups', () => {
+    act(() => useAppStore.setState({ resourceCollections: [
+      { id: 'col', name: 'Favourites', collapsed: true, references: [] },
+      { id: 'hidden', name: 'Hidden', parentId: 'col', collapsed: false, references: [] },
+      { id: 'col2', name: 'Archive', collapsed: false, references: [] },
+    ] }))
+    const contents = host.querySelector<HTMLElement>('[role="group"][aria-label="Favourites contents"]')!
+    expect(contents.querySelector('[data-collection-id="hidden"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"] button[aria-label="Archive"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(host.textContent).toContain('2 collections selected')
+    act(() => host.querySelector<HTMLElement>('[data-collection-id="col2"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+    expect(item('Delete 2 collections')).toBeTruthy()
+  })
+
   it('keeps a plain click as expand or collapse without selecting', async () => {
     await act(async () => { host.querySelector<HTMLElement>('[data-collection-id="col"] button[aria-label="Favourites"]')!.click(); await flush() })
     expect(sent('toggleResourceCollection')).toEqual([{ collectionId: 'col' }])

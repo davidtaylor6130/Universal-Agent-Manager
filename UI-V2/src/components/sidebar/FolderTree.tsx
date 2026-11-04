@@ -405,7 +405,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
 
   const visibleSessionRows = useCallback(() => Array.from(
     treeRef.current?.querySelectorAll<HTMLElement>('[data-session-id]') ?? []
-  ).filter((row) => !row.closest('[inert]')), [])
+  ), [])
   const visibleSessionIds = useCallback(() => visibleSessionRows()
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
@@ -506,7 +506,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     event.preventDefault()
     clearBulkSelection()
     clearWorkspaceSelection()
-    const rows = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-collection-id]') ?? [])
+    // Headers inside a collapsed (inert) parent are hidden, so a range never selects them for bulk actions.
+    const rows = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-collection-id]') ?? []).filter((row) => !row.closest('[inert]'))
     const anchor = collectionSelectionAnchorRef.current ? rows.indexOf(collectionSelectionAnchorRef.current) : -1
     const target = rows.indexOf(header)
     if (anchor < 0 || target < 0) {
@@ -1636,6 +1637,8 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           <div
             id={`collection-children-${collection.id}`}
             data-testid={`collection-children-${collection.id}`}
+            role="group"
+            aria-label={`${collection.name} contents`}
             className="ml-3 mr-1 mt-0 py-0 pl-1"
             style={{
               background: 'transparent',
