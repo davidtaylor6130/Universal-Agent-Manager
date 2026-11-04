@@ -120,6 +120,8 @@ class CefQueryWorkerTask : public CefTask
 		{
 			result = AsyncFailure(500, "Async bridge request failed.");
 		}
+		// CEF releases this task after Execute returns; drop worker captures (such as workspace leases) before the completion can run (#647).
+		m_worker = nullptr;
 		(void)CefPostTask(TID_UI, new CefQueryCallbackTask(m_lifetime, m_callback, std::move(result), std::move(m_completion)));
 	}
 
